@@ -63,6 +63,17 @@ async def attach_live_members(
     return enriched
 
 
+async def load_sub2api_dashboard(db: AsyncSession, *, force: bool = False) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    status = await sub2api_service.dashboard_status(db, force=force)
+    cards = await attach_live_members(
+        db,
+        await child_account_service.dashboard_cards(db),
+        sub2api_service.index_status_by_email(status.get("boxes") or []),
+    )
+    sub2api_service.annotate_rotation(status.get("boxes") or [], cards)
+    return cards, status
+
+
 class OnboardRequest(BaseModel):
     team_id: int
     email: str = Field(..., description="邮箱，或 email----pickup_url；只填 iCloud 别名时走 Cloudflare 读码")
@@ -111,11 +122,9 @@ async def seats_page(
     from app.routes.admin import build_admin_base_context
 
     context = await build_admin_base_context(request, db, current_user, "seats")
-    cards = await child_account_service.dashboard_cards(db)
-    sub2api_status = await sub2api_service.dashboard_status(db)
-    status_index = sub2api_service.index_status_by_email(sub2api_status.get("boxes") or [])
+    cards, sub2api_status = await load_sub2api_dashboard(db)
     context.update({
-        "cards": await attach_live_members(db, cards, status_index),
+        "cards": cards,
         "children": [child_account_service.serialize(item) for item in await child_account_service.list_accounts(db)],
         "stats": await child_account_service.stats(db),
         "sub2api_status": sub2api_status,
@@ -132,16 +141,12 @@ async def seats_list(
     current_user: dict = Depends(require_admin),
 ):
     children = await child_account_service.list_accounts(db, status=status, team_id=team_id, search=search)
-    sub2api_status = await sub2api_service.dashboard_status(db)
+    cards, sub2api_status = await load_sub2api_dashboard(db)
     return {
         "success": True,
         "children": [child_account_service.serialize(item) for item in children],
         "stats": await child_account_service.stats(db),
-        "cards": await attach_live_members(
-            db,
-            await child_account_service.dashboard_cards(db),
-            sub2api_service.index_status_by_email(sub2api_status.get("boxes") or []),
-        ),
+        "cards": cards,
         "sub2api_status": sub2api_status,
     }
 
@@ -152,7 +157,7 @@ async def seats_sub2api_status(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin),
 ):
-    status = await sub2api_service.dashboard_status(db, force=force)
+    _cards, status = await load_sub2api_dashboard(db, force=force)
     return {"success": True, **status}
 
 

@@ -89,6 +89,46 @@ class Sub2ApiStatusTests(unittest.TestCase):
         self.assertEqual(row["quota_label"], "7日 89%")
         self.assertEqual(row["schedule"], "401")
 
+    def test_annotates_today_rotation_from_live_members(self):
+        boxes = self.service.group_accounts([
+            {
+                "id": 1,
+                "name": "Team .2026.15 母号",
+                "status": "active",
+                "credentials": {"email": "xiaozhudf.2026.15@gmail.com"},
+            },
+            {
+                "id": 4,
+                "name": "Team Pedro 母号",
+                "status": "active",
+                "credentials": {"email": "pedropick89@gmail.com"},
+            },
+        ])
+        now = datetime(2026, 8, 24, 21, 0, 0)
+        self.service.annotate_rotation(boxes, [
+            {
+                "email": "xiaozhudf.2026.15@gmail.com",
+                "team_name": "Dual World",
+                "live_members": [
+                    {"email": "xiaozhudf.2026.15@gmail.com", "role": "account-owner", "joined_at": "2026-08-24T01:00:00+00:00"},
+                    {"email": "eagle-snoop-4d@icloud.com", "role": "standard-user", "joined_at": "2026-08-24T04:10:00+00:00"},
+                ],
+            },
+            {
+                "email": "pedropick89@gmail.com",
+                "team_name": "SunshineRain",
+                "live_members": [
+                    {"email": "old-seat@icloud.com", "role": "standard-user", "joined_at": "2026-08-23T10:00:00+00:00"},
+                ],
+            },
+        ], now=now)
+        by_title = {box["title"]: box for box in boxes}
+        self.assertTrue(by_title[".2026.15"]["rotated_today"])
+        self.assertEqual(by_title[".2026.15"]["rotation_label"], "今日已轮")
+        self.assertFalse(by_title["Pedro"]["rotated_today"])
+        self.assertEqual(by_title["Pedro"]["rotation_label"], "今日未轮")
+        self.assertEqual(by_title["Pedro"]["rotation_tone"], "warn")
+
 
 if __name__ == "__main__":
     unittest.main()

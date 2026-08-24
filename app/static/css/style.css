@@ -6703,9 +6703,19 @@ body.style-classic .btn {
 }
 
 .sub2api-box header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
     font-size: 0.92rem;
     font-weight: 800;
     margin-bottom: 0.45rem;
+}
+
+.sub2api-box header .sub2api-chip {
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    font-weight: 700;
 }
 
 .sub2api-box.tone-danger {

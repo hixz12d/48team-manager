@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import pytz
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,6 +12,8 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.settings import settings_service
+from app.config import settings
+from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +268,58 @@ class Sub2ApiService:
                 "accounts": rows,
             })
         boxes.sort(key=lambda item: item["title"].lower())
+        return boxes
+
+    def _local_datetime(self, value: Any) -> Optional[datetime]:
+        when = self._parse_when(value)
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            return when
+        tz = pytz.timezone(settings.timezone)
+        return when.astimezone(tz).replace(tzinfo=None)
+
+    def _is_today(self, value: Any, today) -> bool:
+        local = self._local_datetime(value)
+        return bool(local and local.date() == today)
+
+    def _card_family(self, card: Dict[str, Any]) -> str:
+        return self._family_from_email(str(card.get("email") or "")) or self._normalize_family(str(card.get("team_name") or ""))
+
+    def _box_matches_card(self, box: Dict[str, Any], card: Dict[str, Any]) -> bool:
+        family = self._card_family(card)
+        if family and family == box.get("title"):
+            return True
+        card_email = str(card.get("email") or "").strip().lower()
+        if not card_email:
+            return False
+        return any(str(item.get("email") or "").strip().lower() == card_email for item in (box.get("accounts") or []))
+
+    def annotate_rotation(
+        self,
+        boxes: List[Dict[str, Any]],
+        cards: List[Dict[str, Any]],
+        *,
+        now: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        today = (now or get_now()).date()
+        for box in boxes:
+            rotated = False
+            for card in cards:
+                if not self._box_matches_card(box, card):
+                    continue
+                members = list(card.get("live_members") or []) + list(card.get("active_children") or [])
+                for member in members:
+                    if str(member.get("role") or "") == "account-owner":
+                        continue
+                    if self._is_today(member.get("joined_at") or member.get("added_at"), today):
+                        rotated = True
+                        break
+                if rotated:
+                    break
+            box["rotated_today"] = rotated
+            box["rotation_label"] = "今日已轮" if rotated else "今日未轮"
+            box["rotation_tone"] = "ok" if rotated else "warn"
         return boxes
 
     async def _login_headers(self, client: httpx.AsyncClient, cfg: Dict[str, Any]) -> Dict[str, str]:

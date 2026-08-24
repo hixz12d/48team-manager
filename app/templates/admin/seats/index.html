@@ -35,7 +35,7 @@
             {% else %}
             {% for group in sub2api_status.boxes %}
             <article class="sub2api-box tone-{{ group.tone or 'ok' }}">
-                <header>{{ group.title }}</header>
+                <header><span>{{ group.title }}</span><span class="sub2api-chip tone-{{ group.rotation_tone or 'muted' }}">{{ group.rotation_label or '今日未轮' }}</span></header>
                 {% for item in group.accounts %}
                 <div class="sub2api-row">
                     <span class="sub2api-name" title="{{ item.name or item.email or '' }}">{{ item.short_name or item.name }}</span>
@@ -371,7 +371,7 @@ function renderSub2apiStatus(data) {
                 '<span class="sub2api-chip tone-' + escapeSeatHtml(item.tone || 'muted') + '">' + escapeSeatHtml(item.schedule_label || '-') + '</span>' +
             '</div>'
         )).join('');
-        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header>' + escapeSeatHtml(group.title) + '</header>' + rows + '</article>';
+        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span><span class="sub2api-chip tone-' + escapeSeatHtml(group.rotation_tone || 'muted') + '">' + escapeSeatHtml(group.rotation_label || '今日未轮') + '</span></header>' + rows + '</article>';
     }).join('');
 }
 
