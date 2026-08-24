@@ -139,10 +139,26 @@
 
                 <div class="auth-card-title">
                     <h1>管理员登录</h1>
-                    <p>请使用管理员密码进入运营后台</p>
+                    <p>请使用账号和密码进入运营后台</p>
                 </div>
 
                 <form id="loginForm" class="auth-form" onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="username">管理员账号</label>
+                        <div class="auth-input-wrap">
+                            <span class="auth-input-icon"><i data-lucide="user"></i></span>
+                            <input
+                                type="text"
+                                id="username"
+                                name="username"
+                                class="form-control auth-input"
+                                placeholder="请输入管理员账号"
+                                required
+                                autocomplete="username"
+                                autofocus
+                            >
+                        </div>
+                    </div>
                     <div class="form-group">
                         <label for="password">管理员密码</label>
                         <div class="auth-input-wrap">
@@ -155,7 +171,6 @@
                                 placeholder="请输入管理员密码"
                                 required
                                 autocomplete="current-password"
-                                autofocus
                             >
                             <button
                                 type="button"
@@ -244,6 +259,7 @@
 async function handleLogin(event) {
     event.preventDefault();
 
+    const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
     const errorMessage = document.getElementById('errorMessage');
     const errorText = errorMessage.querySelector('.auth-error-text');
@@ -261,7 +277,7 @@ async function handleLogin(event) {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ password })
+            body: JSON.stringify({ username, password })
         });
 
         const data = await response.json();
@@ -269,7 +285,7 @@ async function handleLogin(event) {
         if (response.ok && data.success) {
             window.location.href = '/admin';
         } else {
-            if (errorText) errorText.textContent = data.error || '登录失败';
+            if (errorText) errorText.textContent = data.error || data.detail || '登录失败';
             errorMessage.style.display = 'flex';
             submitButton.disabled = false;
             submitButton.classList.remove('is-loading');

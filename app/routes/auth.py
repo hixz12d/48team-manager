@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.services.auth import auth_service
 from app.dependencies.auth import get_current_user
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ router = APIRouter(
 # 请求模型
 class LoginRequest(BaseModel):
     """登录请求"""
+    username: str = Field(..., description="管理员用户名", min_length=1)
     password: str = Field(..., description="管理员密码", min_length=1)
 
 
@@ -134,6 +136,15 @@ async def login(
                 headers={"Retry-After": str(max(retry_after, 1))}
             )
 
+        import hmac
+        expected_username = (settings.admin_username or "").strip()
+        provided_username = (login_data.username or "").strip()
+        if not expected_username or provided_username != expected_username:
+            _record_login_failure(ip)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="用户名或密码错误",
+            )
         # 验证密码
         result = await auth_service.verify_admin_login(
             login_data.password,
@@ -152,7 +163,7 @@ async def login(
 
         # 设置 Session
         request.session["user"] = {
-            "username": "admin",
+            "username": settings.admin_username,
             "is_admin": True
         }
 

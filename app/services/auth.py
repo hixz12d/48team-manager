@@ -208,7 +208,8 @@ class AuthService:
     async def verify_admin_login(
         self,
         password: str,
-        db_session: AsyncSession
+        db_session: AsyncSession,
+        username: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         验证管理员登录
@@ -221,6 +222,16 @@ class AuthService:
             结果字典，包含 success, message, error
         """
         try:
+            if username is not None:
+                import hmac
+                expected = (settings.admin_username or "").strip()
+                provided = str(username or "").strip()
+                if not expected or provided != expected:
+                    return {
+                        "success": False,
+                        "message": None,
+                        "error": "用户名或密码错误",
+                    }
             # 获取密码哈希
             password_hash = await self.get_admin_password_hash(db_session)
 

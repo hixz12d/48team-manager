@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     session_secret_key: str = ""
     encryption_key: str = ""
     admin_password: str = "admin123"
+    admin_username: str = "hixz12"
     # Cookie 是否仅允许 HTTPS (生产环境应设为 True)
     session_cookie_secure: bool = False
 
