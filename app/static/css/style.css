@@ -6805,6 +6805,49 @@ body.style-classic .btn {
     white-space: nowrap;
 }
 
+.vacancy-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.65rem;
+    margin: 0 0 0.55rem;
+    font-size: 0.78rem;
+}
+
+.vacancy-metrics {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.vacancy-history {
+    margin: 0 0 0.75rem;
+}
+
+.vacancy-history summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.vacancy-history-row {
+    margin-top: 0.55rem;
+    padding-top: 0.55rem;
+    border-top: 1px dashed var(--border-base);
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.vacancy-history-empty {
+    margin: 0.55rem 0 0;
+    font-size: 0.75rem;
+}
+
+.vacancy-history .btn {
+    margin-top: 0.65rem;
+}
+
 .seat-table td:first-child {
     max-width: 220px;
     overflow: hidden;

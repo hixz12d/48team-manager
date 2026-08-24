@@ -22,6 +22,8 @@ from app.services.mail_otp import parse_mail_line, wait_for_mailbox_item
 from app.services.sms import parse_phone_line, require_proxy
 from app.services.sub2api import sub2api_service
 from app.services.team import team_service
+from app.services.chatgpt import ChatGPTService
+from app.services.vacancy import summarize_for_message
 from app.utils.proxy import normalize_proxy_url
 from app.utils.time_utils import get_now
 
@@ -364,13 +366,17 @@ class OnboardService:
         target = normalize_email(email)
         child = await child_account_service.get_by_email(db_session, target)
 
-        if not user_id:
+        needs_lookup = not user_id or (isinstance(user_id, str) and not user_id.startswith("user-"))
+        if needs_lookup:
             members = await team_service.get_team_members(team_id, db_session)
             if members.get("success"):
                 for item in members.get("members") or []:
-                    if normalize_email(item.get("email")) == target and item.get("user_id"):
-                        user_id = item.get("user_id")
-                        break
+                    if normalize_email(item.get("email")) != target:
+                        continue
+                    live_id = ChatGPTService.pick_user_id(item)
+                    if live_id:
+                        user_id = live_id
+                    break
 
         if user_id:
             result = await team_service.delete_team_member(team_id, user_id, db_session, email=target)
@@ -403,10 +409,16 @@ class OnboardService:
             detail="已踢出并保留子号",
         )
         await db_session.commit()
+        vacancy = result.get("vacancy")
+        message = f"{target} 已踢出，子号进入 standby"
+        summary = summarize_for_message(vacancy)
+        if summary:
+            message = f"{message}。{summary}"
         return {
             "success": True,
-            "message": f"{target} 已踢出，子号进入 standby",
+            "message": message,
             "child": child_account_service.serialize(child) if child else None,
+            "vacancy": vacancy,
         }
 
     async def rotate_one(
@@ -476,11 +488,17 @@ class OnboardService:
             detail=f"kicked {kick_target.email}",
         )
         await db_session.commit()
+        vacancy = kick_result.get("vacancy")
+        message = f"已踢出 {kick_target.email} 并补入 {(invite_result.get('child') or {}).get('email')}"
+        summary = summarize_for_message(vacancy)
+        if summary:
+            message = f"{message}。{summary}"
         return {
             "success": True,
-            "message": f"已踢出 {kick_target.email} 并补入 {(invite_result.get('child') or {}).get('email')}",
+            "message": message,
             "kick": kick_result,
             "invite": invite_result,
+            "vacancy": vacancy,
         }
 
 

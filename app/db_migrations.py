@@ -359,6 +359,31 @@ def run_auto_migration():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_email ON seat_events (email)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_team ON seat_events (team_id, created_at)")
 
+        if not table_exists(cursor, "seat_vacancy_events"):
+            logger.info("创建 seat_vacancy_events 表")
+            cursor.execute("""
+                CREATE TABLE seat_vacancy_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    team_id INTEGER NOT NULL,
+                    account_id VARCHAR(100),
+                    user_id VARCHAR(100),
+                    email VARCHAR(255),
+                    policy_notice_null BOOLEAN NOT NULL DEFAULT 0,
+                    vacancy_ordinal INTEGER,
+                    free_vacancy_threshold INTEGER,
+                    billing_starts_at DATETIME,
+                    expires_at DATETIME,
+                    is_free BOOLEAN,
+                    captured_at DATETIME NOT NULL,
+                    FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
+                )
+            """)
+            migrations_applied.append("seat_vacancy_events")
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vacancy_team_captured ON seat_vacancy_events (team_id, captured_at)"
+        )
+
         # 提交更改
         conn.commit()
         

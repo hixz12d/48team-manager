@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models import Team, TeamAccount, RedemptionCode, TeamEmailMapping
 from app.services.chatgpt import ChatGPTService
+from app.services.vacancy import parse_policy_notice, present_vacancy, summarize_for_message, vacancy_service
 from app.services.encryption import encryption_service
 from app.utils.token_parser import TokenParser
 from app.utils.jwt_parser import JWTParser
@@ -390,6 +391,20 @@ class TeamService:
             "message": message,
             "error_code": error_code,
             "error": error,
+        }
+        payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _delete_member_success(message: str, vacancy: Optional[Dict[str, Any]] = None, **extra: Any) -> Dict[str, Any]:
+        summary = summarize_for_message(vacancy)
+        if summary:
+            message = f"{message}。{summary}"
+        payload: Dict[str, Any] = {
+            "success": True,
+            "message": message,
+            "error": None,
+            "vacancy": vacancy,
         }
         payload.update(extra)
         return payload
@@ -2334,7 +2349,8 @@ class TeamService:
                 if normalized_email:
                     joined_emails.add(normalized_email)
                 all_members.append({
-                    "user_id": m.get("id"),
+                    "user_id": ChatGPTService.pick_user_id(m),
+                    "account_user_id": m.get("account_user_id") if isinstance(m.get("account_user_id"), str) else None,
                     "email": normalized_email or m.get("email"),
                     "name": m.get("name"),
                     "role": m.get("role"),
@@ -2938,6 +2954,7 @@ class TeamService:
             结果字典,包含 success, message, error
         """
         remote_removed = False
+        vacancy = None
         try:
             # 1. 查询 Team
             stmt = select(Team).where(Team.id == team_id)
@@ -2967,6 +2984,20 @@ class TeamService:
                 identifier=team.email
             )
             remote_removed = self._remote_delete_succeeded(delete_result)
+            if remote_removed:
+                vacancy = delete_result.get("vacancy") or parse_policy_notice(delete_result.get("data"))
+                if vacancy:
+                    try:
+                        vacancy = await vacancy_service.record(
+                            db_session,
+                            team=team,
+                            user_id=user_id,
+                            email=email,
+                            vacancy=vacancy,
+                        )
+                    except Exception:
+                        logger.exception("保存席位阈值失败")
+                        vacancy = present_vacancy(vacancy)
 
             if not remote_removed:
                 # 检查是否封号或 Token 失效
@@ -3003,20 +3034,15 @@ class TeamService:
                     team_id,
                     sync_result.get("error"),
                 )
-                return {
-                    "success": True,
-                    "message": "成员已删除，但席位数字暂未刷新，请手动同步一次",
-                    "warning": sync_result.get("error"),
-                    "error": None,
-                }
+                return self._delete_member_success(
+                    "成员已删除，但席位数字暂未刷新，请手动同步一次",
+                    vacancy,
+                    warning=sync_result.get("error"),
+                )
 
             logger.info(f"删除成员成功: {user_id} from Team {team_id}")
             await self._reset_error_status(team, db_session)
-            return {
-                "success": True,
-                "message": "成员已删除",
-                "error": None
-            }
+            return self._delete_member_success("成员已删除", vacancy)
 
         except Exception:
             if remote_removed:
@@ -3027,11 +3053,10 @@ class TeamService:
                     await db_session.commit()
                 except Exception:
                     await db_session.rollback()
-                return {
-                    "success": True,
-                    "message": "成员已从 ChatGPT 移除，本地状态可能未刷新，请同步后核对",
-                    "error": None,
-                }
+                return self._delete_member_success(
+                    "成员已从 ChatGPT 移除，本地状态可能未刷新，请同步后核对",
+                    vacancy,
+                )
             await db_session.rollback()
             logger.exception("删除成员失败")
             return {

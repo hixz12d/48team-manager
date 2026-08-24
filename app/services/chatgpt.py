@@ -160,6 +160,12 @@ class ChatGPTService:
         )
         return any(marker in text for marker in markers)
 
+    @staticmethod
+    def pick_user_id(*candidates: Any) -> Optional[str]:
+        from app.services.vacancy import pick_chatgpt_user_id
+
+        return pick_chatgpt_user_id(*candidates)
+
     async def _get_session(self, db_session: DBAsyncSession, identifier: str) -> AsyncSession:
         """
         根据标识符获取或创建持久会话
@@ -413,6 +419,11 @@ class ChatGPTService:
             "chatgpt-account-id": account_id
         }
         result = await self._make_request("DELETE", url, headers, db_session=db_session, identifier=identifier)
+        from app.services.vacancy import parse_policy_notice
+
+        vacancy = parse_policy_notice(result.get("data"))
+        if vacancy is not None:
+            result["vacancy"] = vacancy
         return result
 
     async def toggle_beta_feature(

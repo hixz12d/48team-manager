@@ -57,6 +57,30 @@
                 <span class="text-muted">{{ card.current_members }}/{{ card.max_members }}</span>
             </div>
             <p class="seat-card-meta">{{ card.email }}</p>
+            {% set vacancy = card.vacancy %}
+            {% if vacancy %}
+            <div class="vacancy-strip">
+                <span class="sub2api-chip tone-{{ vacancy.tone or 'muted' }}">{{ vacancy.status_label }}</span>
+                <span class="vacancy-metrics">{{ vacancy.comparison_text }}</span>
+                <span class="vacancy-metrics">开始 {{ vacancy.billing_starts_at_text }}</span>
+                <span class="vacancy-metrics">释放 {{ vacancy.expires_at_text }}</span>
+            </div>
+            {% endif %}
+            <details class="vacancy-history">
+                <summary>席位阈值历史（{{ (card.vacancy_history or [])|length }}）</summary>
+                {% if card.vacancy_history %}
+                {% for item in card.vacancy_history %}
+                <div class="vacancy-history-row">
+                    <div>{{ item.email or '邮箱待匹配' }} · {{ item.captured_at_text }}</div>
+                    <div>vacancy_ordinal {{ item.vacancy_ordinal_text }} / free_vacancy_threshold {{ item.free_vacancy_threshold_text }}</div>
+                    <div>开始 {{ item.billing_starts_at_text }} · 结束 {{ item.expires_at_text }}</div>
+                </div>
+                {% endfor %}
+                <button class="btn btn-sm btn-secondary" type="button" onclick="clearVacancyHistory({{ card.id }})">清空本 Team 历史</button>
+                {% else %}
+                <p class="text-muted vacancy-history-empty">踢人成功后会记录 policy_notice。ordinal 小于 threshold 即可立刻复用席位。</p>
+                {% endif %}
+            </details>
             {% if card.due_children %}
             <p>
                 {% for child in card.due_children %}
@@ -266,6 +290,17 @@ async function kickChild(teamId, email, userId = '') {
         const result = await postJSON('/admin/seats/kick', payload);
         showToast(result.message || '已踢出', 'success');
         setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function clearVacancyHistory(teamId) {
+    if (!confirm('清空该 Team 的席位阈值历史？')) return;
+    try {
+        const result = await postJSON('/admin/seats/vacancy/clear', { team_id: teamId });
+        showToast(result.message || '已清空', 'success');
+        setTimeout(() => location.reload(), 500);
     } catch (error) {
         showToast(error.message, 'error');
     }

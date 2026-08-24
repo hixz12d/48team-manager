@@ -264,3 +264,25 @@ class SeatEvent(Base):
         Index("idx_seat_event_email", "email"),
         Index("idx_seat_event_team", "team_id", "created_at"),
     )
+
+
+class SeatVacancyEvent(Base):
+    """踢人响应里的 policy_notice / 席位阈值历史。"""
+    __tablename__ = "seat_vacancy_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    account_id = Column(String(100), comment="ChatGPT account-id")
+    user_id = Column(String(100), comment="被踢成员 user-xxx")
+    email = Column(String(255), comment="被踢成员邮箱")
+    policy_notice_null = Column(Boolean, default=False, nullable=False, comment="policy_notice 是否为 null")
+    vacancy_ordinal = Column(Integer, comment="vacancy_ordinal")
+    free_vacancy_threshold = Column(Integer, comment="free_vacancy_threshold")
+    billing_starts_at = Column(DateTime, comment="席位开始时间(本地)")
+    expires_at = Column(DateTime, comment="席位释放时间(本地)")
+    is_free = Column(Boolean, comment="ordinal < threshold 或 policy_notice 为 null")
+    captured_at = Column(DateTime, default=get_now, nullable=False, comment="记录时间")
+
+    __table_args__ = (
+        Index("idx_vacancy_team_captured", "team_id", "captured_at"),
+    )

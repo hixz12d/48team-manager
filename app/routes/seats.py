@@ -15,6 +15,7 @@ from app.services.child_accounts import child_account_service
 from app.services.onboard import onboard_service
 from app.services.sub2api import sub2api_service
 from app.services.team import team_service
+from app.services.vacancy import vacancy_service
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ async def attach_live_members(
                 live_members.append({
                     "email": email or member.get("email"),
                     "user_id": member.get("user_id"),
+                    "account_user_id": member.get("account_user_id"),
                     "role": member.get("role") or "",
                     "status": member.get("status") or "joined",
                     "local_status": local.get("status") or "未入库",
@@ -65,10 +67,13 @@ async def attach_live_members(
 
 async def load_sub2api_dashboard(db: AsyncSession, *, force: bool = False) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     status = await sub2api_service.dashboard_status(db, force=force)
-    cards = await attach_live_members(
+    cards = await vacancy_service.attach_to_cards(
         db,
-        await child_account_service.dashboard_cards(db),
-        sub2api_service.index_status_by_email(status.get("boxes") or []),
+        await attach_live_members(
+            db,
+            await child_account_service.dashboard_cards(db),
+            sub2api_service.index_status_by_email(status.get("boxes") or []),
+        ),
     )
     sub2api_service.annotate_rotation(status.get("boxes") or [], cards)
     return cards, status
@@ -96,6 +101,9 @@ class RotateRequest(BaseModel):
     proxy: str = ""
     child_id: Optional[int] = None
 
+
+class VacancyClearRequest(BaseModel):
+    team_id: int
 
 class ChildUpdateRequest(BaseModel):
     phone: Optional[str] = None
@@ -202,6 +210,16 @@ async def seats_kick(
     except Exception as exc:
         logger.exception("踢人失败")
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+
+
+@router.post("/seats/vacancy/clear")
+async def seats_vacancy_clear(
+    payload: VacancyClearRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    deleted = await vacancy_service.clear_team(db, payload.team_id)
+    return {"success": True, "message": f"已清空 {deleted} 条席位阈值历史", "deleted": deleted}
 
 
 @router.post("/seats/rotate")
