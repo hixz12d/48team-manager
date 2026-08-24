@@ -369,6 +369,18 @@ class TeamService:
             "deactivated_workspace",
         )
         return any(keyword in error_msg for keyword in ban_keywords)
+
+    @staticmethod
+    def _remote_delete_succeeded(result: Dict[str, Any]) -> bool:
+        if result.get("success"):
+            return True
+        from app.services.chatgpt import ChatGPTService
+
+        return ChatGPTService.is_already_removed_error(
+            result.get("status_code"),
+            result.get("error"),
+            result.get("error_code"),
+        )
         
     @staticmethod
     def _admin_error(error_code: str, error: str, message: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
@@ -2925,6 +2937,7 @@ class TeamService:
         Returns:
             结果字典,包含 success, message, error
         """
+        remote_removed = False
         try:
             # 1. 查询 Team
             stmt = select(Team).where(Team.id == team_id)
@@ -2953,8 +2966,9 @@ class TeamService:
                 db_session,
                 identifier=team.email
             )
+            remote_removed = self._remote_delete_succeeded(delete_result)
 
-            if not delete_result["success"]:
+            if not remote_removed:
                 # 检查是否封号或 Token 失效
                 if await self._handle_api_error(delete_result, team, db_session):
                     error_msg = delete_result.get("error", "未知错误")
@@ -2962,7 +2976,7 @@ class TeamService:
                         error_msg = "账号已封禁 (account_deactivated)"
                     elif delete_result.get("error_code") == "token_invalidated":
                         error_msg = "Token 已失效 (token_invalidated)"
-                        
+
                     return {
                         "success": False,
                         "message": None,
@@ -2978,16 +2992,26 @@ class TeamService:
             if email:
                 await self.mark_team_email_mapping_removed(team_id, email, db_session, source="api")
 
-            # 4. 更新成员数 (不再手动 -1，同步最新数据)
-            await self.sync_team_info(team_id, db_session)
-
+            # 先落本地状态。后面的同步如果失败，不能把已经踢掉的人再回滚成失败。
             await db_session.commit()
 
+            sync_result = await self.sync_team_info(team_id, db_session)
+            if not sync_result.get("success"):
+                logger.warning(
+                    "删除成员后同步失败: user=%s team=%s error=%s",
+                    user_id,
+                    team_id,
+                    sync_result.get("error"),
+                )
+                return {
+                    "success": True,
+                    "message": "成员已删除，但席位数字暂未刷新，请手动同步一次",
+                    "warning": sync_result.get("error"),
+                    "error": None,
+                }
+
             logger.info(f"删除成员成功: {user_id} from Team {team_id}")
-
-            # 5. 请求成功，重置错误状态
             await self._reset_error_status(team, db_session)
-
             return {
                 "success": True,
                 "message": "成员已删除",
@@ -2995,6 +3019,19 @@ class TeamService:
             }
 
         except Exception:
+            if remote_removed:
+                logger.exception("ChatGPT 已踢出成员，但本地收尾失败")
+                try:
+                    if email:
+                        await self.mark_team_email_mapping_removed(team_id, email, db_session, source="api")
+                    await db_session.commit()
+                except Exception:
+                    await db_session.rollback()
+                return {
+                    "success": True,
+                    "message": "成员已从 ChatGPT 移除，本地状态可能未刷新，请同步后核对",
+                    "error": None,
+                }
             await db_session.rollback()
             logger.exception("删除成员失败")
             return {

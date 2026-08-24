@@ -139,6 +139,27 @@ class ChatGPTService:
         message = str(error or "").lower()
         return any(marker in message for marker in cls.TRANSIENT_ERROR_MARKERS)
 
+    @staticmethod
+    def is_already_removed_error(
+        status_code: Optional[int] = None,
+        error: Any = None,
+        error_code: Any = None,
+    ) -> bool:
+        if int(status_code or 0) == 404:
+            return True
+        text = f"{error_code or ''} {error or ''}".lower()
+        markers = (
+            "not found",
+            "does not exist",
+            "already removed",
+            "isn't a member",
+            "is not a member",
+            "no longer a member",
+            "not a member of",
+            "user_not_found",
+        )
+        return any(marker in text for marker in markers)
+
     async def _get_session(self, db_session: DBAsyncSession, identifier: str) -> AsyncSession:
         """
         根据标识符获取或创建持久会话
@@ -240,6 +261,16 @@ class ChatGPTService:
                             error_code = error_info.get("code") if isinstance(error_info, dict) else error_data.get("code")
                     except Exception:
                         pass
+
+                    if method == "DELETE" and self.is_already_removed_error(status_code, error_msg, error_code):
+                        logger.info("删除目标已不在 Team 中，视为成功: %s", url)
+                        return {
+                            "success": True,
+                            "status_code": status_code,
+                            "data": {},
+                            "error": None,
+                            "already_removed": True,
+                        }
 
                     if error_code == "token_invalidated" or "token_invalidated" in str(error_msg).lower():
                         logger.warning(f"检测到 Token 失效，清理会话缓存: {identifier}")

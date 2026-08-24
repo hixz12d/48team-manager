@@ -138,6 +138,9 @@ function getFriendlyAdminErrorMessage(rawMessage, statusCode = 0, scene = 'commo
         if (includesAny('owner', '所有者') && includesAny('不可删除', 'cannot', 'forbidden')) {
             return '所有者账号不支持删除';
         }
+        if (includesAny('not found', 'already removed', '已不在', '已被移除', 'member not found')) {
+            return '成员已不在 Team 中，请刷新后核对';
+        }
     }
 
     if (includesAny('未登录', 'api key 无效', 'unauthorized', 'authentication', 'login required')) {
@@ -2083,17 +2086,18 @@ async function deleteMember(teamId, userId, email, inModal = false) {
         });
 
         if (result.success) {
-            showToast('删除成功', 'success');
-            if (inModal) {
-                await loadModalMemberList(teamId);
-            } else {
-                setTimeout(() => location.reload(), 1000);
-            }
+            showToast(result.data?.message || '删除成功', 'success');
         } else {
             showToast(getFriendlyAdminErrorMessage(result.error || '删除失败', 0, 'member'), 'error');
         }
     } catch (error) {
         showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'member'), 'error');
+    } finally {
+        if (inModal) {
+            await loadModalMemberList(teamId);
+        } else {
+            setTimeout(() => location.reload(), 800);
+        }
     }
 }
 

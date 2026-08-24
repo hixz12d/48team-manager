@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock
 from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -63,6 +64,43 @@ class ChildAccountTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(TeamService._workspace_error_is_fatal({"error": "timeout"}))
         self.assertTrue(TeamService._workspace_error_is_fatal({"error_code": "account_deactivated"}))
+
+    def test_remote_delete_success_includes_already_removed(self):
+        from app.services.team import TeamService
+
+        self.assertTrue(TeamService._remote_delete_succeeded({"success": True}))
+        self.assertTrue(TeamService._remote_delete_succeeded({"success": False, "status_code": 404, "error": "not found"}))
+        self.assertFalse(TeamService._remote_delete_succeeded({"success": False, "error": "timeout"}))
+
+    async def test_delete_member_keeps_success_when_sync_fails(self):
+        from app.services.team import TeamService
+
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+        )
+        self.session.add(team)
+        await self.session.flush()
+
+        service = TeamService()
+        service.ensure_access_token = AsyncMock(return_value="tok")
+        service.chatgpt_service = type("Svc", (), {})()
+        service.chatgpt_service.delete_member = AsyncMock(
+            return_value={"success": True, "status_code": 200, "error": None}
+        )
+        service.sync_team_info = AsyncMock(return_value={"success": False, "error": "rolled back"})
+        service.mark_team_email_mapping_removed = AsyncMock()
+        service._reset_error_status = AsyncMock()
+
+        result = await service.delete_team_member(
+            team.id, "user-abc", self.session, email="kid@example.com"
+        )
+        self.assertTrue(result["success"])
+        self.assertIn("暂未刷新", result["message"])
+        service.mark_team_email_mapping_removed.assert_awaited()
 
 
 class ParserTests(unittest.TestCase):

@@ -122,6 +122,33 @@ class ChatGPTCloudflareHeaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new_session.calls, 1)
         self.assertIs(service._sessions["owner@example.com"], new_session)
 
+    async def test_delete_404_is_treated_as_already_removed(self):
+        service = ChatGPTService()
+        session = FakeCurlSession()
+        original_delete = session.delete
+
+        async def delete_404(url, headers=None, json=None):
+            await original_delete(url, headers=headers, json=json)
+            return FakeResponse(status_code=404, json_data={"detail": "not found"}, text="not found")
+
+        session.delete = delete_404
+        service._sessions["owner@example.com"] = session
+
+        result = await service._make_request(
+            "DELETE",
+            "https://chatgpt.com/backend-api/accounts/acc-1/users/user-abc",
+            {"Authorization": "Bearer token", "chatgpt-account-id": "acc-1"},
+            identifier="owner@example.com",
+        )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result.get("already_removed"))
+
+    def test_already_removed_markers(self):
+        self.assertTrue(ChatGPTService.is_already_removed_error(404, "whatever"))
+        self.assertTrue(ChatGPTService.is_already_removed_error(400, "User is not a member of this workspace"))
+        self.assertFalse(ChatGPTService.is_already_removed_error(400, "account_deactivated", "account_deactivated"))
+
 
 if __name__ == "__main__":
     unittest.main()

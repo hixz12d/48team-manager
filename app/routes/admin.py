@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from app.database import AsyncSessionLocal, get_db
 from app.dependencies.auth import require_admin
 from app.services.team import TeamService
+from app.services.onboard import onboard_service
 from app.services.redemption import RedemptionService
 from app.services.warranty import warranty_service
 from app.services.chatgpt import chatgpt_service
@@ -939,12 +940,20 @@ async def delete_team_member(
     try:
         logger.info(f"管理员从 Team {team_id} 删除成员: {user_id}")
 
-        result = await team_service.delete_team_member(
-            team_id=team_id,
-            user_id=user_id,
-            db_session=db,
-            email=payload.email,
-        )
+        if (payload.email or "").strip():
+            result = await onboard_service.kick_to_standby(
+                db,
+                team_id=team_id,
+                email=payload.email,
+                user_id=user_id,
+            )
+        else:
+            result = await team_service.delete_team_member(
+                team_id=team_id,
+                user_id=user_id,
+                db_session=db,
+                email=payload.email,
+            )
 
         if not result["success"]:
             return JSONResponse(
