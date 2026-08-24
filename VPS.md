@@ -51,3 +51,17 @@ cd /opt/team48
 git pull --ff-only origin main
 docker compose -p team48 -f deploy/docker-compose.yml up -d --build --no-deps team48
 ```
+
+## Git 拉取
+
+仓库是私有的。VPS 不要拷本机 `gh` 登录态或带 `repo` 权限的 Token，那是完整账号。
+
+`/opt/team48` 已接成 `origin/main` 工作副本，用仓库只读 Deploy Key 拉代码：
+
+- 密钥：`/root/.ssh/team48_deploy`（只读，不能 push）
+- SSH 别名：`github.com-team48`
+- remote：`git@github.com-team48:hixz12d/48team-manager.git`
+
+推送只在本机：本机已用 GitHub CLI 登录 `hixz12d`，`git push origin main` 走本地凭据。VPS 只 `git pull`，不要在生产目录提交或回写 GitHub。
+
+`.env` 和 `data/` 不进仓库，`git pull` 不会覆盖它们。
