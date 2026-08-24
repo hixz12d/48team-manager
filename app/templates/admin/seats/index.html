@@ -20,6 +20,15 @@
     </div>
 
     <div class="content-section">
+        <div class="section-header">
+            <h3>Sub2API 状态</h3>
+            <button class="btn btn-secondary" type="button" onclick="loadSub2apiStatus(true)">刷新</button>
+        </div>
+        <p class="form-help">按主 Team 分框，只看账号名、7 日额度和 401/429。读的是 Sub2API 现成状态，不改那边任何东西。</p>
+        <div id="sub2apiStatus" class="sub2api-status">加载中…</div>
+    </div>
+
+    <div class="content-section">
         <div class="section-header"><h3>代理出口检测</h3></div>
         <p class="form-help">批量测已绑定的母号 / 子号 ISP：先看端口通不通，再看出口 IP、国家、城市、ISP。如果出口和 VPS 本机一样，说明代理没生效。</p>
         <button class="btn btn-secondary" type="button" onclick="checkAllProxies()">检测全部已绑定代理</button>
@@ -311,5 +320,62 @@ async function checkAllProxies() {
         showToast(error.message, 'error');
     }
 }
+
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[ch]);
+}
+
+function renderSub2apiStatus(data) {
+    const box = document.getElementById('sub2apiStatus');
+    if (!box) return;
+    if (!data.configured) {
+        box.innerHTML = '<p class="form-help">还没配 Sub2API。去系统中心填地址，再加上 Admin Key 或后台账号。</p>';
+        return;
+    }
+    if (!data.ok) {
+        box.innerHTML = `<p class="form-help">读不到 Sub2API：${escapeHtml(data.error || '未知错误')}</p>`;
+        return;
+    }
+    const boxes = data.boxes || [];
+    if (!boxes.length) {
+        box.innerHTML = '<p class="form-help">没有匹配到 Team 账号。</p>';
+        return;
+    }
+    box.innerHTML = boxes.map((group) => {
+        const rows = (group.accounts || []).map((item) => `
+            <div class="sub2api-row">
+                <span class="sub2api-name" title="${escapeHtml(item.name || item.email || '')}">${escapeHtml(item.short_name || item.name)}</span>
+                <span class="sub2api-quota">${escapeHtml(item.quota_label || '额度 -')}</span>
+                <span class="sub2api-chip tone-${escapeHtml(item.tone || 'muted')}">${escapeHtml(item.schedule_label || '-')}</span>
+            </div>
+        `).join('');
+        return `<article class="sub2api-box tone-${escapeHtml(group.tone || 'ok')}"><header>${escapeHtml(group.title)}</header>${rows}</article>`;
+    }).join('');
+}
+
+async function loadSub2apiStatus() {
+    const box = document.getElementById('sub2apiStatus');
+    if (!box) return;
+    box.textContent = '加载中…';
+    try {
+        const response = await fetch('/admin/seats/sub2api-status');
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            throw new Error(data.error || '读取失败');
+        }
+        renderSub2apiStatus(data);
+    } catch (error) {
+        box.innerHTML = `<p class="form-help">${escapeHtml(error.message)}</p>`;
+    }
+}
+
+loadSub2apiStatus();
 </script>
 {% endblock %}

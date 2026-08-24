@@ -1,0 +1,64 @@
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from app.services.sub2api import Sub2ApiService
+
+
+class Sub2ApiStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.service = Sub2ApiService()
+
+    def test_groups_team_accounts_by_family(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+        boxes = self.service.group_accounts([
+            {
+                "id": 1,
+                "name": "Team .2026.15 母号",
+                "status": "active",
+                "schedulable": False,
+                "credentials": {"email": "xiaozhudf.2026.15@gmail.com"},
+                "extra": {"codex_7d_used_percent": 81},
+            },
+            {
+                "id": 2,
+                "name": "Team .2026.15 子号 1",
+                "status": "error",
+                "schedulable": False,
+                "error_message": "Token revoked (401): Encountered invalidated oauth token",
+                "credentials": {"email": "eagle-snoop-4d@icloud.com"},
+                "extra": {"codex_7d_used_percent": 100},
+            },
+            {
+                "id": 3,
+                "name": "Team 2026.27 子号 2",
+                "status": "active",
+                "schedulable": True,
+                "rate_limited_at": "2026-08-24T14:47:42+08:00",
+                "rate_limit_reset_at": future,
+                "credentials": {"email": "lava_tuning_4w@icloud.com"},
+                "extra": {"codex_7d_used_percent": 100},
+            },
+            {
+                "id": 4,
+                "name": "Team Pedro 母号",
+                "status": "active",
+                "schedulable": True,
+                "credentials": {"email": "pedropick89@gmail.com"},
+                "extra": {"codex_7d_used_percent": 18},
+            },
+        ])
+
+        titles = [box["title"] for box in boxes]
+        self.assertEqual(titles, [".2026.15", ".2026.27", "Pedro"])
+
+        fifteen = boxes[0]["accounts"]
+        self.assertEqual([row["short_name"] for row in fifteen], ["母号", "子号 1"])
+        self.assertEqual(fifteen[0]["quota_label"], "7日 81%")
+        self.assertEqual(fifteen[0]["schedule_label"], "不调度")
+        self.assertEqual(fifteen[1]["schedule"], "401")
+        self.assertEqual(boxes[1]["accounts"][0]["schedule"], "429")
+        self.assertEqual(boxes[2]["accounts"][0]["short_name"], "母号")
+
+
+if __name__ == "__main__":
+    unittest.main()

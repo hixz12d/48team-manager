@@ -2283,6 +2283,8 @@ async def settings_page(
             "cliproxyapi_api_key": await settings_service.get_setting(db, "cliproxyapi_api_key", ""),
             "sub2api_base_url": await settings_service.get_setting(db, "sub2api_base_url", ""),
             "sub2api_api_key": await settings_service.get_setting(db, "sub2api_api_key", ""),
+            "sub2api_admin_email": await settings_service.get_setting(db, "sub2api_admin_email", ""),
+            "sub2api_admin_password": await settings_service.get_setting(db, "sub2api_admin_password", ""),
             "sub2api_group_ids": await settings_service.get_setting(db, "sub2api_group_ids", ""),
             "cf_mail_base_url": await settings_service.get_setting(db, "cf_mail_base_url", "https://apimail.xiaozhudf2026.foo"),
             "cf_mail_address": await settings_service.get_setting(db, "cf_mail_address", "icloud@xiaozhudf2026.foo"),
@@ -2344,6 +2346,8 @@ class CliproxyapiSettingsRequest(BaseModel):
 class Sub2ApiSettingsRequest(BaseModel):
     base_url: str = Field("", description="Sub2API 地址")
     api_key: str = Field("", description="Sub2API Admin API Key")
+    admin_email: str = Field("", description="Sub2API 后台邮箱，只读状态可选用")
+    admin_password: str = Field("", description="Sub2API 后台密码，只读状态可选用")
     group_ids: str = Field("", description="分组 ID，逗号分隔")
 
 
@@ -3324,6 +3328,8 @@ async def update_sub2api_settings(
     success = await settings_service.update_settings(db, {
         "sub2api_base_url": payload.base_url.strip().rstrip("/"),
         "sub2api_api_key": payload.api_key.strip(),
+        "sub2api_admin_email": payload.admin_email.strip(),
+        "sub2api_admin_password": payload.admin_password.strip(),
         "sub2api_group_ids": payload.group_ids.strip(),
     })
     if success:

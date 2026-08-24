@@ -13,6 +13,7 @@ from app.database import get_db
 from app.dependencies.auth import require_admin
 from app.services.child_accounts import child_account_service
 from app.services.onboard import onboard_service
+from app.services.sub2api import sub2api_service
 from app.services.team import team_service
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,15 @@ async def seats_list(
         "stats": await child_account_service.stats(db),
         "cards": await attach_live_members(db, await child_account_service.dashboard_cards(db)),
     }
+
+
+@router.get("/seats/sub2api-status")
+async def seats_sub2api_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    status = await sub2api_service.dashboard_status(db)
+    return {"success": True, **status}
 
 
 @router.post("/seats/onboard")

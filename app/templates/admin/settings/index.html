@@ -385,17 +385,26 @@
 
 <div class="content-section settings-panel" id="settings-sub2api">
     <div class="section-header">
-        <h3>Sub2API 推送</h3>
+        <h3>Sub2API 推送 / 状态</h3>
     </div>
     <form id="sub2apiForm" class="settings-form">
         <div class="form-group">
             <label for="sub2apiBaseUrl">Sub2API 地址</label>
-            <input type="text" id="sub2apiBaseUrl" class="form-control" value="{{ sub2api_base_url or '' }}" placeholder="http://127.0.0.1:8080">
-            <p class="form-help">和本项目部署在同一台美西机器时直连，不走代理。</p>
+            <input type="text" id="sub2apiBaseUrl" class="form-control" value="{{ sub2api_base_url or '' }}" placeholder="http://host.docker.internal:8101">
+            <p class="form-help">和本项目部署在同一台美西机器时直连，不走代理。容器里默认用 host.docker.internal:8101。</p>
         </div>
         <div class="form-group">
             <label for="sub2apiApiKey">Admin API Key</label>
             <input type="text" id="sub2apiApiKey" class="form-control" value="{{ sub2api_api_key or '' }}">
+        </div>
+        <div class="form-group">
+            <label for="sub2apiAdminEmail">后台邮箱（只读状态备用）</label>
+            <input type="text" id="sub2apiAdminEmail" class="form-control" value="{{ sub2api_admin_email or '' }}" placeholder="Hixz12@1.com">
+        </div>
+        <div class="form-group">
+            <label for="sub2apiAdminPassword">后台密码</label>
+            <input type="password" id="sub2apiAdminPassword" class="form-control" value="{{ sub2api_admin_password or '' }}">
+            <p class="form-help">没有 Admin API Key 时，子号池状态框会用这对账号只读登录。不会改 Sub2API 任何数据。</p>
         </div>
         <div class="form-group">
             <label for="sub2apiGroupIds">分组 ID</label>
@@ -900,6 +909,8 @@
                     body: JSON.stringify({
                         base_url: document.getElementById('sub2apiBaseUrl').value.trim(),
                         api_key: document.getElementById('sub2apiApiKey').value.trim(),
+                        admin_email: document.getElementById('sub2apiAdminEmail').value.trim(),
+                        admin_password: document.getElementById('sub2apiAdminPassword').value.trim(),
                         group_ids: document.getElementById('sub2apiGroupIds').value.trim()
                     })
                 });

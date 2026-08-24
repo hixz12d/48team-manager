@@ -120,6 +120,16 @@ async def create_default_settings():
                 description="Sub2API Admin API Key"
             ),
             Setting(
+                key="sub2api_admin_email",
+                value="",
+                description="Sub2API 后台邮箱，只读状态可选用"
+            ),
+            Setting(
+                key="sub2api_admin_password",
+                value="",
+                description="Sub2API 后台密码，只读状态可选用"
+            ),
+            Setting(
                 key="sub2api_group_ids",
                 value="",
                 description="Sub2API 分组 ID，逗号分隔"
