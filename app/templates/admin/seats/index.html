@@ -33,7 +33,7 @@
                 <label>Team</label>
                 <select id="rotateTeamId" class="form-control" required>
                     {% for card in cards %}
-                    <option value="{{ card.id }}">{{ card.team_name or card.email }}（{{ card.current_members }}/{{ card.max_members }}，到期 {{ card.due_children|length }}）</option>
+                    <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（{{ card.current_members }}/{{ card.max_members }}，到期 {{ card.due_children|length }}）</option>
                     {% endfor %}
                 </select>
             </div>
@@ -61,7 +61,7 @@
                 <label>Team</label>
                 <select id="onboardTeamId" class="form-control" required>
                     {% for card in cards %}
-                    <option value="{{ card.id }}">{{ card.team_name or card.email }}（空位 {{ card.available_seats }}）</option>
+                    <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（空位 {{ card.available_seats }}）</option>
                     {% endfor %}
                 </select>
             </div>
@@ -85,7 +85,7 @@
     {% for card in cards %}
     <div class="content-section">
         <div class="section-header">
-            <h3>{{ card.team_name or card.email }}</h3>
+            <h3>{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}</h3>
         </div>
         <p class="text-muted">席位 {{ card.current_members }}/{{ card.max_members }} · 周期 {{ card.seat_cycle_days }} 天 · 代理 {{ card.proxy or '未绑定' }}</p>
         {% if card.due_children %}
