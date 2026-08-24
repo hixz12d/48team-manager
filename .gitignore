@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Local settings
+.claude/settings.local.json
+
+# Temporary files
+*.tmp
+*.bak
+
+# Environment variables
+.env
+!.env.example
+接口.md
+任务.md
+需求.md
+CLAUDE.md
+openai-api.md
+team_manage.db-shm
+team_manage.db-wal
+DATABASE_MIGRATION.md

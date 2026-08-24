@@ -1,0 +1,187 @@
+"""邮箱 OTP / 邀请链接轮询。支持 pickup URL 和 Graph 风格行。"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+import time
+from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
+
+import httpx
+
+from app.services.sms import require_proxy
+from app.utils.proxy import build_httpx_proxy
+
+logger = logging.getLogger(__name__)
+
+CODE_RES = [
+    re.compile(
+        r"(?:verification code|one-time code|security code|login code|your code|enter code|"
+        r"temporary (?:verification )?code|验证码|临时验证码|一次性(?:验证)?码|安全码)"
+        r"[^\d]{0,80}(\d{6})\b",
+        re.I,
+    ),
+    re.compile(r"\b(\d{6})\b[^\w]{0,40}(?:is your|verification|one-time|security|验证码|是你的)", re.I),
+    re.compile(r"(?:code|验证码)\s*[:=：]\s*(\d{6})\b", re.I),
+    re.compile(r"\b(\d{6})\b"),
+]
+INVITE_RE = re.compile(r"https?://(?:chatgpt|chat\.openai)\.com/[^\s\"'<>]+", re.I)
+
+
+def extract_code(text: str) -> Optional[str]:
+    blob = str(text or "")
+    for pattern in CODE_RES:
+        match = pattern.search(blob)
+        if match:
+            return match.group(1)
+    return None
+
+
+def extract_invite_url(text: str) -> Optional[str]:
+    match = INVITE_RE.search(str(text or ""))
+    return match.group(0) if match else None
+
+
+def parse_mail_line(value: str) -> dict[str, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return {"email": "", "password": "", "pickup_url": "", "refresh_token": "", "client_id": ""}
+
+    parts = [part.strip() for part in re.split(r"----+|\|", raw) if part.strip()]
+    email = parts[0] if parts else ""
+    password = ""
+    pickup_url = ""
+    refresh_token = ""
+    client_id = ""
+    for part in parts[1:]:
+        if part.startswith("http://") or part.startswith("https://"):
+            pickup_url = part
+        elif re.fullmatch(r"[0-9a-fA-F-]{32,}", part) or part.startswith("M."):
+            refresh_token = part
+        elif re.fullmatch(r"[0-9a-fA-F-]{8,}", part) and not client_id:
+            client_id = part
+        elif not password:
+            password = part
+    return {
+        "email": email.split()[0] if email else "",
+        "password": password,
+        "pickup_url": pickup_url,
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "raw": raw,
+    }
+
+
+class MailOtpClient:
+    def __init__(self, *, timeout: float = 20.0) -> None:
+        self.timeout = timeout
+
+    def _iter_payloads(self, payload: Any) -> list[str]:
+        blobs: list[str] = []
+        if payload is None:
+            return blobs
+        if isinstance(payload, str):
+            return [payload]
+        if isinstance(payload, dict):
+            for key in ("html", "text", "content", "body", "message", "mail", "data", "items", "messages"):
+                if key in payload:
+                    blobs.extend(self._iter_payloads(payload[key]))
+            blobs.append(json.dumps(payload, ensure_ascii=False))
+            return blobs
+        if isinstance(payload, list):
+            for item in payload:
+                blobs.extend(self._iter_payloads(item))
+        return blobs
+
+    def fetch_mailbox(self, pickup_url: str, *, proxy: str, email: str = "") -> list[str]:
+        normalized_proxy = require_proxy(proxy, "邮箱 OTP")
+        parsed = urlparse(pickup_url)
+        fragment = parse_qs(parsed.fragment)
+        query = parse_qs(parsed.query)
+        token = ""
+        for source in (fragment, query):
+            token = str((source.get("key") or source.get("token") or [""])[0]).strip()
+            if token:
+                break
+        headers = {"Accept": "application/json, text/html"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if email:
+            headers["X-Mailbox-Email"] = email
+
+        with httpx.Client(
+            timeout=self.timeout,
+            follow_redirects=True,
+            proxy=build_httpx_proxy(normalized_proxy),
+        ) as client:
+            response = client.get(pickup_url, headers=headers)
+            text = response.text
+        blobs = [text]
+        try:
+            blobs.extend(self._iter_payloads(response.json()))
+        except Exception:  # noqa: BLE001
+            pass
+        return blobs
+
+    def find_code(self, pickup_url: str, *, proxy: str, email: str = "") -> Optional[str]:
+        for blob in self.fetch_mailbox(pickup_url, proxy=proxy, email=email):
+            code = extract_code(blob)
+            if code:
+                return code
+        return None
+
+    def find_invite(self, pickup_url: str, *, proxy: str, email: str = "") -> Optional[str]:
+        for blob in self.fetch_mailbox(pickup_url, proxy=proxy, email=email):
+            url = extract_invite_url(blob)
+            if url:
+                return url
+        return None
+
+    def wait_for_code(
+        self,
+        pickup_url: str,
+        *,
+        proxy: str,
+        email: str = "",
+        timeout_sec: float = 120,
+        poll_interval_sec: float = 2.0,
+    ) -> str:
+        deadline = time.time() + timeout_sec
+        last_error: Optional[Exception] = None
+        while time.time() < deadline:
+            try:
+                code = self.find_code(pickup_url, proxy=proxy, email=email)
+                if code:
+                    return code
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning("邮箱 OTP 轮询失败: %s", exc)
+            time.sleep(max(1.0, poll_interval_sec))
+        if last_error:
+            raise TimeoutError(f"email OTP timeout after {timeout_sec}s: {last_error}")
+        raise TimeoutError(f"email OTP timeout after {timeout_sec}s")
+
+    def wait_for_invite(
+        self,
+        pickup_url: str,
+        *,
+        proxy: str,
+        email: str = "",
+        timeout_sec: float = 180,
+        poll_interval_sec: float = 3.0,
+    ) -> Optional[str]:
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            try:
+                url = self.find_invite(pickup_url, proxy=proxy, email=email)
+                if url:
+                    return url
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("邀请邮件轮询失败: %s", exc)
+            time.sleep(max(1.0, poll_interval_sec))
+        return None
+
+
+mail_otp_client = MailOtpClient()

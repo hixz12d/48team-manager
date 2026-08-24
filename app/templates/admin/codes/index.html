@@ -1,0 +1,1159 @@
+{% extends "base.html" %}
+
+{% block title %}兑换码管理 - GPT Team 管理系统{% endblock %}
+
+{% block content %}
+<div class="workspace-page codes-workspace-page">
+    <div class="page-header">
+        <div class="page-header-copy">
+            <div class="page-header-kicker">
+                <i data-lucide="ticket"></i>
+                <span>Code Workspace</span>
+            </div>
+            <h2>兑换码工作台</h2>
+            <div class="page-header-meta">
+                <span class="page-meta-pill">
+                    <i data-lucide="hash"></i>
+                    <span>{{ stats.total }} 个兑换码</span>
+                </span>
+                <span class="page-meta-pill">
+                    <i data-lucide="check-circle"></i>
+                    <span>{{ stats.unused }} 个未使用</span>
+                </span>
+                <span class="page-meta-pill">
+                    <i data-lucide="clock-3"></i>
+                    <span>{{ stats.expired }} 个已过期</span>
+                </span>
+            </div>
+        </div>
+        <div class="page-header-actions">
+            <button onclick="scanInvalidCodes()" class="btn btn-secondary">
+                <i data-lucide="shield-alert" style="width: 16px; height: 16px;"></i> 扫描无效兑换码
+            </button>
+            <button onclick="showModal('generateCodeModal')" class="btn btn-primary">
+                <i data-lucide="plus-circle" style="width: 16px; height: 16px;"></i> 生成兑换码
+            </button>
+        </div>
+    </div>
+
+    <div class="stats-container">
+        <div class="stat-card">
+            <div class="stat-icon"><i data-lucide="ticket"></i></div>
+            <div class="stat-content">
+                <div class="stat-value">{{ stats.total }}</div>
+                <div class="stat-label">兑换码总数</div>
+            </div>
+        </div>
+        <div class="stat-card stat-success">
+            <div class="stat-icon"><i data-lucide="check-circle"></i></div>
+            <div class="stat-content">
+                <div class="stat-value">{{ stats.unused }}</div>
+                <div class="stat-label">未使用</div>
+            </div>
+        </div>
+        <div class="stat-card stat-info">
+            <div class="stat-icon"><i data-lucide="clipboard-list"></i></div>
+            <div class="stat-content">
+                <div class="stat-value">{{ stats.used }}</div>
+                <div class="stat-label">已使用</div>
+            </div>
+        </div>
+        <div class="stat-card stat-danger">
+            <div class="stat-icon"><i data-lucide="clock-3"></i></div>
+            <div class="stat-content">
+                <div class="stat-value">{{ stats.expired }}</div>
+                <div class="stat-label">已过期</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="workbench-panel">
+        <div class="content-section workbench-toolbar">
+            <div class="workbench-toolbar-row">
+                <div class="workbench-toolbar-copy">
+                    <h3>兑换码筛选与操作</h3>
+                </div>
+                <div class="workbench-toolbar-actions">
+                    <button onclick="exportCodes()" class="btn btn-secondary btn-sm">
+                        <i data-lucide="download" style="width: 16px; height: 16px;"></i> 导出结果
+                    </button>
+                </div>
+            </div>
+            <div class="workbench-toolbar-row codes-toolbar">
+                <div class="filter-tabs">
+                    <button onclick="filterByStatus('')" class="filter-tab {% if not status_filter %}active{% endif %}" id="filter-all">全部</button>
+                    <button onclick="filterByStatus('unused')" class="filter-tab {% if status_filter == 'unused' %}active{% endif %}" id="filter-unused">未使用</button>
+                    <button onclick="filterByStatus('used')" class="filter-tab {% if status_filter == 'used' %}active{% endif %}" id="filter-used">已使用</button>
+                    <button onclick="filterByStatus('expired')" class="filter-tab {% if status_filter == 'expired' %}active{% endif %}" id="filter-expired">已过期</button>
+                </div>
+
+                <div class="codes-toolbar-actions">
+                    <form action="/admin/codes" method="get" class="search-form codes-search-form">
+                        <div class="input-group-clean">
+                            <i data-lucide="search" style="width: 14px; height: 14px;"></i>
+                            <input type="text" name="search" value="{{ search or '' }}" placeholder="搜索兑换码 / 使用者邮箱...">
+                            {% if search %}
+                            <a href="/admin/codes{% if status_filter %}?status_filter={{ status_filter|urlencode }}{% endif %}" title="清除搜索">
+                                <i data-lucide="x-circle" style="width: 14px; height: 14px;"></i>
+                            </a>
+                            {% endif %}
+                            {% if status_filter %}
+                            <input type="hidden" name="status_filter" value="{{ status_filter }}">
+                            {% endif %}
+                        </div>
+                    </form>
+
+                    <div class="header-actions codes-header-actions">
+                        <div class="dropdown-wrapper">
+                            <button class="btn btn-secondary btn-sm dropdown-toggle" onclick="toggleDropdown('columnToggleDropdown', this)">
+                                <i data-lucide="columns" style="width: 16px; height: 16px;"></i> 列设置
+                            </button>
+                            <div id="columnToggleDropdown" class="dropdown-menu dropdown-menu-floating">
+                                <!-- Column checkboxes will be generated here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="content-section workbench-table-card">
+            <div class="table-section-head">
+                <div class="table-section-copy">
+                    <h3>兑换码明细</h3>
+                </div>
+                <div class="table-section-meta">
+                    {% if search %}
+                    <span class="table-meta-pill">
+                        <i data-lucide="search"></i>
+                        <span>关键词：{{ search }}</span>
+                    </span>
+                    {% endif %}
+                    {% if status_filter %}
+                    <span class="table-meta-pill">
+                        <i data-lucide="list-filter"></i>
+                        <span>
+                            {% if status_filter == 'unused' %}未使用
+                            {% elif status_filter == 'used' %}已使用
+                            {% elif status_filter == 'expired' %}已过期
+                            {% else %}全部状态{% endif %}
+                        </span>
+                    </span>
+                    {% endif %}
+                    <span class="table-meta-pill">
+                        <i data-lucide="rows-3"></i>
+                        <span>每页 {{ pagination.per_page if pagination else 20 }} 条</span>
+                    </span>
+                    {% if pagination %}
+                    <span class="table-meta-pill">
+                        <i data-lucide="database"></i>
+                        <span>共 {{ pagination.total }} 条</span>
+                    </span>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if codes %}
+            <div class="table-container mobile-card-table-container">
+                <table class="data-table mobile-card-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px;">
+                                <input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)" style="width: auto; margin: 0;">
+                            </th>
+                            <th>兑换码</th>
+                            <th>状态</th>
+                            <th>创建时间</th>
+                            <th>过期时间</th>
+                            <th>使用者邮箱</th>
+                            <th>使用时间</th>
+                            <th>质保</th>
+                            <th>质保时长</th>
+                            <th style="text-align: right;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="codesTableBody">
+                        {% for code in codes %}
+                        <tr data-status="{{ code.status }}">
+                            <td class="table-select-cell" data-label="选择">
+                                <input type="checkbox" class="code-checkbox" value="{{ code.code }}" onchange="updateSelectionCount()" style="width: auto; margin: 0;">
+                            </td>
+                            <td data-label="兑换码">
+                                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                    <i data-lucide="ticket" style="width: 14px; height: 14px; color: var(--text-muted);"></i>
+                                    <code>{{ code.code }}</code>
+                                </div>
+                            </td>
+                            <td data-label="状态">
+                                {% if code.status == 'unused' %}
+                                <span class="status-badge status-active">未使用</span>
+                                {% elif code.status == 'used' %}
+                                <span class="status-badge status-full">已使用</span>
+                                {% elif code.status == 'warranty_active' %}
+                                <span class="status-badge status-info">质保中</span>
+                                {% elif code.status == 'expired' %}
+                                <span class="status-badge status-error">已过期</span>
+                                {% endif %}
+                            </td>
+                            <td data-label="创建时间">{{ code.created_at }}</td>
+                            <td data-label="过期时间">{{ code.expires_at if code.expires_at else '永久有效' }}</td>
+                            <td data-label="使用者邮箱">{{ code.used_by_email if code.used_by_email else '-' }}</td>
+                            <td data-label="使用时间">{{ code.used_at if code.used_at else '-' }}</td>
+                            <td data-label="质保">
+                                {% if code.has_warranty %}
+                                <span class="status-badge status-info">是</span>
+                                {% else %}
+                                <span class="status-badge" style="background: #f3f4f6; color: #6b7280;">否</span>
+                                {% endif %}
+                            </td>
+                            <td data-label="质保时长">
+                                {% if code.has_warranty %}
+                                <span style="font-size: 0.875rem;">{{ code.warranty_days }} 天</span>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td class="table-actions-cell" data-label="操作" style="text-align: right;">
+                                <div class="action-buttons" style="justify-content: flex-end;">
+                                    <button onclick='copyCode({{ code.code|tojson }})' class="btn btn-sm btn-icon btn-minimal btn-secondary" title="复制">
+                                        <i data-lucide="copy" style="width: 14px; height: 14px;"></i>
+                                    </button>
+                                    <button onclick='editCode({{ code.code|tojson }}, {{ 'true' if code.has_warranty else 'false' }}, {{ code.warranty_days or 30 }})' class="btn btn-sm btn-icon btn-minimal btn-info" title="编辑">
+                                        <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i>
+                                    </button>
+                                    <button onclick='deleteCode({{ code.code|tojson }})' class="btn btn-sm btn-icon btn-minimal btn-danger" title="删除">
+                                        <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div id="bulkActionBar" class="bulk-action-bar" style="display: none;">
+                <div class="bulk-info">
+                    已选择 <span id="selectedCount">0</span> 个兑换码
+                </div>
+                <div class="bulk-actions">
+                    <button onclick="showBulkEditModal()" class="btn btn-primary">
+                        <i data-lucide="edit-3" style="width: 16px; height: 16px;"></i> 批量修改质保
+                    </button>
+                    <button onclick="handleBulkDeleteCodes()" class="btn btn-danger">
+                        <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i> 批量删除
+                    </button>
+                    <button onclick="deselectAll()" class="btn btn-secondary">取消全选</button>
+                </div>
+            </div>
+
+            {% if pagination %}
+            <div class="pagination">
+                <div class="per-page-selector">
+                    每页
+                    <select class="per-page-select" onchange="changePerPage(this.value)">
+                        <option value="20" {% if pagination.per_page==20 %}selected{% endif %}>20</option>
+                        <option value="50" {% if pagination.per_page==50 %}selected{% endif %}>50</option>
+                        <option value="100" {% if pagination.per_page==100 %}selected{% endif %}>100</option>
+                    </select>
+                </div>
+
+                {% if pagination.total_pages > 1 %}
+                {% set search_param = '&search=' + search|urlencode if search else '' %}
+                {% set status_param = '&status_filter=' + status_filter|urlencode if status_filter else '' %}
+                {% set per_page_param = '&per_page=' + pagination.per_page|string if pagination.per_page != 50 else '' %}
+                {% set base_query = search_param + status_param + per_page_param %}
+
+                <div class="pagination-controls">
+                    <a href="?page=1{{ base_query }}" class="btn btn-sm btn-secondary {% if pagination.current_page == 1 %}disabled{% endif %}" title="首页">
+                        <i data-lucide="chevrons-left" style="width: 14px; height: 14px;"></i>
+                    </a>
+
+                    {% if pagination.current_page > 1 %}
+                    <a href="?page={{ pagination.current_page - 1 }}{{ base_query }}" class="btn btn-sm btn-secondary" title="上一页">
+                        <i data-lucide="chevron-left" style="width: 14px; height: 14px;"></i>
+                    </a>
+                    {% else %}
+                    <button class="btn btn-sm btn-secondary" disabled>
+                        <i data-lucide="chevron-left" style="width: 14px; height: 14px;"></i>
+                    </button>
+                    {% endif %}
+
+                    <div class="pagination-numbers">
+                        {% set start_page = pagination.current_page - 2 %}
+                        {% set end_page = pagination.current_page + 2 %}
+
+                        {% if start_page < 1 %} {% set end_page=end_page + (1 - start_page) %} {% set start_page=1 %} {% endif %}
+                        {% if end_page > pagination.total_pages %}
+                            {% set start_page = start_page - (end_page - pagination.total_pages) %}
+                            {% set end_page = pagination.total_pages %}
+                            {% if start_page < 1 %}{% set start_page=1 %}{% endif %}
+                        {% endif %}
+                        {% if start_page > 1 %}
+                            <a href="?page=1{{ base_query }}" class="page-number">1</a>
+                            {% if start_page > 2 %}
+                            <span class="page-dots">...</span>
+                            {% endif %}
+                        {% endif %}
+
+                        {% for p in range(start_page, end_page + 1) %}
+                        <a href="?page={{ p }}{{ base_query }}" class="page-number {% if p == pagination.current_page %}active{% endif %}">{{ p }}</a>
+                        {% endfor %}
+
+                        {% if end_page < pagination.total_pages %}
+                            {% if end_page < pagination.total_pages - 1 %}
+                            <span class="page-dots">...</span>
+                            {% endif %}
+                            <a href="?page={{ pagination.total_pages }}{{ base_query }}" class="page-number">{{ pagination.total_pages }}</a>
+                        {% endif %}
+                    </div>
+
+                    {% if pagination.current_page < pagination.total_pages %}
+                    <a href="?page={{ pagination.current_page + 1 }}{{ base_query }}" class="btn btn-sm btn-secondary" title="下一页">
+                        <i data-lucide="chevron-right" style="width: 14px; height: 14px;"></i>
+                    </a>
+                    {% else %}
+                    <button class="btn btn-sm btn-secondary" disabled>
+                        <i data-lucide="chevron-right" style="width: 14px; height: 14px;"></i>
+                    </button>
+                    {% endif %}
+
+                    <a href="?page={{ pagination.total_pages }}{{ base_query }}" class="btn btn-sm btn-secondary {% if pagination.current_page == pagination.total_pages %}disabled{% endif %}" title="末页">
+                        <i data-lucide="chevrons-right" style="width: 14px; height: 14px;"></i>
+                    </a>
+                </div>
+                <span class="pagination-summary">共 {{ pagination.total }} 条记录</span>
+                {% endif %}
+            </div>
+            {% endif %}
+            {% else %}
+            <div class="workbench-empty-state">
+                <div class="empty-state">
+                    <span class="empty-icon"><i data-lucide="package-open"></i></span>
+                    <p>还没有兑换码，先生成一批吧。</p>
+                    <button onclick="showModal('generateCodeModal')" class="btn btn-primary">立即生成</button>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+<!-- 批量编辑兑换码模态框 -->
+<div id="bulkEditCodeModal" class="modal-overlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>批量修改质保</h3>
+            <button class="modal-close" onclick="hideModal('bulkEditCodeModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="alert alert-info" style="margin-bottom: 1rem;">
+                您正在批量修改 <strong id="bulk-selected-count-display">0</strong> 个兑换码的质保信息。
+            </div>
+            <form id="bulkEditCodeForm" onsubmit="handleBulkEditCode(event)">
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin-top: 1rem;">
+                        <input type="checkbox" id="bulk-edit-has-warranty" name="hasWarranty"
+                            style="width: auto; margin: 0;"
+                            onchange="toggleWarrantyDays(this, 'bulk-edit-warranty-days-group')">
+                        <span>质保兑换码 (可重复使用)</span>
+                    </label>
+                </div>
+                <div class="form-group" id="bulk-edit-warranty-days-group" style="display: none;">
+                    <label>质保时长 (天) *</label>
+                    <input type="number" id="bulk-edit-warranty-days" name="warrantyDays" class="form-control"
+                        value="30" min="1" max="3650">
+                </div>
+                <button type="submit" class="btn btn-primary" style="margin-top: 1rem;">保存修改</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 编辑兑换码模态框 -->
+<div id="editCodeModal" class="modal-overlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>编辑兑换码</h3>
+            <button class="modal-close" onclick="hideModal('editCodeModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="editCodeForm" onsubmit="handleEditCode(event)">
+                <input type="hidden" id="edit-code" name="code">
+                <div class="form-group">
+                    <label>兑换码</label>
+                    <input type="text" id="edit-code-display" class="form-control" readonly
+                        style="background: rgba(0,0,0,0.05);">
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; margin-top: 1rem;">
+                        <input type="checkbox" id="edit-has-warranty" name="hasWarranty" style="width: auto; margin: 0;"
+                            onchange="toggleWarrantyDays(this, 'edit-warranty-days-group')">
+                        <span>质保兑换码 (可重复使用)</span>
+                    </label>
+                </div>
+                <div class="form-group" id="edit-warranty-days-group" style="display: none;">
+                    <label>质保时长 (天) *</label>
+                    <input type="number" id="edit-warranty-days" name="warrantyDays" class="form-control" value="30"
+                        min="1" max="3650">
+                </div>
+                <button type="submit" class="btn btn-primary" style="margin-top: 1rem;">保存修改</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- 无效兑换码扫描结果 -->
+<div id="invalidCodesModal" class="modal-overlay">
+    <div class="modal" style="max-width: 760px;">
+        <div class="modal-header">
+            <h3>无效兑换码扫描结果</h3>
+            <button class="modal-close" onclick="hideModal('invalidCodesModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div id="invalidCodesEmptyState" class="empty-state" style="display: none; padding: 2rem 0;">
+                <span class="empty-icon"><i data-lucide="check-circle-2"></i></span>
+                <p>没有需要清理的无效兑换码。</p>
+            </div>
+            <div id="invalidCodesTableWrapper" style="display: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; flex-wrap: wrap;">
+                    <div>共扫描到 <strong id="invalidCodesCount">0</strong> 个可清理兑换码</div>
+                </div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 40px;"><input type="checkbox" id="selectAllInvalidCodes" style="width: auto; margin: 0;" onclick="toggleSelectAllInvalidCodes(this)"></th>
+                                <th>兑换码</th>
+                                <th>过期参考时间</th>
+                                <th>关联记录数</th>
+                                <th>关联 Team 状态</th>
+                                <th>说明</th>
+                            </tr>
+                        </thead>
+                        <tbody id="invalidCodesTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="invalidCleanupBar" class="invalid-cleanup-bar" style="display: none;">
+                    <div>已选择 <strong id="invalidCleanupSelectedCount">0</strong> 个无效兑换码</div>
+                    <button onclick="cleanupInvalidCodes()" class="btn btn-danger">
+                        <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i> 确认删除
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 删除兑换码确认模态框 -->
+<div id="deleteCodeModal" class="modal-overlay">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>确认删除兑换码</h3>
+            <button class="modal-close" onclick="hideModal('deleteCodeModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="alert alert-warning" style="margin-bottom: 1rem;">
+                仅可删除无任何关联记录的兑换码；已使用或仍有关联记录的将被拦截。
+            </div>
+            <form id="deleteCodeForm" onsubmit="handleDeleteCode(event)">
+                <input type="hidden" id="delete-code-value">
+                <div class="form-group">
+                    <label>待删除兑换码</label>
+                    <input type="text" id="delete-code-display" class="form-control" readonly
+                        style="background: rgba(0,0,0,0.05);">
+                </div>
+                <div class="form-group">
+                    <label>请输入完整兑换码确认删除</label>
+                    <input type="text" id="delete-code-confirm" class="form-control"
+                        placeholder="请输入上方完整兑换码" autocomplete="off" required>
+                </div>
+                <button type="submit" class="btn btn-danger" style="margin-top: 1rem;">确认删除</button>
+            </form>
+        </div>
+    </div>
+</div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    .codes-toolbar {
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: nowrap;
+        gap: 1rem;
+    }
+
+    .codes-toolbar-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.5rem;
+        flex: 0 1 auto;
+        flex-wrap: nowrap;
+        min-width: 0;
+    }
+
+    .codes-search-form {
+        margin: 0;
+        flex: 0 0 auto;
+    }
+
+    .codes-search-form .input-group-clean {
+        width: 280px;
+        min-width: 280px;
+    }
+
+    .codes-header-actions {
+        flex-wrap: nowrap;
+        justify-content: flex-end;
+        gap: 0.5rem;
+    }
+
+    .codes-header-actions .btn {
+        white-space: nowrap;
+        padding: 0.6rem 0.8rem;
+        font-size: 0.875rem;
+    }
+
+    .bulk-action-bar {
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-top: 1rem;
+        padding: 0.85rem 1rem;
+        border-radius: 16px;
+        border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border-base) 82%);
+        background: color-mix(in srgb, var(--bg-surface) 88%, var(--primary-soft) 12%);
+        box-shadow: var(--shadow-sm);
+    }
+
+    #bulkActionBar.bulk-action-bar.viewport-floating {
+        position: fixed;
+        left: 50%;
+        bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+        transform: translateX(-50%);
+        width: min(calc(100vw - 2rem), 960px);
+        max-width: calc(100vw - 2rem);
+        margin-top: 0;
+        padding: 0.85rem 1rem;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+        border-radius: 18px;
+        backdrop-filter: blur(14px);
+        animation: none;
+        z-index: 900;
+    }
+
+    body.bulk-action-visible .codes-workspace-page {
+        padding-bottom: calc(var(--bulk-action-bar-height, 0px) + 1.5rem + env(safe-area-inset-bottom, 0px));
+    }
+
+    .bulk-info {
+        font-weight: 600;
+        color: var(--text-main);
+        white-space: nowrap;
+    }
+
+    .bulk-actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+
+    .invalid-cleanup-bar {
+        position: sticky;
+        bottom: 0;
+        margin-top: 1rem;
+        padding: 1rem;
+        border-top: 1px solid var(--border-base);
+        background: color-mix(in srgb, var(--bg-surface) 96%, var(--bg-main) 4%);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        backdrop-filter: blur(8px);
+    }
+
+    @media (max-width: 1240px) {
+        .codes-toolbar {
+            align-items: stretch;
+            flex-wrap: wrap;
+        }
+
+        .codes-toolbar-actions {
+            width: 100%;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+
+        .codes-search-form {
+            flex: 1 1 240px;
+        }
+
+        .codes-search-form .input-group-clean {
+            min-width: 0;
+            width: 100%;
+        }
+    }
+
+    @media (max-width: 768px) {
+        .codes-toolbar-actions,
+        .codes-header-actions {
+            width: 100%;
+            justify-content: flex-start;
+            flex-wrap: wrap;
+        }
+
+        #bulkActionBar.bulk-action-bar.viewport-floating {
+            left: 1rem;
+            right: 1rem;
+            bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+            transform: none;
+            width: auto;
+            max-width: none;
+            padding: 0.75rem;
+            gap: 0.75rem;
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        #bulkActionBar.bulk-action-bar.viewport-floating .bulk-actions {
+            width: 100%;
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        #bulkActionBar.bulk-action-bar.viewport-floating .bulk-actions .btn {
+            flex: 1 1 0;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let scannedInvalidCodes = [];
+
+    function prepareFloatingDropdowns() {
+        document.querySelectorAll('.dropdown-menu-floating').forEach((menu) => {
+            const wrapper = menu.closest('.dropdown-wrapper');
+            if (!wrapper || menu.parentElement === document.body) return;
+
+            menu._dropdownWrapper = wrapper;
+            document.body.appendChild(menu);
+        });
+    }
+
+    function positionFloatingDropdown(menu) {
+        if (!menu || !menu.classList.contains('dropdown-menu-floating')) return;
+
+        const wrapper = menu._dropdownWrapper || menu.closest('.dropdown-wrapper');
+        if (!wrapper) return;
+
+        const wrapperRect = wrapper.getBoundingClientRect();
+        const viewportPadding = 16;
+        const menuWidth = Math.min(260, window.innerWidth - viewportPadding * 2);
+
+        let left = wrapperRect.left;
+        if (left + menuWidth + viewportPadding > window.innerWidth) {
+            left = window.innerWidth - menuWidth - viewportPadding;
+        }
+        left = Math.max(viewportPadding, left);
+
+        menu.style.position = 'fixed';
+        menu.style.top = `${wrapperRect.bottom + 8}px`;
+        menu.style.left = `${left}px`;
+        menu.style.right = 'auto';
+        menu.style.width = `${menuWidth}px`;
+        menu.style.maxWidth = 'calc(100vw - 2rem)';
+        menu.style.zIndex = '9999';
+    }
+
+    function closeAllDropdowns() {
+        document.querySelectorAll('.dropdown-menu.show').forEach((menu) => {
+            menu.classList.remove('show');
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        prepareFloatingDropdowns();
+        // Init Column Toggler
+        initColumnToggler('.data-table', 'codes_list_columns');
+    });
+
+    // Column Toggler Logic & Pagination
+    function initColumnToggler(tableSelector, storageKey) {
+        const table = document.querySelector(tableSelector);
+        if (!table) return;
+
+        const headers = table.querySelectorAll('thead th');
+        const container = document.getElementById('columnToggleDropdown');
+        if (!container) return;
+
+        container.innerHTML = '<div class="dropdown-header">显示/隐藏列</div>';
+
+        // Load saved preferences
+        const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+
+        headers.forEach((th, index) => {
+            const text = th.innerText.trim();
+            if (!text || text === '操作' || th.querySelector('input')) return; // Checkbox column or Action
+
+            const isVisible = !saved.includes(index);
+            if (!isVisible) {
+                th.style.display = 'none';
+                table.querySelectorAll(`tbody tr td:nth-child(${index + 1})`).forEach(td => td.style.display = 'none');
+            }
+
+            const item = document.createElement('label');
+            item.className = 'dropdown-item';
+            item.innerHTML = `
+        <input type="checkbox" ${isVisible ? 'checked' : ''}>
+            <span>${text}</span>
+            `;
+
+            item.querySelector('input').addEventListener('change', (e) => {
+                const checked = e.target.checked;
+                // Toggle header
+                th.style.display = checked ? '' : 'none';
+                // Toggle cells
+                table.querySelectorAll(`tbody tr td:nth-child(${index + 1})`).forEach(td => td.style.display = checked ? '' : 'none');
+
+                // Save to localStorage
+                const currentSaved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                if (checked) {
+                    const idx = currentSaved.indexOf(index);
+                    if (idx > -1) currentSaved.splice(idx, 1);
+                } else {
+                    if (!currentSaved.includes(index)) currentSaved.push(index);
+                }
+                localStorage.setItem(storageKey, JSON.stringify(currentSaved));
+            });
+
+            container.appendChild(item);
+        });
+    }
+
+    function toggleDropdown(id, triggerEl = null) {
+        const el = document.getElementById(id);
+        if (!el) return;
+
+        const shouldShow = !el.classList.contains('show');
+        closeFloatingDropdowns();
+
+        if (shouldShow) {
+            el.classList.add('show');
+            positionFloatingDropdown(el, triggerEl);
+            requestAnimationFrame(() => positionFloatingDropdown(el));
+        }
+    }
+
+    window.addEventListener('resize', () => {
+        document.querySelectorAll('.dropdown-menu.show.dropdown-menu-floating').forEach((menu) => positionFloatingDropdown(menu));
+    });
+
+    window.addEventListener('scroll', () => {
+        document.querySelectorAll('.dropdown-menu.show.dropdown-menu-floating').forEach((menu) => positionFloatingDropdown(menu));
+    }, true);
+
+    // Close dropdowns
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.dropdown-wrapper') && !e.target.closest('.dropdown-toggle') && !e.target.closest('.dropdown-menu')) {
+            closeFloatingDropdowns();
+        }
+    });
+
+    function changePerPage(val) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('per_page', val);
+        url.searchParams.set('page', 1);
+        window.location.href = url.toString();
+    }
+
+    // 全选/取消全选
+    function toggleSelectAll(checkbox) {
+        const checkboxes = document.querySelectorAll('.code-checkbox');
+        checkboxes.forEach(cb => {
+            // 只选择当前显示的行
+            if (cb.closest('tr').style.display !== 'none') {
+                cb.checked = checkbox.checked;
+            }
+        });
+        updateSelectionCount();
+    }
+
+    // 取消全选
+    function deselectAll() {
+        const selectAllCheckbox = document.getElementById('selectAll');
+        if (selectAllCheckbox) {
+            selectAllCheckbox.checked = false;
+            toggleSelectAll(selectAllCheckbox);
+        }
+    }
+
+    // 更新选择计数
+    function updateSelectionCount() {
+        const selected = document.querySelectorAll('.code-checkbox:checked');
+        const count = selected.length;
+        document.getElementById('selectedCount').innerText = count;
+
+        const actionBar = document.getElementById('bulkActionBar');
+        if (!actionBar) return;
+
+        if (count > 0) {
+            // 桌面版使用了 body/main-container 的 flex + overflow:hidden 布局，
+            // 导致 `position: fixed` 仍被祖先的 overflow/containing-block 约束，
+            // 悬浮条只在滚动到 main-content 底部时才可见。
+            // 把它临时挂到 body 下面，position: fixed 才能真正相对视口定位。
+            if (actionBar.parentElement !== document.body) {
+                actionBar.dataset.homeParent = actionBar.dataset.homeParent || 'bulk-action-home';
+                if (!document.getElementById(actionBar.dataset.homeParent)) {
+                    const placeholder = document.createElement('span');
+                    placeholder.id = actionBar.dataset.homeParent;
+                    placeholder.style.display = 'none';
+                    actionBar.parentElement.insertBefore(placeholder, actionBar);
+                }
+                document.body.appendChild(actionBar);
+            }
+            actionBar.style.display = 'flex';
+            actionBar.classList.add('viewport-floating');
+            document.body.classList.add('bulk-action-visible');
+            requestAnimationFrame(() => {
+                document.documentElement.style.setProperty('--bulk-action-bar-height', `${actionBar.offsetHeight}px`);
+            });
+        } else {
+            actionBar.style.display = 'none';
+            actionBar.classList.remove('viewport-floating');
+            document.body.classList.remove('bulk-action-visible');
+            document.documentElement.style.removeProperty('--bulk-action-bar-height');
+        }
+    }
+
+    // 显示批量编辑弹窗
+    function showBulkEditModal() {
+        const selected = document.querySelectorAll('.code-checkbox:checked');
+        document.getElementById('bulk-selected-count-display').innerText = selected.length;
+        showModal('bulkEditCodeModal');
+    }
+
+    // 处理批量编辑
+    async function handleBulkEditCode(event) {
+        event.preventDefault();
+        const selected = document.querySelectorAll('.code-checkbox:checked');
+        const codes = Array.from(selected).map(cb => cb.value);
+
+        const has_warranty = document.getElementById('bulk-edit-has-warranty').checked;
+        const warranty_days = parseInt(document.getElementById('bulk-edit-warranty-days').value) || 30;
+
+        try {
+            const response = await fetch('/admin/codes/bulk-update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    codes: codes,
+                    has_warranty: has_warranty,
+                    warranty_days: has_warranty ? warranty_days : null
+                })
+            });
+
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                showToast('批量更新成功', 'success');
+                hideModal('bulkEditCodeModal');
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                showToast(result.error || '批量更新失败', 'error');
+            }
+        } catch (error) {
+            console.error(error);
+            showToast('网络错误', 'error');
+        }
+    }
+
+
+    async function handleBulkDeleteCodes() {
+        const selected = document.querySelectorAll('.code-checkbox:checked');
+        const codes = Array.from(selected).map(cb => cb.value);
+
+        if (!codes.length) {
+            showToast('请先选择要删除的兑换码', 'error');
+            return;
+        }
+
+        const confirmed = confirm(`确认批量删除已选 ${codes.length} 个兑换码吗？\n\n注意：系统仅会删除没有关联记录的兑换码，其余会自动跳过。`);
+        if (!confirmed) {
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/codes/batch-delete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ codes })
+            });
+
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                showToast(result.message || '批量删除完成', 'success');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+                return;
+            }
+
+            showToast(result.error || result.message || '批量删除失败', 'error');
+        } catch (error) {
+            console.error(error);
+            showToast('网络错误', 'error');
+        }
+    }
+
+    // 按状态筛选 (服务器端筛选)
+    function filterByStatus(status) {
+        const url = new URL(window.location.href);
+        if (status && status !== 'all') {
+            url.searchParams.set('status_filter', status);
+        } else {
+            url.searchParams.delete('status_filter');
+        }
+        url.searchParams.set('page', 1);
+        window.location.href = url.toString();
+    }
+
+    // 删除兑换码
+    function deleteCode(code) {
+        document.getElementById('delete-code-value').value = code;
+        document.getElementById('delete-code-display').value = code;
+        document.getElementById('delete-code-confirm').value = '';
+        showModal('deleteCodeModal');
+    }
+
+    async function handleDeleteCode(event) {
+        event.preventDefault();
+        const code = document.getElementById('delete-code-value').value;
+        const confirmValue = document.getElementById('delete-code-confirm').value.trim();
+
+        if (confirmValue !== code) {
+            showToast('输入的兑换码不匹配，请重新确认', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/admin/codes/${encodeURIComponent(code)}/delete`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                hideModal('deleteCodeModal');
+                showToast('删除成功', 'success');
+                // 刷新页面
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            } else {
+                showToast(result.error || '删除失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+
+    function renderInvalidCodes(codes) {
+        scannedInvalidCodes = codes || [];
+        const emptyState = document.getElementById('invalidCodesEmptyState');
+        const tableWrapper = document.getElementById('invalidCodesTableWrapper');
+        const tableBody = document.getElementById('invalidCodesTableBody');
+        const countEl = document.getElementById('invalidCodesCount');
+        const selectAll = document.getElementById('selectAllInvalidCodes');
+        const cleanupBar = document.getElementById('invalidCleanupBar');
+        const cleanupSelectedCount = document.getElementById('invalidCleanupSelectedCount');
+
+        if (!tableBody || !emptyState || !tableWrapper || !countEl || !selectAll || !cleanupBar || !cleanupSelectedCount) return;
+
+        tableBody.innerHTML = '';
+        countEl.innerText = scannedInvalidCodes.length;
+        selectAll.checked = false;
+        cleanupBar.style.display = 'none';
+        cleanupSelectedCount.innerText = '0';
+
+        if (!scannedInvalidCodes.length) {
+            emptyState.style.display = 'block';
+            tableWrapper.style.display = 'none';
+            return;
+        }
+
+        emptyState.style.display = 'none';
+        tableWrapper.style.display = 'block';
+
+        scannedInvalidCodes.forEach((item) => {
+            const tr = document.createElement('tr');
+            const teamStatusText = (item.team_statuses || []).map((team) => `#${team.team_id}: ${team.status}`).join('，') || 'Team 已删除';
+            tr.innerHTML = `
+                <td><input type="checkbox" class="invalid-code-checkbox" value="${escapeHtml(item.code)}" style="width: auto; margin: 0;" onchange="updateInvalidCleanupSelection()"></td>
+                <td><code>${escapeHtml(item.code)}</code></td>
+                <td>${escapeHtml(formatDateTime(item.expired_at))}</td>
+                <td>${escapeHtml(item.record_count)}</td>
+                <td>${escapeHtml(teamStatusText)}</td>
+                <td>${escapeHtml(item.reason || '-')}</td>
+            `;
+            tableBody.appendChild(tr);
+        });
+    }
+
+    async function scanInvalidCodes() {
+        try {
+            const response = await fetch('/admin/codes/invalid/scan');
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                renderInvalidCodes(result.codes || []);
+                showModal('invalidCodesModal');
+                if (window.lucide) {
+                    lucide.createIcons();
+                }
+            } else {
+                showToast(result.error || '扫描失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+
+    function toggleSelectAllInvalidCodes(checkbox) {
+        document.querySelectorAll('.invalid-code-checkbox').forEach((item) => {
+            item.checked = checkbox.checked;
+        });
+        updateInvalidCleanupSelection();
+    }
+
+    function updateInvalidCleanupSelection() {
+        const selected = document.querySelectorAll('.invalid-code-checkbox:checked');
+        const cleanupBar = document.getElementById('invalidCleanupBar');
+        const cleanupSelectedCount = document.getElementById('invalidCleanupSelectedCount');
+        if (!cleanupBar || !cleanupSelectedCount) return;
+
+        cleanupSelectedCount.innerText = selected.length;
+        cleanupBar.style.display = selected.length > 0 ? 'flex' : 'none';
+    }
+
+    async function cleanupInvalidCodes() {
+        const selected = Array.from(document.querySelectorAll('.invalid-code-checkbox:checked')).map((item) => item.value);
+        if (!selected.length) {
+            showToast('请先选择需要清理的兑换码', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/codes/invalid/cleanup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ codes: selected })
+            });
+
+            const result = await response.json();
+            if (response.ok && result.success) {
+                hideModal('invalidCodesModal');
+                showToast(result.message || '清理成功', 'success');
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                showToast(result.error || '清理失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+
+
+    // 导出兑换码
+    async function exportCodes() {
+        try {
+            const urlParams = new URLSearchParams(window.location.search);
+            const search = urlParams.get('search') || '';
+            const exportUrl = `/admin/codes/export${search ? '?search=' + encodeURIComponent(search) : ''}`;
+
+            const response = await fetch(exportUrl);
+
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `redemption_codes_${new Date().getTime()}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast('导出成功', 'success');
+            } else {
+                showToast('导出失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+
+    // 编辑兑换码
+    function editCode(code, hasWarranty, warrantyDays) {
+        document.getElementById('edit-code').value = code;
+        document.getElementById('edit-code-display').value = code;
+
+        const hasWarrantyCheckbox = document.getElementById('edit-has-warranty');
+        hasWarrantyCheckbox.checked = hasWarranty;
+
+        const warrantyDaysInput = document.getElementById('edit-warranty-days');
+        warrantyDaysInput.value = warrantyDays || 30;
+
+        // 触发显示/隐藏
+        toggleWarrantyDays(hasWarrantyCheckbox, 'edit-warranty-days-group');
+
+        showModal('editCodeModal');
+    }
+
+    async function handleEditCode(event) {
+        event.preventDefault();
+        const code = document.getElementById('edit-code').value;
+        const has_warranty = document.getElementById('edit-has-warranty').checked;
+        const warranty_days = parseInt(document.getElementById('edit-warranty-days').value) || 30;
+
+        try {
+            const response = await fetch(`/admin/codes/${encodeURIComponent(code)}/update`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    has_warranty,
+                    warranty_days: has_warranty ? warranty_days : null
+                })
+            });
+
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                showToast('更新成功', 'success');
+                hideModal('editCodeModal');
+                setTimeout(() => window.location.reload(), 1000);
+            } else {
+                showToast(result.error || '更新失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+</script>
+{% endblock %}

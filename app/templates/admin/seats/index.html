@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+
+{% block title %}子号池 - 48 Team Manager{% endblock %}
+
+{% block content %}
+<div class="workspace-page">
+    <div class="page-header">
+        <div class="page-header-copy">
+            <div class="page-header-kicker">
+                <i data-lucide="users"></i>
+                <span>Seat Pool</span>
+            </div>
+            <h2>4 个 Team 的子号池</h2>
+            <div class="page-header-meta">
+                <span class="page-meta-pill">在席 {{ stats.active }}</span>
+                <span class="page-meta-pill">standby {{ stats.standby }}</span>
+                <span class="page-meta-pill">到期 {{ stats.due }}</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="content-section">
+        <div class="section-header"><h3>今天的 1 踢 1 拉</h3></div>
+        <form id="rotateForm" class="settings-form" onsubmit="return handleRotate(event)">
+            <div class="form-group">
+                <label>Team</label>
+                <select id="rotateTeamId" class="form-control" required>
+                    {% for card in cards %}
+                    <option value="{{ card.id }}">{{ card.team_name or card.email }}（{{ card.current_members }}/{{ card.max_members }}，到期 {{ card.due_children|length }}）</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>补位邮箱（可空，默认复用 standby）</label>
+                <input id="rotateEmail" class="form-control" placeholder="email 或 email----pickup_url">
+            </div>
+            <div class="form-group">
+                <label>接码</label>
+                <input id="rotatePhone" class="form-control" placeholder="+1xxxxxxxxxx----https://api668.com/sms/by_key?key=...">
+            </div>
+            <div class="form-group">
+                <label>子号 ISP（可空，默认跟母号）</label>
+                <input id="rotateProxy" class="form-control" placeholder="socks5h://user:pass@host:port">
+            </div>
+            <button class="btn btn-primary" type="submit">先踢到期号，再拉/复用</button>
+        </form>
+    </div>
+
+    <div class="content-section">
+        <div class="section-header"><h3>拉一个邮箱进 Team</h3></div>
+        <form id="onboardForm" class="settings-form" onsubmit="return handleOnboard(event)">
+            <div class="form-group">
+                <label>Team</label>
+                <select id="onboardTeamId" class="form-control" required>
+                    {% for card in cards %}
+                    <option value="{{ card.id }}">{{ card.team_name or card.email }}（空位 {{ card.available_seats }}）</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>邮箱</label>
+                <input id="onboardEmail" class="form-control" required placeholder="alias@icloud.com----https://pickup...">
+            </div>
+            <div class="form-group">
+                <label>接码</label>
+                <input id="onboardPhone" class="form-control" placeholder="+1xxxxxxxxxx----https://api668.com/sms/by_key?key=...">
+            </div>
+            <div class="form-group">
+                <label>子号 ISP</label>
+                <input id="onboardProxy" class="form-control" placeholder="不填则用该母号 ISP">
+            </div>
+            <button class="btn btn-primary" type="submit">邀请并授权</button>
+        </form>
+    </div>
+
+    {% for card in cards %}
+    <div class="content-section">
+        <div class="section-header">
+            <h3>{{ card.team_name or card.email }}</h3>
+        </div>
+        <p class="text-muted">席位 {{ card.current_members }}/{{ card.max_members }} · 周期 {{ card.seat_cycle_days }} 天 · 代理 {{ card.proxy or '未绑定' }}</p>
+        {% if card.due_children %}
+        <p><strong>到期待踢：</strong>
+            {% for child in card.due_children %}
+            <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}')">踢出 {{ child.email }}</button>
+            {% endfor %}
+        </p>
+        {% endif %}
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>邮箱</th>
+                        <th>状态</th>
+                        <th>入组</th>
+                        <th>剩余</th>
+                        <th>Sub2API</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for child in card.active_children %}
+                    <tr>
+                        <td>{{ child.email }}</td>
+                        <td>{{ child.status }}</td>
+                        <td>{{ child.joined_at or '-' }}</td>
+                        <td>{{ child.remaining_days if child.remaining_days is not none else '-' }}</td>
+                        <td>{{ child.sub2api_account_id or '-' }}</td>
+                        <td>
+                            <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}')">踢出保留</button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="text-muted">这个 Team 还没有入库的在席子号</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="content-section">
+        <div class="section-header"><h3>全部子号资产</h3></div>
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>邮箱</th>
+                        <th>状态</th>
+                        <th>当前 Team</th>
+                        <th>代理</th>
+                        <th>Sub2API</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for child in children %}
+                    <tr>
+                        <td>{{ child.email }}</td>
+                        <td>{{ child.status }}</td>
+                        <td>{{ child.current_team_id or '-' }}</td>
+                        <td>{{ child.proxy or '-' }}</td>
+                        <td>{{ child.sub2api_account_id or '-' }}</td>
+                        <td>
+                            {% if child.status in ['unused', 'standby', 'disabled'] %}
+                            <button class="btn btn-sm btn-danger" onclick="deleteChild({{ child.id }}, '{{ child.email }}')">删除</button>
+                            {% else %}
+                            <span class="text-muted">先踢再删</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6" class="text-muted">还没有子号</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function postJSON(url, payload) {
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.error || '请求失败');
+    }
+    return data;
+}
+
+async function handleOnboard(event) {
+    event.preventDefault();
+    try {
+        showToast('正在拉人，浏览器会弹起来走授权...', 'info');
+        const result = await postJSON('/admin/seats/onboard', {
+            team_id: parseInt(document.getElementById('onboardTeamId').value, 10),
+            email: document.getElementById('onboardEmail').value,
+            phone: document.getElementById('onboardPhone').value,
+            proxy: document.getElementById('onboardProxy').value
+        });
+        showToast(result.message || '拉人成功', 'success');
+        setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+    return false;
+}
+
+async function handleRotate(event) {
+    event.preventDefault();
+    try {
+        showToast('正在执行今天的 1 踢 1 拉...', 'info');
+        const result = await postJSON('/admin/seats/rotate', {
+            team_id: parseInt(document.getElementById('rotateTeamId').value, 10),
+            email: document.getElementById('rotateEmail').value,
+            phone: document.getElementById('rotatePhone').value,
+            proxy: document.getElementById('rotateProxy').value
+        });
+        showToast(result.message || '轮转成功', 'success');
+        setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+    return false;
+}
+
+async function kickChild(teamId, email) {
+    if (!confirm(`踢出 ${email}？子号会留在 standby，不会删除。`)) return;
+    try {
+        const result = await postJSON('/admin/seats/kick', { team_id: teamId, email });
+        showToast(result.message || '已踢出', 'success');
+        setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function deleteChild(childId, email) {
+    if (!confirm(`删除本地子号 ${email}？这不会自动下架 Sub2API。`)) return;
+    try {
+        const result = await postJSON(`/admin/seats/${childId}/delete`, {});
+        showToast(result.message || '已删除', 'success');
+        setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+</script>
+{% endblock %}
