@@ -390,8 +390,8 @@
     <form id="sub2apiForm" class="settings-form">
         <div class="form-group">
             <label for="sub2apiBaseUrl">Sub2API 地址</label>
-            <input type="text" id="sub2apiBaseUrl" class="form-control" value="{{ sub2api_base_url or '' }}" placeholder="http://host.docker.internal:8101">
-            <p class="form-help">和本项目部署在同一台美西机器时直连，不走代理。容器里默认用 host.docker.internal:8101。</p>
+            <input type="text" id="sub2apiBaseUrl" class="form-control" value="{{ sub2api_base_url or '' }}" placeholder="http://sub2api-canary:8080">
+            <p class="form-help">同机容器直连用 http://sub2api-canary:8080。8101 只绑宿主机回环，容器里不要填 host.docker.internal:8101。</p>
         </div>
         <div class="form-group">
             <label for="sub2apiApiKey">Admin API Key</label>

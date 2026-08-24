@@ -34,8 +34,12 @@ services:
       start_period: 40s
     networks:
       - team48_net
+      - sub2api_net
 
 networks:
   team48_net:
     name: team48_net
     driver: bridge
+  sub2api_net:
+    name: sub2api_sub2api-network
+    external: true

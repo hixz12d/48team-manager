@@ -33,7 +33,7 @@
 
 不要占用 `8100`、`8101`、`8080`、`8200`、`8317`。本项目域名单独走 80/443 的独立 server_name。
 
-同机访问 Sub2API 用 `http://127.0.0.1:8101`，容器里写 `http://host.docker.internal:8101`。这条是直连，不走代理。
+宿主机访问 Sub2API 用 `http://127.0.0.1:8101`。8101 只绑回环，team48 容器要外挂现有网络 `sub2api_sub2api-network`，地址写 `http://sub2api-canary:8080`。只加入现有网络，不改 `/opt/sub2api` 的 Compose。
 
 ## 常用命令
 

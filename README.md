@@ -43,7 +43,7 @@ docker compose -p team48 up -d --build --no-deps team48
 本机回环访问：`http://127.0.0.1:8018`。端口不要占用 `8100` / `8101`。
 
 1. 每个母号在「编辑 Team」里填自己的静态 ISP，先点「检测这条代理」
-2. 系统中心填 Sub2API 地址，容器里用 `http://host.docker.internal:8101`
+2. 系统中心填 Sub2API 地址，容器里用 `http://sub2api-canary:8080`
 3. 子号池里贴邮箱 / 接码，执行拉人或今天的轮转
 4. 删除子号是单独按钮，不会在踢人时发生
 

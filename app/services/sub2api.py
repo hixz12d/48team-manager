@@ -35,7 +35,7 @@ class Sub2ApiService:
                 if part.isdigit():
                     group_ids.append(int(part))
         return {
-            "base_url": base_url or "http://host.docker.internal:8101",
+            "base_url": base_url or "http://sub2api-canary:8080",
             "api_key": api_key,
             "email": email,
             "password": password,
@@ -344,7 +344,7 @@ class Sub2ApiService:
                 "configured": bool(cfg["api_key"] or (cfg["email"] and cfg["password"])),
                 "boxes": [],
                 "count": 0,
-                "error": str(exc),
+                "error": str(exc) or type(exc).__name__,
             }
         _STATUS_CACHE[cache_key] = (now, result)
         return result

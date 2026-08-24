@@ -111,8 +111,8 @@ async def create_default_settings():
             ),
             Setting(
                 key="sub2api_base_url",
-                value="",
-                description="Sub2API 地址，同机部署直连"
+                value="http://sub2api-canary:8080",
+                description="Sub2API 地址。同机容器直连 sub2api-canary:8080",
             ),
             Setting(
                 key="sub2api_api_key",
