@@ -182,7 +182,7 @@ function getFriendlyAdminErrorMessage(rawMessage, statusCode = 0, scene = 'commo
         return '数据格式异常，请检查后重试';
     }
 
-    if (includesAny('proxy', 'connection', 'timeout', 'timed out', 'network', '连接', 'dns', 'ssl', 'socket')) {
+    if (includesAny('proxy', 'connection', 'timeout', 'timed out', 'network', '连接', 'dns', 'ssl', 'socket', 'cloudflare', 'cf-ray', 'failed to perform')) {
         return '网络连接异常，请稍后重试';
     }
 
@@ -732,6 +732,11 @@ async function apiCall(url, options = {}) {
         if (!response.ok) {
             const rawError = data?.error ?? data?.detail ?? data?.message ?? data?.reason ?? '请求失败';
             throw new Error(extractErrorText(rawError) || '请求失败');
+        }
+
+        if (data && typeof data === 'object' && Object.prototype.hasOwnProperty.call(data, 'success') && data.success === false) {
+            const rawError = data?.error ?? data?.detail ?? data?.message ?? data?.reason ?? '请求失败';
+            return { success: false, error: extractErrorText(rawError) || '请求失败', data };
         }
 
         return { success: true, data };

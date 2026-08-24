@@ -195,6 +195,17 @@ class ChatGPTProxySupportTests(AsyncDatabaseTestCase):
 
         self.assertIsNone(FakeCurlSession.instances[0].kwargs["proxies"])
 
+    async def test_create_session_uses_current_chrome_impersonate(self):
+        await self.set_proxy_config(False, "")
+        FakeCurlSession.instances.clear()
+        service = ChatGPTService()
+
+        async with self.session_factory() as session:
+            with patch("app.services.chatgpt.AsyncSession", new=FakeCurlSession):
+                await service._create_session(session)
+
+        self.assertEqual(FakeCurlSession.instances[0].kwargs["impersonate"], "chrome136")
+
 
 class CliproxyapiProxySupportTests(AsyncDatabaseTestCase):
     async def test_push_team_auth_file_uses_socks5h_proxy(self):

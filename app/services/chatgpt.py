@@ -8,6 +8,7 @@ import hashlib
 import logging
 import random
 import secrets
+import uuid
 from urllib.parse import urlencode, urlparse
 from typing import Optional, Dict, Any, List
 from curl_cffi.requests import AsyncSession
@@ -23,16 +24,35 @@ class ChatGPTService:
     """ChatGPT API 服务类"""
 
     BASE_URL = "https://chatgpt.com/backend-api"
+    ADMIN_MEMBERS_REFERER = "https://chatgpt.com/admin/members?tab=members"
+    ADMIN_INVITES_REFERER = "https://chatgpt.com/admin/members?tab=invites"
+    OAI_CLIENT_VERSION = "prod-eddc2f6ff65fee2d0d6439e379eab94fe3047f72"
+    IMPERSONATE = "chrome136"
 
     # 重试配置
     MAX_RETRIES = 3
     RETRY_DELAYS = [1, 2, 4]  # 指数退避: 1s, 2s, 4s
+    TRANSIENT_ERROR_MARKERS = (
+        "timed out",
+        "timeout",
+        "ssl_connect",
+        "ssl_error",
+        "connection reset",
+        "connection closed",
+        "recv failure",
+        "failed to perform",
+        "curl: (28)",
+        "curl: (35)",
+        "curl: (56)",
+        "proxy",
+    )
 
     def __init__(self):
         """初始化 ChatGPT API 服务"""
         self.jwt_parser = JWTParser()
         # 会话池：按标识符（如 Email 或 TeamID）隔离，防止身份泄漏并提高 CF 稳定性
         self._sessions: Dict[str, AsyncSession] = {}
+        self._device_ids: Dict[str, str] = {}
         self.proxy: Optional[str] = None
 
     async def _get_proxy_config(
@@ -93,14 +113,31 @@ class ChatGPTService:
         else:
             logger.info("创建 ChatGPT 会话代理: disabled")
 
-        # 使用 chrome110 指纹，这是 curl_cffi 中绕过 CF 最稳定的版本之一
+        # chrome136 比旧的 chrome110 更接近当前 ChatGPT 前台，CF 通过率更好。
         session = AsyncSession(
-            impersonate="chrome110",
+            impersonate=self.IMPERSONATE,
             proxies=proxies,
             timeout=30,
             verify=False # 某些代理环境下需要，或根据需求开启
         )
         return session
+
+    def _device_id_for(self, identifier: str) -> str:
+        if identifier not in self._device_ids:
+            self._device_ids[identifier] = str(uuid.uuid4())
+        return self._device_ids[identifier]
+
+    def _default_referer(self, url: str) -> str:
+        if "/invites" in url:
+            return self.ADMIN_INVITES_REFERER
+        if "/users" in url:
+            return self.ADMIN_MEMBERS_REFERER
+        return "https://chatgpt.com/"
+
+    @classmethod
+    def _is_transient_transport_error(cls, error: Any) -> bool:
+        message = str(error or "").lower()
+        return any(marker in message for marker in cls.TRANSIENT_ERROR_MARKERS)
 
     async def _get_session(self, db_session: DBAsyncSession, identifier: str) -> AsyncSession:
         """
@@ -110,6 +147,13 @@ class ChatGPTService:
             logger.info(f"为标识符 {identifier} 创建新会话")
             self._sessions[identifier] = await self._create_session(db_session, identifier)
         return self._sessions[identifier]
+
+    async def _rebuild_session(self, db_session: Optional[DBAsyncSession], identifier: str) -> Optional[AsyncSession]:
+        logger.warning(f"传输层失败，重建 ChatGPT 会话: {identifier}")
+        await self.clear_session(identifier)
+        if db_session is None:
+            return None
+        return await self._get_session(db_session, identifier)
 
     async def _make_request(
         self,
@@ -137,19 +181,23 @@ class ChatGPTService:
                     identifier = email
 
         session = await self._get_session(db_session, identifier)
-        
-        # 补全基础浏览器请求头
+
+        # 补全基础浏览器请求头，对齐 chatgpt.com/admin/members 前台。
+        request_headers = dict(headers)
         base_headers = {
             "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://chatgpt.com/",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": self._default_referer(url),
             "Origin": "https://chatgpt.com",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "oai-language": "zh-CN",
+            "oai-client-version": self.OAI_CLIENT_VERSION,
+            "oai-device-id": self._device_id_for(identifier),
         }
         # 合并请求头，不要轻易覆盖 User-Agent 以免破坏 impersonate 的指纹
         for k, v in base_headers.items():
-            if k not in headers:
-                headers[k] = v
+            if k not in request_headers:
+                request_headers[k] = v
 
         for attempt in range(self.MAX_RETRIES):
             try:
@@ -161,11 +209,11 @@ class ChatGPTService:
                 logger.info(f"[{identifier}] 发送请求: {method} {url} (尝试 {attempt + 1})")
 
                 if method == "GET":
-                    response = await session.get(url, headers=headers)
+                    response = await session.get(url, headers=request_headers)
                 elif method == "POST":
-                    response = await session.post(url, headers=headers, json=json_data)
+                    response = await session.post(url, headers=request_headers, json=json_data)
                 elif method == "DELETE":
-                    response = await session.delete(url, headers=headers, json=json_data)
+                    response = await session.delete(url, headers=request_headers, json=json_data)
                 else:
                     raise ValueError(f"不支持的 HTTP 方法: {method}")
 
@@ -192,21 +240,28 @@ class ChatGPTService:
                             error_code = error_info.get("code") if isinstance(error_info, dict) else error_data.get("code")
                     except Exception:
                         pass
-                    
+
                     if error_code == "token_invalidated" or "token_invalidated" in str(error_msg).lower():
                         logger.warning(f"检测到 Token 失效，清理会话缓存: {identifier}")
                         await self.clear_session(identifier)
-                    
+
                     logger.warning(f"客户端错误 {status_code}: {error_msg}")
                     return {"success": False, "status_code": status_code, "error": error_msg, "error_code": error_code}
 
                 if status_code >= 500:
+                    rebuilt = await self._rebuild_session(db_session, identifier)
+                    if rebuilt is not None:
+                        session = rebuilt
                     if attempt < self.MAX_RETRIES - 1:
                         continue
                     return {"success": False, "status_code": status_code, "error": f"服务器错误 {status_code}"}
 
             except Exception as e:
                 logger.error(f"请求异常: {e}")
+                if self._is_transient_transport_error(e):
+                    rebuilt = await self._rebuild_session(db_session, identifier)
+                    if rebuilt is not None:
+                        session = rebuilt
                 if attempt < self.MAX_RETRIES - 1:
                     continue
                 return {"success": False, "status_code": 0, "error": str(e)}
@@ -243,7 +298,7 @@ class ChatGPTService:
         offset = 0
         limit = 50
         while True:
-            url = f"{self.BASE_URL}/accounts/{account_id}/users?limit={limit}&offset={offset}"
+            url = f"{self.BASE_URL}/accounts/{account_id}/users?offset={offset}&limit={limit}&query="
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "chatgpt-account-id": account_id,
@@ -275,7 +330,7 @@ class ChatGPTService:
         identifier: str = "default"
     ) -> Dict[str, Any]:
         """获取 Team 邀请列表"""
-        url = f"{self.BASE_URL}/accounts/{account_id}/invites"
+        url = f"{self.BASE_URL}/accounts/{account_id}/invites?offset=0&limit=50&query="
         headers = {
             "Authorization": f"Bearer {access_token}",
             "chatgpt-account-id": account_id
@@ -626,23 +681,25 @@ class ChatGPTService:
     async def clear_session(self, identifier: Optional[str] = None):
         """清理指定身份的会话，若不提供则清理所有"""
         if identifier:
-            if identifier in self._sessions:
+            session = self._sessions.pop(identifier, None)
+            if session is not None:
                 try:
-                    await self._sessions[identifier].close()
-                except:
+                    await session.close()
+                except Exception:
                     pass
-                del self._sessions[identifier]
-        else:
-            await self.close()
+            return
+
+        await self.close()
 
     async def close(self):
         """关闭所有会话"""
-        for session in self._sessions.values():
+        for session in list(self._sessions.values()):
             try:
                 await session.close()
-            except:
+            except Exception:
                 pass
         self._sessions.clear()
+        self._device_ids.clear()
 
 
 # 创建全局实例
