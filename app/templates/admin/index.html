@@ -793,6 +793,7 @@
             <div id="batchRefreshProgressBar" class="batch-progress-bar-inner"></div>
         </div>
         <div id="batchRefreshProgressText" class="batch-progress-text">正在刷新中，请稍候…</div>
+        <div id="batchRefreshProgressDetails" class="batch-progress-text" style="margin-top: 8px; max-height: 140px; overflow:auto;"></div>
     </div>
 
     <div class="workbench-panel">
@@ -805,11 +806,8 @@
                     <button type="button" id="btnBatchRefresh" class="btn btn-secondary btn-sm">
                         <i data-lucide="refresh-cw" style="width: 14px; height: 14px;"></i> 批量刷新
                     </button>
-                    <button type="button" id="btnBatchEnableDeviceAuth" class="btn btn-success btn-sm">
-                        <i data-lucide="shield-check" style="width: 14px; height: 14px;"></i> 批量开启验证
-                    </button>
-                    <button type="button" id="btnBatchPushCliproxyapi" class="btn btn-primary btn-sm">
-                        <i data-lucide="send" style="width: 14px; height: 14px;"></i> 批量推送
+                    <button type="button" id="btnBatchPushSub2api" class="btn btn-primary btn-sm">
+                        <i data-lucide="send" style="width: 14px; height: 14px;"></i> 批量推送到 Sub2API
                     </button>
                     <button type="button" id="btnBatchExportJson" class="btn btn-secondary btn-sm">
                         <i data-lucide="download" style="width: 14px; height: 14px;"></i> 批量导出 JSON
@@ -933,7 +931,6 @@
                 <th>成员数</th>
                 <th>订阅计划</th>
                 <th>到期时间</th>
-                <th>设备验证</th>
                 <th>状态</th>
                 <th>操作</th>
             </tr>
@@ -963,13 +960,6 @@
                     {{ team.expires_at|format_datetime }}
                     {% else %}
                     -
-                    {% endif %}
-                </td>
-                <td data-label="设备验证">
-                    {% if team.device_code_auth_enabled %}
-                    <span class="status-badge status-active">已开启</span>
-                    {% else %}
-                    <span class="status-badge status-banned">未开启</span>
                     {% endif %}
                 </td>
                 <td data-label="状态">
@@ -1006,28 +996,8 @@
                             <i data-lucide="refresh-cw" style="width: 16px; height: 16px;"></i>
                             <span class="btn-icon-fallback" aria-hidden="true">刷</span>
                         </button>
-                        {% if team.pool_type == 'normal' %}
-                        <button class="btn btn-sm btn-icon btn-minimal {{ 'btn-success is-toggle-on' if team.warranty_seat_enabled else 'btn-secondary is-toggle-off' }} btn-toggle-warranty-seat"
-                            data-id="{{ team.id }}"
-                            data-enabled="{{ 'true' if team.warranty_seat_enabled else 'false' }}"
-                            title="{{ '已开启质保（点击关闭）' if team.warranty_seat_enabled else '开启质保' }}"
-                            aria-label="{{ '已开启质保（点击关闭）' if team.warranty_seat_enabled else '开启质保' }}"
-                            aria-pressed="{{ 'true' if team.warranty_seat_enabled else 'false' }}">
-                            <i data-lucide="{{ 'shield-check' if team.warranty_seat_enabled else 'shield' }}" style="width: 16px; height: 16px;"></i>
-                            <span class="btn-icon-fallback" aria-hidden="true">保</span>
-                        </button>
-                        {% endif %}
-                        <button class="btn btn-sm btn-icon btn-minimal {{ 'btn-success is-toggle-on' if team.device_code_auth_enabled else 'btn-secondary is-toggle-off' }} btn-enable-device-auth"
-                            data-id="{{ team.id }}"
-                            data-enabled="{{ 'true' if team.device_code_auth_enabled else 'false' }}"
-                            title="{{ '已开启设备代码验证' if team.device_code_auth_enabled else '一键开启设备代码验证' }}"
-                            aria-label="{{ '已开启设备代码验证' if team.device_code_auth_enabled else '开启设备验证' }}"
-                            aria-pressed="{{ 'true' if team.device_code_auth_enabled else 'false' }}">
-                            <i data-lucide="{{ 'badge-check' if team.device_code_auth_enabled else 'shield-check' }}" style="width: 16px; height: 16px;"></i>
-                            <span class="btn-icon-fallback" aria-hidden="true">验</span>
-                        </button>
-                        <button class="btn btn-sm btn-icon btn-minimal btn-primary btn-push-cliproxyapi"
-                            data-id="{{ team.id }}" data-email="{{ team.email }}" title="推送到 CliproxyAPI" aria-label="推送到 CliproxyAPI">
+                        <button class="btn btn-sm btn-icon btn-minimal btn-primary btn-push-sub2api"
+                            data-id="{{ team.id }}" data-email="{{ team.email }}" title="推送到 Sub2API" aria-label="推送到 Sub2API">
                             <i data-lucide="send" style="width: 16px; height: 16px;"></i>
                             <span class="btn-icon-fallback" aria-hidden="true">推</span>
                         </button>
@@ -1257,10 +1227,6 @@
                     <input type="text" id="edit-team-role" class="form-control" readonly title="检测到的账号角色">
                 </div>
                 <div class="form-group">
-                    <label>设备代码身份验证</label>
-                    <input type="text" id="edit-team-device-auth" class="form-control" readonly title="检测到的验证开启状态">
-                </div>
-                <div class="form-group">
                     <label>最大成员数 <span class="required">*</span></label>
                     <input type="number" id="edit-team-max-members" name="maxMembers" class="form-control" min="1"
                         max="999" required>
@@ -1349,28 +1315,12 @@
             });
         });
 
-        // 绑定开启设备认证按钮
-        document.querySelectorAll('.btn-enable-device-auth').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                const alreadyEnabled = btn.getAttribute('data-enabled') === 'true';
-                enableDeviceAuth(id, alreadyEnabled);
-            });
-        });
 
-        document.querySelectorAll('.btn-toggle-warranty-seat').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                const enabled = btn.getAttribute('data-enabled') === 'true';
-                toggleTeamWarrantySeat(id, enabled);
-            });
-        });
-
-        document.querySelectorAll('.btn-push-cliproxyapi').forEach(btn => {
+        document.querySelectorAll('.btn-push-sub2api').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = btn.getAttribute('data-id');
                 const email = btn.getAttribute('data-email');
-                pushTeamToCliproxyapi(id, email);
+                pushTeamToSub2api(id, email);
             });
         });
 
@@ -1392,81 +1342,24 @@
 
         // 绑定批量操作按钮（避免依赖内联 onclick，兼容更严格的 CSP）
         document.getElementById('btnBatchRefresh')?.addEventListener('click', handleBatchRefresh);
-        document.getElementById('btnBatchEnableDeviceAuth')?.addEventListener('click', handleBatchEnableDeviceAuth);
-        document.getElementById('btnBatchPushCliproxyapi')?.addEventListener('click', handleBatchPushCliproxyapi);
+        document.getElementById('btnBatchPushSub2api')?.addEventListener('click', handleBatchPushSub2api);
         document.getElementById('btnBatchExportJson')?.addEventListener('click', handleBatchExportJson);
         document.getElementById('btnBatchDelete')?.addEventListener('click', handleBatchDelete);
         document.getElementById('btnBatchTransferPool')?.addEventListener('click', handleBatchTransferPool);
         document.getElementById('btnCheckPoolTeamsLive')?.addEventListener('click', handleCheckPoolTeamsLive);
     });
 
-    async function enableDeviceAuth(teamId, alreadyEnabled = false) {
-        if (alreadyEnabled) {
-            showToast('该 Team 已开启设备代码验证', 'info');
-            return;
-        }
-        if (!confirm('确定要为该 Team 开启设备代码身份验证吗?')) {
-            return;
-        }
-
-        try {
-            showToast('正在开启...', 'info');
-            const response = await fetch(`/admin/teams/${teamId}/enable-device-auth`, {
-                method: 'POST'
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.success) {
-                showToast('开启成功', 'success');
-                setTimeout(() => location.reload(), 1000);
-            } else {
-                showToast(data.error || '开启失败', 'error');
-            }
-        } catch (error) {
-            showToast('网络错误', 'error');
-        }
-    }
-
-    async function toggleTeamWarrantySeat(teamId, currentlyEnabled) {
-        const nextEnabled = !currentlyEnabled;
-        const actionLabel = nextEnabled ? '开启' : '关闭';
-        if (!confirm(`确定要为该 Team ${actionLabel}质保车位吗？\n\n此操作仅影响后续兑换码分流，不会影响现有成员。`)) {
-            return;
-        }
-
-        try {
-            showToast(`正在${actionLabel}质保车位...`, 'info');
-            const response = await fetch(`/admin/teams/${teamId}/warranty-seat`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ enabled: nextEnabled })
-            });
-
-            const data = await response.json();
-            if (response.ok && data.success) {
-                showToast(data.message || `${actionLabel}成功`, 'success');
-                setTimeout(() => location.reload(), 1000);
-            } else {
-                showToast(data.error || `${actionLabel}失败`, 'error');
-            }
-        } catch (error) {
-            showToast('网络错误', 'error');
-        }
-    }
 
 
-    async function pushTeamToCliproxyapi(teamId, email = '') {
+    async function pushTeamToSub2api(teamId, email = '') {
         const targetLabel = email ? `"${email}"` : `ID=${teamId}`;
-        if (!confirm(`确定要将 Team ${targetLabel} 推送到 CliproxyAPI 吗?`)) {
+        if (!confirm(`确定要将 Team ${targetLabel} 推送到 Sub2API 吗?`)) {
             return;
         }
 
         try {
-            showToast('正在推送到 CliproxyAPI...', 'info');
-            const response = await fetch(`/admin/teams/${teamId}/push-cliproxyapi`, {
+            showToast('正在推送到 Sub2API...', 'info');
+            const response = await fetch(`/admin/teams/${teamId}/push-sub2api`, {
                 method: 'POST'
             });
 
@@ -1671,7 +1564,6 @@
                 document.getElementById('edit-team-name').value = team.team_name || '';
                 document.getElementById('edit-team-status').value = team.status || 'active';
                 document.getElementById('edit-team-role').value = team.account_role || '未知';
-                document.getElementById('edit-team-device-auth').value = team.device_code_auth_enabled ? '已开启' : '未开启';
                 document.getElementById('edit-team-proxy').value = team.proxy || '';
                 document.getElementById('edit-team-cycle-days').value = team.seat_cycle_days || 7;
                 resetEditTokenRenewUI();
@@ -2037,7 +1929,7 @@
     }
 
     function setBatchActionButtonsDisabled(disabled) {
-        ['btnBatchRefresh', 'btnBatchEnableDeviceAuth', 'btnBatchPushCliproxyapi', 'btnBatchExportJson', 'btnBatchDelete', 'btnBatchTransferPool', 'btnCheckPoolTeamsLive'].forEach(id => {
+        ['btnBatchRefresh', 'btnBatchPushSub2api', 'btnBatchExportJson', 'btnBatchDelete', 'btnBatchTransferPool', 'btnCheckPoolTeamsLive'].forEach(id => {
             const button = document.getElementById(id);
             if (button) button.disabled = disabled;
         });
@@ -2067,10 +1959,11 @@
         return text;
     }
 
-    function updateBatchRefreshProgress({ current, total, success, failed, text }) {
+    function updateBatchRefreshProgress({ current, total, success, failed, text, details }) {
         const barNode = document.getElementById('batchRefreshProgressBar');
         const percentNode = document.getElementById('batchRefreshProgressPercent');
         const textNode = document.getElementById('batchRefreshProgressText');
+        const detailsNode = document.getElementById('batchRefreshProgressDetails');
         if (!barNode || !percentNode || !textNode) return;
 
         const safeTotal = total > 0 ? total : 1;
@@ -2080,6 +1973,9 @@
         barNode.style.width = `${percent}%`;
         percentNode.textContent = `${safeCurrent}/${total}`;
         textNode.innerHTML = text || `当前进度：<strong>${safeCurrent}</strong>/<strong>${total}</strong>，成功 ${success}，失败 ${failed}。`;
+        if (detailsNode && details) {
+            detailsNode.innerHTML = details;
+        }
     }
 
     function showBatchRefreshProgress() {
@@ -2184,6 +2080,7 @@
         setBatchRefreshProgressTitle(panelTitle);
         setBatchActionButtonsDisabled(true);
         const actionLabel = progressActionLabel || progressVerb;
+        const failureLines = [];
 
         updateBatchRefreshProgress({
             current: 0,
@@ -2255,11 +2152,16 @@
                             })
                         });
                     } else if (data.type === 'progress') {
+                        const lastResult = data.last_result || {};
+                        if (!lastResult.success && (lastResult.error || lastResult.message)) {
+                            failureLines.push(`#${data.team_id || '?'} ${lastResult.error || lastResult.message}`);
+                        }
                         updateBatchRefreshProgress({
                             current: data.completed_count || data.current || 0,
                             total: data.total || totalCount,
                             success: data.success_count || 0,
                             failed: data.failed_count || 0,
+                            details: failureLines.map((line) => escapeHtml(line)).join('<br>'),
                             text: formatBatchRefreshStatusText({
                                 actionLabel,
                                 current: data.completed_count || data.current || 0,
@@ -2275,6 +2177,7 @@
                             total: data.total || totalCount,
                             success: data.success_count || 0,
                             failed: data.failed_count || 0,
+                            details: failureLines.map((line) => escapeHtml(line)).join('<br>'),
                             text: completionMessageBuilder(data)
                         });
                     } else if (data.type === 'error') {
@@ -2346,12 +2249,8 @@
         handleBatchAction('/admin/teams/batch-delete', '批量删除');
     }
 
-    function handleBatchEnableDeviceAuth() {
-        handleBatchAction('/admin/teams/batch-enable-device-auth', '批量开启验证');
-    }
-
-    function handleBatchPushCliproxyapi() {
-        handleBatchAction('/admin/teams/batch-push-cliproxyapi', '批量推送到 CliproxyAPI', {
+    function handleBatchPushSub2api() {
+        handleBatchAction('/admin/teams/batch-push-sub2api', '批量推送到 Sub2API', {
             onSuccessToast(result) {
                 if (result.warning_count > 0) {
                     return {

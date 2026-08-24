@@ -28,6 +28,7 @@ from app.services.settings import (
     DEFAULT_UI_STYLE,
 )
 from app.services.cliproxyapi import cliproxyapi_service
+from app.services.sub2api import sub2api_service
 from app.models import RedemptionCode, RedemptionRecord, RenewalRequest, Team
 from app.utils.time_utils import get_now
 from app.utils.proxy import mask_proxy_url, normalize_proxy_url
@@ -1184,41 +1185,49 @@ async def batch_export_team_json(
         )
 
 
+async def _push_team_to_sub2api(team_id: int, db: AsyncSession) -> Dict[str, Any]:
+    team = await db.get(Team, team_id)
+    if not team:
+        return {"success": False, "error": "Team 不存在", "team_id": team_id}
+    try:
+        result = await sub2api_service.push_team(db, team)
+        result["team_id"] = team_id
+        return result
+    except Exception as exc:
+        logger.exception("推送 Team %s 到 Sub2API 失败", team_id)
+        return {"success": False, "error": str(exc), "email": team.email, "team_id": team_id}
+
+
+@router.post("/teams/{team_id}/push-sub2api")
 @router.post("/teams/{team_id}/push-cliproxyapi")
-async def push_team_to_cliproxyapi(
+async def push_team_to_sub2api(
     team_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin)
 ):
-    """将单个 Team 的 Codex 认证文件推送到 CliproxyAPI。"""
-    try:
-        logger.info("管理员推送 Team %s 到 CliproxyAPI", team_id)
-        result = await cliproxyapi_service.push_team_auth_file(team_id, db)
-        if not result.get("success"):
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content=result
-            )
-        return JSONResponse(content=result)
-    except Exception as e:
-        logger.error("推送 Team %s 到 CliproxyAPI 失败: %s", team_id, e)
+    """将单个 Team 的会话推送到 Sub2API。"""
+    logger.info("管理员推送 Team %s 到 Sub2API", team_id)
+    result = await _push_team_to_sub2api(team_id, db)
+    if not result.get("success"):
         return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": str(e)}
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=result
         )
+    return JSONResponse(content=result)
 
 
 # ==================== 批量操作路由 ====================
 
+@router.post("/teams/batch-push-sub2api")
 @router.post("/teams/batch-push-cliproxyapi")
-async def batch_push_teams_to_cliproxyapi(
+async def batch_push_teams_to_sub2api(
     action_data: BulkActionRequest,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin)
 ):
-    """批量推送 Team 的 Codex 认证文件到 CliproxyAPI。"""
+    """批量推送 Team 会话到 Sub2API。"""
     try:
-        logger.info("管理员批量推送 %s 个 Team 到 CliproxyAPI", len(action_data.ids))
+        logger.info("管理员批量推送 %s 个 Team 到 Sub2API", len(action_data.ids))
 
         uploaded_count = 0
         updated_count = 0
@@ -1228,7 +1237,7 @@ async def batch_push_teams_to_cliproxyapi(
         results = []
 
         for team_id in action_data.ids:
-            result = await cliproxyapi_service.push_team_auth_file(team_id, db)
+            result = await _push_team_to_sub2api(team_id, db)
             action = result.get("action")
             warning = result.get("warning")
 
@@ -1286,7 +1295,7 @@ async def batch_push_teams_to_cliproxyapi(
             "results": results,
         })
     except Exception as e:
-        logger.error("批量推送 Team 到 CliproxyAPI 失败: %s", e)
+        logger.error("批量推送 Team 到 Sub2API 失败: %s", e)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": str(e)}

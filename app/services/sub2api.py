@@ -131,5 +131,42 @@ class Sub2ApiService:
 
         raise RuntimeError("Sub2API 推送失败: " + " | ".join(errors))
 
+    async def push_team(self, db_session: AsyncSession, team: Any) -> Dict[str, Any]:
+        from app.services.encryption import encryption_service
+
+        def _decrypt(value: Optional[str]) -> str:
+            if not value:
+                return ""
+            try:
+                return encryption_service.decrypt_token(value)
+            except Exception as exc:
+                logger.warning("解密 Team %s 凭证失败: %s", getattr(team, "id", "?"), exc)
+                return ""
+
+        access_token = _decrypt(getattr(team, "access_token_encrypted", None))
+        if not access_token:
+            return {"success": False, "error": "Team 缺少 Access Token，无法推送到 Sub2API", "email": getattr(team, "email", "")}
+
+        result = await self.import_session(
+            db_session,
+            email=str(getattr(team, "email", "") or ""),
+            access_token=access_token,
+            refresh_token=_decrypt(getattr(team, "refresh_token_encrypted", None)),
+            id_token=_decrypt(getattr(team, "id_token_encrypted", None)),
+            account_id=str(getattr(team, "account_id", "") or ""),
+            client_id=str(getattr(team, "client_id", "") or ""),
+        )
+        email = str(getattr(team, "email", "") or "")
+        return {
+            "success": True,
+            "message": f"已推送到 Sub2API：{email}",
+            "email": email,
+            "filename": email,
+            "action": "updated" if result.get("strategy") == "create_account" else "uploaded",
+            "account_id": result.get("account_id"),
+            "warning": None,
+            "warnings": [],
+        }
+
 
 sub2api_service = Sub2ApiService()

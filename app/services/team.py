@@ -341,6 +341,34 @@ class TeamService:
 
         await db_session.commit()
         return True
+
+    @staticmethod
+    def _workspace_error_is_fatal(result: Dict[str, Any]) -> bool:
+        error_code = str(result.get("error_code") or "").strip()
+        error_msg = str(result.get("error") or "").lower()
+        ban_codes = {
+            "account_deactivated",
+            "token_invalidated",
+            "account_suspended",
+            "account_not_found",
+            "user_not_found",
+            "deactivated_workspace",
+        }
+        if error_code in ban_codes:
+            return True
+        ban_keywords = (
+            "token has been invalidated",
+            "account_deactivated",
+            "account has been deactivated",
+            "account is deactivated",
+            "account_suspended",
+            "account is suspended",
+            "account was deleted",
+            "user_not_found",
+            "this account is deactivated",
+            "deactivated_workspace",
+        )
+        return any(keyword in error_msg for keyword in ban_keywords)
         
     @staticmethod
     def _admin_error(error_code: str, error: str, message: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
@@ -1891,79 +1919,71 @@ class TeamService:
             joined_member_emails = set()
             invited_member_emails = set()
             all_member_emails = set()
-            current_members = 0
-            if members_result["success"]:
-                current_members += members_result["total"]
+            current_members = int(team.current_members or 0)
+            members_warning = None
+            invites_warning = None
+            members_ok = bool(members_result.get("success"))
+            invites_ok = bool(invites_result.get("success"))
+
+            if members_ok:
+                current_members = int(members_result.get("total") or 0)
                 for m in members_result.get("members", []):
                     if m.get("email"):
                         normalized_email = self._normalize_member_email(m["email"])
                         if normalized_email:
                             joined_member_emails.add(normalized_email)
                             all_member_emails.add(normalized_email)
-            else:
-                # 检查是否封号或 Token 失效
-                if await self._handle_api_error(members_result, team, db_session):
-                    error_msg = members_result.get("error", "未知错误")
-                    if members_result.get("error_code") == "account_deactivated":
-                        error_msg = "账号已封禁 (account_deactivated)"
-                    elif members_result.get("error_code") == "token_invalidated":
-                        error_msg = "账号已封禁/失效 (token_invalidated)"
-
-                    return {
-                        "success": False,
-                        "message": None,
-                        "error": error_msg
-                    }
-
-                # 其他错误, 累加错误次数
-                team.error_count = (team.error_count or 0) + 1
-                if team.error_count >= 3:
-                    logger.error(f"Team {team.id} 获取成员列表连续失败 {team.error_count} 次，更新状态为 error")
-                    team.status = "error"
-                await db_session.commit()
+            elif self._workspace_error_is_fatal(members_result):
+                await self._handle_api_error(members_result, team, db_session)
+                error_msg = members_result.get("error", "未知错误")
+                if members_result.get("error_code") == "account_deactivated":
+                    error_msg = "账号已封禁 (account_deactivated)"
+                elif members_result.get("error_code") == "token_invalidated":
+                    error_msg = "账号已封禁/失效 (token_invalidated)"
                 return {
                     "success": False,
                     "message": None,
-                    "error": f"获取成员列表失败: {members_result.get('error', '未知错误')} (错误次数: {team.error_count})"
+                    "error": error_msg,
                 }
+            else:
+                members_warning = members_result.get("error") or "获取成员列表失败"
+                logger.warning(
+                    "Team %s 订阅仍有效，但成员列表暂不可用: %s",
+                    team.id,
+                    members_warning,
+                )
 
-            if invites_result["success"]:
+            if invites_ok:
                 pending_invites = self._filter_pending_invites(
                     invites_result.get("items", []),
                     joined_emails=joined_member_emails,
                 )
-                current_members += len(pending_invites)
+                if members_ok:
+                    current_members += len(pending_invites)
                 for inv in pending_invites:
                     normalized_email = inv.get("email_address")
                     if normalized_email:
                         invited_member_emails.add(normalized_email)
                         all_member_emails.add(normalized_email)
-            else:
-                # 检查是否封号或 Token 失效
-                if await self._handle_api_error(invites_result, team, db_session):
-                    error_msg = invites_result.get("error", "未知错误")
-                    if invites_result.get("error_code") == "account_deactivated":
-                        error_msg = "账号已封禁 (account_deactivated)"
-                    elif invites_result.get("error_code") == "token_invalidated":
-                        error_msg = "账号已封禁/失效 (token_invalidated)"
-
-                    return {
-                        "success": False,
-                        "message": None,
-                        "error": error_msg
-                    }
-
-                # 其他错误, 累加错误次数
-                team.error_count = (team.error_count or 0) + 1
-                if team.error_count >= 3:
-                    logger.error(f"Team {team.id} 获取邀请列表连续失败 {team.error_count} 次，更新状态为 error")
-                    team.status = "error"
-                await db_session.commit()
+            elif self._workspace_error_is_fatal(invites_result):
+                await self._handle_api_error(invites_result, team, db_session)
+                error_msg = invites_result.get("error", "未知错误")
+                if invites_result.get("error_code") == "account_deactivated":
+                    error_msg = "账号已封禁 (account_deactivated)"
+                elif invites_result.get("error_code") == "token_invalidated":
+                    error_msg = "账号已封禁/失效 (token_invalidated)"
                 return {
                     "success": False,
                     "message": None,
-                    "error": f"获取邀请列表失败: {invites_result.get('error', '未知错误')} (错误次数: {team.error_count})"
+                    "error": error_msg,
                 }
+            else:
+                invites_warning = invites_result.get("error") or "获取邀请列表失败"
+                logger.warning(
+                    "Team %s 订阅仍有效，但邀请列表暂不可用: %s",
+                    team.id,
+                    invites_warning,
+                )
 
             # 6. 解析过期时间
             expires_at = self._parse_remote_expires_at(current_account.get("expires_at"))
@@ -1989,24 +2009,39 @@ class TeamService:
             team.account_role = current_account.get("account_user_role")
             team.expires_at = expires_at
             team.device_code_auth_enabled = device_code_auth_enabled
-            team.error_count = 0  # 同步成功，重置错误次数
+            team.error_count = 0  # 账号本身仍活着，重置错误次数
             team.last_sync = get_now()
-            await self._reconcile_team_email_mappings(
-                team.id,
-                joined_member_emails,
-                invited_member_emails,
-                db_session
-            )
-            effective_members = await self._apply_member_count_floor(team, current_members, db_session)
+            if members_ok:
+                await self._reconcile_team_email_mappings(
+                    team.id,
+                    joined_member_emails,
+                    invited_member_emails,
+                    db_session
+                )
+                effective_members = await self._apply_member_count_floor(team, current_members, db_session)
+            else:
+                effective_members = int(team.current_members or 0)
+                if expires_at and expires_at < get_now():
+                    team.status = "expired"
+                elif effective_members >= int(team.max_members or 0):
+                    team.status = "full"
+                else:
+                    team.status = "active"
 
             await db_session.commit()
 
             logger.info(f"Team 同步成功: ID {team_id}, 成员数 {effective_members}")
 
+            message = f"同步成功,当前成员数: {effective_members}"
+            warnings = [item for item in (members_warning, invites_warning) if item]
+            if warnings:
+                message = f"Team 存活，订阅信息已更新；成员详情未完全刷新: {'；'.join(warnings)}"
+
             return {
                 "success": True,
-                "message": f"同步成功,当前成员数: {effective_members}",
+                "message": message,
                 "member_emails": list(all_member_emails),
+                "warning": "；".join(warnings) if warnings else None,
                 "error": None
             }
 
@@ -2226,7 +2261,8 @@ class TeamService:
             members_result = await self.chatgpt_service.get_members(
                 access_token,
                 team.account_id,
-                db_session
+                db_session,
+                identifier=team.email,
             )
 
             if not members_result["success"]:
@@ -2256,7 +2292,8 @@ class TeamService:
             invites_result = await self.chatgpt_service.get_invites(
                 access_token,
                 team.account_id,
-                db_session
+                db_session,
+                identifier=team.email,
             )
             
             if not invites_result["success"]:

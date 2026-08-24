@@ -244,7 +244,10 @@ class ChatGPTService:
         limit = 50
         while True:
             url = f"{self.BASE_URL}/accounts/{account_id}/users?limit={limit}&offset={offset}"
-            headers = {"Authorization": f"Bearer {access_token}"}
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "chatgpt-account-id": account_id,
+            }
             result = await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
             if not result["success"]:
                 return {

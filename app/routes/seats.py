@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -13,10 +13,44 @@ from app.database import get_db
 from app.dependencies.auth import require_admin
 from app.services.child_accounts import child_account_service
 from app.services.onboard import onboard_service
+from app.services.team import team_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["seats"])
+
+
+async def attach_live_members(db: AsyncSession, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    enriched: List[Dict[str, Any]] = []
+    for card in cards:
+        item = dict(card)
+        live = await team_service.get_team_members(int(card["id"]), db)
+        local_by_email = {
+            str(child.get("email") or "").lower(): child
+            for child in (card.get("active_children") or [])
+        }
+        live_members = []
+        if live.get("success"):
+            for member in live.get("members") or []:
+                email = str(member.get("email") or "").strip().lower()
+                local = local_by_email.get(email) or {}
+                live_members.append({
+                    "email": email or member.get("email"),
+                    "user_id": member.get("user_id"),
+                    "role": member.get("role") or "",
+                    "status": member.get("status") or "joined",
+                    "local_status": local.get("status") or "未入库",
+                    "joined_at": member.get("added_at") or local.get("joined_at"),
+                    "remaining_days": local.get("remaining_days"),
+                    "sub2api_account_id": local.get("sub2api_account_id"),
+                    "in_pool": bool(local),
+                })
+            item["live_error"] = None
+        else:
+            item["live_error"] = live.get("error") or "读取当前 Team 成员失败"
+        item["live_members"] = live_members
+        enriched.append(item)
+    return enriched
 
 
 class OnboardRequest(BaseModel):
@@ -67,8 +101,9 @@ async def seats_page(
     from app.routes.admin import build_admin_base_context
 
     context = await build_admin_base_context(request, db, current_user, "seats")
+    cards = await child_account_service.dashboard_cards(db)
     context.update({
-        "cards": await child_account_service.dashboard_cards(db),
+        "cards": await attach_live_members(db, cards),
         "children": [child_account_service.serialize(item) for item in await child_account_service.list_accounts(db)],
         "stats": await child_account_service.stats(db),
     })
@@ -88,7 +123,7 @@ async def seats_list(
         "success": True,
         "children": [child_account_service.serialize(item) for item in children],
         "stats": await child_account_service.stats(db),
-        "cards": await child_account_service.dashboard_cards(db),
+        "cards": await attach_live_members(db, await child_account_service.dashboard_cards(db)),
     }
 
 

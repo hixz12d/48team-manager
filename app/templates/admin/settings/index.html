@@ -14,7 +14,7 @@
             <div class="page-header-meta">
                 <span class="page-meta-pill"><i data-lucide="shield"></i><span>系统配置</span></span>
                 <span class="page-meta-pill"><i data-lucide="bot"></i><span>自动化任务</span></span>
-                <span class="page-meta-pill"><i data-lucide="palette"></i><span>主题与公告</span></span>
+                <span class="page-meta-pill"><i data-lucide="palette"></i><span>主题外观</span></span>
             </div>
         </div>
     </div>
@@ -34,7 +34,6 @@
         </div>
         <div class="settings-nav-group">
             <div class="settings-nav-group-title">业务规则</div>
-            <a href="#settings-warranty" class="settings-nav-pill settings-nav-link" data-target="settings-warranty">质保设置</a>
             <a href="#settings-team-import" class="settings-nav-pill settings-nav-link" data-target="settings-team-import">Team 导入</a>
             <a href="#settings-sub2api" class="settings-nav-pill settings-nav-link" data-target="settings-sub2api">Sub2API 推送</a>
             <a href="#settings-cfmail" class="settings-nav-pill settings-nav-link" data-target="settings-cfmail">Cloudflare 邮箱</a>
@@ -44,7 +43,6 @@
             <a href="#settings-password" class="settings-nav-pill settings-nav-link" data-target="settings-password">修改密码</a>
             <a href="#settings-ui-style" class="settings-nav-pill settings-nav-link" data-target="settings-ui-style">界面风格</a>
             <a href="#settings-ui-theme" class="settings-nav-pill settings-nav-link" data-target="settings-ui-theme">系统配色</a>
-            <a href="/admin/announcement" class="settings-nav-pill">公告通知</a>
         </div>
     </div>
 
@@ -60,7 +58,7 @@
                 <input type="checkbox" id="proxyEnabled" name="enabled" {% if proxy_enabled %}checked{% endif %}>
                 <span>启用代理</span>
             </label>
-            <p class="form-help">出站请求将经代理转发，包括 ChatGPT / CliproxyAPI / Webhook。</p>
+            <p class="form-help">出站请求将经代理转发，包括 ChatGPT / Sub2API / Webhook。</p>
         </div>
 
         <div class="form-group">
@@ -270,31 +268,6 @@
 </div>
 
 
-<!-- 质保设置 -->
-<div class="content-section settings-panel" id="settings-warranty">
-    <div class="section-header">
-        <h3>质保设置</h3>
-    </div>
-
-    <form id="warrantySettingsForm" class="settings-form">
-        <div class="form-group">
-            <label for="warrantyExpirationMode">质保时长计算方式</label>
-            <select id="warrantyExpirationMode" name="expiration_mode" class="form-control">
-                <option value="first_use" {% if (warranty_expiration_mode or 'first_use') == 'first_use' %}selected{% endif %}>
-                    首次使用后开始计算
-                </option>
-                <option value="refresh_on_redeem" {% if warranty_expiration_mode == 'refresh_on_redeem' %}selected{% endif %}>
-                    每次质保重兑成功后刷新
-                </option>
-            </select>
-            <p class="form-help">推荐"首次使用后开始计算"。刷新模式下每次重兑成功会重新获得完整质保时长。</p>
-        </div>
-
-        <button type="submit" class="btn btn-primary">保存质保设置</button>
-    </form>
-</div>
-
-
 <!-- Team 导入配置 -->
 <div class="content-section settings-panel" id="settings-team-import">
     <div class="section-header">
@@ -313,30 +286,7 @@
     </form>
 </div>
 
-<!-- CliproxyAPI 推送配置 -->
-<div class="content-section settings-panel" id="settings-cliproxyapi">
-    <div class="section-header">
-        <h3>CliproxyAPI 推送</h3>
-    </div>
 
-    <form id="cliproxyapiForm" class="settings-form">
-        <div class="form-group">
-            <label for="cliproxyapiBaseUrl">站点地址</label>
-            <input type="text" id="cliproxyapiBaseUrl" name="base_url" value="{{ cliproxyapi_base_url or '' }}"
-                placeholder="https://cli-proxy-api.example.com" class="form-control">
-            <p class="form-help">站点根地址，保存时自动去尾部斜杠。</p>
-        </div>
-
-        <div class="form-group">
-            <label for="cliproxyapiApiKey">管理密钥</label>
-            <input type="password" id="cliproxyapiApiKey" name="api_key" value="{{ cliproxyapi_api_key or '' }}"
-                placeholder="Bearer 管理密钥中的原始 token 值" class="form-control">
-            <p class="form-help">推送 Team 配置时调用 `/v0/management/auth-files` 所用密钥。</p>
-        </div>
-
-        <button type="submit" class="btn btn-primary">保存 CliproxyAPI 配置</button>
-    </form>
-</div>
 
 <!-- 界面风格 -->
 <div class="content-section settings-panel" id="settings-ui-style">
@@ -808,33 +758,6 @@
         }
     });
 
-    // 质保设置表单
-    document.getElementById('warrantySettingsForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-
-        const expiration_mode = document.getElementById('warrantyExpirationMode').value;
-
-        try {
-            const response = await fetch('/admin/settings/warranty', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ expiration_mode })
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.success) {
-                showToast(data.message || '质保设置已保存', 'success');
-            } else {
-                showToast(data.error || '保存失败', 'error');
-            }
-        } catch (error) {
-            showToast('网络错误', 'error');
-        }
-    });
-
     // Team 导入配置表单
     document.getElementById('teamImportForm').addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -867,49 +790,6 @@
         }
     });
 
-    // CliproxyAPI 推送配置表单
-    document.getElementById('cliproxyapiForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-
-        const base_url = document.getElementById('cliproxyapiBaseUrl').value.trim();
-        const api_key = document.getElementById('cliproxyapiApiKey').value.trim();
-
-        if (!base_url) {
-            showToast('请输入 CliproxyAPI 站点地址', 'error');
-            return;
-        }
-
-        if (!/^https?:\/\//i.test(base_url)) {
-            showToast('CliproxyAPI 地址必须以 http:// 或 https:// 开头', 'error');
-            return;
-        }
-
-        if (!api_key) {
-            showToast('请输入 CliproxyAPI 管理密钥', 'error');
-            return;
-        }
-
-        try {
-            const response = await fetch('/admin/settings/cliproxyapi', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ base_url, api_key })
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.success) {
-                document.getElementById('cliproxyapiBaseUrl').value = data.base_url || base_url.replace(/\/+$/, '');
-                showToast(data.message || 'CliproxyAPI 配置已保存', 'success');
-            } else {
-                showToast(data.error || '保存失败', 'error');
-            }
-        } catch (error) {
-            showToast('网络错误', 'error');
-        }
-    });
 
     // 界面风格表单
     document.getElementById('uiStyleForm').addEventListener('submit', async (e) => {

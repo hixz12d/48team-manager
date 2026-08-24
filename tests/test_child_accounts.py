@@ -58,6 +58,12 @@ class ChildAccountTests(unittest.IsolatedAsyncioTestCase):
         due = await child_account_service.list_due_accounts(self.session, team_id=team.id)
         self.assertEqual([item.email for item in due], ["old@example.com"])
 
+    def test_workspace_member_errors_are_not_always_fatal(self):
+        from app.services.team import TeamService
+
+        self.assertFalse(TeamService._workspace_error_is_fatal({"error": "timeout"}))
+        self.assertTrue(TeamService._workspace_error_is_fatal({"error_code": "account_deactivated"}))
+
 
 class ParserTests(unittest.TestCase):
     def test_parse_phone_and_mail(self):

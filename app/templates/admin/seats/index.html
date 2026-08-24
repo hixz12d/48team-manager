@@ -95,12 +95,18 @@
             {% endfor %}
         </p>
         {% endif %}
+        {% if card.live_error %}
+        <p class="text-muted">实时成员读取失败：{{ card.live_error }}。下方仍显示本地已入库子号。</p>
+        {% else %}
+        <p class="form-help">下面是当前 Team 里真正在席 / 邀请中的邮箱，不仅限于本项目子号池。</p>
+        {% endif %}
         <div class="table-container">
             <table class="data-table">
                 <thead>
                     <tr>
                         <th>邮箱</th>
-                        <th>状态</th>
+                        <th>实时状态</th>
+                        <th>本地库</th>
                         <th>入组</th>
                         <th>剩余</th>
                         <th>Sub2API</th>
@@ -108,19 +114,27 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for child in card.active_children %}
+                    {% set seat_rows = card.live_members or card.active_children %}
+                    {% for child in seat_rows %}
                     <tr>
                         <td>{{ child.email }}</td>
-                        <td>{{ child.status }}</td>
+                        <td>{{ child.status or child.local_status or '-' }}</td>
+                        <td>{{ child.local_status if child.local_status is defined else (child.status or '-') }}</td>
                         <td>{{ child.joined_at or '-' }}</td>
                         <td>{{ child.remaining_days if child.remaining_days is not none else '-' }}</td>
                         <td>{{ child.sub2api_account_id or '-' }}</td>
                         <td>
-                            <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}')">踢出保留</button>
+                            {% if child.role == 'account-owner' %}
+                            <span class="text-muted">所有者</span>
+                            {% elif child.status == 'invited' %}
+                            <button class="btn btn-sm btn-warning" onclick="revokeLiveInvite({{ card.id }}, '{{ child.email }}')">撤回邀请</button>
+                            {% else %}
+                            <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}', '{{ child.user_id or '' }}')">踢出保留</button>
+                            {% endif %}
                         </td>
                     </tr>
                     {% else %}
-                    <tr><td colspan="6" class="text-muted">这个 Team 还没有入库的在席子号</td></tr>
+                    <tr><td colspan="7" class="text-muted">这个 Team 当前没有可显示的成员</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -219,11 +233,24 @@ async function handleRotate(event) {
     return false;
 }
 
-async function kickChild(teamId, email) {
-    if (!confirm(`踢出 ${email}？子号会留在 standby，不会删除。`)) return;
+async function kickChild(teamId, email, userId = '') {
+    if (!confirm(`踢出 ${email}？本地已入库的子号会留在 standby，未入库成员只从 Team 里移除。`)) return;
+    try {
+        const payload = { team_id: teamId, email };
+        if (userId) payload.user_id = userId;
+        const result = await postJSON('/admin/seats/kick', payload);
+        showToast(result.message || '已踢出', 'success');
+        setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function revokeLiveInvite(teamId, email) {
+    if (!confirm(`撤回对 ${email} 的邀请？`)) return;
     try {
         const result = await postJSON('/admin/seats/kick', { team_id: teamId, email });
-        showToast(result.message || '已踢出', 'success');
+        showToast(result.message || '已撤回', 'success');
         setTimeout(() => location.reload(), 800);
     } catch (error) {
         showToast(error.message, 'error');
