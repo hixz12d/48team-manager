@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["seats"])
 
 
-async def attach_live_members(db: AsyncSession, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+async def attach_live_members(
+    db: AsyncSession,
+    cards: List[Dict[str, Any]],
+    status_index: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    status_index = status_index or {}
     enriched: List[Dict[str, Any]] = []
     for card in cards:
         item = dict(card)
@@ -35,6 +40,7 @@ async def attach_live_members(db: AsyncSession, cards: List[Dict[str, Any]]) -> 
             for member in live.get("members") or []:
                 email = str(member.get("email") or "").strip().lower()
                 local = local_by_email.get(email) or {}
+                remote = status_index.get(email) or {}
                 live_members.append({
                     "email": email or member.get("email"),
                     "user_id": member.get("user_id"),
@@ -43,7 +49,10 @@ async def attach_live_members(db: AsyncSession, cards: List[Dict[str, Any]]) -> 
                     "local_status": local.get("status") or "未入库",
                     "joined_at": member.get("added_at") or local.get("joined_at"),
                     "remaining_days": local.get("remaining_days"),
-                    "sub2api_account_id": local.get("sub2api_account_id"),
+                    "quota_label": remote.get("quota_label") or "",
+                    "schedule_label": remote.get("schedule_label") or "",
+                    "tone": remote.get("tone") or "muted",
+                    "sub2api_account_id": remote.get("id") or local.get("sub2api_account_id"),
                     "in_pool": bool(local),
                 })
             item["live_error"] = None
@@ -103,10 +112,13 @@ async def seats_page(
 
     context = await build_admin_base_context(request, db, current_user, "seats")
     cards = await child_account_service.dashboard_cards(db)
+    sub2api_status = await sub2api_service.dashboard_status(db)
+    status_index = sub2api_service.index_status_by_email(sub2api_status.get("boxes") or [])
     context.update({
-        "cards": await attach_live_members(db, cards),
+        "cards": await attach_live_members(db, cards, status_index),
         "children": [child_account_service.serialize(item) for item in await child_account_service.list_accounts(db)],
         "stats": await child_account_service.stats(db),
+        "sub2api_status": sub2api_status,
     })
     return templates.TemplateResponse(request, "admin/seats/index.html", context)
 
@@ -120,20 +132,27 @@ async def seats_list(
     current_user: dict = Depends(require_admin),
 ):
     children = await child_account_service.list_accounts(db, status=status, team_id=team_id, search=search)
+    sub2api_status = await sub2api_service.dashboard_status(db)
     return {
         "success": True,
         "children": [child_account_service.serialize(item) for item in children],
         "stats": await child_account_service.stats(db),
-        "cards": await attach_live_members(db, await child_account_service.dashboard_cards(db)),
+        "cards": await attach_live_members(
+            db,
+            await child_account_service.dashboard_cards(db),
+            sub2api_service.index_status_by_email(sub2api_status.get("boxes") or []),
+        ),
+        "sub2api_status": sub2api_status,
     }
 
 
 @router.get("/seats/sub2api-status")
 async def seats_sub2api_status(
+    force: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin),
 ):
-    status = await sub2api_service.dashboard_status(db)
+    status = await sub2api_service.dashboard_status(db, force=force)
     return {"success": True, **status}
 
 

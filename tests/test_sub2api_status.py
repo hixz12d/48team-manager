@@ -59,6 +59,36 @@ class Sub2ApiStatusTests(unittest.TestCase):
         self.assertEqual(boxes[1]["accounts"][0]["schedule"], "429")
         self.assertEqual(boxes[2]["accounts"][0]["short_name"], "母号")
 
+    def test_keeps_email_named_accounts_without_team_prefix(self):
+        account = {
+            "id": 9,
+            "name": "xiaozhudf2026.28@gmail.com",
+            "status": "active",
+            "schedulable": True,
+            "credentials": {"email": "xiaozhudf2026.28@gmail.com"},
+            "extra": {"codex_7d_used_percent": 50},
+        }
+        self.assertTrue(self.service._is_relevant_account(account))
+        boxes = self.service.group_accounts([account])
+        self.assertEqual(boxes[0]["title"], ".2026.28")
+        self.assertEqual(boxes[0]["accounts"][0]["short_name"], "母号")
+
+    def test_indexes_status_by_email(self):
+        boxes = self.service.group_accounts([
+            {
+                "id": 12,
+                "name": "Team 2026.28 子号 3",
+                "status": "error",
+                "error_message": "Token revoked (401)",
+                "credentials": {"email": "phoebes-likely-69@icloud.com"},
+                "extra": {"codex_7d_used_percent": 89},
+            }
+        ])
+        index = self.service.index_status_by_email(boxes)
+        row = index["phoebes-likely-69@icloud.com"]
+        self.assertEqual(row["quota_label"], "7日 89%")
+        self.assertEqual(row["schedule"], "401")
+
 
 if __name__ == "__main__":
     unittest.main()

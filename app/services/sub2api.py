@@ -227,6 +227,23 @@ class Sub2ApiService:
             "tone": schedule["tone"],
         }
 
+    def _is_relevant_account(self, account: Dict[str, Any]) -> bool:
+        name = str(account.get("name") or "")
+        email = self._account_email(account)
+        blob = f"{name} {email}".lower()
+        if "team" in blob or "pedro" in blob:
+            return True
+        return bool(_EMAIL_FAMILY_RE.search(name) or _EMAIL_FAMILY_RE.search(email))
+
+    def index_status_by_email(self, boxes: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        index: Dict[str, Dict[str, Any]] = {}
+        for box in boxes:
+            for account in box.get("accounts") or []:
+                email = str(account.get("email") or "").strip().lower()
+                if email:
+                    index[email] = account
+        return index
+
     def group_accounts(self, accounts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for account in accounts:
@@ -315,17 +332,14 @@ class Sub2ApiService:
                     if total is not None and len(seen) >= int(total):
                         break
                     page += 1
-        return [
-            item for item in seen.values()
-            if "team" in str(item.get("name") or "").lower()
-        ]
+        return [item for item in seen.values() if self._is_relevant_account(item)]
 
-    async def dashboard_status(self, db_session: AsyncSession) -> Dict[str, Any]:
+    async def dashboard_status(self, db_session: AsyncSession, *, force: bool = False) -> Dict[str, Any]:
         cfg = await self._config(db_session)
         cache_key = f"{cfg['base_url']}|{cfg['api_key']}|{cfg['email']}|{','.join(str(i) for i in cfg['group_ids'])}"
         cached = _STATUS_CACHE.get(cache_key)
         now = time.monotonic()
-        if cached and now - cached[0] < _STATUS_CACHE_TTL:
+        if not force and cached and now - cached[0] < _STATUS_CACHE_TTL:
             return cached[1]
         try:
             accounts = await self.list_status_accounts(db_session)

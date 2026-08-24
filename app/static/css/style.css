@@ -6765,3 +6765,80 @@ body.style-classic .btn {
     background: color-mix(in srgb, var(--bg-main) 70%, var(--border-base) 30%);
     color: var(--text-muted);
 }
+
+.seat-card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.seat-card {
+    margin-bottom: 0;
+    padding: 1rem 1.1rem 0.85rem;
+}
+
+.seat-card .section-header {
+    margin-bottom: 0.35rem;
+}
+
+.seat-card .section-header h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+
+.seat-card-meta {
+    margin: 0 0 0.7rem;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.seat-table td:first-child {
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.seat-table th:last-child,
+.seat-table td:last-child {
+    text-align: right;
+    width: 4.8rem;
+}
+
+.seat-tools summary {
+    cursor: pointer;
+    font-weight: 700;
+    list-style: none;
+}
+
+.seat-tools summary::-webkit-details-marker {
+    display: none;
+}
+
+.seat-tools[open] summary {
+    margin-bottom: 1rem;
+}
+
+.seat-tools-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+}
+
+.seat-tools-proxy {
+    margin-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+@media (max-width: 1100px) {
+    .seat-card-grid,
+    .seat-tools-grid {
+        grid-template-columns: 1fr;
+    }
+}

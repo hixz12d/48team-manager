@@ -3,6 +3,7 @@
 {% block title %}子号池 - 48 Team Manager{% endblock %}
 
 {% block content %}
+{% set sub2api_status = sub2api_status or {} %}
 <div class="workspace-page">
     <div class="page-header">
         <div class="page-header-copy">
@@ -10,7 +11,7 @@
                 <i data-lucide="users"></i>
                 <span>Seat Pool</span>
             </div>
-            <h2>{{ cards|length }} 个 Team 的子号池</h2>
+            <h2>{{ cards|length }} 个 Team</h2>
             <div class="page-header-meta">
                 <span class="page-meta-pill">在席 {{ stats.active }}</span>
                 <span class="page-meta-pill">standby {{ stats.standby }}</span>
@@ -21,138 +22,158 @@
 
     <div class="content-section">
         <div class="section-header">
-            <h3>Sub2API 状态</h3>
+            <h3>Sub2API</h3>
             <button class="btn btn-secondary" type="button" onclick="loadSub2apiStatus(true)">刷新</button>
         </div>
-        <p class="form-help">按主 Team 分框，只看账号名、7 日额度和 401/429。读的是 Sub2API 现成状态，不改那边任何东西。</p>
-        <div id="sub2apiStatus" class="sub2api-status">加载中…</div>
-    </div>
-
-    <div class="content-section">
-        <div class="section-header"><h3>代理出口检测</h3></div>
-        <p class="form-help">批量测已绑定的母号 / 子号 ISP：先看端口通不通，再看出口 IP、国家、城市、ISP。如果出口和 VPS 本机一样，说明代理没生效。</p>
-        <button class="btn btn-secondary" type="button" onclick="checkAllProxies()">检测全部已绑定代理</button>
-        <pre id="proxyBatchResult" class="form-help" style="white-space:pre-wrap;margin-top:12px;"></pre>
-    </div>
-
-    <div class="content-section">
-        <div class="section-header"><h3>今天的 1 踢 1 拉</h3></div>
-        <form id="rotateForm" class="settings-form" onsubmit="return handleRotate(event)">
-            <div class="form-group">
-                <label>Team</label>
-                <select id="rotateTeamId" class="form-control" required>
-                    {% for card in cards %}
-                    <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（{{ card.current_members }}/{{ card.max_members }}，到期 {{ card.due_children|length }}）</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="form-group">
-                <label>补位邮箱（可空，默认复用 standby）</label>
-                <input id="rotateEmail" class="form-control" placeholder="afraid-16.scepter@icloud.com">
-            </div>
-            <div class="form-group">
-                <label>接码</label>
-                <input id="rotatePhone" class="form-control" placeholder="+1xxxxxxxxxx----https://api668.com/sms/by_key?key=...">
-            </div>
-            <div class="form-group">
-                <label>子号 ISP（可空，默认跟母号）</label>
-                <input id="rotateProxy" class="form-control" placeholder="socks5h://user:pass@host:port">
-                <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('rotateProxy')">检测这条代理</button>
-            </div>
-            <button class="btn btn-primary" type="submit">先踢到期号，再拉/复用</button>
-        </form>
-    </div>
-
-    <div class="content-section">
-        <div class="section-header"><h3>拉一个邮箱进 Team</h3></div>
-        <form id="onboardForm" class="settings-form" onsubmit="return handleOnboard(event)">
-            <div class="form-group">
-                <label>Team</label>
-                <select id="onboardTeamId" class="form-control" required>
-                    {% for card in cards %}
-                    <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（空位 {{ card.available_seats }}）</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="form-group">
-                <label>邮箱</label>
-                <input id="onboardEmail" class="form-control" required placeholder="afraid-16.scepter@icloud.com">
-            </div>
-            <div class="form-group">
-                <label>接码</label>
-                <input id="onboardPhone" class="form-control" placeholder="+1xxxxxxxxxx----https://api668.com/sms/by_key?key=...">
-            </div>
-            <div class="form-group">
-                <label>子号 ISP</label>
-                <input id="onboardProxy" class="form-control" placeholder="不填则用该母号 ISP">
-                <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('onboardProxy')">检测这条代理</button>
-            </div>
-            <button class="btn btn-primary" type="submit">邀请并授权</button>
-        </form>
-    </div>
-
-    {% for card in cards %}
-    <div class="content-section">
-        <div class="section-header">
-            <h3>{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}</h3>
-        </div>
-        <p class="text-muted">席位 {{ card.current_members }}/{{ card.max_members }} · 周期 {{ card.seat_cycle_days }} 天 · 代理 {{ card.proxy or '未绑定' }}</p>
-        {% if card.due_children %}
-        <p><strong>到期待踢：</strong>
-            {% for child in card.due_children %}
-            <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}')">踢出 {{ child.email }}</button>
+        <div id="sub2apiStatus" class="sub2api-status">
+            {% if not sub2api_status.configured %}
+            <p class="form-help">还没配 Sub2API</p>
+            {% elif not sub2api_status.ok %}
+            <p class="form-help">读不到 Sub2API：{{ sub2api_status.error or '未知错误' }}</p>
+            {% elif not sub2api_status.boxes %}
+            <p class="form-help">没有匹配到 Team 账号</p>
+            {% else %}
+            {% for group in sub2api_status.boxes %}
+            <article class="sub2api-box tone-{{ group.tone or 'ok' }}">
+                <header>{{ group.title }}</header>
+                {% for item in group.accounts %}
+                <div class="sub2api-row">
+                    <span class="sub2api-name" title="{{ item.name or item.email or '' }}">{{ item.short_name or item.name }}</span>
+                    <span class="sub2api-quota">{{ item.quota_label or '额度 -' }}</span>
+                    <span class="sub2api-chip tone-{{ item.tone or 'muted' }}">{{ item.schedule_label or '-' }}</span>
+                </div>
+                {% endfor %}
+            </article>
             {% endfor %}
-        </p>
-        {% endif %}
-        {% if card.live_error %}
-        <p class="text-muted">实时成员读取失败：{{ card.live_error }}。下方仍显示本地已入库子号。</p>
-        {% else %}
-        <p class="form-help">下面是当前 Team 里真正在席 / 邀请中的邮箱，不仅限于本项目子号池。</p>
-        {% endif %}
-        <div class="table-container">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>邮箱</th>
-                        <th>实时状态</th>
-                        <th>本地库</th>
-                        <th>入组</th>
-                        <th>剩余</th>
-                        <th>Sub2API</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% set seat_rows = card.live_members or card.active_children %}
-                    {% for child in seat_rows %}
-                    <tr>
-                        <td>{{ child.email }}</td>
-                        <td>{{ child.status or child.local_status or '-' }}</td>
-                        <td>{{ child.local_status if child.local_status is defined else (child.status or '-') }}</td>
-                        <td>{{ child.joined_at or '-' }}</td>
-                        <td>{{ child.remaining_days if child.remaining_days is not none else '-' }}</td>
-                        <td>{{ child.sub2api_account_id or '-' }}</td>
-                        <td>
-                            {% if child.role == 'account-owner' %}
-                            <span class="text-muted">所有者</span>
-                            {% elif child.status == 'invited' %}
-                            <button class="btn btn-sm btn-warning" onclick="revokeLiveInvite({{ card.id }}, '{{ child.email }}')">撤回邀请</button>
-                            {% else %}
-                            <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}', '{{ child.user_id or '' }}')">踢出保留</button>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="7" class="text-muted">这个 Team 当前没有可显示的成员</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            {% endif %}
         </div>
     </div>
-    {% endfor %}
 
+    <div class="seat-card-grid">
+        {% for card in cards %}
+        <section class="content-section seat-card">
+            <div class="section-header">
+                <h3>{% if card.team_name %}{{ card.team_name }}{% else %}{{ card.email }}{% endif %}</h3>
+                <span class="text-muted">{{ card.current_members }}/{{ card.max_members }}</span>
+            </div>
+            <p class="seat-card-meta">{{ card.email }}</p>
+            {% if card.due_children %}
+            <p>
+                {% for child in card.due_children %}
+                <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}')">踢出 {{ child.email }}</button>
+                {% endfor %}
+            </p>
+            {% endif %}
+            {% if card.live_error %}
+            <p class="text-muted">{{ card.live_error }}</p>
+            {% endif %}
+            <div class="table-container">
+                <table class="data-table seat-table">
+                    <thead>
+                        <tr>
+                            <th>邮箱</th>
+                            <th>额度</th>
+                            <th>状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% set seat_rows = card.live_members or card.active_children %}
+                        {% for child in seat_rows %}
+                        <tr>
+                            <td title="{{ child.email }}">{{ child.email }}</td>
+                            <td>{{ child.quota_label or '-' }}</td>
+                            <td>
+                                {% if child.schedule_label %}
+                                <span class="sub2api-chip tone-{{ child.tone or 'muted' }}">{{ child.schedule_label }}</span>
+                                {% else %}
+                                -
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if child.role == 'account-owner' %}
+                                <span class="text-muted">所有者</span>
+                                {% elif child.status == 'invited' %}
+                                <button class="btn btn-sm btn-warning" onclick="revokeLiveInvite({{ card.id }}, '{{ child.email }}')">撤回</button>
+                                {% else %}
+                                <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}', '{{ child.user_id or '' }}')">踢出</button>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="4" class="text-muted">没有成员</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endfor %}
+    </div>
+
+    <details class="content-section seat-tools">
+        <summary>拉人 / 轮转 / 测代理</summary>
+        <div class="seat-tools-grid">
+            <form id="rotateForm" class="settings-form" onsubmit="return handleRotate(event)">
+                <h4>1 踢 1 拉</h4>
+                <div class="form-group">
+                    <label>Team</label>
+                    <select id="rotateTeamId" class="form-control" required>
+                        {% for card in cards %}
+                        <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（{{ card.current_members }}/{{ card.max_members }}）</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>补位邮箱</label>
+                    <input id="rotateEmail" class="form-control" placeholder="可空，默认 standby">
+                </div>
+                <div class="form-group">
+                    <label>接码</label>
+                    <input id="rotatePhone" class="form-control" placeholder="+1xxxx----https://...">
+                </div>
+                <div class="form-group">
+                    <label>子号 ISP</label>
+                    <input id="rotateProxy" class="form-control" placeholder="可空，默认跟母号">
+                </div>
+                <button class="btn btn-primary" type="submit">先踢到期号，再拉/复用</button>
+            </form>
+
+            <form id="onboardForm" class="settings-form" onsubmit="return handleOnboard(event)">
+                <h4>拉进 Team</h4>
+                <div class="form-group">
+                    <label>Team</label>
+                    <select id="onboardTeamId" class="form-control" required>
+                        {% for card in cards %}
+                        <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（空位 {{ card.available_seats }}）</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>邮箱</label>
+                    <input id="onboardEmail" class="form-control" required placeholder="afraid-16.scepter@icloud.com">
+                </div>
+                <div class="form-group">
+                    <label>接码</label>
+                    <input id="onboardPhone" class="form-control" placeholder="+1xxxx----https://...">
+                </div>
+                <div class="form-group">
+                    <label>子号 ISP</label>
+                    <input id="onboardProxy" class="form-control" placeholder="不填则用该母号 ISP">
+                </div>
+                <button class="btn btn-primary" type="submit">邀请并授权</button>
+            </form>
+        </div>
+        <div class="seat-tools-proxy">
+            <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('rotateProxy')">测轮转代理</button>
+            <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('onboardProxy')">测拉人代理</button>
+            <button class="btn btn-secondary" type="button" onclick="checkAllProxies()">检测全部已绑定代理</button>
+            <pre id="proxyBatchResult" class="form-help" style="white-space:pre-wrap;margin-top:12px;"></pre>
+        </div>
+    </details>
+
+    {% if children %}
     <div class="content-section">
-        <div class="section-header"><h3>全部子号资产</h3></div>
+        <div class="section-header"><h3>本地子号库</h3></div>
         <div class="table-container">
             <table class="data-table">
                 <thead>
@@ -160,8 +181,6 @@
                         <th>邮箱</th>
                         <th>状态</th>
                         <th>当前 Team</th>
-                        <th>代理</th>
-                        <th>Sub2API</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -171,8 +190,6 @@
                         <td>{{ child.email }}</td>
                         <td>{{ child.status }}</td>
                         <td>{{ child.current_team_id or '-' }}</td>
-                        <td>{{ child.proxy or '-' }}</td>
-                        <td>{{ child.sub2api_account_id or '-' }}</td>
                         <td>
                             {% if child.status in ['unused', 'standby', 'disabled'] %}
                             <button class="btn btn-sm btn-danger" onclick="deleteChild({{ child.id }}, '{{ child.email }}')">删除</button>
@@ -181,13 +198,12 @@
                             {% endif %}
                         </td>
                     </tr>
-                    {% else %}
-                    <tr><td colspan="6" class="text-muted">还没有子号</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
     </div>
+    {% endif %}
 </div>
 {% endblock %}
 
@@ -321,61 +337,58 @@ async function checkAllProxies() {
     }
 }
 
-
-function escapeHtml(value) {
+function escapeSeatHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
         '&': '&amp;',
         '<': '&lt;',
         '>': '&gt;',
         '"': '&quot;',
         "'": '&#39;'
-    }[ch]);
+    }[ch]));
 }
 
 function renderSub2apiStatus(data) {
     const box = document.getElementById('sub2apiStatus');
     if (!box) return;
     if (!data.configured) {
-        box.innerHTML = '<p class="form-help">还没配 Sub2API。去系统中心填地址，再加上 Admin Key 或后台账号。</p>';
+        box.innerHTML = '<p class="form-help">还没配 Sub2API</p>';
         return;
     }
     if (!data.ok) {
-        box.innerHTML = `<p class="form-help">读不到 Sub2API：${escapeHtml(data.error || '未知错误')}</p>`;
+        box.innerHTML = '<p class="form-help">读不到 Sub2API：' + escapeSeatHtml(data.error || '未知错误') + '</p>';
         return;
     }
     const boxes = data.boxes || [];
     if (!boxes.length) {
-        box.innerHTML = '<p class="form-help">没有匹配到 Team 账号。</p>';
+        box.innerHTML = '<p class="form-help">没有匹配到 Team 账号</p>';
         return;
     }
     box.innerHTML = boxes.map((group) => {
-        const rows = (group.accounts || []).map((item) => `
-            <div class="sub2api-row">
-                <span class="sub2api-name" title="${escapeHtml(item.name || item.email || '')}">${escapeHtml(item.short_name || item.name)}</span>
-                <span class="sub2api-quota">${escapeHtml(item.quota_label || '额度 -')}</span>
-                <span class="sub2api-chip tone-${escapeHtml(item.tone || 'muted')}">${escapeHtml(item.schedule_label || '-')}</span>
-            </div>
-        `).join('');
-        return `<article class="sub2api-box tone-${escapeHtml(group.tone || 'ok')}"><header>${escapeHtml(group.title)}</header>${rows}</article>`;
+        const rows = (group.accounts || []).map((item) => (
+            '<div class="sub2api-row">' +
+                '<span class="sub2api-name" title="' + escapeSeatHtml(item.name || item.email || '') + '">' + escapeSeatHtml(item.short_name || item.name) + '</span>' +
+                '<span class="sub2api-quota">' + escapeSeatHtml(item.quota_label || '额度 -') + '</span>' +
+                '<span class="sub2api-chip tone-' + escapeSeatHtml(item.tone || 'muted') + '">' + escapeSeatHtml(item.schedule_label || '-') + '</span>' +
+            '</div>'
+        )).join('');
+        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header>' + escapeSeatHtml(group.title) + '</header>' + rows + '</article>';
     }).join('');
 }
 
-async function loadSub2apiStatus() {
+async function loadSub2apiStatus(force) {
     const box = document.getElementById('sub2apiStatus');
     if (!box) return;
     box.textContent = '加载中…';
     try {
-        const response = await fetch('/admin/seats/sub2api-status');
+        const response = await fetch('/admin/seats/sub2api-status' + (force ? '?force=1' : ''));
         const data = await response.json();
         if (!response.ok || data.success === false) {
             throw new Error(data.error || '读取失败');
         }
         renderSub2apiStatus(data);
     } catch (error) {
-        box.innerHTML = `<p class="form-help">${escapeHtml(error.message)}</p>`;
+        box.innerHTML = '<p class="form-help">' + escapeSeatHtml(error.message) + '</p>';
     }
 }
-
-loadSub2apiStatus();
 </script>
 {% endblock %}
