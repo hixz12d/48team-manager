@@ -115,7 +115,7 @@ class SmsClient:
 sms_client = SmsClient()
 
 
-def chrome_proxy_server(proxy: Optional[str]) -> str:
+def chrome_proxy_config(proxy: Optional[str]) -> dict[str, str]:
     normalized = require_proxy(proxy, "浏览器")
     parsed = urlparse(normalized)
     host = parsed.hostname or ""
@@ -123,4 +123,10 @@ def chrome_proxy_server(proxy: Optional[str]) -> str:
     if not host or not port:
         raise ValueError("浏览器代理缺少 host/port")
     scheme = "socks5" if parsed.scheme.startswith("socks5") else parsed.scheme
-    return f"{scheme}://{host}:{port}"
+    config = {"server": f"{scheme}://{host}:{port}"}
+    if parsed.username is not None:
+        from urllib.parse import unquote
+        config["username"] = unquote(parsed.username)
+        if parsed.password is not None:
+            config["password"] = unquote(parsed.password)
+    return config

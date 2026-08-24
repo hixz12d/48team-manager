@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # 时区配置
     timezone: str = "Asia/Shanghai"
 
+    # Docker / VPS 上没有桌面，浏览器拉人走 headless Chromium
+    browser_headless: bool = False
+    browser_channel: str = "chrome"
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",

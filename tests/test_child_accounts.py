@@ -7,7 +7,7 @@ from app.database import Base
 from app.models import ChildAccount, Team
 from app.services.child_accounts import child_account_service
 from app.services.mail_otp import parse_mail_line
-from app.services.sms import parse_phone_line, require_proxy
+from app.services.sms import chrome_proxy_config, parse_phone_line, require_proxy
 from app.utils.proxy import normalize_proxy_url
 from app.utils.time_utils import get_now
 
@@ -72,6 +72,17 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(normalize_proxy_url("127.0.0.1:1080:user:pass"), "socks5h://user:pass@127.0.0.1:1080")
         with self.assertRaises(ValueError):
             require_proxy("", "接码")
+        self.assertEqual(
+            chrome_proxy_config("socks5h://user:pass@127.0.0.1:1080"),
+            {"server": "socks5://127.0.0.1:1080", "username": "user", "password": "pass"},
+        )
+
+    def test_proxy_check_rejects_empty(self):
+        import asyncio
+        from app.services.proxy_check import check_proxy
+        result = asyncio.run(check_proxy(""))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["summary"], "未填写代理")
 
 
 if __name__ == "__main__":

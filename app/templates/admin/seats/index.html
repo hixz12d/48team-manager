@@ -20,6 +20,13 @@
     </div>
 
     <div class="content-section">
+        <div class="section-header"><h3>代理出口检测</h3></div>
+        <p class="form-help">批量测已绑定的母号 / 子号 ISP：先看端口通不通，再看出口 IP、国家、城市、ISP。如果出口和 VPS 本机一样，说明代理没生效。</p>
+        <button class="btn btn-secondary" type="button" onclick="checkAllProxies()">检测全部已绑定代理</button>
+        <pre id="proxyBatchResult" class="form-help" style="white-space:pre-wrap;margin-top:12px;"></pre>
+    </div>
+
+    <div class="content-section">
         <div class="section-header"><h3>今天的 1 踢 1 拉</h3></div>
         <form id="rotateForm" class="settings-form" onsubmit="return handleRotate(event)">
             <div class="form-group">
@@ -41,6 +48,7 @@
             <div class="form-group">
                 <label>子号 ISP（可空，默认跟母号）</label>
                 <input id="rotateProxy" class="form-control" placeholder="socks5h://user:pass@host:port">
+                <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('rotateProxy')">检测这条代理</button>
             </div>
             <button class="btn btn-primary" type="submit">先踢到期号，再拉/复用</button>
         </form>
@@ -68,6 +76,7 @@
             <div class="form-group">
                 <label>子号 ISP</label>
                 <input id="onboardProxy" class="form-control" placeholder="不填则用该母号 ISP">
+                <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('onboardProxy')">检测这条代理</button>
             </div>
             <button class="btn btn-primary" type="submit">邀请并授权</button>
         </form>
@@ -228,6 +237,50 @@ async function deleteChild(childId, email) {
         showToast(result.message || '已删除', 'success');
         setTimeout(() => location.reload(), 800);
     } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function checkNamedProxy(inputId) {
+    const proxy = document.getElementById(inputId).value.trim();
+    if (!proxy) {
+        showToast('先填写代理，或让它走母号 ISP', 'error');
+        return;
+    }
+    try {
+        showToast('正在检测出口...', 'info');
+        const response = await fetch('/admin/proxy/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ proxy })
+        });
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.error || '检测失败');
+        }
+        showToast(result.ok ? (result.summary || '代理可用') : (result.error || result.summary || '代理不可用'), result.ok ? 'success' : 'error');
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function checkAllProxies() {
+    const box = document.getElementById('proxyBatchResult');
+    box.textContent = '正在检测全部已绑定代理...';
+    try {
+        const response = await fetch('/admin/proxy/check-all', { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || '检测失败');
+        }
+        const lines = (data.results || []).map((item) => {
+            const status = item.ok ? 'OK' : 'FAIL';
+            return `[${status}] ${item.kind} ${item.label}: ${item.summary || item.error || ''}`;
+        });
+        box.textContent = lines.join('\n') || '没有已绑定代理';
+        showToast(`检测完成，共 ${lines.length} 条`, 'success');
+    } catch (error) {
+        box.textContent = error.message;
         showToast(error.message, 'error');
     }
 }

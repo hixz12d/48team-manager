@@ -56,6 +56,7 @@ nul
 
 # Environment variables
 .env
+VPS.local.md
 !.env.example
 接口.md
 任务.md

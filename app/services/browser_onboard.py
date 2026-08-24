@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from app.config import settings
 from app.services.mail_otp import mail_otp_client
-from app.services.sms import chrome_proxy_server, require_proxy, sms_client
+from app.services.sms import chrome_proxy_config, require_proxy, sms_client
 
 logger = logging.getLogger(__name__)
 
@@ -94,16 +94,17 @@ def run_browser_onboard(
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode}
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            channel="chrome",
-            headless=False,
-            proxy={"server": chrome_proxy_server(proxy)},
-            locale="en-US",
-            viewport={"width": 1280, "height": 900},
-            args=["--disable-features=Translate"],
-        )
+        launch_kwargs = {
+            "user_data_dir": str(profile_dir),
+            "headless": bool(settings.browser_headless),
+            "proxy": chrome_proxy_config(proxy),
+            "locale": "en-US",
+            "viewport": {"width": 1280, "height": 900},
+            "args": ["--disable-features=Translate", "--disable-dev-shm-usage"],
+        }
+        if settings.browser_channel:
+            launch_kwargs["channel"] = settings.browser_channel
+        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
         page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
         try:

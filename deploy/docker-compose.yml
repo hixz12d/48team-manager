@@ -1,11 +1,12 @@
-# 独立项目。禁止和 /opt/sub2api 的 compose 混用。
-# 启动：在仓库根目录执行 docker compose -p team48 up -d --build
+# 备用文件。推荐在仓库根目录用根目录 docker-compose.yml。
+# 如果一定要用本文件：cd 到仓库根目录后执行
+# docker compose -p team48 -f deploy/docker-compose.yml up -d --build
 name: team48
 
 services:
   team48:
     build:
-      context: .
+      context: ..
       dockerfile: deploy/Dockerfile
     image: team48-manager:local
     container_name: team48-manager
@@ -13,7 +14,7 @@ services:
     ports:
       - "127.0.0.1:8018:8008"
     env_file:
-      - .env
+      - ../.env
     environment:
       APP_HOST: "0.0.0.0"
       APP_PORT: "8008"
@@ -22,7 +23,7 @@ services:
       BROWSER_CHANNEL: ""
       TZ: "Asia/Shanghai"
     volumes:
-      - ./data:/app/data
+      - ../data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

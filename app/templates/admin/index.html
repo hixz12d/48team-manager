@@ -1268,6 +1268,8 @@
                 <div class="form-group">
                     <label>母号静态 ISP</label>
                     <input type="text" id="edit-team-proxy" name="proxy" class="form-control" placeholder="socks5h://user:pass@host:port">
+                    <button type="button" class="btn btn-secondary" style="margin-top:8px;" onclick="checkTeamProxy()">检测这条代理</button>
+                    <p class="form-help" id="edit-team-proxy-result">保存前可先测出口 IP / 国家 / ISP。</p>
                 </div>
                 <div class="form-group">
                     <label>轮转天数</label>
@@ -1837,7 +1839,7 @@
             account_id: document.getElementById('edit-team-account-id').value,
             max_members: parseInt(document.getElementById('edit-team-max-members').value),
             team_name: document.getElementById('edit-team-name').value,
-            status: document.getElementById('edit-team-status').value
+            status: document.getElementById('edit-team-status').value,
             proxy: document.getElementById('edit-team-proxy').value,
             seat_cycle_days: parseInt(document.getElementById('edit-team-cycle-days').value || '7', 10),
         };
@@ -1861,6 +1863,29 @@
                 showToast(result.error || '更新失败', 'error');
             }
         } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+
+    async function checkTeamProxy() {
+        const proxy = document.getElementById('edit-team-proxy').value.trim();
+        const hint = document.getElementById('edit-team-proxy-result');
+        if (!proxy) {
+            showToast('先填写母号静态 ISP', 'error');
+            return;
+        }
+        hint.textContent = '正在检测出口...';
+        try {
+            const response = await fetch('/admin/proxy/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ proxy })
+            });
+            const data = await response.json();
+            hint.textContent = data.summary || data.error || '检测完成';
+            showToast(data.ok ? (data.summary || '代理可用') : (data.error || '代理不可用'), data.ok ? 'success' : 'error');
+        } catch (error) {
+            hint.textContent = '检测失败';
             showToast('网络错误', 'error');
         }
     }

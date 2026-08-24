@@ -33,10 +33,27 @@ python -m uvicorn app.main:app --reload --port 8008
 
 ## 上机部署
 
-1. 每个母号在「编辑 Team」里填自己的静态 ISP
-2. 系统中心填 Sub2API 地址和 Admin API Key
+默认机器是速维云美西，关联写在 [VPS.md](VPS.md)。本项目只部署到 `/opt/team48`，**绝不进入 `/opt/sub2api`**。
+
+```bash
+cd /opt/team48
+docker compose -p team48 up -d --build --no-deps team48
+```
+
+本机回环访问：`http://127.0.0.1:8018`。端口不要占用 `8100` / `8101`。
+
+1. 每个母号在「编辑 Team」里填自己的静态 ISP，先点「检测这条代理」
+2. 系统中心填 Sub2API 地址，容器里用 `http://host.docker.internal:8101`
 3. 子号池里贴邮箱 / 接码，执行拉人或今天的轮转
 4. 删除子号是单独按钮，不会在踢人时发生
+
+## 代理检测
+
+保存前可测单条代理，子号池也可批量测已绑定 ISP。检测内容：
+
+- TCP 能不能连上代理端口
+- 走代理后的出口 IP / 国家 / 城市 / ISP（ip-api，失败再回落到 ipify + ipinfo）
+- 出口是否和 VPS 本机一样；一样就判定代理没生效
 
 ## 测试
 

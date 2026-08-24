@@ -51,6 +51,12 @@ class ChildUpdateRequest(BaseModel):
     cycle_days: Optional[int] = None
 
 
+class ProxyCheckRequest(BaseModel):
+    proxy: str = Field("", description="要检测的代理")
+    team_id: Optional[int] = None
+    child_id: Optional[int] = None
+
+
 @router.get("/seats", response_class=HTMLResponse)
 async def seats_page(
     request: Request,
@@ -197,3 +203,56 @@ async def seats_delete(
     )
     await db.commit()
     return {"success": True, "message": f"{child.email} 已从本地子号池删除"}
+
+
+@router.post("/proxy/check")
+async def proxy_check(
+    payload: ProxyCheckRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.proxy_check import check_proxy
+    from app.models import Team
+
+    proxy = (payload.proxy or "").strip()
+    if not proxy and payload.team_id:
+        team = await db.get(Team, payload.team_id)
+        proxy = (team.proxy if team else "") or ""
+    if not proxy and payload.child_id:
+        child = await child_account_service.get_by_id(db, payload.child_id)
+        proxy = (child.proxy if child else "") or ""
+    result = await check_proxy(proxy)
+    result["success"] = True
+    return result
+
+
+@router.post("/proxy/check-all")
+async def proxy_check_all(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from sqlalchemy import select
+
+    from app.models import Team
+    from app.services.proxy_check import check_many
+
+    teams = (await db.execute(select(Team).order_by(Team.id.asc()))).scalars().all()
+    children = await child_account_service.list_accounts(db)
+    items = []
+    for team in teams:
+        items.append({
+            "id": team.id,
+            "kind": "team",
+            "label": team.team_name or team.email,
+            "proxy": team.proxy or "",
+        })
+    for child in children:
+        if child.proxy:
+            items.append({
+                "id": child.id,
+                "kind": "child",
+                "label": child.email,
+                "proxy": child.proxy,
+            })
+    results = await check_many(items)
+    return {"success": True, "results": results}

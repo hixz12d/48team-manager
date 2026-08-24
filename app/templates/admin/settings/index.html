@@ -70,6 +70,8 @@
         </div>
 
         <button type="submit" class="btn btn-primary">保存代理配置</button>
+        <button type="button" class="btn btn-secondary" id="proxyCheckBtn">检测当前代理</button>
+        <p class="form-help" id="proxyCheckResult">走代理看出口 IP、国家、城市、ISP；如果和本机一样，说明代理没生效。</p>
     </form>
 </div>
 
@@ -547,6 +549,32 @@
             showToast('网络错误', 'error');
         }
     });
+
+    const proxyCheckBtn = document.getElementById('proxyCheckBtn');
+    if (proxyCheckBtn) {
+        proxyCheckBtn.addEventListener('click', async () => {
+            const proxy = document.getElementById('proxyUrl').value.trim();
+            const hint = document.getElementById('proxyCheckResult');
+            if (!proxy) {
+                showToast('先填写代理地址', 'error');
+                return;
+            }
+            hint.textContent = '正在检测出口...';
+            try {
+                const response = await fetch('/admin/proxy/check', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy })
+                });
+                const data = await response.json();
+                hint.textContent = data.summary || data.error || '检测完成';
+                showToast(data.ok ? (data.summary || '代理可用') : (data.error || '代理不可用'), data.ok ? 'success' : 'error');
+            } catch (error) {
+                hint.textContent = '检测失败';
+                showToast('网络错误', 'error');
+            }
+        });
+    }
 
     // 密码修改表单
     document.getElementById('passwordForm').addEventListener('submit', async (e) => {
