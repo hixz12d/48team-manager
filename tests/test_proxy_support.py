@@ -111,6 +111,18 @@ class ProxyHelperTests(unittest.TestCase):
             "socks5h://127.0.0.1:1080",
         )
 
+    def test_normalize_proxy_url_upgrades_socks5_to_socks5h(self):
+        self.assertEqual(
+            normalize_proxy_url("socks5://user:secret@127.0.0.1:1080"),
+            "socks5h://user:secret@127.0.0.1:1080",
+        )
+
+    def test_build_curl_cffi_proxies_uses_remote_dns_for_socks5(self):
+        self.assertEqual(
+            build_curl_cffi_proxies("socks5://127.0.0.1:1080")["all"],
+            "socks5h://127.0.0.1:1080",
+        )
+
     def test_normalize_proxy_url_rejects_invalid_scheme(self):
         with self.assertRaises(ValueError):
             normalize_proxy_url("ftp://127.0.0.1:21")
@@ -130,7 +142,7 @@ class ProxyHelperTests(unittest.TestCase):
     def test_mask_proxy_url_hides_credentials(self):
         self.assertEqual(
             mask_proxy_url("socks5://user:secret@127.0.0.1:1080"),
-            "socks5://***:***@127.0.0.1:1080",
+            "socks5h://***:***@127.0.0.1:1080",
         )
 
 

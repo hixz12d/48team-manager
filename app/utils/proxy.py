@@ -37,6 +37,11 @@ def normalize_proxy_url(proxy: Optional[str]) -> Optional[str]:
             "代理地址格式错误,应为 http://host:port, https://host:port, socks5://host:port 或 socks5h://host:port"
         )
 
+    # socks5 会在本机解析目标域名。VPS 解析到的 chatgpt.com 走住宅 ISP 时，
+    # Cloudflare 经常在 TLS 握手阶段直接 RST。socks5h 把 DNS 交给代理，才能通。
+    if parsed.scheme == "socks5":
+        value = urlunparse(parsed._replace(scheme="socks5h"))
+
     return value
 
 

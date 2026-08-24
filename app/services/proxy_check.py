@@ -22,6 +22,7 @@ IP_API_URL = f"http://ip-api.com/json/?fields={IP_API_FIELDS}"
 IPIFY_URL = "https://api.ipify.org?format=json"
 IPINFO_URL = "https://ipinfo.io/json"
 CHECK_TIMEOUT = 12.0
+CHATGPT_PROBE_URL = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
 
 
 def _empty_geo() -> Dict[str, Any]:
@@ -143,6 +144,53 @@ def _tcp_probe(host: str, port: int, timeout: float = 5.0) -> Dict[str, Any]:
         }
 
 
+def _probe_chatgpt(proxy: str) -> Dict[str, Any]:
+    from curl_cffi.requests import Session
+
+    from app.utils.proxy import build_curl_cffi_proxies
+
+    started = time.perf_counter()
+    try:
+        with Session(
+            impersonate="chrome136",
+            proxies=build_curl_cffi_proxies(proxy),
+            timeout=12,
+            verify=False,
+        ) as session:
+            response = session.get(
+                CHATGPT_PROBE_URL,
+                headers={"Accept": "*/*", "Referer": "https://chatgpt.com/"},
+            )
+            cf_mitigated = response.headers.get("cf-mitigated") or ""
+            content_type = response.headers.get("content-type") or ""
+            text = response.text or ""
+            looks_like_challenge = (
+                cf_mitigated == "challenge"
+                or "just a moment" in text.lower()
+                or (response.status_code == 403 and "text/html" in content_type)
+            )
+            # 未带 Token 时 401 JSON 也算通了 ChatGPT，说明 TLS/CF 没拦。
+            ok = (not looks_like_challenge) and (
+                response.status_code in {200, 401}
+                or (200 <= response.status_code < 500 and "application/json" in content_type)
+            )
+            return {
+                "ok": ok,
+                "status": response.status_code,
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "cf_mitigated": cf_mitigated,
+                "error": "" if ok else f"ChatGPT 返回 {response.status_code}",
+            }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "status": 0,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "cf_mitigated": "",
+            "error": str(exc),
+        }
+
+
 async def check_proxy(proxy: Optional[str], *, compare_direct: bool = True) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "ok": False,
@@ -153,6 +201,8 @@ async def check_proxy(proxy: Optional[str], *, compare_direct: bool = True) -> D
         "latency_ms": None,
         "tcp_ok": False,
         "tcp_latency_ms": None,
+        "chatgpt_ok": False,
+        "chatgpt_status": None,
         "egress": _empty_geo(),
         "direct": _empty_geo() if compare_direct else None,
         "same_as_host": False,
@@ -230,7 +280,16 @@ async def check_proxy(proxy: Optional[str], *, compare_direct: bool = True) -> D
         result["error"] = "走代理后的出口 IP 和 VPS 本机一样，这条代理没有真正改出口"
         result["summary"] = "代理未生效"
         return result
+    chatgpt = await asyncio.to_thread(_probe_chatgpt, normalized)
+    result["chatgpt_ok"] = bool(chatgpt.get("ok"))
+    result["chatgpt_status"] = chatgpt.get("status")
+    if not chatgpt.get("ok"):
+        result["ok"] = False
+        result["error"] = f"出口正常，但打不通 chatgpt.com: {chatgpt.get('error') or '未知错误'}"
+        result["summary"] = "代理出网正常，但 ChatGPT 不通"
+        return result
 
+    bits.append("ChatGPT 可通")
     result["summary"] = " · ".join(bits)
     return result
 
