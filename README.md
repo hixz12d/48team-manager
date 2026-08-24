@@ -1,10 +1,10 @@
 # 48 Team Manager
 
-自用 ChatGPT Team 控制台。从 [team-manage-refresh](https://github.com/loLollipop/team-manage-refresh) fork 后二开，给 4 个母号做「踢人不删、7 天再拉、输入邮箱自动注册接码、推 Sub2API」。
+自用 ChatGPT Team 控制台。从 [team-manage-refresh](https://github.com/loLollipop/team-manage-refresh) fork 后二开，给多个母号做「踢人不删、7 天再拉、输入邮箱自动注册接码、推 Sub2API」。
 
 兑换前台、质保售后和定时自动踢人不是主路径。日常只做三件事：
 
-1. 导入 4 个母号，每个绑自己的静态 ISP
+1. 导入母号，每个绑自己的静态 ISP
 2. 输入邮箱拉人，或把 standby 旧号再拉回来
 3. 手动执行「今天的 1 踢 1 拉」
 

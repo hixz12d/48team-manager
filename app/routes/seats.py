@@ -21,7 +21,7 @@ router = APIRouter(prefix="/admin", tags=["seats"])
 
 class OnboardRequest(BaseModel):
     team_id: int
-    email: str = Field(..., description="邮箱，或 email----pickup_url")
+    email: str = Field(..., description="邮箱，或 email----pickup_url；只填 iCloud 别名时走 Cloudflare 读码")
     phone: str = Field("", description="+1xxxx----https://api668.com/sms/by_key?key=...")
     proxy: str = Field("", description="子号静态 ISP，不填则用母号 ISP")
     password: str = ""

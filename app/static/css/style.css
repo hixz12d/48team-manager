@@ -65,7 +65,7 @@
 }
 
 body {
-    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
     background-color: var(--bg-main);
     color: var(--text-main);
     line-height: 1.5;
@@ -2264,7 +2264,7 @@ body.admin-theme {
     --radius-lg: 20px;
     background: var(--bg-main);
     color: var(--text-main);
-    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 body.admin-theme.theme-warm,
@@ -4420,7 +4420,7 @@ body.admin-theme {
         radial-gradient(circle at 1px 1px, rgba(26, 26, 26, 0.085) 1px, transparent 1px) 0 0 / 22px 22px,
         var(--ca-paper) !important;
     color: var(--ca-ink) !important;
-    font-family: 'Plus Jakarta Sans', 'Sora', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 body.admin-theme::before { display: none !important; }

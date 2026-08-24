@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 import logging
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -483,6 +484,10 @@ app.add_middleware(
     max_age=14 * 24 * 60 * 60,  # 14 天
     same_site="lax",
     https_only=settings.session_cookie_secure,
+)
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1024,
 )
 
 # 配置静态文件

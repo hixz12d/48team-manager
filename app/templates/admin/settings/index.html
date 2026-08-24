@@ -37,6 +37,7 @@
             <a href="#settings-warranty" class="settings-nav-pill settings-nav-link" data-target="settings-warranty">质保设置</a>
             <a href="#settings-team-import" class="settings-nav-pill settings-nav-link" data-target="settings-team-import">Team 导入</a>
             <a href="#settings-sub2api" class="settings-nav-pill settings-nav-link" data-target="settings-sub2api">Sub2API 推送</a>
+            <a href="#settings-cfmail" class="settings-nav-pill settings-nav-link" data-target="settings-cfmail">Cloudflare 邮箱</a>
         </div>
         <div class="settings-nav-group">
             <div class="settings-nav-group-title">账户与外观</div>
@@ -453,6 +454,27 @@
         <button type="submit" class="btn btn-primary">保存 Sub2API 配置</button>
     </form>
 </div>
+
+<div class="content-section settings-panel" id="settings-cfmail">
+    <div class="section-header">
+        <h3>Cloudflare 邮箱读码</h3>
+    </div>
+    <form id="cfMailForm" class="settings-form">
+        <div class="form-group">
+            <label for="cfMailBaseUrl">邮件 API 地址</label>
+            <input type="text" id="cfMailBaseUrl" class="form-control" value="{{ cf_mail_base_url or 'https://apimail.xiaozhudf2026.foo' }}" placeholder="https://apimail.xiaozhudf2026.foo">
+            <p class="form-help">兼容 icloud-hme 的 GET /admin/mails。子号只填 Hide My Email 别名，例如 afraid-16.scepter@icloud.com。</p>
+        </div>
+        <div class="form-group">
+            <label for="cfMailAddress">Forward To 收件地址</label>
+            <input type="text" id="cfMailAddress" class="form-control" value="{{ cf_mail_address or 'icloud@xiaozhudf2026.foo' }}" placeholder="icloud@xiaozhudf2026.foo">
+        </div>
+        <div class="form-group">
+            <label for="cfMailAdminPassword">管理员密钥</label>
+            <input type="password" id="cfMailAdminPassword" class="form-control" value="" placeholder="{{ '已保存，留空则沿用原密钥' if cf_mail_admin_password else 'x-admin-auth' }}" autocomplete="new-password">
+        </div>
+        <button type="submit" class="btn btn-primary">保存并测试连接</button>
+    </form>
 </div>
 {% endblock %}
 
@@ -1004,6 +1026,34 @@
                 const data = await response.json();
                 if (response.ok && data.success) {
                     showToast(data.message || 'Sub2API 配置已保存', 'success');
+                } else {
+                    showToast(data.error || '保存失败', 'error');
+                }
+            } catch (error) {
+                showToast('网络错误', 'error');
+            }
+        });
+    }
+    const cfMailForm = document.getElementById('cfMailForm');
+    if (cfMailForm) {
+        cfMailForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const response = await fetch('/admin/settings/cloudflare-mail', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        base_url: document.getElementById('cfMailBaseUrl').value.trim(),
+                        address: document.getElementById('cfMailAddress').value.trim(),
+                        admin_password: document.getElementById('cfMailAdminPassword').value
+                    })
+                });
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    if (data.base_url) document.getElementById('cfMailBaseUrl').value = data.base_url;
+                    if (data.address) document.getElementById('cfMailAddress').value = data.address;
+                    document.getElementById('cfMailAdminPassword').value = '';
+                    showToast(data.message || 'Cloudflare 邮箱配置已保存', 'success');
                 } else {
                     showToast(data.error || '保存失败', 'error');
                 }

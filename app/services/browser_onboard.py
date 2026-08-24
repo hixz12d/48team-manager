@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from app.config import settings
-from app.services.mail_otp import mail_otp_client
+from app.services.mail_otp import wait_for_mailbox_item
 from app.services.sms import chrome_proxy_config, require_proxy, sms_client
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,10 @@ def run_browser_onboard(
     proxy: str,
     start_url: str = "",
     mode: str = "register",
+    use_cloudflare: bool = False,
+    cf_base_url: str = "",
+    cf_address: str = "",
+    cf_admin_password: str = "",
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
     from playwright.sync_api import sync_playwright
@@ -124,9 +128,18 @@ def run_browser_onboard(
                 otp_el = _find_otp(page)
                 if otp_el:
                     code = ""
-                    if pickup_url:
+                    if pickup_url or use_cloudflare:
                         try:
-                            code = mail_otp_client.wait_for_code(pickup_url, proxy=proxy, email=email, timeout_sec=90)
+                            code = wait_for_mailbox_item(
+                                email=email,
+                                pickup_url=pickup_url,
+                                proxy=proxy,
+                                kind="code",
+                                timeout_sec=90,
+                                cf_base_url=cf_base_url if use_cloudflare else "",
+                                cf_address=cf_address if use_cloudflare else "",
+                                cf_admin_password=cf_admin_password if use_cloudflare else "",
+                            ) or ""
                         except Exception as exc:  # noqa: BLE001
                             result["error"] = f"email OTP failed: {exc}"
                     if not code:

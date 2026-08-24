@@ -1,4 +1,4 @@
-"""邮箱 OTP / 邀请链接轮询。支持 pickup URL 和 Graph 风格行。"""
+"""邮箱 OTP / 邀请链接轮询。支持 pickup URL 和 Cloudflare 自建邮箱。"""
 from __future__ import annotations
 
 import hashlib
@@ -47,7 +47,7 @@ def extract_invite_url(text: str) -> Optional[str]:
 def parse_mail_line(value: str) -> dict[str, str]:
     raw = str(value or "").strip()
     if not raw:
-        return {"email": "", "password": "", "pickup_url": "", "refresh_token": "", "client_id": ""}
+        return {"email": "", "password": "", "pickup_url": "", "refresh_token": "", "client_id": "", "use_cloudflare": False}
 
     parts = [part.strip() for part in re.split(r"----+|\|", raw) if part.strip()]
     email = parts[0] if parts else ""
@@ -71,6 +71,7 @@ def parse_mail_line(value: str) -> dict[str, str]:
         "refresh_token": refresh_token,
         "client_id": client_id,
         "raw": raw,
+        "use_cloudflare": not pickup_url and "@" in email,
     }
 
 
@@ -185,3 +186,57 @@ class MailOtpClient:
 
 
 mail_otp_client = MailOtpClient()
+
+
+def wait_for_mailbox_item(
+    *,
+    email: str,
+    pickup_url: str = "",
+    proxy: str = "",
+    kind: str = "code",
+    timeout_sec: float = 120,
+    poll_interval_sec: float = 3.0,
+    cf_base_url: str = "",
+    cf_address: str = "",
+    cf_admin_password: str = "",
+) -> Optional[str]:
+    from app.services.cloudflare_mail import cloudflare_mail_client
+
+    deadline = time.time() + timeout_sec
+    last_error: Optional[Exception] = None
+    use_cf = bool(cf_base_url and cf_address and cf_admin_password and not pickup_url)
+    while time.time() < deadline:
+        try:
+            if use_cf:
+                if kind == "invite":
+                    found = cloudflare_mail_client.find_invite(
+                        base_url=cf_base_url,
+                        address=cf_address,
+                        admin_password=cf_admin_password,
+                        alias=email,
+                    )
+                else:
+                    found = cloudflare_mail_client.find_code(
+                        base_url=cf_base_url,
+                        address=cf_address,
+                        admin_password=cf_admin_password,
+                        alias=email,
+                    )
+            elif pickup_url:
+                if kind == "invite":
+                    found = mail_otp_client.find_invite(pickup_url, proxy=proxy, email=email)
+                else:
+                    found = mail_otp_client.find_code(pickup_url, proxy=proxy, email=email)
+            else:
+                raise ValueError("未配置邮箱读码方式")
+            if found:
+                return found
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning("邮箱轮询失败: %s", exc)
+        time.sleep(max(1.0, poll_interval_sec))
+    if kind == "invite":
+        return None
+    if last_error:
+        raise TimeoutError(f"email OTP timeout after {timeout_sec}s: {last_error}")
+    raise TimeoutError(f"email OTP timeout after {timeout_sec}s")

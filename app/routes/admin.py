@@ -2275,6 +2275,9 @@ async def settings_page(
             "sub2api_base_url": await settings_service.get_setting(db, "sub2api_base_url", ""),
             "sub2api_api_key": await settings_service.get_setting(db, "sub2api_api_key", ""),
             "sub2api_group_ids": await settings_service.get_setting(db, "sub2api_group_ids", ""),
+            "cf_mail_base_url": await settings_service.get_setting(db, "cf_mail_base_url", "https://apimail.xiaozhudf2026.foo"),
+            "cf_mail_address": await settings_service.get_setting(db, "cf_mail_address", "icloud@xiaozhudf2026.foo"),
+            "cf_mail_admin_password": await settings_service.get_setting(db, "cf_mail_admin_password", ""),
             "warranty_expiration_mode": await settings_service.get_warranty_expiration_mode(db),
             "ui_theme": settings_service.normalize_ui_theme(await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)),
             "ui_style": settings_service.normalize_ui_style(await settings_service.get_setting(db, "ui_style", DEFAULT_UI_STYLE)),
@@ -2333,6 +2336,12 @@ class Sub2ApiSettingsRequest(BaseModel):
     base_url: str = Field("", description="Sub2API 地址")
     api_key: str = Field("", description="Sub2API Admin API Key")
     group_ids: str = Field("", description="分组 ID，逗号分隔")
+
+
+class CloudflareMailSettingsRequest(BaseModel):
+    base_url: str = Field("", description="Cloudflare Temp Email API 地址")
+    address: str = Field("", description="Forward To 收件地址")
+    admin_password: str = Field("", description="x-admin-auth 密钥")
 
 
 class TeamAutoRefreshSettingsRequest(BaseModel):
@@ -3310,4 +3319,45 @@ async def update_sub2api_settings(
     })
     if success:
         return JSONResponse(content={"success": True, "message": "Sub2API 配置已保存"})
+    return JSONResponse(status_code=500, content={"success": False, "error": "保存失败"})
+
+
+@router.post("/settings/cloudflare-mail")
+async def update_cloudflare_mail_settings(
+    payload: CloudflareMailSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.cloudflare_mail import (
+        CF_SETTING_ADDRESS,
+        CF_SETTING_ADMIN_PASSWORD,
+        CF_SETTING_BASE_URL,
+        cloudflare_mail_client,
+        normalize_cloudflare_base_url,
+        normalize_mailbox_address,
+    )
+
+    base_url = normalize_cloudflare_base_url(payload.base_url)
+    address = normalize_mailbox_address(payload.address)
+    admin_password = payload.admin_password.strip()
+    if not admin_password:
+        admin_password = (await settings_service.get_setting(db, CF_SETTING_ADMIN_PASSWORD, "") or "").strip()
+    if not admin_password:
+        return JSONResponse(status_code=400, content={"success": False, "error": "请输入 Cloudflare 管理员密钥"})
+    try:
+        cloudflare_mail_client.fetch_messages(
+            base_url=base_url,
+            address=address,
+            admin_password=admin_password,
+            limit=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"success": False, "error": f"连接失败: {exc}"})
+    success = await settings_service.update_settings(db, {
+        CF_SETTING_BASE_URL: base_url,
+        CF_SETTING_ADDRESS: address,
+        CF_SETTING_ADMIN_PASSWORD: admin_password,
+    })
+    if success:
+        return JSONResponse(content={"success": True, "message": "Cloudflare 邮箱配置已保存", "base_url": base_url, "address": address})
     return JSONResponse(status_code=500, content={"success": False, "error": "保存失败"})

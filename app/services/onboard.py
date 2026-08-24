@@ -18,7 +18,7 @@ from app.services.child_accounts import (
     child_account_service,
     normalize_email,
 )
-from app.services.mail_otp import mail_otp_client, parse_mail_line
+from app.services.mail_otp import parse_mail_line, wait_for_mailbox_item
 from app.services.sms import parse_phone_line, require_proxy
 from app.services.sub2api import sub2api_service
 from app.services.team import team_service
@@ -67,6 +67,22 @@ class OnboardService:
                 return True
         return False
 
+    async def _cf_config(self, db_session: AsyncSession) -> Dict[str, str]:
+        from app.services.cloudflare_mail import (
+            CF_SETTING_ADDRESS,
+            CF_SETTING_ADMIN_PASSWORD,
+            CF_SETTING_BASE_URL,
+            DEFAULT_CF_MAIL_ADDRESS,
+            DEFAULT_CF_MAIL_BASE_URL,
+        )
+        from app.services.settings import settings_service
+
+        return {
+            "base_url": (await settings_service.get_setting(db_session, CF_SETTING_BASE_URL, DEFAULT_CF_MAIL_BASE_URL) or DEFAULT_CF_MAIL_BASE_URL).strip(),
+            "address": (await settings_service.get_setting(db_session, CF_SETTING_ADDRESS, DEFAULT_CF_MAIL_ADDRESS) or DEFAULT_CF_MAIL_ADDRESS).strip(),
+            "admin_password": (await settings_service.get_setting(db_session, CF_SETTING_ADMIN_PASSWORD, "") or "").strip(),
+        }
+
     async def _run_browser(
         self,
         *,
@@ -78,6 +94,10 @@ class OnboardService:
         proxy: str,
         start_url: str = "",
         mode: str = "register",
+        use_cloudflare: bool = False,
+        cf_base_url: str = "",
+        cf_address: str = "",
+        cf_admin_password: str = "",
     ) -> Dict[str, Any]:
         from app.services.browser_onboard import run_browser_onboard
 
@@ -90,6 +110,10 @@ class OnboardService:
             proxy=proxy,
             start_url=start_url,
             mode=mode,
+            use_cloudflare=use_cloudflare,
+            cf_base_url=cf_base_url,
+            cf_address=cf_address,
+            cf_admin_password=cf_admin_password,
         )
 
     async def invite_and_onboard(
@@ -170,19 +194,26 @@ class OnboardService:
         pickup_url = parsed.get("pickup_url") or ""
         if not pickup_url and child.mail_raw:
             pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") or ""
+        cf_config = await self._cf_config(db_session)
+        use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
+        if not pickup_url and not use_cloudflare:
+            raise ValueError("请先在系统中心配置 Cloudflare 邮箱，或输入 email----pickup_url")
 
         invite_url = ""
-        if pickup_url:
-            try:
-                invite_url = await asyncio.to_thread(
-                    mail_otp_client.wait_for_invite,
-                    pickup_url,
-                    proxy=self._child_proxy(child, team),
-                    email=email,
-                    timeout_sec=90,
-                ) or ""
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("等待邀请邮件失败: %s", exc)
+        try:
+            invite_url = await asyncio.to_thread(
+                wait_for_mailbox_item,
+                email=email,
+                pickup_url=pickup_url,
+                proxy=self._child_proxy(child, team),
+                kind="invite",
+                timeout_sec=90,
+                cf_base_url=cf_config["base_url"] if use_cloudflare else "",
+                cf_address=cf_config["address"] if use_cloudflare else "",
+                cf_admin_password=cf_config["admin_password"] if use_cloudflare else "",
+            ) or ""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("等待邀请邮件失败: %s", exc)
 
         browser_mode = "register" if should_register else "relogin"
         try:
@@ -196,6 +227,10 @@ class OnboardService:
                 proxy=self._child_proxy(child, team),
                 start_url=invite_url,
                 mode=browser_mode,
+                use_cloudflare=use_cloudflare,
+                cf_base_url=cf_config["base_url"] if use_cloudflare else "",
+                cf_address=cf_config["address"] if use_cloudflare else "",
+                cf_admin_password=cf_config["admin_password"] if use_cloudflare else "",
             )
         except Exception as exc:  # noqa: BLE001
             child.last_error = str(exc)
