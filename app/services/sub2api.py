@@ -670,22 +670,30 @@ class Sub2ApiService:
     ) -> List[Dict[str, Any]]:
         today = (now or get_now()).date()
         for box in boxes:
-            rotated = False
+            emails: set[str] = set()
             for card in cards:
                 if not self._box_matches_card(box, card):
                     continue
+                owner = str(card.get("email") or "").strip().lower()
+                for item in card.get("rotation_emails") or []:
+                    email = str(item or "").strip().lower()
+                    if email and email != owner:
+                        emails.add(email)
                 members = list(card.get("live_members") or []) + list(card.get("active_children") or [])
                 for member in members:
                     if str(member.get("role") or "") == "account-owner":
                         continue
+                    email = str(member.get("email") or "").strip().lower()
+                    if email and email == owner:
+                        continue
                     if self._is_today(member.get("joined_at") or member.get("added_at"), today):
-                        rotated = True
-                        break
-                if rotated:
-                    break
-            box["rotated_today"] = rotated
-            box["rotation_label"] = "今日已轮" if rotated else "今日未轮"
-            box["rotation_tone"] = "ok" if rotated else "warn"
+                        if email:
+                            emails.add(email)
+            count = len(emails)
+            box["rotated_today"] = count > 0
+            box["rotation_count"] = count
+            box["rotation_label"] = f"今日已轮 {count}次" if count else "今日未轮"
+            box["rotation_tone"] = "ok" if count else "warn"
         return boxes
 
     async def _login_headers(self, client: httpx.AsyncClient, cfg: Dict[str, Any]) -> Dict[str, str]:

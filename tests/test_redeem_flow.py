@@ -3217,6 +3217,50 @@ class RedeemFlowServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(refreshed_team.current_members, 2)
             self.assertEqual(refreshed_team.status, "active")
 
+    async def test_apply_member_count_floor_ignores_stale_sync_mapping_when_live_complete(self):
+        async with self.session_factory() as session:
+            team = Team(
+                id=68,
+                email="pedro@example.com",
+                access_token_encrypted="token-68",
+                account_id="acct-68",
+                team_name="Pedro",
+                current_members=2,
+                max_members=5,
+                status="full",
+                pool_type="normal",
+            )
+            session.add(team)
+            await session.commit()
+
+            team_service = TeamService()
+            await team_service.upsert_team_email_mapping(68, "pedro@example.com", "joined", session, source="sync")
+            await team_service.upsert_team_email_mapping(68, "kicked@example.com", "joined", session, source="sync")
+            mapping = (
+                await session.execute(
+                    select(TeamEmailMapping).where(
+                        TeamEmailMapping.team_id == 68,
+                        TeamEmailMapping.email == "kicked@example.com",
+                    )
+                )
+            ).scalar_one()
+            mapping.last_seen_at = get_now() - timedelta(days=2)
+            await session.commit()
+
+            effective_members = await team_service._apply_member_count_floor(
+                team,
+                1,
+                session,
+                trust_observed=True,
+                live_emails={"pedro@example.com"},
+            )
+            await session.commit()
+
+            self.assertEqual(effective_members, 1)
+            refreshed_team = await session.get(Team, 68)
+            self.assertEqual(refreshed_team.current_members, 1)
+            self.assertEqual(refreshed_team.status, "active")
+
     async def test_get_team_members_filters_non_pending_invites_and_joined_duplicates(self):
         async with self.session_factory() as session:
             team = Team(

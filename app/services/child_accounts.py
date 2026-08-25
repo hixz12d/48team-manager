@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func, or_, select
@@ -41,6 +41,29 @@ def is_workspace_account_id(value: Optional[str]) -> bool:
 
 def normalize_email(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
+
+
+def coerce_local_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 1e12:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts)
+        except (OSError, OverflowError, ValueError):
+            return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
 
 
 class ChildAccountService:
@@ -239,18 +262,23 @@ class ChildAccountService:
         team: Team,
         *,
         mapping: Optional[TeamEmailMapping] = None,
+        joined_at: Optional[datetime] = None,
     ) -> None:
         now = get_now()
+        already_active = child.status == CHILD_STATUS_ACTIVE and child.joined_at
         child.status = CHILD_STATUS_ACTIVE
         child.current_team_id = team.id
-        child.joined_at = now
+        if joined_at:
+            child.joined_at = joined_at
+        elif not already_active:
+            child.joined_at = now
         child.kicked_at = None
         child.cycle_days = int(getattr(team, "seat_cycle_days", None) or child.cycle_days or 7)
         child.last_error = None
         child.updated_at = now
         if mapping:
             mapping.child_account_id = child.id
-            mapping.joined_at = now
+            mapping.joined_at = child.joined_at
             mapping.kicked_at = None
             mapping.cycle_days = child.cycle_days
         await db_session.flush()
@@ -351,6 +379,36 @@ class ChildAccountService:
             )
         )
         await db_session.flush()
+
+    async def sync_with_live_members(
+        self,
+        db_session: AsyncSession,
+        team: Team,
+        live_members: List[Dict[str, Any]],
+    ) -> Dict[str, int]:
+        live_by_email: Dict[str, Dict[str, Any]] = {}
+        for member in live_members or []:
+            email = normalize_email(member.get("email"))
+            if email:
+                live_by_email[email] = member
+        owner = normalize_email(team.email)
+        promoted = 0
+        released = 0
+        children = await self.list_accounts(db_session, team_id=team.id)
+        for child in children:
+            email = normalize_email(child.email)
+            if not email or email == owner:
+                continue
+            live = live_by_email.get(email)
+            live_status = str((live or {}).get("status") or "joined") if live else None
+            if live and live_status != "invited" and child.status == CHILD_STATUS_INVITED:
+                joined_at = coerce_local_datetime(live.get("joined_at") or live.get("added_at"))
+                await self.mark_active(db_session, child, team, joined_at=joined_at)
+                promoted += 1
+            elif child.status == CHILD_STATUS_INVITED and live is None:
+                await self.mark_unused(db_session, child, stage="live_absent")
+                released += 1
+        return {"promoted": promoted, "released": released}
 
     async def dashboard_cards(self, db_session: AsyncSession) -> List[Dict[str, Any]]:
         teams = (await db_session.execute(select(Team).order_by(Team.id.asc()))).scalars().all()

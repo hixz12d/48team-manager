@@ -166,6 +166,26 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item.get("type") == "ghost" for item in result["skipped"]))
         self.assertFalse(any(item.get("type") == "ghost" for item in result["applied"]))
 
+    async def test_apply_reconcile_marks_invited_as_active_when_already_joined(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(self.session, email="basket@example.com")
+        await child_account_service.mark_invited(self.session, child, team)
+        service = OnboardService()
+        service._load_team = AsyncMock(return_value=team)
+        from app.services import team as team_mod
+        original = team_mod.team_service.get_team_members
+        team_mod.team_service.get_team_members = AsyncMock(return_value={
+            "success": True,
+            "members": [{"email": "basket@example.com", "status": "joined", "added_at": "2026-08-20T01:00:00"}],
+        })
+        try:
+            result = await service.apply_reconcile(self.session, team.id)
+        finally:
+            team_mod.team_service.get_team_members = original
+        self.assertTrue(result["success"])
+        self.assertEqual(child.status, "active")
+        self.assertTrue(any(item.get("type") == "joined_unmarked" for item in result["applied"]))
+
     async def test_fix_child_account_id_uses_team_workspace(self):
         team = await self._team()
         team.account_id = "11111111-1111-4111-8111-111111111111"

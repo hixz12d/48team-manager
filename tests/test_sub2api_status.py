@@ -124,10 +124,39 @@ class Sub2ApiStatusTests(unittest.TestCase):
         ], now=now)
         by_title = {box["title"]: box for box in boxes}
         self.assertTrue(by_title[".2026.15"]["rotated_today"])
-        self.assertEqual(by_title[".2026.15"]["rotation_label"], "今日已轮")
+        self.assertEqual(by_title[".2026.15"]["rotation_label"], "今日已轮 1次")
+        self.assertEqual(by_title[".2026.15"]["rotation_count"], 1)
         self.assertFalse(by_title["Pedro"]["rotated_today"])
         self.assertEqual(by_title["Pedro"]["rotation_label"], "今日未轮")
         self.assertEqual(by_title["Pedro"]["rotation_tone"], "warn")
+
+    def test_annotates_rotation_from_kicked_member_events(self):
+        boxes = self.service.group_accounts([
+            {
+                "id": 4,
+                "name": "Team Pedro 母号",
+                "status": "active",
+                "credentials": {"email": "pedropick89@gmail.com"},
+            },
+        ])
+        now = datetime(2026, 8, 24, 21, 0, 0)
+        self.service.annotate_rotation(boxes, [
+            {
+                "id": 5,
+                "email": "pedropick89@gmail.com",
+                "team_name": "SunshineRain",
+                "live_members": [
+                    {"email": "pedropick89@gmail.com", "role": "account-owner", "joined_at": "2026-08-20T01:00:00+00:00"},
+                ],
+                "rotation_emails": ["think_midsole.9e@icloud.com"],
+                "rotation_count": 1,
+            },
+        ], now=now)
+        box = boxes[0]
+        self.assertTrue(box["rotated_today"])
+        self.assertEqual(box["rotation_count"], 1)
+        self.assertEqual(box["rotation_label"], "今日已轮 1次")
+        self.assertEqual(box["rotation_tone"], "ok")
 
 
 if __name__ == "__main__":

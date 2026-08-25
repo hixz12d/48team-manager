@@ -19,6 +19,7 @@ from app.services.child_accounts import (
     CHILD_STATUS_STANDBY,
     OWNER_ROLES,
     child_account_service,
+    coerce_local_datetime,
     is_workspace_account_id,
     normalize_email,
 )
@@ -237,6 +238,15 @@ class OnboardService:
                     "local_status": child.status,
                     "detail": "上游邀请还在，本地已回到未使用",
                 })
+            elif child.status == CHILD_STATUS_INVITED and member.get("status") != "invited":
+                findings.append({
+                    "type": "joined_unmarked",
+                    "email": email,
+                    "live_status": member.get("status"),
+                    "local_status": child.status,
+                    "joined_at": member.get("added_at") or member.get("joined_at"),
+                    "detail": "上游已加入，本地还停在已邀请未注册",
+                })
         for child in children:
             if child.current_team_id != team.id:
                 continue
@@ -407,6 +417,30 @@ class OnboardService:
             if kind == "leftover_invite":
                 result = await self.kick_to_standby(db_session, team_id=team_id, email=email)
                 applied.append({**finding, "action": "revoke_invite", "result": result.get("message") or result.get("error")})
+                continue
+            if kind == "joined_unmarked":
+                child = await child_account_service.get_by_email(db_session, email)
+                if not child:
+                    skipped.append({**finding, "reason": "本地子号已不在"})
+                    continue
+                mapping = await self._mapping(db_session, team_id, email)
+                await child_account_service.mark_active(
+                    db_session,
+                    child,
+                    await self._load_team(db_session, team_id),
+                    mapping=mapping,
+                    joined_at=coerce_local_datetime(finding.get("joined_at")),
+                )
+                await child_account_service.record_event(
+                    db_session,
+                    email=email,
+                    action="reconcile",
+                    team_id=team_id,
+                    child_id=child.id,
+                    success=True,
+                    detail="mark_active",
+                )
+                applied.append({**finding, "action": "mark_active", "result": "已改成在席"})
                 continue
             if kind == "leftover_local":
                 child = await child_account_service.get_by_email(db_session, email)

@@ -31,6 +31,8 @@ ACTIVE_TEAM_EMAIL_STATUSES = (
     TEAM_EMAIL_STATUS_INVITED,
     TEAM_EMAIL_STATUS_JOINED,
 )
+IN_FLIGHT_MAPPING_SOURCES = {"redeem", "admin_add"}
+IN_FLIGHT_MAPPING_TTL = timedelta(hours=2)
 
 
 class TeamService:
@@ -292,19 +294,20 @@ class TeamService:
             await db_session.commit()
             return True
 
-        # 2. 判定是否为“席位已满”错误
-        full_keywords = ["maximum number of seats", "reached maximum number of seats", "no seats available"]
-        if any(kw in error_msg for kw in full_keywords):
-            logger.warning(f"检测到 Team 席位已满 (msg={error_msg}), 更新 Team {team.id} ({team.email}) 状态为 full")
-            team.status = "full"
-            # 学习真实的席位上限: 如果当前探测到的成员数小于预设的最大值，说明该团队实际容量较小
-            if team.current_members > 0 and team.current_members < team.max_members:
-                logger.info(f"修正 Team {team.id} 的最大成员数: {team.max_members} -> {team.current_members}")
-                team.max_members = team.current_members
-            elif team.current_members >= team.max_members:
-                # 进位修正，确保逻辑闭环
-                team.current_members = team.max_members
-
+        # 2. 判定是否为“席位已满”错误。踢人后 ChatGPT 会短暂占着座位，
+        # 这时报满不等于操作上限变小，不能把 max_members 学成当前人数。
+        if self._is_seat_full_error(result):
+            occupied = int(team.current_members or 0)
+            capacity = int(team.max_members or 0)
+            if capacity > 0 and occupied >= capacity:
+                logger.warning(
+                    f"检测到 Team 席位已满 (msg={error_msg}), 更新 Team {team.id} ({team.email}) 状态为 full"
+                )
+                team.status = "full"
+            else:
+                logger.warning(
+                    f"ChatGPT 报席位已满但本地占用 {occupied}/{capacity or '未知'}，按席位未释放处理，不改操作上限 Team {team.id}"
+                )
             await db_session.commit()
             return True
 
@@ -395,6 +398,17 @@ class TeamService:
             result.get("error_code"),
         )
         
+    @staticmethod
+    def _is_seat_full_error(result: Optional[Dict[str, Any]] = None, text: str = "") -> bool:
+        blob = f"{text} {str((result or {}).get('error') or '')} {str((result or {}).get('error_code') or '')}".lower()
+        keywords = (
+            "maximum number of seats",
+            "reached maximum number of seats",
+            "no seats available",
+            "team is full",
+            "seats are full",
+        )
+        return any(keyword in blob for keyword in keywords)
     @staticmethod
     def _admin_error(error_code: str, error: str, message: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
         """为管理员页面构造结构化错误响应。"""
@@ -504,17 +518,47 @@ class TeamService:
         )
         return int(result.scalar() or 0)
 
+    async def _count_in_flight_mappings(
+        self,
+        team_id: int,
+        db_session: AsyncSession,
+        live_emails: Optional[set[str]] = None,
+    ) -> int:
+        cutoff = get_now() - IN_FLIGHT_MAPPING_TTL
+        result = await db_session.execute(
+            select(TeamEmailMapping).where(
+                TeamEmailMapping.team_id == team_id,
+                TeamEmailMapping.status.in_(ACTIVE_TEAM_EMAIL_STATUSES),
+                TeamEmailMapping.source.in_(tuple(IN_FLIGHT_MAPPING_SOURCES)),
+                TeamEmailMapping.last_seen_at >= cutoff,
+            )
+        )
+        live = {email for email in (live_emails or set()) if email}
+        count = 0
+        for mapping in result.scalars().all():
+            email = self._normalize_member_email(mapping.email)
+            if email and email not in live:
+                count += 1
+        return count
+
     async def _apply_member_count_floor(
         self,
         team: Team,
         observed_member_count: int,
         db_session: AsyncSession,
+        *,
+        trust_observed: bool = False,
+        live_emails: Optional[set[str]] = None,
     ) -> int:
-        """将远端同步人数与本地仍活跃占位合并，避免短暂同步延迟把人数回写变小。"""
+        """回写占用。成员+邀请都拉成功时以上游为准，只额外保留短时 in-flight 邀请。"""
         await db_session.flush()
-        active_mapping_count = await self._get_active_mapping_count(team.id, db_session)
         observed_count = int(observed_member_count or 0)
-        effective_members = max(observed_count, active_mapping_count)
+        if trust_observed:
+            extra = await self._count_in_flight_mappings(team.id, db_session, live_emails)
+            effective_members = observed_count + extra
+        else:
+            active_mapping_count = await self._get_active_mapping_count(team.id, db_session)
+            effective_members = max(observed_count, active_mapping_count)
         if team.max_members and team.max_members > 0:
             effective_members = min(effective_members, team.max_members)
 
@@ -2057,7 +2101,13 @@ class TeamService:
                     invited_member_emails,
                     db_session
                 )
-                effective_members = await self._apply_member_count_floor(team, current_members, db_session)
+                effective_members = await self._apply_member_count_floor(
+                    team,
+                    current_members,
+                    db_session,
+                    trust_observed=bool(members_ok and invites_ok),
+                    live_emails=joined_member_emails | invited_member_emails,
+                )
             else:
                 effective_members = int(team.current_members or 0)
                 if expires_at and expires_at < get_now():
@@ -2390,8 +2440,19 @@ class TeamService:
 
             # 6. 持久化最新人数，避免“查看成员/撤回时已拿到实时列表，但数据库人数仍旧值”
             live_member_count = len(all_members)
+            live_emails = {
+                self._normalize_member_email(item.get("email"))
+                for item in all_members
+                if self._normalize_member_email(item.get("email"))
+            }
             team.last_sync = get_now()
-            effective_members = await self._apply_member_count_floor(team, live_member_count, db_session)
+            effective_members = await self._apply_member_count_floor(
+                team,
+                live_member_count,
+                db_session,
+                trust_observed=bool(invites_result.get("success")),
+                live_emails=live_emails,
+            )
 
             # 7. 请求成功，重置错误状态
             await self._reset_error_status(team, db_session)
@@ -2542,13 +2603,7 @@ class TeamService:
                     f"未找到 ID 为 {team_id} 的 Team",
                 )
 
-            # 2. 检查 Team 状态
-            if team.status == "full":
-                return self._admin_error(
-                    "team_full",
-                    "Team 已满,无法添加成员",
-                )
-
+            # 2. 过期直接拦。满员状态可能是踢人后占位残留，先同步再判断。
             if team.status == "expired":
                 return self._admin_error(
                     "team_expired",
@@ -2588,7 +2643,7 @@ class TeamService:
             if not team:
                 return self._admin_error("team_not_found", f"Team ID {team_id} 不存在")
 
-            if team.current_members >= team.max_members or team.status == "full":
+            if team.current_members >= team.max_members:
                 team.status = "full"
                 await db_session.commit()
                 return self._admin_error(
@@ -2615,19 +2670,27 @@ class TeamService:
             )
 
             if not invite_result["success"]:
-                # 检查是否封号或 Token 失效
                 if await self._handle_api_error(invite_result, team, db_session):
                     error_msg = invite_result.get("error", "未知错误")
                     if invite_result.get("error_code") == "account_deactivated":
                         error_msg = "账号已封禁 (account_deactivated)"
                     elif invite_result.get("error_code") == "token_invalidated":
                         error_msg = "Token 已失效 (token_invalidated)"
-
+                    elif self._is_seat_full_error(invite_result) and int(team.current_members or 0) < int(team.max_members or 0):
+                        return self._admin_error(
+                            "seat_held",
+                            "席位尚未释放：成员已经不在，但 ChatGPT 仍占着座位。先看踢人回执，确认释放后再拉人。",
+                        )
                     return self._admin_error(
                         invite_result.get("error_code") or "invite_failed",
                         error_msg,
                     )
 
+                if self._is_seat_full_error(invite_result) and int(team.current_members or 0) < int(team.max_members or 0):
+                    return self._admin_error(
+                        "seat_held",
+                        "席位尚未释放：成员已经不在，但 ChatGPT 仍占着座位。先看踢人回执，确认释放后再拉人。",
+                    )
                 return self._admin_error(
                     invite_result.get("error_code") or "invite_failed",
                     f"发送邀请失败: {invite_result['error']}",

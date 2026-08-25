@@ -102,6 +102,71 @@ class ChildAccountTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("暂未刷新", result["message"])
         service.mark_team_email_mapping_removed.assert_awaited()
 
+    async def test_sync_promotes_invited_when_live_joined(self):
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            max_members=5,
+            current_members=2,
+            seat_cycle_days=7,
+        )
+        self.session.add(team)
+        await self.session.flush()
+        child = await child_account_service.upsert_from_input(self.session, email="kid@example.com")
+        await child_account_service.mark_invited(self.session, child, team)
+        joined_at = get_now() - timedelta(days=1)
+        result = await child_account_service.sync_with_live_members(
+            self.session,
+            team,
+            [{"email": "kid@example.com", "status": "joined", "added_at": joined_at.isoformat()}],
+        )
+        self.assertEqual(result["promoted"], 1)
+        self.assertEqual(child.status, "active")
+        self.assertEqual(child.joined_at.date(), joined_at.date())
+
+    async def test_sync_releases_invited_when_live_absent(self):
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            max_members=5,
+            current_members=2,
+        )
+        self.session.add(team)
+        await self.session.flush()
+        child = await child_account_service.upsert_from_input(self.session, email="gone@example.com")
+        await child_account_service.mark_invited(self.session, child, team)
+        result = await child_account_service.sync_with_live_members(
+            self.session,
+            team,
+            [{"email": "owner@example.com", "status": "joined", "role": "account-owner"}],
+        )
+        self.assertEqual(result["released"], 1)
+        self.assertEqual(child.status, "unused")
+        self.assertIsNone(child.current_team_id)
+
+    async def test_full_error_does_not_shrink_max_members(self):
+        from app.services.team import TeamService
+
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            max_members=5,
+            current_members=1,
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        service = TeamService()
+        handled = await service._handle_api_error(
+            {"success": False, "error": "Reached maximum number of seats"},
+            team,
+            self.session,
+        )
+        self.assertTrue(handled)
+        self.assertEqual(team.max_members, 5)
+        self.assertEqual(team.current_members, 1)
+        self.assertEqual(team.status, "active")
+
 
 class ParserTests(unittest.TestCase):
     def test_parse_phone_and_mail(self):

@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.database import AsyncSessionLocal, get_db
+from app.models import SeatEvent, Team
 from app.dependencies.auth import require_admin
 from app.services.child_accounts import child_account_service, normalize_email
 from app.services.onboard import onboard_service
@@ -18,6 +21,7 @@ from app.services import onboard_jobs
 from app.services.sub2api import sub2api_service
 from app.services.team import team_service
 from app.services.vacancy import vacancy_service
+from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +64,47 @@ async def attach_live_members(
                     "in_pool": bool(local),
                 })
             item["live_error"] = None
+            team = await db.get(Team, int(card["id"]))
+            if team:
+                await child_account_service.sync_with_live_members(db, team, live.get("members") or [])
         else:
             item["live_error"] = live.get("error") or "读取当前 Team 成员失败"
         item["live_members"] = live_members
         enriched.append(item)
     return enriched
+
+
+ROTATION_EVENT_ACTIONS = ("invite", "register", "reregister", "kick", "rotate")
+
+
+async def attach_rotation_events(
+    db: AsyncSession,
+    cards: List[Dict[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    today = (now or get_now()).date()
+    start = datetime.combine(today, datetime.min.time())
+    result = await db.execute(
+        select(SeatEvent).where(
+            SeatEvent.success.is_(True),
+            SeatEvent.action.in_(ROTATION_EVENT_ACTIONS),
+            SeatEvent.created_at >= start,
+        )
+    )
+    by_team: Dict[int, set[str]] = {}
+    for event in result.scalars().all():
+        if not event.team_id:
+            continue
+        email = normalize_email(event.email)
+        if email:
+            by_team.setdefault(int(event.team_id), set()).add(email)
+    for card in cards:
+        owner = normalize_email(card.get("email"))
+        emails = {item for item in by_team.get(int(card["id"]), set()) if item and item != owner}
+        card["rotation_emails"] = sorted(emails)
+        card["rotation_count"] = len(emails)
+    return cards
 
 
 async def load_sub2api_dashboard(db: AsyncSession, *, force: bool = False) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -77,7 +117,9 @@ async def load_sub2api_dashboard(db: AsyncSession, *, force: bool = False) -> tu
             sub2api_service.index_status_by_email(status.get("boxes") or []),
         ),
     )
+    await attach_rotation_events(db, cards)
     sub2api_service.annotate_rotation(status.get("boxes") or [], cards)
+    await db.commit()
     return cards, status
 
 
