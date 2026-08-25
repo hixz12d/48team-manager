@@ -11,6 +11,7 @@ from app.services.team import TeamService
 from app.services.vacancy import (
     is_safe_to_refill,
     parse_policy_notice,
+    chatgpt_member_ids,
     pick_chatgpt_user_id,
     present_vacancy,
     summarize_for_message,
@@ -113,6 +114,10 @@ class VacancyParseTests(unittest.TestCase):
         )
         self.assertEqual(pick_chatgpt_user_id({"account_user_id": "user-only"}), "user-only")
         self.assertIsNone(pick_chatgpt_user_id({"email": "a@b.com"}))
+        self.assertEqual(
+            chatgpt_member_ids({"id": "user-a", "account_user_id": "user-b"}, "user-a"),
+            ["user-a", "user-b"],
+        )
 
     def test_utc_z_converts_to_shanghai(self):
         self.assertEqual(

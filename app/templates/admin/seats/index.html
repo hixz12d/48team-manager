@@ -28,6 +28,8 @@
         <div id="sub2apiStatus" class="sub2api-status">
             {% if not sub2api_status.configured %}
             <p class="form-help">还没配 Sub2API</p>
+            {% elif sub2api_status.pending %}
+            <p class="form-help">加载中…</p>
             {% elif not sub2api_status.ok %}
             <p class="form-help">读不到 Sub2API：{{ sub2api_status.error or '未知错误' }}</p>
             {% elif not sub2api_status.boxes %}
@@ -35,11 +37,15 @@
             {% else %}
             {% for group in sub2api_status.boxes %}
             <article class="sub2api-box tone-{{ group.tone or 'ok' }}">
-                <header><span>{{ group.title }}</span>{% if group.team_id %}<span class="rotation-stepper" data-team-id="{{ group.team_id }}" data-count="{{ group.rotation_count or 0 }}" title="今天轮了几次，可手调"><button type="button" class="rotation-step" onclick="adjustRotationCount(this, -1)" {% if not group.rotation_count %}disabled{% endif %}>−</button><span class="sub2api-chip tone-{{ group.rotation_tone or 'muted' }}" data-rotation-label>{{ group.rotation_label or '今日未轮' }}</span><button type="button" class="rotation-step" onclick="adjustRotationCount(this, 1)">+</button></span>{% else %}<span class="sub2api-chip tone-{{ group.rotation_tone or 'muted' }}">{{ group.rotation_label or '今日未轮' }}</span>{% endif %}</header>
+                <header><span>{{ group.title }}</span>{% if group.team_id %}<span class="rotation-stepper" data-team-id="{{ group.team_id }}" data-count="{{ group.rotation_count or 0 }}" title="今天轮了几次，可手调"><button type="button" class="rotation-step" onclick="adjustRotationCount(this, -1)" {% if not group.rotation_count %}disabled{% endif %}>−</button><span class="rotation-value tone-{{ group.rotation_tone or 'muted' }}" data-rotation-label>{{ group.rotation_label or '今日未轮' }}</span><button type="button" class="rotation-step" onclick="adjustRotationCount(this, 1)">+</button></span>{% else %}<span class="rotation-value tone-{{ group.rotation_tone or 'muted' }}">{{ group.rotation_label or '今日未轮' }}</span>{% endif %}</header>
                 {% for item in group.accounts %}
                 <div class="sub2api-row">
                     <span class="sub2api-name" title="{{ item.name or item.email or '' }}">{{ item.short_name or item.name }}</span>
-                    <span class="sub2api-quota">{{ item.quota_label or '额度 -' }}</span>
+                    <span class="sub2api-quota">
+                        <span>{{ item.quota_label or '额度 -' }}</span>
+                        {% if item.account_cost_label %}<span class="sub2api-money" title="7日账号计费">{{ item.account_cost_label }}</span>{% endif %}
+                        {% if item.user_cost_label %}<span class="sub2api-money" title="7日用户计费">{{ item.user_cost_label }}</span>{% endif %}
+                    </span>
                     <span class="sub2api-chip tone-{{ item.tone or 'muted' }}">{{ item.schedule_label or '-' }}</span>
                 </div>
                 {% endfor %}
@@ -58,10 +64,10 @@
     </div>
     <div class="seat-card-grid">
         {% for card in cards %}
-        <section class="content-section seat-card">
+        <section class="content-section seat-card" data-team-id="{{ card.id }}">
             <div class="section-header">
                 <h3>{% if card.team_name %}{{ card.team_name }}{% else %}{{ card.email }}{% endif %}</h3>
-                <span class="text-muted" title="本地占用 / 操作上限">{{ (card.occupancy.occupancy_text if card.occupancy else (card.current_members ~ '/' ~ card.max_members)) }}</span>
+                <span class="text-muted" data-occupancy-text title="本地占用 / 操作上限">{{ (card.occupancy.occupancy_text if card.occupancy else (card.current_members ~ '/' ~ card.max_members)) }}</span>
                 <button class="btn btn-sm btn-secondary" type="button" onclick="previewReconcile({{ card.id }})">对账</button>
             </div>
             <p class="seat-card-meta">{{ card.email }}
@@ -107,9 +113,7 @@
                 {% endfor %}
             </p>
             {% endif %}
-            {% if card.live_error %}
-            <p class="text-muted">{{ card.live_error }}</p>
-            {% endif %}
+            <p class="text-muted" data-live-error {% if not card.live_error %}hidden{% endif %}>{{ card.live_error or '' }}</p>
             <div class="table-container">
                 <table class="data-table seat-table">
                     <thead>
@@ -123,7 +127,7 @@
                     <tbody>
                         {% set seat_rows = card.live_members or card.active_children %}
                         {% for child in seat_rows %}
-                        <tr>
+                        <tr data-email="{{ child.email }}">
                             <td title="{{ child.email }}">{{ child.email }}</td>
                             <td>{{ child.quota_label or '-' }}</td>
                             <td>
@@ -591,13 +595,46 @@ function escapeSeatHtml(value) {
     }[ch]));
 }
 
+let lastSub2apiIndex = {};
+
+function indexSub2apiAccounts(boxes) {
+    const index = {};
+    (boxes || []).forEach((group) => {
+        (group.accounts || []).forEach((item) => {
+            const email = String(item.email || '').toLowerCase();
+            if (email) index[email] = item;
+        });
+    });
+    lastSub2apiIndex = index;
+    return index;
+}
+
+function patchSeatQuotaFromIndex() {
+    document.querySelectorAll('.seat-table tbody tr[data-email]').forEach((tr) => {
+        const item = lastSub2apiIndex[String(tr.getAttribute('data-email') || '').toLowerCase()];
+        if (!item) return;
+        const cells = tr.children;
+        if (cells[1] && item.quota_label) cells[1].textContent = item.quota_label;
+        if (cells[2] && item.schedule_label) {
+            cells[2].innerHTML = '<span class="sub2api-chip tone-' + escapeSeatHtml(item.tone || 'muted') + '">' + escapeSeatHtml(item.schedule_label) + '</span>';
+        }
+    });
+}
+
+function quotaCellHtml(item) {
+    let html = '<span class="sub2api-quota"><span>' + escapeSeatHtml(item.quota_label || '额度 -') + '</span>';
+    if (item.account_cost_label) html += '<span class="sub2api-money" title="7日账号计费">' + escapeSeatHtml(item.account_cost_label) + '</span>';
+    if (item.user_cost_label) html += '<span class="sub2api-money" title="7日用户计费">' + escapeSeatHtml(item.user_cost_label) + '</span>';
+    return html + '</span>';
+}
+
 function rotationChipHtml(group) {
     const count = Number(group.rotation_count || 0);
-    const chip = '<span class="sub2api-chip tone-' + escapeSeatHtml(group.rotation_tone || 'muted') + '" data-rotation-label>' + escapeSeatHtml(group.rotation_label || '今日未轮') + '</span>';
-    if (!group.team_id) return chip;
+    const value = '<span class="rotation-value tone-' + escapeSeatHtml(group.rotation_tone || 'muted') + '" data-rotation-label>' + escapeSeatHtml(group.rotation_label || '今日未轮') + '</span>';
+    if (!group.team_id) return value;
     return '<span class="rotation-stepper" data-team-id="' + String(group.team_id) + '" data-count="' + count + '" title="今天轮了几次，可手调">' +
         '<button type="button" class="rotation-step" onclick="adjustRotationCount(this, -1)"' + (count <= 0 ? ' disabled' : '') + '>−</button>' +
-        chip +
+        value +
         '<button type="button" class="rotation-step" onclick="adjustRotationCount(this, 1)">+</button>' +
         '</span>';
 }
@@ -625,7 +662,7 @@ async function adjustRotationCount(btn, delta) {
         const chip = wrap.querySelector('[data-rotation-label]');
         if (chip) {
             chip.textContent = data.rotation_label;
-            chip.className = 'sub2api-chip tone-' + (data.rotation_tone || 'muted');
+            chip.className = 'rotation-value tone-' + (data.rotation_tone || 'muted');
         }
     } catch (error) {
         showToast(error.message, 'error');
@@ -651,25 +688,27 @@ function renderSub2apiStatus(data) {
     }
     const boxes = data.boxes || [];
     if (!boxes.length) {
-        box.innerHTML = '<p class="form-help">没有匹配到 Team 账号</p>';
+        box.innerHTML = '<p class="form-help">' + (data.pending ? '加载中…' : '没有匹配到 Team 账号') + '</p>';
         return;
     }
     box.innerHTML = boxes.map((group) => {
         const rows = (group.accounts || []).map((item) => (
             '<div class="sub2api-row">' +
                 '<span class="sub2api-name" title="' + escapeSeatHtml(item.name || item.email || '') + '">' + escapeSeatHtml(item.short_name || item.name) + '</span>' +
-                '<span class="sub2api-quota">' + escapeSeatHtml(item.quota_label || '额度 -') + '</span>' +
+                quotaCellHtml(item) +
                 '<span class="sub2api-chip tone-' + escapeSeatHtml(item.tone || 'muted') + '">' + escapeSeatHtml(item.schedule_label || '-') + '</span>' +
             '</div>'
         )).join('');
         return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span>' + rotationChipHtml(group) + '</header>' + rows + '</article>';
     }).join('');
+    indexSub2apiAccounts(boxes);
+    patchSeatQuotaFromIndex();
 }
 
 async function loadSub2apiStatus(force) {
     const box = document.getElementById('sub2apiStatus');
     if (!box) return;
-    box.textContent = '加载中…';
+    if (force || !box.querySelector('.sub2api-box')) box.textContent = '加载中…';
     try {
         const response = await fetch('/admin/seats/sub2api-status' + (force ? '?force=1' : ''));
         const data = await response.json();
@@ -681,6 +720,69 @@ async function loadSub2apiStatus(force) {
         box.innerHTML = '<p class="form-help">' + escapeSeatHtml(error.message) + '</p>';
     }
 }
+
+function seatActionHtml(card, child) {
+    const email = String(child.email || '');
+    if (child.role === 'account-owner') return '<span class="text-muted">所有者</span>';
+    if (child.status === 'invited') {
+        return '<button class="btn btn-sm btn-warning" onclick="revokeLiveInvite(' + card.id + ', ' + JSON.stringify(email) + ')">撤回</button>';
+    }
+    return '<button class="btn btn-sm btn-danger" onclick="kickChild(' + card.id + ', ' + JSON.stringify(email) + ', ' + JSON.stringify(String(child.user_id || '')) + ')">踢出</button>';
+}
+
+function updateSeatCard(card) {
+    const root = document.querySelector('.seat-card[data-team-id="' + card.id + '"]');
+    if (!root) return;
+    const occ = root.querySelector('[data-occupancy-text]');
+    if (occ && card.occupancy && card.occupancy.occupancy_text) occ.textContent = card.occupancy.occupancy_text;
+    let meta = root.querySelector('.occupancy-meta');
+    if (card.occupancy && card.occupancy.upstream_occupied != null) {
+        const text = '上游占用 ' + card.occupancy.upstream_occupied + '（已加入 ' + card.occupancy.upstream_joined + ' / 邀请中 ' + card.occupancy.upstream_invited + '）';
+        if (!meta) {
+            meta = document.createElement('p');
+            meta.className = 'occupancy-meta';
+            const after = root.querySelector('.seat-card-meta');
+            if (after) after.insertAdjacentElement('afterend', meta);
+            else root.appendChild(meta);
+        }
+        meta.textContent = text;
+        meta.hidden = false;
+    }
+    const err = root.querySelector('[data-live-error]');
+    if (err) {
+        err.hidden = !card.live_error;
+        err.textContent = card.live_error || '';
+    }
+    const tbody = root.querySelector('.seat-table tbody');
+    if (!tbody) return;
+    const rows = card.live_members && card.live_members.length ? card.live_members : (card.active_children || []);
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">没有成员</td></tr>';
+        return;
+    }
+    tbody.innerHTML = rows.map((child) => {
+        const email = String(child.email || '');
+        const schedule = child.schedule_label
+            ? '<span class="sub2api-chip tone-' + escapeSeatHtml(child.tone || 'muted') + '">' + escapeSeatHtml(child.schedule_label) + '</span>'
+            : '-';
+        return '<tr data-email="' + escapeSeatHtml(email) + '"><td title="' + escapeSeatHtml(email) + '">' + escapeSeatHtml(email) + '</td><td>' + escapeSeatHtml(child.quota_label || '-') + '</td><td>' + schedule + '</td><td>' + seatActionHtml(card, child) + '</td></tr>';
+    }).join('');
+}
+
+async function hydrateSeatLive() {
+    try {
+        const response = await fetch('/admin/seats/live');
+        const data = await response.json();
+        if (!response.ok || data.success === false) return;
+        (data.cards || []).forEach(updateSeatCard);
+        patchSeatQuotaFromIndex();
+    } catch (error) {
+        console.warn(error);
+    }
+}
+
+loadSub2apiStatus(false);
+hydrateSeatLive();
 if (currentOnboardJobId) {
     pollOnboardJob(currentOnboardJobId, { reloadOnDone: false, quiet: true });
 }

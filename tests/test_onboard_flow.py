@@ -81,10 +81,11 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         service = OnboardService()
         service._load_team = AsyncMock(return_value=team)
         service._team_proxy = MagicMock(return_value="socks5h://127.0.0.1:1080")
-        service._lookup_live_member = AsyncMock(return_value=(
-            {"success": True, "members": [{"email": "kid@example.com", "status": "joined", "user_id": "user-1"}]},
-            {"email": "kid@example.com", "status": "joined", "user_id": "user-1"},
-        ))
+        joined = {"email": "kid@example.com", "status": "joined", "user_id": "user-1", "account_user_id": "user-1"}
+        service._lookup_live_member = AsyncMock(side_effect=[
+            ({"success": True, "members": [joined]}, joined),
+            ({"success": True, "members": []}, None),
+        ])
         from app.services import team as team_mod
         original = team_mod.team_service.delete_team_member
         team_mod.team_service.delete_team_member = AsyncMock(return_value={"success": True, "message": "ok"})
@@ -95,6 +96,30 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "standby")
         self.assertEqual(child.status, "standby")
+
+    async def test_kick_fails_when_member_still_live(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(self.session, email="kid@example.com")
+        await child_account_service.mark_active(self.session, child, team)
+        service = OnboardService()
+        service._load_team = AsyncMock(return_value=team)
+        service._team_proxy = MagicMock(return_value="socks5h://127.0.0.1:1080")
+        joined = {"email": "kid@example.com", "status": "joined", "user_id": "user-1", "account_user_id": "user-alt"}
+        service._lookup_live_member = AsyncMock(return_value=(
+            {"success": True, "members": [joined]}, joined,
+        ))
+        from app.services import team as team_mod
+        original = team_mod.team_service.delete_team_member
+        delete_mock = AsyncMock(return_value={"success": True, "already_removed": True})
+        team_mod.team_service.delete_team_member = delete_mock
+        try:
+            result = await service.kick_to_standby(self.session, team_id=team.id, email="kid@example.com")
+        finally:
+            team_mod.team_service.delete_team_member = original
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "kick_not_removed")
+        self.assertEqual(child.status, "active")
+        self.assertGreaterEqual(delete_mock.await_count, 2)
 
     async def test_master_degraded_blocks_invite(self):
         team = await self._team()

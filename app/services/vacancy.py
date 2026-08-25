@@ -121,22 +121,33 @@ def parse_removal_notices(payload: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def pick_chatgpt_user_id(*candidates: Any) -> Optional[str]:
+def chatgpt_member_ids(*candidates: Any) -> List[str]:
     values: List[str] = []
+    seen = set()
+
+    def add(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        text = value.strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        values.append(text)
+
     for candidate in candidates:
         if isinstance(candidate, dict):
-            for key in ("id", "account_user_id", "user_id"):
-                value = candidate.get(key)
-                if isinstance(value, str) and value.strip():
-                    values.append(value.strip())
-        elif isinstance(candidate, str) and candidate.strip():
-            values.append(candidate.strip())
-    if not values:
-        return None
-    for value in values:
-        if value.startswith("user-"):
-            return value
-    return values[0]
+            for key in ("id", "member_id", "account_user_id", "user_id"):
+                add(candidate.get(key))
+        else:
+            add(candidate)
+    preferred = [item for item in values if item.startswith("user-")]
+    rest = [item for item in values if not item.startswith("user-")]
+    return preferred + rest
+
+
+def pick_chatgpt_user_id(*candidates: Any) -> Optional[str]:
+    ids = chatgpt_member_ids(*candidates)
+    return ids[0] if ids else None
 
 
 def _normalize_email(email: Optional[str]) -> Optional[str]:

@@ -6691,7 +6691,7 @@ body.style-classic .btn {
 
 .sub2api-status {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
     gap: 0.75rem;
 }
 
@@ -6743,7 +6743,19 @@ body.style-classic .btn {
 }
 
 .sub2api-quota {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: baseline;
+    gap: 0.28rem;
     color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.72rem;
+}
+
+.sub2api-money {
+    color: var(--text-main);
+    font-weight: 650;
     font-variant-numeric: tabular-nums;
 }
 
@@ -6778,22 +6790,53 @@ body.style-classic .btn {
 
 .rotation-stepper {
     display: inline-flex;
-    align-items: center;
-    gap: 0.12rem;
+    align-items: stretch;
+    height: 1.5rem;
+    border: 1px solid var(--border-base);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-main) 78%, var(--bg-surface) 22%);
+    overflow: hidden;
     flex: 0 0 auto;
 }
 
 .rotation-step {
-    width: 1.15rem;
-    height: 1.15rem;
-    border: 1px solid var(--border-base);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--bg-main) 80%, var(--border-base) 20%);
+    width: 1.35rem;
+    border: 0;
+    background: transparent;
     color: var(--text-muted);
-    font-size: 0.78rem;
+    font-size: 0.88rem;
+    font-weight: 700;
     line-height: 1;
     padding: 0;
     cursor: pointer;
+}
+
+.rotation-step:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--bg-main) 55%, var(--border-base) 45%);
+    color: var(--text-main);
+}
+
+.rotation-value {
+    min-width: 4.8rem;
+    padding: 0 0.35rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.68rem;
+    font-weight: 750;
+    white-space: nowrap;
+}
+
+.rotation-value.tone-ok {
+    color: var(--success);
+}
+
+.rotation-value.tone-warn {
+    color: var(--warning);
+}
+
+.rotation-value.tone-muted {
+    color: var(--text-muted);
 }
 
 .rotation-step:disabled {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import re
 import pytz
 import time
@@ -27,6 +28,8 @@ _NEWXIAOZHU_RE = re.compile(r"^newxiaozhu(.*)$", re.IGNORECASE)
 _DEFAULT_CHILD_TEMPLATE = "Team轮转"
 _STATUS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _STATUS_CACHE_TTL = 45.0
+_USAGE_COST_CACHE: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+_USAGE_COST_TTL = 90.0
 
 
 class Sub2ApiService:
@@ -594,6 +597,10 @@ class Sub2ApiService:
             "schedule": schedule["kind"],
             "schedule_label": schedule["label"],
             "tone": schedule["tone"],
+            "account_cost": None,
+            "user_cost": None,
+            "account_cost_label": "",
+            "user_cost_label": "",
         }
 
     def _is_relevant_account(self, account: Dict[str, Any]) -> bool:
@@ -769,17 +776,26 @@ class Sub2ApiService:
             seen: Dict[int, Dict[str, Any]] = {}
             searches = ("Team", "2026", "Pedro")
             group_ids = cfg["group_ids"] or [None]
-            for search in searches:
-                for group_id in group_ids:
-                    params: Dict[str, Any] = {"search": search, "page": 1, "page_size": 100, "sort_by": "name"}
-                    if group_id is not None:
-                        params["group"] = group_id
-                    response = await client.get("/api/v1/admin/accounts", headers=headers, params=params)
-                    response.raise_for_status()
-                    for item in self._account_items(self._unwrap(response.json())):
-                        account_id = item.get("id")
-                        if isinstance(account_id, int):
-                            seen[account_id] = item
+            async def pull(search: str, group_id: Optional[int]) -> List[Dict[str, Any]]:
+                params: Dict[str, Any] = {"search": search, "page": 1, "page_size": 100, "sort_by": "name"}
+                if group_id is not None:
+                    params["group"] = group_id
+                response = await client.get("/api/v1/admin/accounts", headers=headers, params=params)
+                response.raise_for_status()
+                return self._account_items(self._unwrap(response.json()))
+
+            chunks = await asyncio.gather(
+                *[pull(search, group_id) for search in searches for group_id in group_ids],
+                return_exceptions=True,
+            )
+            for chunk in chunks:
+                if isinstance(chunk, Exception):
+                    logger.warning("读取 Sub2API 账号列表失败: %s", chunk)
+                    continue
+                for item in chunk:
+                    account_id = item.get("id")
+                    if isinstance(account_id, int):
+                        seen[account_id] = item
             if not seen:
                 page = 1
                 while page <= 5:
@@ -803,13 +819,131 @@ class Sub2ApiService:
                     page += 1
         return [item for item in seen.values() if self._is_relevant_account(item)]
 
-    async def dashboard_status(self, db_session: AsyncSession, *, force: bool = False) -> Dict[str, Any]:
+    def _status_cache_key(self, cfg: Dict[str, Any]) -> str:
+        return f"{cfg['base_url']}|{cfg['api_key']}|{cfg['email']}|{','.join(str(i) for i in cfg['group_ids'])}"
+
+    @staticmethod
+    def format_usd(value: Any) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return f"{number:.2f}"
+
+    def apply_window_costs(self, row: Dict[str, Any], usage: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = usage if isinstance(usage, dict) else {}
+        seven = payload.get("seven_day")
+        stats = seven.get("window_stats") if isinstance(seven, dict) else None
+        if not isinstance(stats, dict):
+            stats = {}
+        account_cost = stats.get("cost")
+        user_cost = stats.get("user_cost")
+        account_label = f"A ${usd}" if (usd := self.format_usd(account_cost)) is not None else ""
+        user_label = f"U ${usd}" if (usd := self.format_usd(user_cost)) is not None else ""
+        row["account_cost"] = account_cost
+        row["user_cost"] = user_cost
+        row["account_cost_label"] = account_label
+        row["user_cost_label"] = user_label
+        return row
+
+    async def attach_usage_costs(
+        self,
+        db_session: AsyncSession,
+        boxes: List[Dict[str, Any]],
+        *,
+        force: bool = False,
+    ) -> List[Dict[str, Any]]:
+        rows = [account for box in boxes for account in (box.get("accounts") or []) if account.get("id") is not None]
+        if not rows:
+            return boxes
+        now = time.monotonic()
+        missing: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                account_id = int(row["id"])
+            except (TypeError, ValueError):
+                continue
+            cached = _USAGE_COST_CACHE.get(account_id)
+            if not force and cached and now - cached[0] < _USAGE_COST_TTL:
+                self.apply_window_costs(row, cached[1])
+            else:
+                missing.append(row)
+        if not missing:
+            return boxes
         cfg = await self._config(db_session)
-        cache_key = f"{cfg['base_url']}|{cfg['api_key']}|{cfg['email']}|{','.join(str(i) for i in cfg['group_ids'])}"
+        if not cfg["base_url"]:
+            return boxes
+        ids: List[int] = []
+        seen: set[int] = set()
+        for row in missing:
+            try:
+                account_id = int(row["id"])
+            except (TypeError, ValueError):
+                continue
+            if account_id in seen:
+                continue
+            seen.add(account_id)
+            ids.append(account_id)
+        payload_by_id: Dict[int, Dict[str, Any]] = {}
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=20.0) as client:
+            headers = await self._login_headers(client, cfg)
+            for offset in range(0, len(ids), 80):
+                chunk = ids[offset:offset + 80]
+                try:
+                    response = await client.post(
+                        "/api/v1/admin/accounts/usage/batch",
+                        headers=headers,
+                        json={"account_ids": chunk, "force": False},
+                    )
+                    response.raise_for_status()
+                    data = self._unwrap(response.json())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("批量读取 7日消费失败: %s", exc)
+                    continue
+                usage_map = data.get("usage") if isinstance(data, dict) else None
+                if not isinstance(usage_map, dict):
+                    continue
+                for key, payload in usage_map.items():
+                    try:
+                        payload_by_id[int(key)] = payload if isinstance(payload, dict) else {}
+                    except (TypeError, ValueError):
+                        continue
+        stamp = time.monotonic()
+        for row in missing:
+            try:
+                account_id = int(row["id"])
+            except (TypeError, ValueError):
+                continue
+            payload = payload_by_id.get(account_id, {})
+            _USAGE_COST_CACHE[account_id] = (stamp, payload)
+            self.apply_window_costs(row, payload)
+        return boxes
+
+    async def dashboard_status(
+        self,
+        db_session: AsyncSession,
+        *,
+        force: bool = False,
+        allow_network: bool = True,
+    ) -> Dict[str, Any]:
+        cfg = await self._config(db_session)
+        configured = bool(cfg["base_url"] and (cfg["api_key"] or (cfg["email"] and cfg["password"])))
+        cache_key = self._status_cache_key(cfg)
         cached = _STATUS_CACHE.get(cache_key)
         now = time.monotonic()
-        if not force and cached and now - cached[0] < _STATUS_CACHE_TTL:
+        if cached and not force and (now - cached[0] < _STATUS_CACHE_TTL or not allow_network):
             return cached[1]
+        if not allow_network:
+            return {
+                "ok": configured,
+                "configured": configured,
+                "boxes": [],
+                "count": 0,
+                "error": None if configured else "还没配 Sub2API",
+                "pending": configured,
+            }
         try:
             accounts = await self.list_status_accounts(db_session)
             boxes = self.group_accounts(accounts)
@@ -819,15 +953,17 @@ class Sub2ApiService:
                 "boxes": boxes,
                 "count": sum(len(box["accounts"]) for box in boxes),
                 "error": None,
+                "pending": False,
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning("读取 Sub2API 状态失败: %s", exc)
             result = {
                 "ok": False,
-                "configured": bool(cfg["api_key"] or (cfg["email"] and cfg["password"])),
+                "configured": configured,
                 "boxes": [],
                 "count": 0,
                 "error": str(exc) or type(exc).__name__,
+                "pending": False,
             }
         _STATUS_CACHE[cache_key] = (now, result)
         return result

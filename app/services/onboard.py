@@ -30,7 +30,7 @@ from app.services.sub2api import sub2api_service
 from app.services.team import team_service
 from app.services.chatgpt import ChatGPTService
 from app.services.team_view import present_occupancy
-from app.services.vacancy import is_safe_to_refill, summarize_for_message
+from app.services.vacancy import chatgpt_member_ids, is_safe_to_refill, summarize_for_message
 from app.utils.proxy import normalize_proxy_url
 from app.utils.time_utils import get_now
 
@@ -829,6 +829,65 @@ class OnboardService:
         email: str,
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        return await self._kick_to_standby_impl(
+            db_session, team_id=team_id, email=email, user_id=user_id
+        )
+
+    async def _kick_joined_and_verify(
+        self,
+        db_session: AsyncSession,
+        *,
+        team: Team,
+        target: str,
+        live_item: Optional[Dict[str, Any]],
+        user_id: Optional[str],
+    ) -> Dict[str, Any]:
+        ids = chatgpt_member_ids(user_id, live_item or {})
+        if not ids:
+            return {
+                "success": False,
+                "error": f"{target} 还在 Team 里，但没有可踢的 user_id",
+                "error_code": "kick_missing_user_id",
+            }
+        last: Dict[str, Any] = {"success": False, "error": "未执行踢人"}
+        for candidate in ids:
+            last = await team_service.delete_team_member(team.id, candidate, db_session, email=target)
+            if not last.get("success"):
+                logger.warning("踢人 ID %s 失败: %s", candidate, last.get("error"))
+                continue
+            live, still = await self._lookup_live_member(
+                db_session, team.id, target, retries=2, interval=1.5
+            )
+            if live.get("success") is False:
+                return {
+                    "success": False,
+                    "error": f"踢人请求已发出，但无法核对成员列表: {live.get('error') or '读取失败'}。没有把子号标成 standby。",
+                    "error_code": "kick_unverified",
+                }
+            if still is None or still.get("status") == "invited":
+                last["verified"] = True
+                last["kicked_user_id"] = candidate
+                return last
+            logger.warning(
+                "踢人接口成功但 %s 仍在成员列表 id=%s already_removed=%s",
+                target,
+                candidate,
+                last.get("already_removed"),
+            )
+        return {
+            "success": False,
+            "error": f"{target} 没有踢掉，ChatGPT 里还在。不要信刚才的成功提示。",
+            "error_code": "kick_not_removed",
+        }
+
+    async def _kick_to_standby_impl(
+        self,
+        db_session: AsyncSession,
+        *,
+        team_id: int,
+        email: str,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         team = await self._load_team(db_session, team_id)
         self._team_proxy(team)
         target = normalize_email(email)
@@ -890,16 +949,20 @@ class OnboardService:
                 "child": child_account_service.serialize(child) if child else None,
             }
 
-        if user_id:
-            result = await team_service.delete_team_member(team_id, user_id, db_session, email=target)
-        elif live_item is None:
+        if live_item is None and not user_id:
             result = {
                 "success": True,
                 "message": f"{target} 重试后仍不在成员列表，按已不在 Team 处理",
                 "already_absent": True,
             }
         else:
-            result = await team_service.revoke_team_invite(team_id, target, db_session)
+            result = await self._kick_joined_and_verify(
+                db_session,
+                team=team,
+                target=target,
+                live_item=live_item,
+                user_id=user_id,
+            )
 
         if not result.get("success"):
             await child_account_service.record_event(
@@ -910,10 +973,10 @@ class OnboardService:
                 child_id=child.id if child else None,
                 success=False,
                 detail=result.get("error") or "踢人失败",
-                error_code="kick_failed",
+                error_code=result.get("error_code") or "kick_failed",
             )
             await db_session.commit()
-            return {"success": False, "error": result.get("error") or "踢人失败"}
+            return {"success": False, "error": result.get("error") or "踢人失败", "error_code": result.get("error_code") or "kick_failed"}
 
         mapping = await self._mapping(db_session, team.id, target)
         if child:

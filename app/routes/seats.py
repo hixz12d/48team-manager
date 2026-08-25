@@ -28,16 +28,39 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["seats"])
 
 
+LIVE_FETCH_CONCURRENCY = 4
+
+
+async def _fetch_team_live(team_id: int) -> Dict[str, Any]:
+    async with AsyncSessionLocal() as session:
+        try:
+            live = await team_service.get_team_members(team_id, session)
+            await session.commit()
+            return live
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 Team %s 成员失败: %s", team_id, exc)
+            await session.rollback()
+            return {"success": False, "members": [], "error": str(exc) or type(exc).__name__}
+
+
 async def attach_live_members(
     db: AsyncSession,
     cards: List[Dict[str, Any]],
     status_index: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     status_index = status_index or {}
+    sem = asyncio.Semaphore(LIVE_FETCH_CONCURRENCY)
+
+    async def bound(card: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+        team_id = int(card["id"])
+        async with sem:
+            return team_id, await _fetch_team_live(team_id)
+
+    fetched = dict(await asyncio.gather(*(bound(card) for card in cards))) if cards else {}
     enriched: List[Dict[str, Any]] = []
     for card in cards:
         item = dict(card)
-        live = await team_service.get_team_members(int(card["id"]), db)
+        live = fetched.get(int(card["id"])) or {"success": False, "members": [], "error": "未读取"}
         local_by_email = {
             str(child.get("email") or "").lower(): child
             for child in (card.get("active_children") or [])
@@ -107,19 +130,37 @@ async def attach_rotation_events(
     return cards
 
 
-async def load_sub2api_dashboard(db: AsyncSession, *, force: bool = False) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    status = await sub2api_service.dashboard_status(db, force=force)
+async def load_local_cards(db: AsyncSession) -> List[Dict[str, Any]]:
     cards = await vacancy_service.attach_to_cards(
         db,
-        await attach_live_members(
-            db,
-            await child_account_service.dashboard_cards(db),
-            sub2api_service.index_status_by_email(status.get("boxes") or []),
-        ),
+        await child_account_service.dashboard_cards(db),
     )
     await attach_rotation_events(db, cards)
+    return cards
+
+
+async def load_sub2api_dashboard(
+    db: AsyncSession,
+    *,
+    force: bool = False,
+    live: bool = False,
+    costs: bool = False,
+    allow_network: bool = True,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    status = await sub2api_service.dashboard_status(db, force=force, allow_network=allow_network)
+    cards = await load_local_cards(db)
+    if live:
+        cards = await attach_live_members(
+            db,
+            cards,
+            sub2api_service.index_status_by_email(status.get("boxes") or []),
+        )
+        from app.services.team_view import attach_operational_view
+        attach_operational_view(cards)
+        await db.commit()
+    if costs and status.get("boxes"):
+        await sub2api_service.attach_usage_costs(db, status.get("boxes") or [], force=force)
     sub2api_service.annotate_rotation(status.get("boxes") or [], cards)
-    await db.commit()
     return cards, status
 
 
@@ -202,7 +243,7 @@ async def seats_page(
     from app.routes.admin import build_admin_base_context
 
     context = await build_admin_base_context(request, db, current_user, "seats")
-    cards, sub2api_status = await load_sub2api_dashboard(db)
+    cards, sub2api_status = await load_sub2api_dashboard(db, allow_network=False)
     context.update({
         "cards": cards,
         "children": [child_account_service.serialize(item) for item in await child_account_service.list_accounts(db)],
@@ -221,7 +262,7 @@ async def seats_list(
     current_user: dict = Depends(require_admin),
 ):
     children = await child_account_service.list_accounts(db, status=status, team_id=team_id, search=search)
-    cards, sub2api_status = await load_sub2api_dashboard(db)
+    cards, sub2api_status = await load_sub2api_dashboard(db, allow_network=False)
     return {
         "success": True,
         "children": [child_account_service.serialize(item) for item in children],
@@ -237,8 +278,17 @@ async def seats_sub2api_status(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin),
 ):
-    _cards, status = await load_sub2api_dashboard(db, force=force)
+    _cards, status = await load_sub2api_dashboard(db, force=force, costs=True)
     return {"success": True, **status}
+
+
+@router.get("/seats/live")
+async def seats_live(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    cards, _status = await load_sub2api_dashboard(db, live=True, allow_network=False)
+    return {"success": True, "cards": cards}
 
 
 async def _run_onboard_job(job_id: str, payload: OnboardRequest) -> None:

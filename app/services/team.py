@@ -2412,6 +2412,7 @@ class TeamService:
                     joined_emails.add(normalized_email)
                 all_members.append({
                     "user_id": ChatGPTService.pick_user_id(m),
+                    "member_id": m.get("id") if isinstance(m.get("id"), str) else None,
                     "account_user_id": m.get("account_user_id") if isinstance(m.get("account_user_id"), str) else None,
                     "email": normalized_email or m.get("email"),
                     "name": m.get("name"),

@@ -54,6 +54,7 @@ class Sub2ApiStatusTests(unittest.TestCase):
         fifteen = boxes[0]["accounts"]
         self.assertEqual([row["short_name"] for row in fifteen], ["母号", "子号 1"])
         self.assertEqual(fifteen[0]["quota_label"], "7日 81%")
+        self.assertEqual(fifteen[0]["account_cost_label"], "")
         self.assertEqual(fifteen[0]["schedule_label"], "不调度")
         self.assertEqual(fifteen[1]["schedule"], "401")
         self.assertEqual(boxes[1]["accounts"][0]["schedule"], "429")
@@ -72,6 +73,24 @@ class Sub2ApiStatusTests(unittest.TestCase):
         boxes = self.service.group_accounts([account])
         self.assertEqual(boxes[0]["title"], ".2026.28")
         self.assertEqual(boxes[0]["accounts"][0]["short_name"], "母号")
+
+    def test_apply_window_costs_uses_seven_day_stats(self):
+        row = {"id": 12}
+        self.service.apply_window_costs(row, {
+            "five_hour": {"window_stats": {"cost": 9.99, "user_cost": 8.88}},
+            "seven_day": {"window_stats": {"cost": 1.234, "user_cost": 2.5}},
+        })
+        self.assertEqual(row["account_cost_label"], "A $1.23")
+        self.assertEqual(row["user_cost_label"], "U $2.50")
+
+    def test_apply_window_costs_ignores_five_hour_fallback(self):
+        row = {"id": 13}
+        self.service.apply_window_costs(row, {
+            "five_hour": {"window_stats": {"cost": 9.99, "user_cost": 8.88}},
+            "window_stats": {"cost": 3, "user_cost": 4},
+        })
+        self.assertEqual(row["account_cost_label"], "")
+        self.assertEqual(row["user_cost_label"], "")
 
     def test_indexes_status_by_email(self):
         boxes = self.service.group_accounts([
