@@ -442,6 +442,8 @@ class ChildAccountService:
                 "available_seats": max(0, int(team.max_members or 0) - int(team.current_members or 0)),
                 "proxy": team.proxy or "",
                 "seat_cycle_days": team.seat_cycle_days or 7,
+                "rotation_manual_count": team.rotation_manual_count,
+                "rotation_manual_on": team.rotation_manual_on,
                 "last_sync": team.last_sync.isoformat() if team.last_sync else None,
                 "active_children": [self.serialize(item) for item in active],
                 "due_children": due,

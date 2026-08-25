@@ -153,6 +153,11 @@ class VacancyClearRequest(BaseModel):
     team_id: int
 
 
+class RotationCountRequest(BaseModel):
+    team_id: int
+    count: int = Field(..., ge=0, le=99)
+
+
 class ReregisterRequest(BaseModel):
     child_id: Optional[int] = None
     team_id: Optional[int] = None
@@ -389,6 +394,29 @@ async def seats_vacancy_clear(
 ):
     deleted = await vacancy_service.clear_team(db, payload.team_id)
     return {"success": True, "message": f"已清空 {deleted} 条席位阈值历史", "deleted": deleted}
+
+
+@router.post("/seats/rotation-count")
+async def seats_rotation_count(
+    payload: RotationCountRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    team = await db.get(Team, payload.team_id)
+    if not team:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Team 不存在"})
+    today = get_now().date().isoformat()
+    team.rotation_manual_on = today
+    team.rotation_manual_count = int(payload.count)
+    await db.commit()
+    badge = sub2api_service.rotation_badge(payload.count)
+    return {
+        "success": True,
+        "team_id": team.id,
+        "rotation_manual": True,
+        "rotation_manual_on": today,
+        **badge,
+    }
 
 
 @router.post("/seats/rotate")

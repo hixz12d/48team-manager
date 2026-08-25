@@ -6776,6 +6776,31 @@ body.style-classic .btn {
     color: var(--text-muted);
 }
 
+.rotation-stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.12rem;
+    flex: 0 0 auto;
+}
+
+.rotation-step {
+    width: 1.15rem;
+    height: 1.15rem;
+    border: 1px solid var(--border-base);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-main) 80%, var(--border-base) 20%);
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+}
+
+.rotation-step:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
 .seat-card-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

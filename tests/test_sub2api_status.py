@@ -158,6 +158,59 @@ class Sub2ApiStatusTests(unittest.TestCase):
         self.assertEqual(box["rotation_label"], "今日已轮 1次")
         self.assertEqual(box["rotation_tone"], "ok")
 
+    def test_manual_rotation_count_overrides_auto_for_today(self):
+        boxes = self.service.group_accounts([
+            {
+                "id": 4,
+                "name": "Team Pedro 母号",
+                "status": "active",
+                "credentials": {"email": "pedropick89@gmail.com"},
+            },
+        ])
+        now = datetime(2026, 8, 24, 21, 0, 0)
+        self.service.annotate_rotation(boxes, [
+            {
+                "id": 5,
+                "email": "pedropick89@gmail.com",
+                "team_name": "SunshineRain",
+                "rotation_emails": ["old@icloud.com", "new@icloud.com"],
+                "rotation_manual_count": 1,
+                "rotation_manual_on": "2026-08-24",
+            },
+        ], now=now)
+        box = boxes[0]
+        self.assertEqual(box["team_id"], 5)
+        self.assertEqual(box["rotation_auto_count"], 2)
+        self.assertTrue(box["rotation_manual"])
+        self.assertEqual(box["rotation_count"], 1)
+        self.assertEqual(box["rotation_label"], "今日已轮 1次")
+
+    def test_stale_manual_rotation_count_is_ignored(self):
+        boxes = self.service.group_accounts([
+            {
+                "id": 4,
+                "name": "Team Pedro 母号",
+                "status": "active",
+                "credentials": {"email": "pedropick89@gmail.com"},
+            },
+        ])
+        now = datetime(2026, 8, 24, 21, 0, 0)
+        self.service.annotate_rotation(boxes, [
+            {
+                "id": 5,
+                "email": "pedropick89@gmail.com",
+                "team_name": "SunshineRain",
+                "rotation_emails": ["old@icloud.com", "new@icloud.com"],
+                "rotation_manual_count": 9,
+                "rotation_manual_on": "2026-08-23",
+            },
+        ], now=now)
+        box = boxes[0]
+        self.assertFalse(box["rotation_manual"])
+        self.assertEqual(box["rotation_auto_count"], 2)
+        self.assertEqual(box["rotation_count"], 2)
+        self.assertEqual(box["rotation_label"], "今日已轮 2次")
+
 
 if __name__ == "__main__":
     unittest.main()

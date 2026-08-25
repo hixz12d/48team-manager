@@ -284,6 +284,16 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE teams ADD COLUMN seat_cycle_days INTEGER DEFAULT 7")
             migrations_applied.append("teams.seat_cycle_days")
 
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "rotation_manual_count"):
+            logger.info("添加 teams.rotation_manual_count 字段")
+            cursor.execute("ALTER TABLE teams ADD COLUMN rotation_manual_count INTEGER")
+            migrations_applied.append("teams.rotation_manual_count")
+
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "rotation_manual_on"):
+            logger.info("添加 teams.rotation_manual_on 字段")
+            cursor.execute("ALTER TABLE teams ADD COLUMN rotation_manual_on VARCHAR(10)")
+            migrations_applied.append("teams.rotation_manual_on")
+
         if not table_exists(cursor, "child_accounts"):
             logger.info("创建 child_accounts 表")
             cursor.execute("""

@@ -35,7 +35,7 @@
             {% else %}
             {% for group in sub2api_status.boxes %}
             <article class="sub2api-box tone-{{ group.tone or 'ok' }}">
-                <header><span>{{ group.title }}</span><span class="sub2api-chip tone-{{ group.rotation_tone or 'muted' }}">{{ group.rotation_label or '今日未轮' }}</span></header>
+                <header><span>{{ group.title }}</span>{% if group.team_id %}<span class="rotation-stepper" data-team-id="{{ group.team_id }}" data-count="{{ group.rotation_count or 0 }}" title="今天轮了几次，可手调"><button type="button" class="rotation-step" onclick="adjustRotationCount(this, -1)" {% if not group.rotation_count %}disabled{% endif %}>−</button><span class="sub2api-chip tone-{{ group.rotation_tone or 'muted' }}" data-rotation-label>{{ group.rotation_label or '今日未轮' }}</span><button type="button" class="rotation-step" onclick="adjustRotationCount(this, 1)">+</button></span>{% else %}<span class="sub2api-chip tone-{{ group.rotation_tone or 'muted' }}">{{ group.rotation_label or '今日未轮' }}</span>{% endif %}</header>
                 {% for item in group.accounts %}
                 <div class="sub2api-row">
                     <span class="sub2api-name" title="{{ item.name or item.email or '' }}">{{ item.short_name or item.name }}</span>
@@ -591,6 +591,53 @@ function escapeSeatHtml(value) {
     }[ch]));
 }
 
+function rotationChipHtml(group) {
+    const count = Number(group.rotation_count || 0);
+    const chip = '<span class="sub2api-chip tone-' + escapeSeatHtml(group.rotation_tone || 'muted') + '" data-rotation-label>' + escapeSeatHtml(group.rotation_label || '今日未轮') + '</span>';
+    if (!group.team_id) return chip;
+    return '<span class="rotation-stepper" data-team-id="' + String(group.team_id) + '" data-count="' + count + '" title="今天轮了几次，可手调">' +
+        '<button type="button" class="rotation-step" onclick="adjustRotationCount(this, -1)"' + (count <= 0 ? ' disabled' : '') + '>−</button>' +
+        chip +
+        '<button type="button" class="rotation-step" onclick="adjustRotationCount(this, 1)">+</button>' +
+        '</span>';
+}
+
+async function adjustRotationCount(btn, delta) {
+    const wrap = btn.closest('.rotation-stepper');
+    if (!wrap || wrap.dataset.busy) return;
+    const teamId = Number(wrap.dataset.teamId);
+    const current = Number(wrap.dataset.count || 0);
+    const next = Math.max(0, Math.min(99, current + delta));
+    if (next === current) return;
+    wrap.dataset.busy = '1';
+    wrap.querySelectorAll('.rotation-step').forEach((el) => { el.disabled = true; });
+    try {
+        const response = await fetch('/admin/seats/rotation-count', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ team_id: teamId, count: next }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            throw new Error(data.error || '调整失败');
+        }
+        wrap.dataset.count = String(data.rotation_count);
+        const chip = wrap.querySelector('[data-rotation-label]');
+        if (chip) {
+            chip.textContent = data.rotation_label;
+            chip.className = 'sub2api-chip tone-' + (data.rotation_tone || 'muted');
+        }
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        delete wrap.dataset.busy;
+        const count = Number(wrap.dataset.count || 0);
+        const steps = wrap.querySelectorAll('.rotation-step');
+        if (steps[0]) steps[0].disabled = count <= 0;
+        if (steps[1]) steps[1].disabled = count >= 99;
+    }
+}
+
 function renderSub2apiStatus(data) {
     const box = document.getElementById('sub2apiStatus');
     if (!box) return;
@@ -615,7 +662,7 @@ function renderSub2apiStatus(data) {
                 '<span class="sub2api-chip tone-' + escapeSeatHtml(item.tone || 'muted') + '">' + escapeSeatHtml(item.schedule_label || '-') + '</span>' +
             '</div>'
         )).join('');
-        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span><span class="sub2api-chip tone-' + escapeSeatHtml(group.rotation_tone || 'muted') + '">' + escapeSeatHtml(group.rotation_label || '今日未轮') + '</span></header>' + rows + '</article>';
+        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span>' + rotationChipHtml(group) + '</header>' + rows + '</article>';
     }).join('');
 }
 

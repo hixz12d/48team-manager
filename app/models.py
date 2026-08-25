@@ -38,6 +38,8 @@ class Team(Base):
     pool_type = Column(String(20), default="normal", comment="池类型: normal/welfare")
     proxy = Column(String(500), comment="母号专属静态 ISP 代理")
     seat_cycle_days = Column(Integer, default=7, comment="子号轮转天数")
+    rotation_manual_count = Column(Integer, comment="今日轮转次数手调值")
+    rotation_manual_on = Column(String(10), comment="手调轮转次数的日期 YYYY-MM-DD")
 
     # 关系
     team_accounts = relationship("TeamAccount", back_populates="team", cascade="all, delete-orphan")

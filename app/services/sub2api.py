@@ -661,6 +661,36 @@ class Sub2ApiService:
             return False
         return any(str(item.get("email") or "").strip().lower() == card_email for item in (box.get("accounts") or []))
 
+    @staticmethod
+    def rotation_badge(count: int) -> Dict[str, Any]:
+        value = max(0, int(count or 0))
+        return {
+            "rotated_today": value > 0,
+            "rotation_count": value,
+            "rotation_label": f"今日已轮 {value}次" if value else "今日未轮",
+            "rotation_tone": "ok" if value else "warn",
+        }
+
+    def _today_manual_count(self, card: Dict[str, Any], today) -> Optional[int]:
+        raw_on = card.get("rotation_manual_on")
+        if raw_on in (None, ""):
+            return None
+        if hasattr(raw_on, "date"):
+            on = raw_on.date().isoformat()
+        elif hasattr(raw_on, "isoformat"):
+            on = raw_on.isoformat()[:10]
+        else:
+            on = str(raw_on).strip()[:10]
+        if on != today.isoformat():
+            return None
+        raw_count = card.get("rotation_manual_count")
+        if raw_count in (None, ""):
+            return None
+        try:
+            return max(0, int(raw_count))
+        except (TypeError, ValueError):
+            return None
+
     def annotate_rotation(
         self,
         boxes: List[Dict[str, Any]],
@@ -671,9 +701,18 @@ class Sub2ApiService:
         today = (now or get_now()).date()
         for box in boxes:
             emails: set[str] = set()
+            team_id = None
+            manual = None
             for card in cards:
                 if not self._box_matches_card(box, card):
                     continue
+                if team_id is None and card.get("id") is not None:
+                    try:
+                        team_id = int(card["id"])
+                    except (TypeError, ValueError):
+                        team_id = None
+                if manual is None:
+                    manual = self._today_manual_count(card, today)
                 owner = str(card.get("email") or "").strip().lower()
                 for item in card.get("rotation_emails") or []:
                     email = str(item or "").strip().lower()
@@ -689,11 +728,12 @@ class Sub2ApiService:
                     if self._is_today(member.get("joined_at") or member.get("added_at"), today):
                         if email:
                             emails.add(email)
-            count = len(emails)
-            box["rotated_today"] = count > 0
-            box["rotation_count"] = count
-            box["rotation_label"] = f"今日已轮 {count}次" if count else "今日未轮"
-            box["rotation_tone"] = "ok" if count else "warn"
+            auto = len(emails)
+            count = auto if manual is None else manual
+            box.update(self.rotation_badge(count))
+            box["rotation_auto_count"] = auto
+            box["rotation_manual"] = manual is not None
+            box["team_id"] = team_id
         return boxes
 
     async def _login_headers(self, client: httpx.AsyncClient, cfg: Dict[str, Any]) -> Dict[str, str]:
