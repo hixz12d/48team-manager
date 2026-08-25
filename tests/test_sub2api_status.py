@@ -92,6 +92,31 @@ class Sub2ApiStatusTests(unittest.TestCase):
         self.assertEqual(row["account_cost_label"], "")
         self.assertEqual(row["user_cost_label"], "")
 
+    def test_annotate_cost_totals_sums_group_and_grand(self):
+        boxes = [
+            {
+                "title": ".2026.21",
+                "accounts": [
+                    {"account_cost": 108.97, "user_cost": 12.76},
+                    {"account_cost": 96.79, "user_cost": 11.21},
+                ],
+            },
+            {
+                "title": "Pedro",
+                "accounts": [
+                    {"account_cost": "10.50", "user_cost": None},
+                    {"account_cost": None, "user_cost": 1.5},
+                ],
+            },
+        ]
+        grand = self.service.annotate_cost_totals(boxes)
+        self.assertEqual(boxes[0]["account_cost_label"], "A $205.76")
+        self.assertEqual(boxes[0]["user_cost_label"], "U $23.97")
+        self.assertEqual(boxes[1]["account_cost_label"], "A $10.50")
+        self.assertEqual(boxes[1]["user_cost_label"], "U $1.50")
+        self.assertEqual(grand["account_cost_label"], "A $216.26")
+        self.assertEqual(grand["user_cost_label"], "U $25.47")
+
     def test_indexes_status_by_email(self):
         boxes = self.service.group_accounts([
             {

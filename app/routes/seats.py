@@ -160,6 +160,7 @@ async def load_sub2api_dashboard(
         await db.commit()
     if costs and status.get("boxes"):
         await sub2api_service.attach_usage_costs(db, status.get("boxes") or [], force=force)
+        status.update(sub2api_service.annotate_cost_totals(status.get("boxes") or []))
     sub2api_service.annotate_rotation(status.get("boxes") or [], cards)
     return cards, status
 

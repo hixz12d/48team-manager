@@ -6695,6 +6695,42 @@ body.style-classic .btn {
     gap: 0.75rem;
 }
 
+.sub2api-totals {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.45rem 0.85rem;
+    padding: 0.05rem 0.15rem 0.2rem;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.sub2api-totals > span:first-child {
+    font-weight: 750;
+    color: var(--text-main);
+}
+
+.sub2api-totals .sub2api-money {
+    font-size: 0.98rem;
+    font-weight: 800;
+}
+
+.sub2api-box-totals {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.55rem;
+    margin: -0.05rem 0 0.38rem;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.sub2api-box-totals .sub2api-money {
+    font-weight: 750;
+}
+
 .sub2api-box {
     border: 1px solid var(--border-base);
     border-radius: 14px;

@@ -832,20 +832,59 @@ class Sub2ApiService:
             return None
         return f"{number:.2f}"
 
+    def parse_cost(self, value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def cost_fields(self, account_cost: Any = None, user_cost: Any = None) -> Dict[str, Any]:
+        account = self.parse_cost(account_cost)
+        user = self.parse_cost(user_cost)
+        return {
+            "account_cost": account,
+            "user_cost": user,
+            "account_cost_label": f"A ${usd}" if (usd := self.format_usd(account)) is not None else "",
+            "user_cost_label": f"U ${usd}" if (usd := self.format_usd(user)) is not None else "",
+        }
+
+    def sum_costs(self, rows: List[Dict[str, Any]]) -> tuple[Optional[float], Optional[float]]:
+        account_total = 0.0
+        user_total = 0.0
+        has_account = False
+        has_user = False
+        for row in rows:
+            account = self.parse_cost(row.get("account_cost"))
+            user = self.parse_cost(row.get("user_cost"))
+            if account is not None:
+                account_total += account
+                has_account = True
+            if user is not None:
+                user_total += user
+                has_user = True
+        return (
+            round(account_total, 2) if has_account else None,
+            round(user_total, 2) if has_user else None,
+        )
+
+    def annotate_cost_totals(self, boxes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        all_rows: List[Dict[str, Any]] = []
+        for box in boxes:
+            rows = list(box.get("accounts") or [])
+            all_rows.extend(rows)
+            account_cost, user_cost = self.sum_costs(rows)
+            box.update(self.cost_fields(account_cost, user_cost))
+        return self.cost_fields(*self.sum_costs(all_rows))
+
     def apply_window_costs(self, row: Dict[str, Any], usage: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = usage if isinstance(usage, dict) else {}
         seven = payload.get("seven_day")
         stats = seven.get("window_stats") if isinstance(seven, dict) else None
         if not isinstance(stats, dict):
             stats = {}
-        account_cost = stats.get("cost")
-        user_cost = stats.get("user_cost")
-        account_label = f"A ${usd}" if (usd := self.format_usd(account_cost)) is not None else ""
-        user_label = f"U ${usd}" if (usd := self.format_usd(user_cost)) is not None else ""
-        row["account_cost"] = account_cost
-        row["user_cost"] = user_cost
-        row["account_cost_label"] = account_label
-        row["user_cost_label"] = user_label
+        row.update(self.cost_fields(stats.get("cost"), stats.get("user_cost")))
         return row
 
     async def attach_usage_costs(

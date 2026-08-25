@@ -35,9 +35,22 @@
             {% elif not sub2api_status.boxes %}
             <p class="form-help">没有匹配到 Team 账号</p>
             {% else %}
+            {% if sub2api_status.account_cost_label or sub2api_status.user_cost_label %}
+            <div class="sub2api-totals" title="全部 Team 7日合计">
+                <span>7日合计</span>
+                {% if sub2api_status.account_cost_label %}<span class="sub2api-money" title="7日总消费">{{ sub2api_status.account_cost_label }}</span>{% endif %}
+                {% if sub2api_status.user_cost_label %}<span class="sub2api-money" title="7日总倍率下消费">{{ sub2api_status.user_cost_label }}</span>{% endif %}
+            </div>
+            {% endif %}
             {% for group in sub2api_status.boxes %}
             <article class="sub2api-box tone-{{ group.tone or 'ok' }}">
                 <header><span>{{ group.title }}</span>{% if group.team_id %}<span class="rotation-stepper" data-team-id="{{ group.team_id }}" data-count="{{ group.rotation_count or 0 }}" title="今天轮了几次，可手调"><button type="button" class="rotation-step" onclick="adjustRotationCount(this, -1)" {% if not group.rotation_count %}disabled{% endif %}>−</button><span class="rotation-value tone-{{ group.rotation_tone or 'muted' }}" data-rotation-label>{{ group.rotation_label or '今日未轮' }}</span><button type="button" class="rotation-step" onclick="adjustRotationCount(this, 1)">+</button></span>{% else %}<span class="rotation-value tone-{{ group.rotation_tone or 'muted' }}">{{ group.rotation_label or '今日未轮' }}</span>{% endif %}</header>
+                {% if group.account_cost_label or group.user_cost_label %}
+                <div class="sub2api-box-totals" title="本组 7日合计">
+                    {% if group.account_cost_label %}<span class="sub2api-money" title="本组7日消费">{{ group.account_cost_label }}</span>{% endif %}
+                    {% if group.user_cost_label %}<span class="sub2api-money" title="本组7日倍率下消费">{{ group.user_cost_label }}</span>{% endif %}
+                </div>
+                {% endif %}
                 {% for item in group.accounts %}
                 <div class="sub2api-row">
                     <span class="sub2api-name" title="{{ item.name or item.email or '' }}">{{ item.short_name or item.name }}</span>
@@ -497,6 +510,7 @@ async function handleRotate(event) {
 
 async function kickChild(teamId, email, userId = '') {
     if (!confirm(`踢出 ${email}？本地已入库的子号会留在 standby，未入库成员只从 Team 里移除。`)) return;
+    showToast('正在踢出 ' + email + '…', 'info');
     try {
         const payload = { team_id: teamId, email };
         if (userId) payload.user_id = userId;
@@ -621,6 +635,16 @@ function patchSeatQuotaFromIndex() {
     });
 }
 
+function costTotalsHtml(item, className, titles) {
+    if (!item || (!item.account_cost_label && !item.user_cost_label)) return '';
+    titles = titles || {};
+    let html = '<div class="' + className + '"' + (titles.wrapTitle ? ' title="' + escapeSeatHtml(titles.wrapTitle) + '"' : '') + '>';
+    if (titles.prefix) html += '<span>' + escapeSeatHtml(titles.prefix) + '</span>';
+    if (item.account_cost_label) html += '<span class="sub2api-money" title="' + escapeSeatHtml(titles.account || '7日账号计费') + '">' + escapeSeatHtml(item.account_cost_label) + '</span>';
+    if (item.user_cost_label) html += '<span class="sub2api-money" title="' + escapeSeatHtml(titles.user || '7日用户计费') + '">' + escapeSeatHtml(item.user_cost_label) + '</span>';
+    return html + '</div>';
+}
+
 function quotaCellHtml(item) {
     let html = '<span class="sub2api-quota"><span>' + escapeSeatHtml(item.quota_label || '额度 -') + '</span>';
     if (item.account_cost_label) html += '<span class="sub2api-money" title="7日账号计费">' + escapeSeatHtml(item.account_cost_label) + '</span>';
@@ -691,7 +715,7 @@ function renderSub2apiStatus(data) {
         box.innerHTML = '<p class="form-help">' + (data.pending ? '加载中…' : '没有匹配到 Team 账号') + '</p>';
         return;
     }
-    box.innerHTML = boxes.map((group) => {
+    box.innerHTML = costTotalsHtml(data, 'sub2api-totals', { prefix: '7日合计', wrapTitle: '全部 Team 7日合计', account: '7日总消费', user: '7日总倍率下消费' }) + boxes.map((group) => {
         const rows = (group.accounts || []).map((item) => (
             '<div class="sub2api-row">' +
                 '<span class="sub2api-name" title="' + escapeSeatHtml(item.name || item.email || '') + '">' + escapeSeatHtml(item.short_name || item.name) + '</span>' +
@@ -699,7 +723,7 @@ function renderSub2apiStatus(data) {
                 '<span class="sub2api-chip tone-' + escapeSeatHtml(item.tone || 'muted') + '">' + escapeSeatHtml(item.schedule_label || '-') + '</span>' +
             '</div>'
         )).join('');
-        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span>' + rotationChipHtml(group) + '</header>' + rows + '</article>';
+        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span>' + rotationChipHtml(group) + '</header>' + costTotalsHtml(group, 'sub2api-box-totals', { wrapTitle: '本组 7日合计', account: '本组7日消费', user: '本组7日倍率下消费' }) + rows + '</article>';
     }).join('');
     indexSub2apiAccounts(boxes);
     patchSeatQuotaFromIndex();
@@ -725,9 +749,9 @@ function seatActionHtml(card, child) {
     const email = String(child.email || '');
     if (child.role === 'account-owner') return '<span class="text-muted">所有者</span>';
     if (child.status === 'invited') {
-        return '<button class="btn btn-sm btn-warning" onclick="revokeLiveInvite(' + card.id + ', ' + JSON.stringify(email) + ')">撤回</button>';
+        return '<button class="btn btn-sm btn-warning" onclick="revokeLiveInvite(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(email)) + ')">撤回</button>';
     }
-    return '<button class="btn btn-sm btn-danger" onclick="kickChild(' + card.id + ', ' + JSON.stringify(email) + ', ' + JSON.stringify(String(child.user_id || '')) + ')">踢出</button>';
+    return '<button class="btn btn-sm btn-danger" onclick="kickChild(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(email)) + ', ' + escapeSeatHtml(JSON.stringify(String(child.user_id || ''))) + ')">踢出</button>';
 }
 
 function updateSeatCard(card) {
