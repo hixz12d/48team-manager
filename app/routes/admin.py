@@ -2295,6 +2295,7 @@ async def settings_page(
             "sub2api_admin_email": await settings_service.get_setting(db, "sub2api_admin_email", ""),
             "sub2api_admin_password": await settings_service.get_setting(db, "sub2api_admin_password", ""),
             "sub2api_group_ids": await settings_service.get_setting(db, "sub2api_group_ids", ""),
+            "sub2api_template_name": await settings_service.get_setting(db, "sub2api_template_name", "Team轮转"),
             "cf_mail_base_url": await settings_service.get_setting(db, "cf_mail_base_url", "https://apimail.xiaozhudf2026.foo"),
             "cf_mail_address": await settings_service.get_setting(db, "cf_mail_address", "icloud@xiaozhudf2026.foo"),
             "cf_mail_admin_password": await settings_service.get_setting(db, "cf_mail_admin_password", ""),
@@ -2358,6 +2359,7 @@ class Sub2ApiSettingsRequest(BaseModel):
     admin_email: str = Field("", description="Sub2API 后台邮箱，只读状态可选用")
     admin_password: str = Field("", description="Sub2API 后台密码，只读状态可选用")
     group_ids: str = Field("", description="分组 ID，逗号分隔")
+    template_name: str = Field("Team轮转", description="推子号时套用的账号创建模板名")
 
 
 class CloudflareMailSettingsRequest(BaseModel):
@@ -3340,6 +3342,7 @@ async def update_sub2api_settings(
         "sub2api_admin_email": payload.admin_email.strip(),
         "sub2api_admin_password": payload.admin_password.strip(),
         "sub2api_group_ids": payload.group_ids.strip(),
+        "sub2api_template_name": payload.template_name.strip() or "Team轮转",
     })
     if success:
         return JSONResponse(content={"success": True, "message": "Sub2API 配置已保存"})

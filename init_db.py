@@ -127,12 +127,17 @@ async def create_default_settings():
             Setting(
                 key="sub2api_admin_password",
                 value="",
-                description="Sub2API 后台密码，只读状态可选用"
+                description="Sub2API 后台密码，状态读取和推送可选用"
             ),
             Setting(
                 key="sub2api_group_ids",
                 value="",
-                description="Sub2API 分组 ID，逗号分隔"
+                description="Sub2API 分组 ID，逗号分隔；模板没带分组时才用"
+            ),
+            Setting(
+                key="sub2api_template_name",
+                value="Team轮转",
+                description="推子号时套用的 Sub2API 账号创建模板名"
             ),
         ]
 

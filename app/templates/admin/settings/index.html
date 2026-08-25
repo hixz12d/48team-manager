@@ -404,11 +404,17 @@
         <div class="form-group">
             <label for="sub2apiAdminPassword">后台密码</label>
             <input type="password" id="sub2apiAdminPassword" class="form-control" value="{{ sub2api_admin_password or '' }}">
-            <p class="form-help">没有 Admin API Key 时，子号池状态框会用这对账号只读登录。不会改 Sub2API 任何数据。</p>
+            <p class="form-help">没有 Admin API Key 时，状态读取和推送都会用这对账号登录。</p>
+        </div>
+        <div class="form-group">
+            <label for="sub2apiTemplateName">子号模板名</label>
+            <input type="text" id="sub2apiTemplateName" class="form-control" value="{{ sub2api_template_name or 'Team轮转' }}" placeholder="Team轮转">
+            <p class="form-help">推子号时套这个 Sub2API 账号创建模板。模板默认不带代理，代理按母号 ISP 自动匹配。</p>
         </div>
         <div class="form-group">
             <label for="sub2apiGroupIds">分组 ID</label>
-            <input type="text" id="sub2apiGroupIds" class="form-control" value="{{ sub2api_group_ids or '' }}" placeholder="13">
+            <input type="text" id="sub2apiGroupIds" class="form-control" value="{{ sub2api_group_ids or '' }}" placeholder="112">
+            <p class="form-help">模板没带分组时的兜底。当前 Team轮转模板会覆盖这个值。</p>
         </div>
         <button type="submit" class="btn btn-primary">保存 Sub2API 配置</button>
     </form>
@@ -911,7 +917,8 @@
                         api_key: document.getElementById('sub2apiApiKey').value.trim(),
                         admin_email: document.getElementById('sub2apiAdminEmail').value.trim(),
                         admin_password: document.getElementById('sub2apiAdminPassword').value.trim(),
-                        group_ids: document.getElementById('sub2apiGroupIds').value.trim()
+                        group_ids: document.getElementById('sub2apiGroupIds').value.trim(),
+                        template_name: document.getElementById('sub2apiTemplateName').value.trim()
                     })
                 });
                 const data = await response.json();

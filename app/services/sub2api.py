@@ -7,6 +7,7 @@ import pytz
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 _TEAM_PREFIX_RE = re.compile(r"^(?:GPT\s+)?Team\s*", re.IGNORECASE)
 _CHILD_RE = re.compile(r"子号\s*(\d+)")
 _EMAIL_FAMILY_RE = re.compile(r"(?:xiaozhudf\.?)?(\d{4}\.\d+)", re.IGNORECASE)
+_XIAOZHU_DOTTED_RE = re.compile(r"xiaozhudf\.(\d{4}\.\d+)", re.IGNORECASE)
+_XIAOZHU_PLAIN_RE = re.compile(r"xiaozhudf(\d{4}\.\d+)", re.IGNORECASE)
+_NEWXIAOZHU_RE = re.compile(r"^newxiaozhu(.*)$", re.IGNORECASE)
+_DEFAULT_CHILD_TEMPLATE = "Team轮转"
 _STATUS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _STATUS_CACHE_TTL = 45.0
 
@@ -37,12 +42,14 @@ class Sub2ApiService:
                 part = part.strip()
                 if part.isdigit():
                     group_ids.append(int(part))
+        template_name = (await settings_service.get_setting(db_session, "sub2api_template_name", _DEFAULT_CHILD_TEMPLATE)).strip()
         return {
             "base_url": base_url or "http://sub2api-canary:8080",
             "api_key": api_key,
             "email": email,
             "password": password,
             "group_ids": group_ids,
+            "template_name": template_name or _DEFAULT_CHILD_TEMPLATE,
         }
 
     def _unwrap(self, data: Any) -> Any:
@@ -195,6 +202,365 @@ class Sub2ApiService:
         if "pedro" in local:
             return "Pedro"
         return ""
+
+    def _positive_ids(self, values: Any) -> List[int]:
+        if not isinstance(values, list):
+            return []
+        out: List[int] = []
+        seen = set()
+        for item in values:
+            try:
+                number = int(item)
+            except (TypeError, ValueError):
+                continue
+            if number <= 0 or number in seen:
+                continue
+            seen.add(number)
+            out.append(number)
+        return out
+
+    def _account_group_ids(self, account: Optional[Dict[str, Any]]) -> List[int]:
+        if not account:
+            return []
+        groups = account.get("groups")
+        if not groups:
+            groups = account.get("group_ids")
+        ids: List[int] = []
+        if isinstance(groups, list):
+            for group in groups:
+                if isinstance(group, dict):
+                    ids.append(group.get("id"))
+                else:
+                    ids.append(group)
+        return self._positive_ids(ids)
+
+    def _account_proxy_id(self, account: Optional[Dict[str, Any]]) -> Optional[int]:
+        if not account:
+            return None
+        value = account.get("proxy_id")
+        if value in (None, "", 0, "0"):
+            proxy = account.get("proxy")
+            if isinstance(proxy, dict):
+                value = proxy.get("id")
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    def proxy_endpoint(self, host: Any, port: Any = None) -> str:
+        text = str(host or "").strip().lower().strip("[]")
+        if not text:
+            return ""
+        try:
+            number = int(port) if port not in (None, "") else 0
+        except (TypeError, ValueError):
+            number = 0
+        return f"{text}:{number}" if number else text
+
+    def proxy_endpoint_from_url(self, proxy_url: str) -> str:
+        raw = str(proxy_url or "").strip()
+        if not raw:
+            return ""
+        try:
+            parsed = urlparse(raw if "://" in raw else f"socks5h://{raw}")
+        except Exception:
+            return ""
+        return self.proxy_endpoint(parsed.hostname, parsed.port)
+
+    def proxy_endpoint_from_item(self, item: Dict[str, Any]) -> str:
+        return self.proxy_endpoint(item.get("host"), item.get("port"))
+
+    def match_proxy_id(
+        self,
+        proxies: List[Dict[str, Any]],
+        proxy_url: str,
+        siblings: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[int]:
+        target = self.proxy_endpoint_from_url(proxy_url)
+        if target:
+            for item in proxies:
+                if self.proxy_endpoint_from_item(item) != target:
+                    continue
+                try:
+                    number = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if number > 0:
+                    return number
+        counts: Dict[int, int] = {}
+        for account in siblings or []:
+            proxy_id = self._account_proxy_id(account)
+            if proxy_id:
+                counts[proxy_id] = counts.get(proxy_id, 0) + 1
+        if not counts:
+            return None
+        return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+    def extra_from_template_values(self, values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        extra: Dict[str, Any] = {}
+        if not isinstance(values, dict):
+            return extra
+        ws = str(values.get("openai_ws_mode") or "off").strip() or "off"
+        extra["openai_oauth_responses_websockets_v2_mode"] = ws
+        extra["openai_oauth_responses_websockets_v2_enabled"] = ws not in {"", "off"}
+        fingerprint = str(values.get("codex_fingerprint_mode") or "off").strip() or "off"
+        if fingerprint != "off":
+            extra["codex_fingerprint_mode"] = fingerprint
+        if values.get("tls_fingerprint_enabled"):
+            extra["enable_tls_fingerprint"] = True
+            profile = values.get("tls_fingerprint_profile_id")
+            if profile not in (None, 0, "0"):
+                extra["tls_fingerprint_profile_id"] = profile
+        if values.get("openai_passthrough"):
+            extra["openai_passthrough"] = True
+        if values.get("openai_flatten_namespaces"):
+            extra["openai_flatten_namespaces"] = True
+        if values.get("openai_long_context_billing"):
+            extra["openai_long_context_billing_enabled"] = True
+        compact = str(values.get("openai_compact_mode") or "auto").strip() or "auto"
+        if compact != "auto":
+            extra["openai_compact_mode"] = compact
+        if values.get("codex_cli_only"):
+            extra["codex_cli_only"] = True
+        if values.get("codex_cli_only_app_server"):
+            extra["codex_cli_only_allow_app_server"] = True
+        return extra
+
+    def pick_account_create_template(
+        self,
+        items: List[Dict[str, Any]],
+        *,
+        name: str = "",
+        platform: str = "openai",
+        account_type: str = "oauth",
+    ) -> Optional[Dict[str, Any]]:
+        scoped = [
+            item for item in items
+            if str(item.get("platform") or "") == platform and str(item.get("type") or "") == account_type
+        ]
+        want = (name or "").strip().lower()
+        if want:
+            for item in scoped:
+                if str(item.get("name") or "").strip().lower() == want:
+                    return item
+        for item in scoped:
+            if item.get("is_default"):
+                return item
+        for item in scoped:
+            if str(item.get("name") or "").strip() == _DEFAULT_CHILD_TEMPLATE:
+                return item
+        return scoped[0] if scoped else None
+
+    def template_import_fields(
+        self,
+        template: Optional[Dict[str, Any]],
+        fallback_group_ids: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        if not isinstance(template, dict):
+            return {
+                "name": "",
+                "group_ids": list(fallback_group_ids or []),
+                "concurrency": None,
+                "priority": None,
+                "rate_multiplier": None,
+                "load_factor": None,
+                "auto_pause_on_expired": None,
+                "extra": None,
+            }
+        values = (template or {}).get("values") if isinstance(template, dict) else None
+        if not isinstance(values, dict):
+            values = {}
+        include_groups = bool((template or {}).get("include_groups"))
+        group_ids = self._positive_ids(values.get("group_ids")) if include_groups else []
+        if not group_ids:
+            group_ids = list(fallback_group_ids or [])
+        concurrency = values.get("concurrency")
+        try:
+            concurrency = int(concurrency) if concurrency not in (None, "") else None
+        except (TypeError, ValueError):
+            concurrency = None
+        priority = values.get("priority")
+        try:
+            priority = int(priority) if priority not in (None, "") else None
+        except (TypeError, ValueError):
+            priority = None
+        extra = self.extra_from_template_values(values)
+        return {
+            "name": str((template or {}).get("name") or "").strip(),
+            "group_ids": group_ids,
+            "concurrency": concurrency if concurrency and concurrency > 0 else None,
+            "priority": priority if priority and priority > 0 else None,
+            "rate_multiplier": values.get("rate_multiplier"),
+            "load_factor": values.get("load_factor"),
+            "auto_pause_on_expired": values.get("auto_pause_on_expired"),
+            "extra": extra or None,
+        }
+
+    def derive_family_label(self, email: str, team_name: str = "") -> str:
+        text = email or ""
+        dotted = _XIAOZHU_DOTTED_RE.search(text)
+        if dotted:
+            return f".{dotted.group(1)}"
+        plain = _XIAOZHU_PLAIN_RE.search(text)
+        if plain:
+            return plain.group(1)
+        local = text.split("@", 1)[0].strip()
+        if "pedro" in local.lower():
+            return "Pedro"
+        newbie = _NEWXIAOZHU_RE.match(local)
+        if newbie:
+            suffix = (newbie.group(1) or "").strip()
+            return f"new{suffix}" if suffix else "new"
+        email_family = self._family_from_email(text)
+        if email_family:
+            return email_family
+        if team_name:
+            return self._normalize_family(team_name)
+        return local
+
+    def family_key(self, email: str, team_name: str = "", name: str = "") -> str:
+        return self._family_from_email(email) or self._family_from_name(name)[0] or self._normalize_family(
+            self.derive_family_label(email, team_name)
+        )
+
+    def _label_from_account_name(self, name: str) -> str:
+        text = str(name or "").strip()
+        if not text or "@" in text:
+            return ""
+        text = _TEAM_PREFIX_RE.sub("", text)
+        text = re.sub(r"^母号\s*", "", text)
+        text = re.sub(r"\s*母号\s*$", "", text)
+        text = _CHILD_RE.sub("", text)
+        return text.strip(" -_/")
+
+    def family_accounts(
+        self,
+        accounts: List[Dict[str, Any]],
+        team_email: str,
+        team_name: str = "",
+    ) -> List[Dict[str, Any]]:
+        key = self.family_key(team_email, team_name)
+        if not key:
+            return []
+        matched = []
+        for account in accounts:
+            account_key = self.family_key(self._account_email(account), name=str(account.get("name") or ""))
+            if account_key == key:
+                matched.append(account)
+        return matched
+
+    def display_family_label(
+        self,
+        accounts: List[Dict[str, Any]],
+        team_email: str,
+        team_name: str = "",
+    ) -> str:
+        derived = self.derive_family_label(team_email, team_name)
+        labels = []
+        for account in self.family_accounts(accounts, team_email, team_name):
+            label = self._label_from_account_name(str(account.get("name") or ""))
+            if label:
+                labels.append(label)
+        if labels:
+            return max(set(labels), key=labels.count)
+        return derived
+
+    def next_child_order(self, accounts: List[Dict[str, Any]]) -> int:
+        used = []
+        for account in accounts:
+            match = _CHILD_RE.search(str(account.get("name") or ""))
+            if match:
+                used.append(int(match.group(1)))
+        return (max(used) + 1) if used else 1
+
+    def find_existing_account(
+        self,
+        accounts: List[Dict[str, Any]],
+        *,
+        email: str = "",
+        existing_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if existing_id:
+            for account in accounts:
+                if account.get("id") == existing_id:
+                    return account
+        target = (email or "").strip().lower()
+        if not target:
+            return None
+        for account in accounts:
+            if self._account_email(account).strip().lower() == target:
+                return account
+        return None
+
+    def build_account_name(
+        self,
+        *,
+        role: str,
+        email: str,
+        team_email: str,
+        team_name: str = "",
+        accounts: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        accounts = accounts or []
+        target = (email or "").strip().lower()
+        for account in accounts:
+            name = str(account.get("name") or "").strip()
+            if name and self._account_email(account).strip().lower() == target:
+                return name
+        label = self.display_family_label(accounts, team_email or email, team_name)
+        if not label:
+            return email
+        if role == "owner":
+            return f"Team {label} 母号"
+        family = self.family_accounts(accounts, team_email or email, team_name)
+        return f"Team {label} 子号 {self.next_child_order(family)}"
+
+    def build_codex_import_payload(
+        self,
+        *,
+        content: str,
+        name: str,
+        role: str,
+        existing: Optional[Dict[str, Any]],
+        template_fields: Optional[Dict[str, Any]] = None,
+        fallback_group_ids: Optional[List[int]] = None,
+        proxy_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "content": content,
+            "name": name,
+            "update_existing": True,
+        }
+        fields = template_fields or {}
+        fallback = list(fallback_group_ids or [])
+        create = existing is None
+        group_ids: List[int] = []
+        apply_template = create and role == "child"
+        if apply_template:
+            group_ids = list(fields.get("group_ids") or fallback)
+            if fields.get("concurrency"):
+                payload["concurrency"] = fields["concurrency"]
+            if fields.get("priority"):
+                payload["priority"] = fields["priority"]
+            if fields.get("rate_multiplier") is not None:
+                payload["rate_multiplier"] = fields["rate_multiplier"]
+            if fields.get("load_factor"):
+                payload["load_factor"] = fields["load_factor"]
+            if fields.get("extra"):
+                payload["extra"] = dict(fields["extra"])
+            if fields.get("auto_pause_on_expired") is not None:
+                payload["auto_pause_on_expired"] = bool(fields["auto_pause_on_expired"])
+        elif create:
+            group_ids = fallback
+        elif not self._account_group_ids(existing):
+            group_ids = list(fields.get("group_ids") or fallback) if role == "child" else fallback
+        if group_ids:
+            payload["group_ids"] = group_ids
+            payload["confirm_mixed_channel_risk"] = True
+        if proxy_id and (create or not self._account_proxy_id(existing)):
+            payload["proxy_id"] = proxy_id
+        return payload
 
     def summarize_account(self, account: Dict[str, Any]) -> Dict[str, Any]:
         name = str(account.get("name") or "").strip()
@@ -419,81 +785,180 @@ class Sub2ApiService:
         return result
 
     async def import_session(
-        self,
-        db_session: AsyncSession,
-        *,
-        email: str,
-        access_token: str,
-        refresh_token: str = "",
-        id_token: str = "",
-        account_id: str = "",
-        client_id: str = "",
-        existing_id: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        cfg = await self._config(db_session)
-        if not cfg["base_url"] or not cfg["api_key"]:
-            raise RuntimeError("尚未配置 Sub2API 地址或 Admin API Key")
-        if not access_token:
-            raise RuntimeError("缺少 access token，无法推送 Sub2API")
+            self,
+            db_session: AsyncSession,
+            *,
+            email: str,
+            access_token: str,
+            refresh_token: str = "",
+            id_token: str = "",
+            account_id: str = "",
+            client_id: str = "",
+            existing_id: Optional[int] = None,
+            team: Any = None,
+            proxy_url: str = "",
+            role: str = "child",
+        ) -> Dict[str, Any]:
+            cfg = await self._config(db_session)
+            if not cfg["base_url"]:
+                raise RuntimeError("尚未配置 Sub2API 地址")
+            if not cfg["api_key"] and not (cfg["email"] and cfg["password"]):
+                raise RuntimeError("尚未配置 Sub2API Admin API Key 或后台账号")
+            if not access_token:
+                raise RuntimeError("缺少 access token，无法推送 Sub2API")
 
-        headers = {
-            "x-api-key": cfg["api_key"],
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-        errors: list[str] = []
-        async with httpx.AsyncClient(base_url=cfg["base_url"], headers=headers, timeout=60.0) as client:
-            session_payload = {"content": access_token, "name": email}
-            if cfg["group_ids"]:
-                session_payload["group_ids"] = cfg["group_ids"]
-            try:
-                response = await client.post("/api/v1/admin/accounts/import/codex-session", json=session_payload)
-                if response.status_code < 400:
-                    data = self._unwrap(response.json())
-                    return {
-                        "strategy": "import_codex_session",
-                        "account_id": self._extract_account_id(data) or existing_id,
-                        "data": data,
-                    }
-                errors.append(f"import_codex_session: {response.status_code} {response.text[:240]}")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"import_codex_session: {exc}")
+            team_email = str(getattr(team, "email", "") or "") if team is not None else ""
+            team_name = str(getattr(team, "team_name", "") or "") if team is not None else ""
+            proxy_url = proxy_url or (str(getattr(team, "proxy", "") or "") if team is not None else "")
+            role = "owner" if role == "owner" else "child"
 
-            credentials = {
-                "access_token": access_token,
-                "email": email,
-            }
-            if refresh_token:
-                credentials["refresh_token"] = refresh_token
-            if id_token:
-                credentials["id_token"] = id_token
-            if account_id:
-                credentials["chatgpt_account_id"] = account_id
-            if client_id:
-                credentials["client_id"] = client_id
+            errors: list[str] = []
+            async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=60.0) as client:
+                headers = await self._login_headers(client, cfg)
 
-            create_payload = {
-                "name": email,
-                "platform": "openai",
-                "type": "oauth",
-                "credentials": credentials,
-                "group_ids": cfg["group_ids"],
-                "status": "active",
-            }
-            try:
-                response = await client.post("/api/v1/admin/accounts", json=create_payload)
-                if response.status_code < 400:
-                    data = self._unwrap(response.json())
-                    return {
-                        "strategy": "create_account",
-                        "account_id": self._extract_account_id(data) or existing_id,
-                        "data": data,
-                    }
-                errors.append(f"create_account: {response.status_code} {response.text[:240]}")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"create_account: {exc}")
+                async def admin_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+                    response = await client.get(path, headers=headers, params=params)
+                    response.raise_for_status()
+                    return self._unwrap(response.json())
 
-        raise RuntimeError("Sub2API 推送失败: " + " | ".join(errors))
+                templates: List[Dict[str, Any]] = []
+                try:
+                    payload = await admin_get("/api/v1/admin/settings/account-create-templates")
+                    items = payload.get("items") if isinstance(payload, dict) else payload
+                    if isinstance(items, list):
+                        templates = [item for item in items if isinstance(item, dict)]
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("读取 Sub2API 账号模板失败: %s", exc)
+
+                proxies: List[Dict[str, Any]] = []
+                try:
+                    payload = await admin_get("/api/v1/admin/proxies", {"page": 1, "page_size": 200})
+                    items = payload.get("items") if isinstance(payload, dict) else payload
+                    if isinstance(items, list):
+                        proxies = [item for item in items if isinstance(item, dict)]
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("读取 Sub2API 代理列表失败: %s", exc)
+
+                searches = ["Team", "2026", "Pedro"]
+                for extra in (team_email.split("@", 1)[0], self.derive_family_label(team_email, team_name), email.split("@", 1)[0]):
+                    extra = (extra or "").strip()
+                    if extra and extra not in searches:
+                        searches.append(extra)
+                accounts: List[Dict[str, Any]] = []
+                seen: Dict[int, Dict[str, Any]] = {}
+                try:
+                    for search in searches:
+                        payload = await admin_get(
+                            "/api/v1/admin/accounts",
+                            {"search": search, "page": 1, "page_size": 100, "sort_by": "name"},
+                        )
+                        for item in self._account_items(payload):
+                            account_pk = item.get("id")
+                            if isinstance(account_pk, int) and account_pk not in seen:
+                                seen[account_pk] = item
+                    accounts = list(seen.values())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("读取 Sub2API 账号列表失败: %s", exc)
+
+                template = self.pick_account_create_template(templates, name=cfg.get("template_name") or "") if role == "child" else None
+                template_fields = self.template_import_fields(template, cfg["group_ids"]) if role == "child" else {
+                    "name": "",
+                    "group_ids": list(cfg["group_ids"] or []),
+                    "concurrency": None,
+                    "priority": None,
+                    "rate_multiplier": None,
+                    "load_factor": None,
+                    "auto_pause_on_expired": None,
+                    "extra": None,
+                }
+                existing = self.find_existing_account(accounts, email=email, existing_id=existing_id)
+                siblings = self.family_accounts(accounts, team_email or email, team_name)
+                proxy_id = self.match_proxy_id(proxies, proxy_url, siblings)
+                account_name = self.build_account_name(
+                    role=role,
+                    email=email,
+                    team_email=team_email or email,
+                    team_name=team_name,
+                    accounts=accounts,
+                )
+                session_payload = self.build_codex_import_payload(
+                    content=access_token,
+                    name=account_name,
+                    role=role,
+                    existing=existing,
+                    template_fields=template_fields,
+                    fallback_group_ids=cfg["group_ids"],
+                    proxy_id=proxy_id,
+                )
+                logger.info(
+                    "推送 Sub2API: email=%s name=%s role=%s template=%s proxy_id=%s create=%s",
+                    email,
+                    account_name,
+                    role,
+                    template_fields.get("name") or "-",
+                    session_payload.get("proxy_id"),
+                    existing is None,
+                )
+                try:
+                    response = await client.post(
+                        "/api/v1/admin/accounts/import/codex-session",
+                        headers=headers,
+                        json=session_payload,
+                    )
+                    if response.status_code < 400:
+                        data = self._unwrap(response.json())
+                        return {
+                            "strategy": "import_codex_session",
+                            "account_id": self._extract_account_id(data) or existing_id or (existing or {}).get("id"),
+                            "data": data,
+                            "name": account_name,
+                            "proxy_id": session_payload.get("proxy_id"),
+                            "template": template_fields.get("name") or None,
+                        }
+                    errors.append(f"import_codex_session: {response.status_code} {response.text[:240]}")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"import_codex_session: {exc}")
+
+                credentials = {
+                    "access_token": access_token,
+                    "email": email,
+                }
+                if refresh_token:
+                    credentials["refresh_token"] = refresh_token
+                if id_token:
+                    credentials["id_token"] = id_token
+                if account_id:
+                    credentials["chatgpt_account_id"] = account_id
+                if client_id:
+                    credentials["client_id"] = client_id
+
+                create_payload = {
+                    "name": account_name,
+                    "platform": "openai",
+                    "type": "oauth",
+                    "credentials": credentials,
+                    "status": "active",
+                }
+                for key in ("group_ids", "proxy_id", "concurrency", "priority", "rate_multiplier", "load_factor", "extra", "confirm_mixed_channel_risk", "auto_pause_on_expired"):
+                    if key in session_payload:
+                        create_payload[key] = session_payload[key]
+                try:
+                    response = await client.post("/api/v1/admin/accounts", headers=headers, json=create_payload)
+                    if response.status_code < 400:
+                        data = self._unwrap(response.json())
+                        return {
+                            "strategy": "create_account",
+                            "account_id": self._extract_account_id(data) or existing_id,
+                            "data": data,
+                            "name": account_name,
+                            "proxy_id": session_payload.get("proxy_id"),
+                            "template": template_fields.get("name") or None,
+                        }
+                    errors.append(f"create_account: {response.status_code} {response.text[:240]}")
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"create_account: {exc}")
+
+            raise RuntimeError("Sub2API 推送失败: " + " | ".join(errors))
 
     async def push_team(self, db_session: AsyncSession, team: Any) -> Dict[str, Any]:
         from app.services.encryption import encryption_service
@@ -519,6 +984,9 @@ class Sub2ApiService:
             id_token=_decrypt(getattr(team, "id_token_encrypted", None)),
             account_id=str(getattr(team, "account_id", "") or ""),
             client_id=str(getattr(team, "client_id", "") or ""),
+            team=team,
+            proxy_url=str(getattr(team, "proxy", "") or ""),
+            role="owner",
         )
         email = str(getattr(team, "email", "") or "")
         return {

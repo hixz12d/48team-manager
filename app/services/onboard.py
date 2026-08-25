@@ -345,6 +345,9 @@ class OnboardService:
                     account_id=workspace,
                     client_id=child.client_id or "",
                     existing_id=child.sub2api_account_id,
+                    team=team,
+                    proxy_url=child.proxy or (team.proxy if team else "") or "",
+                    role="child",
                 )
                 if push_result.get("account_id"):
                     child.sub2api_account_id = int(push_result["account_id"])
@@ -738,6 +741,9 @@ class OnboardService:
                 account_id=child.account_id or "",
                 client_id=child.client_id or "",
                 existing_id=child.sub2api_account_id,
+                team=team,
+                proxy_url=child.proxy or team.proxy or "",
+                role="child",
             )
             if push_result.get("account_id"):
                 child.sub2api_account_id = int(push_result["account_id"])
