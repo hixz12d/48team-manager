@@ -160,11 +160,16 @@ class Sub2ApiService:
 
     def _schedule_state(self, account: Dict[str, Any]) -> Dict[str, str]:
         error = str(account.get("error_message") or "").strip()
+        probe = self.classify_probe(status_code=None, error=error, payload=account)
+        if probe["kind"] == "phone":
+            return {"kind": "phone", "label": "未接码", "tone": "warn"}
         lowered = error.lower()
         reset_at = account.get("rate_limit_reset_at")
         limited = bool(account.get("rate_limited_at")) or self._is_future(reset_at)
-        if "401" in error or "revoked" in lowered or "invalidated oauth" in lowered:
+        if probe["kind"] == "401" or "401" in error or "revoked" in lowered or "invalidated oauth" in lowered:
             return {"kind": "401", "label": "401 失效", "tone": "danger"}
+        if probe["kind"] == "403":
+            return {"kind": "403", "label": "403", "tone": "danger"}
         if limited or "429" in error or "rate limit" in lowered:
             remain = self._format_remain(reset_at)
             label = f"429 {remain}" if remain else "429 限额"
@@ -279,11 +284,23 @@ class Sub2ApiService:
         proxies: List[Dict[str, Any]],
         proxy_url: str,
         siblings: Optional[List[Dict[str, Any]]] = None,
+        family_label: str = "",
     ) -> Optional[int]:
         target = self.proxy_endpoint_from_url(proxy_url)
         if target:
             for item in proxies:
                 if self.proxy_endpoint_from_item(item) != target:
+                    continue
+                try:
+                    number = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if number > 0:
+                    return number
+        if family_label:
+            for item in proxies:
+                proxy_family = self._family_from_name(str(item.get("name") or ""))[0]
+                if not self.families_match(family_label, proxy_family):
                     continue
                 try:
                     number = int(item.get("id"))
@@ -299,6 +316,54 @@ class Sub2ApiService:
         if not counts:
             return None
         return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+    def classify_probe(
+        self,
+        *,
+        status_code: Optional[int] = None,
+        error: str = "",
+        payload: Any = None,
+    ) -> Dict[str, str]:
+        parts = [str(error or "")]
+        if isinstance(payload, dict):
+            for key in ("error", "error_message", "message", "detail", "error_code"):
+                value = payload.get(key)
+                if value not in (None, ""):
+                    parts.append(str(value))
+            nested = payload.get("error")
+            if isinstance(nested, dict):
+                parts.extend(str(nested.get(key) or "") for key in ("message", "code", "type"))
+        blob = " ".join(parts).lower()
+        phone_markers = (
+            "phone number",
+            "phone verification",
+            "verify your phone",
+            "add a phone",
+            "sms_verification",
+            "phone_verification",
+            "手机验证",
+            "未接码",
+        )
+        if any(marker in blob for marker in phone_markers):
+            return {"kind": "phone", "label": "未接码", "tone": "warn"}
+        code = 0
+        try:
+            code = int(status_code or 0)
+        except (TypeError, ValueError):
+            code = 0
+        if code == 401 or "401" in blob or "revoked" in blob or "invalidated oauth" in blob or "token_invalidated" in blob:
+            return {"kind": "401", "label": "401", "tone": "danger"}
+        if code == 403 or "403" in blob:
+            return {"kind": "403", "label": "403", "tone": "danger"}
+        if code == 429 or "429" in blob or "rate limit" in blob:
+            return {"kind": "429", "label": "429", "tone": "warn"}
+        if code >= 400:
+            return {"kind": str(code), "label": str(code), "tone": "danger"}
+        if isinstance(payload, dict) and payload.get("ok") is False:
+            return {"kind": "error", "label": "异常", "tone": "danger"}
+        if code == 0 and not blob.strip():
+            return {"kind": "none", "label": "无token", "tone": "muted"}
+        return {"kind": "200", "label": "200", "tone": "ok"}
 
     def extra_from_template_values(self, values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         extra: Dict[str, Any] = {}
@@ -656,17 +721,35 @@ class Sub2ApiService:
         local = self._local_datetime(value)
         return bool(local and local.date() == today)
 
+    def _family_token(self, value: str) -> str:
+        return re.sub(r"\s+", "", (value or "").strip()).lower().lstrip(".")
+
+    def families_match(self, left: str, right: str) -> bool:
+        first = self._family_token(left)
+        second = self._family_token(right)
+        return bool(first and second and first == second)
+
     def _card_family(self, card: Dict[str, Any]) -> str:
-        return self._family_from_email(str(card.get("email") or "")) or self._normalize_family(str(card.get("team_name") or ""))
+        email = str(card.get("email") or "")
+        team_name = str(card.get("team_name") or "")
+        return self.family_key(email, team_name) or self.derive_family_label(email, team_name)
 
     def _box_matches_card(self, box: Dict[str, Any], card: Dict[str, Any]) -> bool:
         family = self._card_family(card)
-        if family and family == box.get("title"):
+        if self.families_match(family, str(box.get("title") or "")):
             return True
         card_email = str(card.get("email") or "").strip().lower()
-        if not card_email:
-            return False
-        return any(str(item.get("email") or "").strip().lower() == card_email for item in (box.get("accounts") or []))
+        if card_email and any(
+            str(item.get("email") or "").strip().lower() == card_email
+            for item in (box.get("accounts") or [])
+        ):
+            return True
+        for item in box.get("accounts") or []:
+            if self.families_match(family, str(item.get("family") or "")):
+                return True
+            if self.families_match(family, self._family_from_name(str(item.get("name") or ""))[0]):
+                return True
+        return False
 
     @staticmethod
     def rotation_badge(count: int) -> Dict[str, Any]:
@@ -1007,6 +1090,85 @@ class Sub2ApiService:
         _STATUS_CACHE[cache_key] = (now, result)
         return result
 
+    async def ensure_account_runtime(
+        self,
+        client: httpx.AsyncClient,
+        headers: Dict[str, str],
+        account_id: Optional[int],
+        *,
+        proxy_id: Optional[int] = None,
+        group_ids: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        if not account_id:
+            return {}
+        account: Dict[str, Any] = {}
+        try:
+            response = await client.get(f"/api/v1/admin/accounts/{account_id}", headers=headers)
+            if response.status_code < 400:
+                data = self._unwrap(response.json())
+                if isinstance(data, dict):
+                    account = data
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取 Sub2API 账号 %s 失败: %s", account_id, exc)
+        patch: Dict[str, Any] = {}
+        if proxy_id and not self._account_proxy_id(account):
+            patch["proxy_id"] = proxy_id
+        wanted_groups = self._positive_ids(group_ids or [])
+        if wanted_groups and not self._account_group_ids(account):
+            patch["group_ids"] = wanted_groups
+            patch["confirm_mixed_channel_risk"] = True
+        if not patch:
+            return {"account": account, "patched": False}
+        try:
+            response = await client.put(
+                f"/api/v1/admin/accounts/{account_id}",
+                headers=headers,
+                json=patch,
+            )
+            if response.status_code < 400:
+                data = self._unwrap(response.json())
+                if isinstance(data, dict):
+                    account = data
+                return {"account": account, "patched": True, "patch": patch}
+            logger.warning("回填 Sub2API 账号 %s 失败: %s %s", account_id, response.status_code, response.text[:240])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("回填 Sub2API 账号 %s 失败: %s", account_id, exc)
+        return {"account": account, "patched": False, "patch": patch}
+
+    async def probe_access_token(
+        self,
+        db_session: AsyncSession,
+        access_token: str,
+        *,
+        email: str = "",
+        proxy_url: str = "",
+    ) -> Dict[str, Any]:
+        if not access_token:
+            return self.classify_probe(status_code=None, error="", payload=None)
+        from app.services.chatgpt import chatgpt_service
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        try:
+            result = await chatgpt_service._make_request(
+                "GET",
+                f"{chatgpt_service.BASE_URL}/me",
+                headers,
+                db_session=db_session,
+                identifier=email or "probe",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self.classify_probe(status_code=0, error=str(exc))
+        probe = self.classify_probe(
+            status_code=result.get("status_code"),
+            error=str(result.get("error") or ""),
+            payload=result.get("data") if isinstance(result.get("data"), dict) else result,
+        )
+        probe["status_code"] = result.get("status_code")
+        probe["detail"] = str(result.get("error") or "")[:240]
+        if proxy_url:
+            probe["proxy"] = self.proxy_endpoint_from_url(proxy_url)
+        return probe
+
     async def import_session(
             self,
             db_session: AsyncSession,
@@ -1043,6 +1205,24 @@ class Sub2ApiService:
                     response = await client.get(path, headers=headers, params=params)
                     response.raise_for_status()
                     return self._unwrap(response.json())
+
+                async def finish(result: Dict[str, Any]) -> Dict[str, Any]:
+                    ensured = await self.ensure_account_runtime(
+                        client,
+                        headers,
+                        result.get("account_id"),
+                        proxy_id=session_payload.get("proxy_id"),
+                        group_ids=session_payload.get("group_ids") or [],
+                    )
+                    if ensured.get("patched") and ensured.get("account"):
+                        result["runtime"] = {"patched": True, "patch": ensured.get("patch")}
+                    result["probe"] = await self.probe_access_token(
+                        db_session,
+                        access_token,
+                        email=email,
+                        proxy_url=proxy_url,
+                    )
+                    return result
 
                 templates: List[Dict[str, Any]] = []
                 try:
@@ -1096,7 +1276,8 @@ class Sub2ApiService:
                 }
                 existing = self.find_existing_account(accounts, email=email, existing_id=existing_id)
                 siblings = self.family_accounts(accounts, team_email or email, team_name)
-                proxy_id = self.match_proxy_id(proxies, proxy_url, siblings)
+                family_label = self.derive_family_label(team_email or email, team_name)
+                proxy_id = self.match_proxy_id(proxies, proxy_url, siblings, family_label=family_label)
                 account_name = self.build_account_name(
                     role=role,
                     email=email,
@@ -1130,14 +1311,14 @@ class Sub2ApiService:
                     )
                     if response.status_code < 400:
                         data = self._unwrap(response.json())
-                        return {
+                        return await finish({
                             "strategy": "import_codex_session",
                             "account_id": self._extract_account_id(data) or existing_id or (existing or {}).get("id"),
                             "data": data,
                             "name": account_name,
                             "proxy_id": session_payload.get("proxy_id"),
                             "template": template_fields.get("name") or None,
-                        }
+                        })
                     errors.append(f"import_codex_session: {response.status_code} {response.text[:240]}")
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"import_codex_session: {exc}")
@@ -1169,14 +1350,14 @@ class Sub2ApiService:
                     response = await client.post("/api/v1/admin/accounts", headers=headers, json=create_payload)
                     if response.status_code < 400:
                         data = self._unwrap(response.json())
-                        return {
+                        return await finish({
                             "strategy": "create_account",
                             "account_id": self._extract_account_id(data) or existing_id,
                             "data": data,
                             "name": account_name,
                             "proxy_id": session_payload.get("proxy_id"),
                             "template": template_fields.get("name") or None,
-                        }
+                        })
                     errors.append(f"create_account: {response.status_code} {response.text[:240]}")
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"create_account: {exc}")
@@ -1212,15 +1393,30 @@ class Sub2ApiService:
             role="owner",
         )
         email = str(getattr(team, "email", "") or "")
+        probe = result.get("probe") if isinstance(result.get("probe"), dict) else {}
+        probe_label = str(probe.get("label") or "").strip()
+        message = f"已推送到 Sub2API：{email}"
+        if probe_label:
+            message += f"，探测 {probe_label}"
+        if result.get("runtime", {}).get("patched"):
+            message += "，已回填缺失的代理/分组"
+        warning = None
+        if probe.get("kind") == "phone":
+            warning = "账号未接码，推送不会覆盖已有代理/分组，可在子号池用本机认证补票"
+        elif probe.get("kind") in {"401", "403"}:
+            warning = f"推送后探测为 {probe_label}，Token 可能还不能用"
         return {
             "success": True,
-            "message": f"已推送到 Sub2API：{email}",
+            "message": message,
             "email": email,
             "filename": email,
             "action": "updated" if result.get("strategy") == "create_account" else "uploaded",
             "account_id": result.get("account_id"),
-            "warning": None,
-            "warnings": [],
+            "proxy_id": result.get("proxy_id"),
+            "template": result.get("template"),
+            "probe": probe,
+            "warning": warning,
+            "warnings": [warning] if warning else [],
         }
 
 

@@ -7,13 +7,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import AsyncSessionLocal, get_db
-from app.models import SeatEvent, Team
+from app.models import ChildAccount, SeatEvent, Team
 from app.dependencies.auth import require_admin
 from app.services.child_accounts import child_account_service, normalize_email
 from app.services.onboard import onboard_service
@@ -49,6 +49,12 @@ async def attach_live_members(
     status_index: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     status_index = status_index or {}
+    probe_rows = (await db.execute(select(ChildAccount))).scalars().all()
+    probe_by_email = {
+        str(child.email or "").lower(): child
+        for child in probe_rows
+        if child.email
+    }
     sem = asyncio.Semaphore(LIVE_FETCH_CONCURRENCY)
 
     async def bound(card: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
@@ -71,6 +77,21 @@ async def attach_live_members(
                 email = str(member.get("email") or "").strip().lower()
                 local = local_by_email.get(email) or {}
                 remote = status_index.get(email) or {}
+                stored = probe_by_email.get(email)
+                probe_status = getattr(stored, "probe_status", None) or local.get("probe_status") or ""
+                probe_label = getattr(stored, "probe_label", None) or local.get("probe_label") or ""
+                probe_tone = {
+                    "200": "ok",
+                    "phone": "warn",
+                    "429": "warn",
+                    "401": "danger",
+                    "403": "danger",
+                }.get(probe_status, "muted")
+                schedule_label = remote.get("schedule_label") or ""
+                tone = remote.get("tone") or "muted"
+                if probe_status in {"phone", "401", "403"} and probe_label:
+                    schedule_label = probe_label
+                    tone = probe_tone
                 live_members.append({
                     "email": email or member.get("email"),
                     "user_id": member.get("user_id"),
@@ -81,10 +102,13 @@ async def attach_live_members(
                     "joined_at": member.get("added_at") or local.get("joined_at"),
                     "remaining_days": local.get("remaining_days"),
                     "quota_label": remote.get("quota_label") or "",
-                    "schedule_label": remote.get("schedule_label") or "",
-                    "tone": remote.get("tone") or "muted",
-                    "sub2api_account_id": remote.get("id") or local.get("sub2api_account_id"),
-                    "in_pool": bool(local),
+                    "schedule_label": schedule_label,
+                    "tone": tone,
+                    "probe_status": probe_status,
+                    "probe_label": probe_label,
+                    "probe_tone": probe_tone,
+                    "sub2api_account_id": remote.get("id") or local.get("sub2api_account_id") or getattr(stored, "sub2api_account_id", None),
+                    "in_pool": bool(local or stored),
                 })
             item["live_error"] = None
             team = await db.get(Team, int(card["id"]))
@@ -219,6 +243,28 @@ class FixAccountIdRequest(BaseModel):
     email: str = ""
     push: bool = True
 
+
+class SeatOAuthStartRequest(BaseModel):
+    team_id: int
+    email: str
+    origin: str = ""
+
+
+class SeatOAuthCompleteRequest(BaseModel):
+    ticket: str
+    callback_text: str = ""
+
+
+def _public_base(request: Request, origin: str = "") -> str:
+    raw = (origin or "").strip().rstrip("/")
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    if host:
+        return f"{proto}://{host}".rstrip("/")
+    return str(request.base_url).rstrip("/")
+
 class ChildUpdateRequest(BaseModel):
     phone: Optional[str] = None
     sms_url: Optional[str] = None
@@ -292,6 +338,119 @@ async def seats_live(
     return {"success": True, "cards": cards}
 
 
+async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str) -> Dict[str, Any]:
+    from urllib.parse import parse_qs, urlparse
+
+    from app.services import oauth_sessions
+    from app.services.chatgpt import chatgpt_service
+    from app.utils.jwt_parser import JWTParser
+
+    session = oauth_sessions.consume_verifier(ticket)
+    if not session:
+        return {"success": False, "error": "认证会话不存在或已过期"}
+    if session.get("status") == "done":
+        return {"success": True, **oauth_sessions.public_session(session)}
+
+    text = (callback_text or "").strip()
+    if not text:
+        return {"success": False, "error": "回调内容为空"}
+    parsed = urlparse(text)
+    merged: Dict[str, str] = {}
+    for source in (parse_qs(parsed.query), parse_qs(parsed.fragment)):
+        for key, values in source.items():
+            if values:
+                merged[key] = values[0]
+    code = merged.get("code") or ""
+    if not code:
+        oauth_sessions.mark_session(ticket, status="error", error="回调里没有 code")
+        return {"success": False, "error": "回调里没有 code"}
+    if session.get("state") and merged.get("state") and merged.get("state") != session.get("state"):
+        oauth_sessions.mark_session(ticket, status="error", error="state 不匹配")
+        return {"success": False, "error": "state 不匹配，请重新点认证"}
+
+    exchange = await chatgpt_service.exchange_oauth_code(
+        code=code,
+        client_id=session.get("client_id") or oauth_sessions.CLIENT_ID,
+        redirect_uri=session.get("redirect_uri") or oauth_sessions.REDIRECT_URI,
+        code_verifier=session.get("code_verifier") or "",
+        db_session=db,
+        identifier=f"oauth_{session.get('email') or 'seat'}",
+    )
+    if not exchange.get("success"):
+        error = str(exchange.get("error") or "兑换 token 失败")
+        oauth_sessions.mark_session(ticket, status="error", error=error)
+        return {"success": False, "error": error}
+
+    access_token = exchange.get("access_token") or ""
+    id_token = exchange.get("id_token") or ""
+    jwt = JWTParser()
+    token_email = normalize_email(jwt.extract_email(access_token) or jwt.extract_email(id_token) or "")
+    expected = normalize_email(session.get("email"))
+    if token_email and expected and token_email != expected:
+        error = f"登录的是 {token_email}，不是 {expected}"
+        oauth_sessions.mark_session(ticket, status="error", error=error)
+        return {"success": False, "error": error}
+
+    email = expected or token_email
+    team = await db.get(Team, int(session["team_id"]))
+    if not team:
+        return {"success": False, "error": "Team 不存在"}
+    child = await child_account_service.upsert_from_input(db, email=email)
+    await child_account_service.save_tokens(db, child, {
+        "access_token": access_token,
+        "refresh_token": exchange.get("refresh_token") or "",
+        "id_token": id_token,
+        "client_id": session.get("client_id") or oauth_sessions.CLIENT_ID,
+        "account_id": team.account_id or "",
+    })
+    if child.current_team_id is None:
+        child.current_team_id = team.id
+    push_result = await sub2api_service.import_session(
+        db,
+        email=email,
+        access_token=access_token,
+        refresh_token=exchange.get("refresh_token") or "",
+        id_token=id_token,
+        account_id=child.account_id or team.account_id or "",
+        client_id=child.client_id or "",
+        existing_id=child.sub2api_account_id,
+        team=team,
+        proxy_url=child.proxy or team.proxy or "",
+        role="child",
+    )
+    if push_result.get("account_id"):
+        child.sub2api_account_id = int(push_result["account_id"])
+    await child_account_service.save_probe(db, child, push_result.get("probe"))
+    await child_account_service.record_event(
+        db,
+        email=email,
+        action="oauth",
+        team_id=team.id,
+        child_id=child.id,
+        success=True,
+        detail=f"probe={(push_result.get('probe') or {}).get('label') or '-'}",
+    )
+    await db.commit()
+    probe = push_result.get("probe") or {}
+    message = f"{email} 已认证并推送到 Sub2API"
+    if probe.get("label"):
+        message += f"，探测 {probe.get('label')}"
+    result = {
+        "success": True,
+        "message": message,
+        "email": email,
+        "account_id": push_result.get("account_id"),
+        "probe": probe,
+        "push": {
+            "strategy": push_result.get("strategy"),
+            "proxy_id": push_result.get("proxy_id"),
+            "template": push_result.get("template"),
+        },
+    }
+    oauth_sessions.mark_session(ticket, status="done", message=message, error="", result=result)
+    return result
+
+
 async def _run_onboard_job(job_id: str, payload: OnboardRequest) -> None:
     async with AsyncSessionLocal() as db:
         try:
@@ -313,6 +472,84 @@ async def _run_onboard_job(job_id: str, payload: OnboardRequest) -> None:
             onboard_jobs.finish(job_id, {"success": False, "error": str(exc), "error_code": "browser_failed"})
         finally:
             await db.close()
+
+
+@router.post("/seats/oauth/start")
+async def seats_oauth_start(
+    payload: SeatOAuthStartRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services import oauth_sessions
+    from app.services.chatgpt import chatgpt_service
+
+    email = normalize_email(payload.email)
+    team = await db.get(Team, payload.team_id)
+    if not team:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Team 不存在"})
+    if not email or "@" not in email:
+        return JSONResponse(status_code=400, content={"success": False, "error": "邮箱不对"})
+    auth = chatgpt_service.create_oauth_authorize_url(
+        client_id=oauth_sessions.CLIENT_ID,
+        redirect_uri=oauth_sessions.REDIRECT_URI,
+    )
+    auth["client_id"] = oauth_sessions.CLIENT_ID
+    session = oauth_sessions.create_session(team_id=team.id, email=email, authorize=auth)
+    base = _public_base(request, payload.origin)
+    complete_url = f"{base}/admin/seats/oauth/complete"
+    return {
+        "success": True,
+        "session": session,
+        "complete_url": complete_url,
+        "launcher_url": f"{base}/admin/seats/oauth/{session['ticket']}/launcher.ps1",
+        "message": "已生成授权链接。点本机窗口会下载 PowerShell 脚本，跑完会自动吃 localhost 回调。",
+    }
+
+
+@router.get("/seats/oauth/{ticket}")
+async def seats_oauth_status(
+    ticket: str,
+    current_user: dict = Depends(require_admin),
+):
+    from app.services import oauth_sessions
+
+    session = oauth_sessions.get_session(ticket)
+    if not session:
+        return JSONResponse(status_code=404, content={"success": False, "error": "认证会话不存在或已过期"})
+    return {"success": True, "session": oauth_sessions.public_session(session)}
+
+
+@router.get("/seats/oauth/{ticket}/launcher.ps1")
+async def seats_oauth_launcher(
+    ticket: str,
+    request: Request,
+    current_user: dict = Depends(require_admin),
+):
+    from app.services import oauth_sessions
+
+    session = oauth_sessions.get_session(ticket)
+    if not session:
+        return JSONResponse(status_code=404, content={"success": False, "error": "认证会话不存在或已过期"})
+    complete_url = f"{_public_base(request)}/admin/seats/oauth/complete"
+    script = oauth_sessions.launcher_script(session, complete_url)
+    return PlainTextResponse(
+        script,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="team48-oauth-{ticket[:8]}.ps1"'},
+    )
+
+
+@router.post("/seats/oauth/complete")
+async def seats_oauth_complete(
+    payload: SeatOAuthCompleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await _complete_seat_oauth(db, payload.ticket, payload.callback_text)
+    status_code = 200 if result.get("success") else 400
+    return JSONResponse(status_code=status_code, content=result)
+
+
 
 
 @router.post("/seats/onboard")

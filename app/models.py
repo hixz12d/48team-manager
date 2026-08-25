@@ -236,6 +236,9 @@ class ChildAccount(Base):
     last_error = Column(Text, comment="最近一次拉人/踢人错误")
     last_stage = Column(String(40), comment="最近一次拉人阶段")
     last_job_id = Column(String(32), comment="最近一次拉人任务 ID")
+    probe_status = Column(String(20), comment="最近探测: 200/401/403/phone/none")
+    probe_label = Column(String(40), comment="最近探测展示")
+    probed_at = Column(DateTime, comment="最近探测时间")
     created_at = Column(DateTime, default=get_now, comment="创建时间")
     updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
 

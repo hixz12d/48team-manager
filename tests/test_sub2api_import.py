@@ -189,6 +189,24 @@ class Sub2ApiImportTests(unittest.TestCase):
         self.assertEqual(payload["proxy_id"], 32)
         self.assertNotIn("extra", payload)
 
+    def test_matches_proxy_by_family_name(self):
+        proxy_id = self.service.match_proxy_id(
+            [
+                {"id": 35, "name": "Team new1", "host": "38.248.197.171", "port": 443},
+                {"id": 33, "name": "Team new2", "host": "66.80.132.187", "port": 443},
+            ],
+            "",
+            family_label="new1",
+        )
+        self.assertEqual(proxy_id, 35)
+
+    def test_classifies_phone_and_http_probes(self):
+        self.assertEqual(self.service.classify_probe(error="Phone verification required")["kind"], "phone")
+        self.assertEqual(self.service.classify_probe(status_code=401, error="revoked")["kind"], "401")
+        self.assertEqual(self.service.classify_probe(status_code=403, error="forbidden")["kind"], "403")
+        self.assertEqual(self.service.classify_probe(status_code=200, payload={"ok": True})["kind"], "200")
+
+
 
 if __name__ == "__main__":
     unittest.main()

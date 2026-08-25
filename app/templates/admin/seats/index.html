@@ -153,10 +153,13 @@
                             <td>
                                 {% if child.role == 'account-owner' %}
                                 <span class="text-muted">所有者</span>
-                                {% elif child.status == 'invited' %}
+                                {% else %}
+                                <button class="btn btn-sm btn-secondary" type="button" onclick="startSeatOauth({{ card.id }}, '{{ child.email }}')">认证</button>
+                                {% if child.status == 'invited' %}
                                 <button class="btn btn-sm btn-warning" onclick="revokeLiveInvite({{ card.id }}, '{{ child.email }}')">撤回</button>
                                 {% else %}
                                 <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}', '{{ child.user_id or '' }}')">踢出</button>
+                                {% endif %}
                                 {% endif %}
                             </td>
                         </tr>
@@ -286,6 +289,27 @@
         </div>
     </div>
     {% endif %}
+</div>
+
+<div id="seatOauthModal" class="modal-overlay">
+    <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+            <h3 id="seatOauthTitle">本机认证</h3>
+            <button type="button" class="modal-close" onclick="closeSeatOauth()">×</button>
+        </div>
+        <div class="modal-body">
+            <p id="seatOauthHelp" class="form-help">会拉起本机窗口吃 localhost:1455 回调。跑完自动推 Sub2API，不会覆盖已有代理/分组。</p>
+            <div class="oauth-quick-btn-row">
+                <button type="button" class="btn btn-primary" onclick="launchSeatOauthWindow()">启动本机窗口</button>
+                <button type="button" class="btn btn-secondary" onclick="openSeatOauthUrl()">只打开授权页</button>
+            </div>
+            <textarea id="seatOauthCallback" class="form-control" rows="3" placeholder="如果没跑本机窗口，把跳到 localhost 的完整地址贴这里"></textarea>
+            <div class="oauth-quick-btn-row">
+                <button type="button" class="btn btn-primary" onclick="submitSeatOauthCallback()">解析回调并推送</button>
+            </div>
+            <pre id="seatOauthLog" class="onboard-progress-log"></pre>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
@@ -748,10 +772,11 @@ async function loadSub2apiStatus(force) {
 function seatActionHtml(card, child) {
     const email = String(child.email || '');
     if (child.role === 'account-owner') return '<span class="text-muted">所有者</span>';
+    const auth = '<button class="btn btn-sm btn-secondary" type="button" onclick="startSeatOauth(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(email)) + ')">认证</button> ';
     if (child.status === 'invited') {
-        return '<button class="btn btn-sm btn-warning" onclick="revokeLiveInvite(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(email)) + ')">撤回</button>';
+        return auth + '<button class="btn btn-sm btn-warning" onclick="revokeLiveInvite(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(email)) + ')">撤回</button>';
     }
-    return '<button class="btn btn-sm btn-danger" onclick="kickChild(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(email)) + ', ' + escapeSeatHtml(JSON.stringify(String(child.user_id || ''))) + ')">踢出</button>';
+    return auth + '<button class="btn btn-sm btn-danger" onclick="kickChild(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(email)) + ', ' + escapeSeatHtml(JSON.stringify(String(child.user_id || ''))) + ')">踢出</button>';
 }
 
 function updateSeatCard(card) {
@@ -803,6 +828,129 @@ async function hydrateSeatLive() {
     } catch (error) {
         console.warn(error);
     }
+}
+
+let seatOauthState = null;
+let seatOauthTimer = null;
+
+function seatOauthLog(text) {
+    const box = document.getElementById('seatOauthLog');
+    if (box) box.textContent = text || '';
+}
+
+function closeSeatOauth() {
+    const modal = document.getElementById('seatOauthModal');
+    if (modal) modal.classList.remove('show');
+    if (seatOauthTimer) {
+        clearInterval(seatOauthTimer);
+        seatOauthTimer = null;
+    }
+}
+
+async function startSeatOauth(teamId, email) {
+    const modal = document.getElementById('seatOauthModal');
+    const title = document.getElementById('seatOauthTitle');
+    const callback = document.getElementById('seatOauthCallback');
+    if (title) title.textContent = '认证 ' + email;
+    if (callback) callback.value = '';
+    seatOauthLog('正在生成授权链接…');
+    if (modal) modal.classList.add('show');
+    try {
+        const response = await fetch('/admin/seats/oauth/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ team_id: teamId, email: email, origin: window.location.origin })
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false) throw new Error(data.error || '启动失败');
+        seatOauthState = data;
+        seatOauthLog(data.message || '已生成授权链接');
+        pollSeatOauth();
+    } catch (error) {
+        seatOauthLog(error.message);
+        showToast(error.message, 'error');
+    }
+}
+
+function openSeatOauthUrl() {
+    const url = seatOauthState && seatOauthState.session && seatOauthState.session.authorize_url;
+    if (!url) {
+        showToast('还没有授权链接', 'error');
+        return;
+    }
+    window.open(url, '_blank');
+}
+
+function launchSeatOauthWindow() {
+    if (!seatOauthState || !seatOauthState.launcher_url) {
+        showToast('还没有本机窗口脚本', 'error');
+        return;
+    }
+    const link = document.createElement('a');
+    link.href = seatOauthState.launcher_url;
+    link.download = 'team48-oauth.ps1';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    const cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File .\\team48-oauth.ps1';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).catch(() => {});
+    }
+    seatOauthLog('已下载本机窗口脚本。在下载目录执行：\n' + cmd + '\n跑完会自动吃 localhost 回调并推送到 Sub2API。');
+}
+
+async function submitSeatOauthCallback() {
+    if (!seatOauthState || !seatOauthState.session) {
+        showToast('请先点认证', 'error');
+        return;
+    }
+    const callback = document.getElementById('seatOauthCallback');
+    try {
+        const response = await fetch('/admin/seats/oauth/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ticket: seatOauthState.session.ticket,
+                callback_text: callback ? callback.value : ''
+            })
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false) throw new Error(data.error || '认证失败');
+        seatOauthLog(data.message || '认证完成');
+        showToast(data.message || '认证完成', data.probe && data.probe.kind === 'phone' ? 'warning' : 'success');
+        hydrateSeatLive();
+        loadSub2apiStatus(true);
+    } catch (error) {
+        seatOauthLog(error.message);
+        showToast(error.message, 'error');
+    }
+}
+
+function pollSeatOauth() {
+    if (seatOauthTimer) clearInterval(seatOauthTimer);
+    seatOauthTimer = setInterval(async () => {
+        if (!seatOauthState || !seatOauthState.session) return;
+        try {
+            const response = await fetch('/admin/seats/oauth/' + encodeURIComponent(seatOauthState.session.ticket));
+            const data = await response.json();
+            if (!response.ok || data.success === false) return;
+            const session = data.session || {};
+            if (session.message) seatOauthLog(session.message);
+            if (session.status === 'done') {
+                clearInterval(seatOauthTimer);
+                seatOauthTimer = null;
+                showToast(session.message || '认证完成', 'success');
+                hydrateSeatLive();
+                loadSub2apiStatus(true);
+            } else if (session.status === 'error') {
+                clearInterval(seatOauthTimer);
+                seatOauthTimer = null;
+                showToast(session.error || '认证失败', 'error');
+            }
+        } catch (error) {
+            console.warn(error);
+        }
+    }, 2000);
 }
 
 loadSub2apiStatus(false);

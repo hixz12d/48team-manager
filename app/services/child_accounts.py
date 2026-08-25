@@ -118,6 +118,10 @@ class ChildAccountService:
             "last_error": child.last_error or "",
             "last_stage": getattr(child, "last_stage", None) or "",
             "last_job_id": getattr(child, "last_job_id", None) or "",
+            "probe_status": getattr(child, "probe_status", None) or "",
+            "probe_label": getattr(child, "probe_label", None) or "",
+            "probe_tone": {"200": "ok", "phone": "warn", "429": "warn", "401": "danger", "403": "danger"}.get(getattr(child, "probe_status", None) or "", "muted"),
+            "probed_at": child.probed_at.isoformat() if getattr(child, "probed_at", None) else None,
             "created_at": child.created_at.isoformat() if child.created_at else None,
             "updated_at": child.updated_at.isoformat() if child.updated_at else None,
         }
@@ -240,6 +244,19 @@ class ChildAccountService:
         if tokens.get("account_id"):
             child.account_id = str(tokens["account_id"]).strip()
         child.updated_at = get_now()
+        await db_session.flush()
+
+    async def save_probe(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        probe: Optional[Dict[str, Any]],
+    ) -> None:
+        probe = probe or {}
+        child.probe_status = str(probe.get("kind") or "")[:20]
+        child.probe_label = str(probe.get("label") or "")[:40]
+        child.probed_at = get_now()
+        child.updated_at = child.probed_at
         await db_session.flush()
 
     async def mark_invited(

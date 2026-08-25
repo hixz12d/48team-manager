@@ -361,6 +361,7 @@ class OnboardService:
                 )
                 if push_result.get("account_id"):
                     child.sub2api_account_id = int(push_result["account_id"])
+                await child_account_service.save_probe(db_session, child, push_result.get("probe"))
             except Exception as exc:  # noqa: BLE001
                 await child_account_service.record_event(
                     db_session,
@@ -781,6 +782,7 @@ class OnboardService:
             )
             if push_result.get("account_id"):
                 child.sub2api_account_id = int(push_result["account_id"])
+            await child_account_service.save_probe(db_session, child, push_result.get("probe"))
             await child_account_service.record_event(
                 db_session,
                 email=email,

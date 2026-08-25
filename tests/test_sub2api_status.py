@@ -255,6 +255,46 @@ class Sub2ApiStatusTests(unittest.TestCase):
         self.assertEqual(box["rotation_count"], 2)
         self.assertEqual(box["rotation_label"], "今日已轮 2次")
 
+    def test_newxiaozhu_card_matches_new1_box_without_owner_email(self):
+        boxes = self.service.group_accounts([
+            {
+                "id": 2894,
+                "name": "Team new1 母号",
+                "status": "active",
+                "schedulable": True,
+                "credentials": {},
+            },
+            {
+                "id": 2895,
+                "name": "Team new1 子号 1",
+                "status": "active",
+                "schedulable": True,
+                "credentials": {"email": "scheme-nougats-0p@icloud.com"},
+            },
+        ])
+        self.assertEqual(boxes[0]["title"], "new1")
+        self.service.annotate_rotation(boxes, [
+            {
+                "id": 9,
+                "email": "newxiaozhu1@gmail.com",
+                "team_name": "Mexc1",
+                "live_members": [],
+            },
+        ])
+        self.assertEqual(boxes[0]["team_id"], 9)
+        self.assertEqual(boxes[0]["rotation_label"], "今日未轮")
+
+    def test_phone_error_is_unverified_not_generic_error(self):
+        row = self.service.summarize_account({
+            "id": 1,
+            "name": "Team new1 子号 1",
+            "status": "error",
+            "error_message": "403 phone verification required",
+            "credentials": {"email": "scheme-nougats-0p@icloud.com"},
+        })
+        self.assertEqual(row["schedule"], "phone")
+        self.assertEqual(row["schedule_label"], "未接码")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -376,6 +376,21 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE child_accounts ADD COLUMN last_job_id VARCHAR(32)")
             migrations_applied.append("child_accounts.last_job_id")
 
+        if table_exists(cursor, "child_accounts") and not column_exists(cursor, "child_accounts", "probe_status"):
+            logger.info("添加 child_accounts.probe_status 字段")
+            cursor.execute("ALTER TABLE child_accounts ADD COLUMN probe_status VARCHAR(20)")
+            migrations_applied.append("child_accounts.probe_status")
+
+        if table_exists(cursor, "child_accounts") and not column_exists(cursor, "child_accounts", "probe_label"):
+            logger.info("添加 child_accounts.probe_label 字段")
+            cursor.execute("ALTER TABLE child_accounts ADD COLUMN probe_label VARCHAR(40)")
+            migrations_applied.append("child_accounts.probe_label")
+
+        if table_exists(cursor, "child_accounts") and not column_exists(cursor, "child_accounts", "probed_at"):
+            logger.info("添加 child_accounts.probed_at 字段")
+            cursor.execute("ALTER TABLE child_accounts ADD COLUMN probed_at DATETIME")
+            migrations_applied.append("child_accounts.probed_at")
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_status ON child_accounts (status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_team ON child_accounts (current_team_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_email ON seat_events (email)")
