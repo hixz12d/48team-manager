@@ -1,6 +1,7 @@
 """自用子号池 / 拉人 / 踢人 / 轮转接口。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -9,10 +10,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.database import AsyncSessionLocal, get_db
 from app.dependencies.auth import require_admin
-from app.services.child_accounts import child_account_service
+from app.services.child_accounts import child_account_service, normalize_email
 from app.services.onboard import onboard_service
+from app.services import onboard_jobs
 from app.services.sub2api import sub2api_service
 from app.services.team import team_service
 from app.services.vacancy import vacancy_service
@@ -86,6 +88,8 @@ class OnboardRequest(BaseModel):
     proxy: str = Field("", description="子号静态 ISP，不填则用母号 ISP")
     password: str = ""
     reuse_existing: bool = True
+    skip_invite: bool = False
+    force: bool = False
 
 
 class KickRequest(BaseModel):
@@ -100,10 +104,31 @@ class RotateRequest(BaseModel):
     phone: str = ""
     proxy: str = ""
     child_id: Optional[int] = None
+    force_refill: bool = False
 
 
 class VacancyClearRequest(BaseModel):
     team_id: int
+
+
+class ReregisterRequest(BaseModel):
+    child_id: Optional[int] = None
+    team_id: Optional[int] = None
+    email: str = ""
+    phone: str = ""
+    proxy: str = ""
+    force: bool = False
+
+
+class ReconcileApplyRequest(BaseModel):
+    team_id: int
+
+
+class FixAccountIdRequest(BaseModel):
+    child_id: Optional[int] = None
+    team_id: Optional[int] = None
+    email: str = ""
+    push: bool = True
 
 class ChildUpdateRequest(BaseModel):
     phone: Optional[str] = None
@@ -169,27 +194,129 @@ async def seats_sub2api_status(
     return {"success": True, **status}
 
 
+async def _run_onboard_job(job_id: str, payload: OnboardRequest) -> None:
+    async with AsyncSessionLocal() as db:
+        try:
+            result = await onboard_service.invite_and_onboard(
+                db,
+                team_id=payload.team_id,
+                email_line=payload.email,
+                phone_line=payload.phone,
+                proxy=payload.proxy,
+                password=payload.password,
+                reuse_existing=payload.reuse_existing,
+                skip_invite=payload.skip_invite,
+                force=payload.force,
+                job_id=job_id,
+            )
+            onboard_jobs.finish(job_id, result)
+        except Exception as exc:
+            logger.exception("后台拉人失败")
+            onboard_jobs.finish(job_id, {"success": False, "error": str(exc), "error_code": "browser_failed"})
+        finally:
+            await db.close()
+
+
 @router.post("/seats/onboard")
 async def seats_onboard(
     payload: OnboardRequest,
+    current_user: dict = Depends(require_admin),
+):
+    email = normalize_email(payload.email.split("----", 1)[0] if payload.email else "")
+    active = onboard_jobs.active_job_for_email(email)
+    if active:
+        return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的拉人任务", "job": active}
+    job = onboard_jobs.create_job(team_id=payload.team_id, email=email or payload.email, action="onboard")
+    asyncio.create_task(_run_onboard_job(job["id"], payload))
+    return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始拉人，进度会留在本页", "job": job}
+
+
+@router.post("/seats/reregister")
+async def seats_reregister(
+    payload: ReregisterRequest,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin),
 ):
-    try:
-        result = await onboard_service.invite_and_onboard(
-            db,
-            team_id=payload.team_id,
-            email_line=payload.email,
-            phone_line=payload.phone,
-            proxy=payload.proxy,
-            password=payload.password,
-            reuse_existing=payload.reuse_existing,
-        )
-        status_code = 200 if result.get("success") else 400
-        return JSONResponse(status_code=status_code, content=result)
-    except Exception as exc:
-        logger.exception("拉人失败")
-        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    child = None
+    if payload.child_id:
+        child = await child_account_service.get_by_id(db, payload.child_id)
+    elif payload.email:
+        child = await child_account_service.get_by_email(db, payload.email)
+    if not child:
+        return JSONResponse(status_code=404, content={"success": False, "error": "子号不存在"})
+    team_id = payload.team_id or child.current_team_id or child.last_team_id
+    if not team_id:
+        return JSONResponse(status_code=400, content={"success": False, "error": "这个子号没有关联 Team，请先在表单里选 Team 再拉"})
+    active = onboard_jobs.active_job_for_email(child.email)
+    if active:
+        return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的拉人任务", "job": active}
+    request = OnboardRequest(
+        team_id=int(team_id),
+        email=payload.email or child.mail_raw or child.email,
+        phone=payload.phone or ((child.phone or "") + ("----" + child.sms_url if child.sms_url else "")),
+        proxy=payload.proxy or child.proxy or "",
+        reuse_existing=True,
+        skip_invite=child.status == "invited",
+        force=payload.force,
+    )
+    job = onboard_jobs.create_job(team_id=int(team_id), email=child.email, action="reregister")
+    asyncio.create_task(_run_onboard_job(job["id"], request))
+    return {"success": True, "accepted": True, "job_id": job["id"], "message": f"开始重新注册 {child.email}", "job": job}
+
+
+@router.get("/seats/jobs/{job_id}")
+async def seats_job_status(
+    job_id: str,
+    current_user: dict = Depends(require_admin),
+):
+    job = onboard_jobs.get_job(job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"success": False, "error": "任务不存在或进程已重启"})
+    return {"success": True, "job": job}
+
+
+@router.post("/seats/jobs/{job_id}/cancel")
+async def seats_job_cancel(
+    job_id: str,
+    current_user: dict = Depends(require_admin),
+):
+    job = onboard_jobs.request_cancel(job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"success": False, "error": "任务不存在"})
+    return {"success": True, "message": "已请求停止", "job": job}
+
+
+@router.get("/seats/reconcile")
+async def seats_reconcile(
+    team_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    return await onboard_service.preview_reconcile(db, team_id)
+
+
+@router.post("/seats/reconcile")
+async def seats_reconcile_apply(
+    payload: ReconcileApplyRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    return await onboard_service.apply_reconcile(db, payload.team_id)
+
+
+@router.post("/seats/fix-account-id")
+async def seats_fix_account_id(
+    payload: FixAccountIdRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    return await onboard_service.fix_child_account_id(
+        db,
+        child_id=payload.child_id,
+        email=payload.email,
+        team_id=payload.team_id,
+        push=payload.push,
+    )
 
 
 @router.post("/seats/kick")
@@ -236,6 +363,7 @@ async def seats_rotate(
             phone_line=payload.phone,
             proxy=payload.proxy,
             child_id=payload.child_id,
+            force_refill=payload.force_refill,
         )
         status_code = 200 if result.get("success") else 400
         return JSONResponse(status_code=status_code, content=result)

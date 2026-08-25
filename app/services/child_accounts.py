@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import ChildAccount, SeatEvent, Team, TeamEmailMapping
 from app.services.encryption import encryption_service
 from app.utils.time_utils import get_now
+from app.utils.token_parser import token_parser
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,19 @@ CHILD_STATUS_DELETED = "deleted"
 
 ACTIVE_CHILD_STATUSES = (CHILD_STATUS_INVITED, CHILD_STATUS_ACTIVE)
 REUSABLE_CHILD_STATUSES = (CHILD_STATUS_UNUSED, CHILD_STATUS_STANDBY, CHILD_STATUS_DISABLED)
+OWNER_ROLES = {"account-owner", "admin", "org-admin", "workspace-owner"}
+STATUS_LABELS = {
+    CHILD_STATUS_UNUSED: "未使用",
+    CHILD_STATUS_INVITED: "已邀请未注册",
+    CHILD_STATUS_ACTIVE: "在席",
+    CHILD_STATUS_STANDBY: "已踢出待复用",
+    CHILD_STATUS_DISABLED: "停用",
+    CHILD_STATUS_DELETED: "已删除",
+}
+
+
+def is_workspace_account_id(value: Optional[str]) -> bool:
+    return token_parser.validate_account_id_format(str(value or "").strip())
 
 
 def normalize_email(value: Optional[str]) -> str:
@@ -54,10 +68,15 @@ class ChildAccountService:
             due_at = child.joined_at + timedelta(days=cycle_days)
             remaining_days = max(0, (due_at.date() - now.date()).days)
 
+        status_label = STATUS_LABELS.get(child.status or "", child.status or "未知")
+        if child.status == CHILD_STATUS_INVITED and child.last_error:
+            status_label = "已邀请，注册失败"
         data = {
             "id": child.id,
             "email": child.email,
             "status": child.status,
+            "status_label": status_label,
+            "can_reregister": child.status == CHILD_STATUS_INVITED or bool(child.last_error and child.status in REUSABLE_CHILD_STATUSES),
             "current_team_id": child.current_team_id,
             "last_team_id": child.last_team_id,
             "joined_at": child.joined_at.isoformat() if child.joined_at else None,
@@ -70,9 +89,12 @@ class ChildAccountService:
             "sms_url": child.sms_url or "",
             "mail_raw": child.mail_raw or "",
             "account_id": child.account_id or "",
+            "needs_account_id_fix": child.status == CHILD_STATUS_ACTIVE and not is_workspace_account_id(child.account_id),
             "client_id": child.client_id or "",
             "sub2api_account_id": child.sub2api_account_id,
             "last_error": child.last_error or "",
+            "last_stage": getattr(child, "last_stage", None) or "",
+            "last_job_id": getattr(child, "last_job_id", None) or "",
             "created_at": child.created_at.isoformat() if child.created_at else None,
             "updated_at": child.updated_at.isoformat() if child.updated_at else None,
         }
@@ -248,10 +270,53 @@ class ChildAccountService:
         child.current_team_id = None
         child.kicked_at = now
         child.last_error = error
+        child.last_stage = "kicked"
         child.updated_at = now
         if mapping:
             mapping.kicked_at = now
             mapping.child_account_id = child.id
+        await db_session.flush()
+
+    async def mark_unused(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        *,
+        mapping: Optional[TeamEmailMapping] = None,
+        error: Optional[str] = None,
+        stage: str = "revoked",
+    ) -> None:
+        now = get_now()
+        if child.current_team_id:
+            child.last_team_id = child.current_team_id
+        child.status = CHILD_STATUS_UNUSED
+        child.current_team_id = None
+        child.last_error = error
+        child.last_stage = stage
+        child.updated_at = now
+        if mapping:
+            mapping.kicked_at = now
+            mapping.child_account_id = child.id
+        await db_session.flush()
+
+    async def set_progress(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        *,
+        stage: str,
+        job_id: Optional[str] = None,
+        error: Optional[str] = None,
+        clear_error: bool = False,
+    ) -> None:
+        child.last_stage = stage
+        if job_id:
+            child.last_job_id = job_id
+        if clear_error:
+            child.last_error = None
+        elif error is not None:
+            child.last_error = error
+        child.updated_at = get_now()
         await db_session.flush()
 
     async def mark_deleted(self, db_session: AsyncSession, child: ChildAccount) -> None:
@@ -270,7 +335,11 @@ class ChildAccountService:
         child_id: Optional[int] = None,
         success: bool = True,
         detail: str = "",
+        error_code: str = "",
     ) -> None:
+        text = (detail or "").strip()
+        if error_code:
+            text = f"[{error_code}] {text}".strip()
         db_session.add(
             SeatEvent(
                 child_account_id=child_id,
@@ -278,7 +347,7 @@ class ChildAccountService:
                 email=normalize_email(email),
                 action=action,
                 success=success,
-                detail=(detail or "")[:4000],
+                detail=text[:4000],
             )
         )
         await db_session.flush()

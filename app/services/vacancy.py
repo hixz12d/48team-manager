@@ -1,6 +1,10 @@
-"""解析并保存踢人响应里的 policy_notice / 席位阈值。"""
+"""解析并保存踢人响应里的 policy_notice / billing_notice。
+
+这些字段没有稳定公开语义，只能当排查证据，不能当作自动补位许可。
+"""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
@@ -32,6 +36,28 @@ def _as_int(value: Any) -> Optional[int]:
     return None
 
 
+def _as_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _as_text(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _json_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        return str(value)
+
+
 def to_local_naive(value: Any) -> Optional[datetime]:
     if value is None or value == "":
         return None
@@ -54,39 +80,44 @@ def to_local_naive(value: Any) -> Optional[datetime]:
 
 
 def parse_policy_notice(payload: Any) -> Optional[Dict[str, Any]]:
-    """从踢人响应里抽出 vacancy 字段。没有 policy_notice 就返回 None。"""
-    if not isinstance(payload, dict) or "policy_notice" not in payload:
+    """兼容旧名：从踢人响应抽出 vacancy / 账单回执。"""
+    return parse_removal_notices(payload)
+
+
+def parse_removal_notices(payload: Any) -> Optional[Dict[str, Any]]:
+    """抽出踢人回执。没有 policy_notice / billing_notice 就返回 None。"""
+    if not isinstance(payload, dict):
+        return None
+    has_policy_key = "policy_notice" in payload
+    has_billing_key = "billing_notice" in payload
+    if not has_policy_key and not has_billing_key:
         return None
 
-    policy = payload.get("policy_notice")
-    if policy is None:
-        return {
-            "policy_notice_null": True,
-            "vacancy_ordinal": None,
-            "free_vacancy_threshold": None,
-            "billing_starts_at": None,
-            "expires_at": None,
-            "is_free": True,
-        }
+    policy = payload.get("policy_notice") if has_policy_key else None
+    billing = payload.get("billing_notice") if has_billing_key else None
+    policy_null = has_policy_key and policy is None
+    policy_obj = policy if isinstance(policy, dict) else None
 
-    if not isinstance(policy, dict):
-        return None
-    if "vacancy_ordinal" not in policy or "free_vacancy_threshold" not in policy:
-        return None
-
-    ordinal = _as_int(policy.get("vacancy_ordinal"))
-    threshold = _as_int(policy.get("free_vacancy_threshold"))
+    ordinal = _as_int(policy_obj.get("vacancy_ordinal")) if policy_obj else None
+    threshold = _as_int(policy_obj.get("free_vacancy_threshold")) if policy_obj else None
     is_free = None
     if ordinal is not None and threshold is not None:
         is_free = ordinal < threshold
 
     return {
-        "policy_notice_null": False,
+        "policy_notice_null": policy_null,
+        "has_policy_notice": policy_obj is not None,
+        "has_billing_notice": billing is not None,
+        "policy_kind": _as_text(policy_obj.get("kind")) if policy_obj else None,
+        "billed_seat_delta": _as_int(policy_obj.get("billed_seat_delta")) if policy_obj else None,
+        "replacement_required": _as_bool(policy_obj.get("replacement_required")) if policy_obj else None,
         "vacancy_ordinal": ordinal,
         "free_vacancy_threshold": threshold,
-        "billing_starts_at": to_local_naive(policy.get("billing_starts_at")),
-        "expires_at": to_local_naive(policy.get("expires_at")),
+        "billing_starts_at": to_local_naive(policy_obj.get("billing_starts_at")) if policy_obj else None,
+        "expires_at": to_local_naive(policy_obj.get("expires_at")) if policy_obj else None,
         "is_free": is_free,
+        "policy_notice_json": _json_text(policy) if has_policy_key else None,
+        "billing_notice_json": _json_text(billing) if has_billing_key else None,
     }
 
 
@@ -134,6 +165,17 @@ def _format_time(value: Any, *, null_policy: bool) -> str:
     return local.strftime("%Y-%m-%d %H:%M:%S") if local else "--"
 
 
+def is_safe_to_refill(vacancy: Optional[Dict[str, Any]]) -> bool:
+    """只有明确低于阈值、且没有账单回执/强制替换时，才允许自动补位。"""
+    if not vacancy:
+        return False
+    if vacancy.get("has_billing_notice"):
+        return False
+    if vacancy.get("replacement_required") is True:
+        return False
+    return vacancy.get("is_free") is True
+
+
 def present_vacancy(vacancy: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not vacancy:
         return None
@@ -142,22 +184,36 @@ def present_vacancy(vacancy: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
     ordinal = vacancy.get("vacancy_ordinal")
     threshold = vacancy.get("free_vacancy_threshold")
     is_free = vacancy.get("is_free")
-    if null_policy:
-        is_free = True
+    has_billing = bool(vacancy.get("has_billing_notice"))
+    replacement_required = vacancy.get("replacement_required")
+    safe = is_safe_to_refill({
+        **vacancy,
+        "is_free": is_free,
+        "has_billing_notice": has_billing,
+        "replacement_required": replacement_required,
+    })
 
     if null_policy:
         comparison = "policy_notice: null"
-        status_label = "安全"
+        status_label = "无阈值"
     elif ordinal is not None and threshold is not None:
         comparison = f"{ordinal} {'<' if ordinal < threshold else '≥'} {threshold}"
         status_label = "可释放" if is_free else "未释放"
-    else:
+    elif vacancy.get("has_policy_notice"):
         comparison = "--"
         status_label = "未知"
+    else:
+        comparison = "无 policy_notice"
+        status_label = "未知"
 
-    if is_free is True:
+    if has_billing:
+        status_label = "有账单回执"
+    elif replacement_required is True:
+        status_label = "需替换席位"
+
+    if safe:
         tone = "ok"
-    elif is_free is False:
+    elif is_free is False or has_billing or replacement_required is True:
         tone = "warn"
     else:
         tone = "muted"
@@ -170,6 +226,11 @@ def present_vacancy(vacancy: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         "user_id": vacancy.get("user_id") or "",
         "email": vacancy.get("email") or "",
         "policy_notice_null": null_policy,
+        "has_policy_notice": bool(vacancy.get("has_policy_notice")),
+        "has_billing_notice": has_billing,
+        "policy_kind": vacancy.get("policy_kind") or "",
+        "billed_seat_delta": vacancy.get("billed_seat_delta"),
+        "replacement_required": replacement_required,
         "vacancy_ordinal": ordinal,
         "free_vacancy_threshold": threshold,
         "vacancy_ordinal_text": _format_metric(ordinal, null_policy=null_policy),
@@ -183,6 +244,9 @@ def present_vacancy(vacancy: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         "billing_starts_at_text": _format_time(vacancy.get("billing_starts_at"), null_policy=null_policy),
         "expires_at_text": _format_time(vacancy.get("expires_at"), null_policy=null_policy),
         "is_free": is_free,
+        "safe_to_refill": safe,
+        "refill_label": "可自动补位" if safe else "勿自动补位",
+        "billing_notice_text": "有" if has_billing else "无",
         "comparison_text": comparison,
         "status_label": status_label,
         "tone": tone,
@@ -196,6 +260,8 @@ def summarize_for_message(vacancy: Optional[Dict[str, Any]]) -> str:
     if not presented:
         return ""
     parts = [presented.get("status_label") or "", presented.get("comparison_text") or ""]
+    if presented.get("refill_label"):
+        parts.append(presented["refill_label"])
     if presented.get("is_free") is False and presented.get("expires_at_text") not in {None, "", "--", "null"}:
         parts.append(f"释放 {presented['expires_at_text']}")
     return "，".join(part for part in parts if part and part != "--")
@@ -210,6 +276,13 @@ class VacancyService:
             "user_id": event.user_id,
             "email": event.email,
             "policy_notice_null": event.policy_notice_null,
+            "has_policy_notice": not bool(event.policy_notice_null) and (
+                event.vacancy_ordinal is not None or bool(getattr(event, "policy_kind", None))
+            ),
+            "has_billing_notice": bool(getattr(event, "has_billing_notice", False)),
+            "policy_kind": getattr(event, "policy_kind", None),
+            "billed_seat_delta": getattr(event, "billed_seat_delta", None),
+            "replacement_required": getattr(event, "replacement_required", None),
             "vacancy_ordinal": event.vacancy_ordinal,
             "free_vacancy_threshold": event.free_vacancy_threshold,
             "billing_starts_at": event.billing_starts_at,
@@ -233,10 +306,6 @@ class VacancyService:
         if last and self._same_values(last, vacancy):
             return self.serialize(last)
 
-        is_free = vacancy.get("is_free")
-        if vacancy.get("policy_notice_null"):
-            is_free = True
-
         event = SeatVacancyEvent(
             team_id=team.id,
             account_id=team.account_id,
@@ -247,19 +316,26 @@ class VacancyService:
             free_vacancy_threshold=vacancy.get("free_vacancy_threshold"),
             billing_starts_at=vacancy.get("billing_starts_at"),
             expires_at=vacancy.get("expires_at"),
-            is_free=is_free,
+            is_free=vacancy.get("is_free"),
+            has_billing_notice=bool(vacancy.get("has_billing_notice")),
+            policy_kind=vacancy.get("policy_kind"),
+            billed_seat_delta=vacancy.get("billed_seat_delta"),
+            replacement_required=vacancy.get("replacement_required"),
+            policy_notice_json=vacancy.get("policy_notice_json"),
+            billing_notice_json=vacancy.get("billing_notice_json"),
             captured_at=get_now(),
         )
         db_session.add(event)
         await db_session.flush()
         logger.info(
-            "记录席位阈值: team=%s user=%s email=%s ordinal=%s threshold=%s free=%s",
+            "记录席位回执: team=%s user=%s email=%s ordinal=%s threshold=%s free=%s billing=%s",
             team.id,
             user_id,
             email_norm,
             event.vacancy_ordinal,
             event.free_vacancy_threshold,
             event.is_free,
+            event.has_billing_notice,
         )
         return self.serialize(event)
 
@@ -270,13 +346,15 @@ class VacancyService:
         *,
         history_limit: int = HISTORY_LIMIT,
     ) -> List[Dict[str, Any]]:
+        from app.services.team_view import attach_operational_view
+
         team_ids = [card.get("id") for card in cards if card.get("id") is not None]
         grouped = await self._history_by_team(db_session, team_ids)
         for card in cards:
             history = grouped.get(int(card["id"]), [])[:history_limit]
             card["vacancy_history"] = [self.serialize(item) for item in history]
             card["vacancy"] = card["vacancy_history"][0] if card["vacancy_history"] else None
-        return cards
+        return attach_operational_view(cards)
 
     async def clear_team(self, db_session: AsyncSession, team_id: int) -> int:
         result = await db_session.execute(
@@ -327,6 +405,11 @@ class VacancyService:
             and event.free_vacancy_threshold == vacancy.get("free_vacancy_threshold")
             and event.billing_starts_at == vacancy.get("billing_starts_at")
             and event.expires_at == vacancy.get("expires_at")
+            and event.is_free == vacancy.get("is_free")
+            and bool(getattr(event, "has_billing_notice", False)) == bool(vacancy.get("has_billing_notice"))
+            and (getattr(event, "policy_kind", None) or None) == (vacancy.get("policy_kind") or None)
+            and getattr(event, "billed_seat_delta", None) == vacancy.get("billed_seat_delta")
+            and getattr(event, "replacement_required", None) == vacancy.get("replacement_required")
         )
 
 

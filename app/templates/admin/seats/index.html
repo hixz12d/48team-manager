@@ -49,36 +49,55 @@
         </div>
     </div>
 
+    <div id="reconcilePanel" class="content-section reconcile-panel" hidden>
+        <div class="section-header">
+            <h3 id="reconcileTitle">对账结果</h3>
+            <button class="btn btn-sm btn-primary" type="button" id="reconcileApply" onclick="applyReconcile()" hidden>修复本地/邀请错位</button>
+        </div>
+        <pre id="reconcileLog" class="onboard-progress-log"></pre>
+    </div>
     <div class="seat-card-grid">
         {% for card in cards %}
         <section class="content-section seat-card">
             <div class="section-header">
                 <h3>{% if card.team_name %}{{ card.team_name }}{% else %}{{ card.email }}{% endif %}</h3>
-                <span class="text-muted">{{ card.current_members }}/{{ card.max_members }}</span>
+                <span class="text-muted" title="本地占用 / 操作上限">{{ (card.occupancy.occupancy_text if card.occupancy else (card.current_members ~ '/' ~ card.max_members)) }}</span>
+                <button class="btn btn-sm btn-secondary" type="button" onclick="previewReconcile({{ card.id }})">对账</button>
             </div>
-            <p class="seat-card-meta">{{ card.email }}</p>
+            <p class="seat-card-meta">{{ card.email }}
+                {% if card.risk_label %}
+                <span class="risk-chip tone-{{ card.risk_level or 'muted' }}">{{ card.risk_label }}</span>
+                {% endif %}
+            </p>
+            {% if card.occupancy and card.occupancy.upstream_occupied is not none %}
+            <p class="occupancy-meta">上游占用 {{ card.occupancy.upstream_occupied }}（已加入 {{ card.occupancy.upstream_joined }} / 邀请中 {{ card.occupancy.upstream_invited }}）</p>
+            {% endif %}
             {% set vacancy = card.vacancy %}
             {% if vacancy %}
             <div class="vacancy-strip">
                 <span class="sub2api-chip tone-{{ vacancy.tone or 'muted' }}">{{ vacancy.status_label }}</span>
-                <span class="vacancy-metrics">{{ vacancy.comparison_text }}</span>
+                <span class="vacancy-metrics">{{ vacancy.refill_label }}</span>
+                <span class="vacancy-metrics">vacancy_ordinal {{ vacancy.vacancy_ordinal_text }}</span>
+                <span class="vacancy-metrics">free_vacancy_threshold {{ vacancy.free_vacancy_threshold_text }}</span>
+                <span class="vacancy-metrics">{{ vacancy.comparison_text }}{% if vacancy.is_free == true %} · vacancy_ordinal &lt; free_vacancy_threshold{% elif vacancy.is_free == false %} · vacancy_ordinal ≥ free_vacancy_threshold{% endif %}</span>
+                <span class="vacancy-metrics">账单回执 {{ vacancy.billing_notice_text }}</span>
                 <span class="vacancy-metrics">开始 {{ vacancy.billing_starts_at_text }}</span>
                 <span class="vacancy-metrics">释放 {{ vacancy.expires_at_text }}</span>
             </div>
             {% endif %}
             <details class="vacancy-history">
-                <summary>席位阈值历史（{{ (card.vacancy_history or [])|length }}）</summary>
+                <summary>踢人回执历史（{{ (card.vacancy_history or [])|length }}）</summary>
                 {% if card.vacancy_history %}
                 {% for item in card.vacancy_history %}
                 <div class="vacancy-history-row">
-                    <div>{{ item.email or '邮箱待匹配' }} · {{ item.captured_at_text }}</div>
-                    <div>vacancy_ordinal {{ item.vacancy_ordinal_text }} / free_vacancy_threshold {{ item.free_vacancy_threshold_text }}</div>
+                    <div>{{ item.email or '邮箱待匹配' }} · {{ item.captured_at_text }} · {{ item.refill_label }}</div>
+                    <div>vacancy_ordinal {{ item.vacancy_ordinal_text }} / free_vacancy_threshold {{ item.free_vacancy_threshold_text }} · {{ item.comparison_text }}{% if item.is_free == true %} · vacancy_ordinal &lt; free_vacancy_threshold{% elif item.is_free == false %} · vacancy_ordinal ≥ free_vacancy_threshold{% endif %} · 账单回执 {{ item.billing_notice_text }}</div>
                     <div>开始 {{ item.billing_starts_at_text }} · 结束 {{ item.expires_at_text }}</div>
                 </div>
                 {% endfor %}
                 <button class="btn btn-sm btn-secondary" type="button" onclick="clearVacancyHistory({{ card.id }})">清空本 Team 历史</button>
                 {% else %}
-                <p class="text-muted vacancy-history-empty">踢人成功后会记录 policy_notice。ordinal 小于 threshold 即可立刻复用席位。</p>
+                <p class="text-muted vacancy-history-empty">踢人成功后会记录 policy_notice / billing_notice。只有 ordinal 明确小于 threshold、且没有账单回执时才允许自动补位。</p>
                 {% endif %}
             </details>
             {% if card.due_children %}
@@ -143,7 +162,7 @@
                     <label>Team</label>
                     <select id="rotateTeamId" class="form-control" required>
                         {% for card in cards %}
-                        <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（{{ card.current_members }}/{{ card.max_members }}）</option>
+                        <option value="{{ card.id }}">{% if card.team_name %}{{ card.team_name }} / {{ card.email }}{% else %}{{ card.email }}{% endif %}（{{ (card.occupancy.occupancy_text if card.occupancy else (card.current_members ~ '/' ~ card.max_members)) }}）</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -159,6 +178,7 @@
                     <label>子号 ISP</label>
                     <input id="rotateProxy" class="form-control" placeholder="可空，默认跟母号">
                 </div>
+                <label class="force-refill-label"><input id="rotateForceRefill" type="checkbox"> 已核对 Billing，强制补位</label>
                 <button class="btn btn-primary" type="submit">先踢到期号，再拉/复用</button>
             </form>
 
@@ -184,8 +204,17 @@
                     <label>子号 ISP</label>
                     <input id="onboardProxy" class="form-control" placeholder="不填则用该母号 ISP">
                 </div>
-                <button class="btn btn-primary" type="submit">邀请并授权</button>
+                <button class="btn btn-primary" type="submit" id="onboardSubmit">邀请并授权</button>
+                <button class="btn btn-secondary" type="button" id="onboardCancel" onclick="cancelOnboardJob()" hidden>停止</button>
             </form>
+            <div id="onboardProgress" class="onboard-progress" hidden>
+                <div class="onboard-progress-head">
+                    <strong id="onboardProgressTitle">拉人进度</strong>
+                    <span id="onboardProgressStage" class="text-muted"></span>
+                </div>
+                <p id="onboardProgressMessage" class="onboard-progress-message">等待开始</p>
+                <pre id="onboardProgressLog" class="onboard-progress-log"></pre>
+            </div>
         </div>
         <div class="seat-tools-proxy">
             <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('rotateProxy')">测轮转代理</button>
@@ -205,6 +234,8 @@
                         <th>邮箱</th>
                         <th>状态</th>
                         <th>当前 Team</th>
+                        <th>account_id</th>
+                        <th>最近结果</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -212,11 +243,21 @@
                     {% for child in children %}
                     <tr>
                         <td>{{ child.email }}</td>
-                        <td>{{ child.status }}</td>
+                        <td>{{ child.status_label or child.status }}</td>
                         <td>{{ child.current_team_id or '-' }}</td>
+                        <td class="child-account-id" title="{{ child.account_id or '' }}">{% if child.needs_account_id_fix %}<span class="risk-chip tone-warning">需修复</span> {% endif %}{{ child.account_id or '-' }}</td>
+                        <td class="child-last-error" title="{{ child.last_error or child.last_stage or '' }}">{{ child.last_error or child.last_stage or '-' }}</td>
                         <td>
+                            {% if child.needs_account_id_fix or child.status == 'active' %}
+                            <button class="btn btn-sm btn-secondary" type="button" onclick='fixAccountId({{ child.id }}, {{ child.email|tojson }}, {{ child.current_team_id or child.last_team_id or "null" }})'>修 account_id</button>
+                            {% endif %}
+                            {% if child.can_reregister or child.status == 'invited' %}
+                            <button class="btn btn-sm btn-primary" type="button" onclick='reregisterChild({{ child.id }}, {{ child.email|tojson }}, {{ child.current_team_id or child.last_team_id or "null" }})'>重新注册</button>
+                            {% endif %}
                             {% if child.status in ['unused', 'standby', 'disabled'] %}
                             <button class="btn btn-sm btn-danger" onclick="deleteChild({{ child.id }}, '{{ child.email }}')">删除</button>
+                            {% elif child.status == 'invited' %}
+                            <span class="text-muted">先撤回再删</span>
                             {% else %}
                             <span class="text-muted">先踢再删</span>
                             {% endif %}
@@ -246,22 +287,189 @@ async function postJSON(url, payload) {
     return data;
 }
 
+let onboardPollTimer = null;
+let currentOnboardJobId = sessionStorage.getItem('onboardJobId') || '';
+
+function renderOnboardJob(job) {
+    const box = document.getElementById('onboardProgress');
+    const title = document.getElementById('onboardProgressTitle');
+    const stage = document.getElementById('onboardProgressStage');
+    const message = document.getElementById('onboardProgressMessage');
+    const log = document.getElementById('onboardProgressLog');
+    const cancelBtn = document.getElementById('onboardCancel');
+    if (!box || !job) return;
+    box.hidden = false;
+    title.textContent = (job.action === 'reregister' ? '重新注册' : '拉人进度') + ' · ' + (job.email || '');
+    stage.textContent = (job.status || '') + ' / ' + (job.stage || '');
+    message.textContent = job.message || job.error || '进行中';
+    box.classList.toggle('is-failed', job.status === 'failed');
+    box.classList.toggle('is-success', job.status === 'success');
+    const lines = (job.log || []).map((item) => `[${item.ts || ''}] ${item.message || item.stage || ''}`);
+    log.textContent = lines.join('\n');
+    log.scrollTop = log.scrollHeight;
+    if (cancelBtn) cancelBtn.hidden = job.status !== 'running';
+}
+
+async function pollOnboardJob(jobId, options) {
+    const reloadOnDone = !options || options.reloadOnDone !== false;
+    const quiet = Boolean(options && options.quiet);
+    currentOnboardJobId = jobId;
+    sessionStorage.setItem('onboardJobId', jobId);
+    if (onboardPollTimer) clearInterval(onboardPollTimer);
+    let finished = false;
+    const tick = async () => {
+        try {
+            const response = await fetch('/admin/seats/jobs/' + encodeURIComponent(jobId));
+            const data = await response.json();
+            if (!response.ok || !data.job) {
+                throw new Error(data.error || '读不到任务');
+            }
+            renderOnboardJob(data.job);
+            if (data.job.status && data.job.status !== 'running') {
+                finished = true;
+                clearInterval(onboardPollTimer);
+                onboardPollTimer = null;
+                if (quiet) return;
+                if (data.job.status === 'success') {
+                    showToast(data.job.message || '拉人成功', 'success');
+                    if (reloadOnDone) setTimeout(() => location.reload(), 800);
+                } else if (data.job.status === 'cancelled') {
+                    showToast(data.job.message || '已停止', 'info');
+                } else {
+                    showToast(data.job.error || data.job.message || '拉人失败', 'error');
+                }
+            }
+        } catch (error) {
+            finished = true;
+            clearInterval(onboardPollTimer);
+            onboardPollTimer = null;
+            if (!quiet) showToast(error.message, 'error');
+        }
+    };
+    await tick();
+    if (!finished && currentOnboardJobId === jobId) {
+        onboardPollTimer = setInterval(tick, 2000);
+    }
+}
+
 async function handleOnboard(event) {
     event.preventDefault();
     try {
-        showToast('正在拉人，浏览器会弹起来走授权...', 'info');
         const result = await postJSON('/admin/seats/onboard', {
             team_id: parseInt(document.getElementById('onboardTeamId').value, 10),
             email: document.getElementById('onboardEmail').value,
             phone: document.getElementById('onboardPhone').value,
             proxy: document.getElementById('onboardProxy').value
         });
-        showToast(result.message || '拉人成功', 'success');
-        setTimeout(() => location.reload(), 800);
+        showToast(result.message || '已开始拉人', 'info');
+        if (result.job) renderOnboardJob(result.job);
+        if (result.job_id) await pollOnboardJob(result.job_id);
     } catch (error) {
         showToast(error.message, 'error');
     }
     return false;
+}
+
+async function reregisterChild(childId, email, teamId) {
+    try {
+        const result = await postJSON('/admin/seats/reregister', {
+            child_id: childId,
+            email: email,
+            team_id: teamId || undefined,
+            phone: document.getElementById('onboardPhone').value,
+            proxy: document.getElementById('onboardProxy').value
+        });
+        showToast(result.message || '开始重新注册', 'info');
+        if (result.job) renderOnboardJob(result.job);
+        if (result.job_id) await pollOnboardJob(result.job_id);
+        const tools = document.querySelector('details.seat-tools');
+        if (tools) tools.open = true;
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function cancelOnboardJob() {
+    if (!currentOnboardJobId) return;
+    try {
+        const result = await postJSON('/admin/seats/jobs/' + encodeURIComponent(currentOnboardJobId) + '/cancel', {});
+        if (result.job) renderOnboardJob(result.job);
+        showToast(result.message || '已请求停止', 'info');
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+let lastReconcileTeamId = null;
+
+function renderReconcile(data, teamId) {
+    const panel = document.getElementById('reconcilePanel');
+    const title = document.getElementById('reconcileTitle');
+    const log = document.getElementById('reconcileLog');
+    const applyBtn = document.getElementById('reconcileApply');
+    if (!panel || !log) return;
+    lastReconcileTeamId = teamId || data.team_id || lastReconcileTeamId;
+    panel.hidden = false;
+    const findings = data.findings || [];
+    const applied = data.applied || [];
+    const skipped = data.skipped || [];
+    const safeCount = findings.filter((item) => item.type === 'leftover_invite' || item.type === 'leftover_local').length;
+    title.textContent = data.dry_run === false ? '对账已应用' : ('对账结果 · Team ' + (lastReconcileTeamId || ''));
+    const lines = [];
+    if (data.message) lines.push(data.message);
+    findings.forEach((item) => lines.push((item.type || 'item') + ' / ' + (item.email || '') + '：' + (item.detail || '')));
+    applied.forEach((item) => lines.push('已修 ' + (item.email || '') + '：' + (item.action || '') + ' ' + (item.result || '')));
+    skipped.forEach((item) => lines.push('未自动处理 ' + (item.email || '') + '：' + (item.reason || item.detail || '')));
+    if (!lines.length) lines.push('上游和本地没有明显错位');
+    log.textContent = lines.join('\n');
+    if (applyBtn) applyBtn.hidden = data.dry_run === false || safeCount === 0;
+}
+
+async function previewReconcile(teamId) {
+    try {
+        const response = await fetch('/admin/seats/reconcile?team_id=' + encodeURIComponent(teamId));
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            throw new Error(data.error || '对账失败');
+        }
+        renderReconcile(data, teamId);
+        const findings = data.findings || [];
+        if (!findings.length) {
+            showToast('对账通过：上游和本地没有明显错位', 'success');
+            return;
+        }
+        showToast('对账发现 ' + findings.length + ' 条，ghost 不会自动踢', 'error');
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function applyReconcile() {
+    if (!lastReconcileTeamId) return;
+    if (!confirm('只修本地错位和未加入的邀请，不会自动踢上游还在的成员。继续？')) return;
+    try {
+        const result = await postJSON('/admin/seats/reconcile', { team_id: lastReconcileTeamId });
+        renderReconcile(result, lastReconcileTeamId);
+        showToast(result.message || '对账已应用', 'success');
+        setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function fixAccountId(childId, email, teamId) {
+    try {
+        const result = await postJSON('/admin/seats/fix-account-id', {
+            child_id: childId,
+            email: email,
+            team_id: teamId || undefined,
+            push: true
+        });
+        showToast(result.message || 'account_id 已修复', 'success');
+        setTimeout(() => location.reload(), 800);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
 }
 
 async function handleRotate(event) {
@@ -272,7 +480,8 @@ async function handleRotate(event) {
             team_id: parseInt(document.getElementById('rotateTeamId').value, 10),
             email: document.getElementById('rotateEmail').value,
             phone: document.getElementById('rotatePhone').value,
-            proxy: document.getElementById('rotateProxy').value
+            proxy: document.getElementById('rotateProxy').value,
+            force_refill: document.getElementById('rotateForceRefill').checked
         });
         showToast(result.message || '轮转成功', 'success');
         setTimeout(() => location.reload(), 800);
@@ -424,6 +633,9 @@ async function loadSub2apiStatus(force) {
     } catch (error) {
         box.innerHTML = '<p class="form-help">' + escapeSeatHtml(error.message) + '</p>';
     }
+}
+if (currentOnboardJobId) {
+    pollOnboardJob(currentOnboardJobId, { reloadOnDone: false, quiet: true });
 }
 </script>
 {% endblock %}

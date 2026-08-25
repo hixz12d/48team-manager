@@ -928,7 +928,7 @@
                 <th>邮箱</th>
                 <th>Account ID</th>
                 <th>Team 名称</th>
-                <th>成员数</th>
+                <th>占用/上限</th>
                 <th>订阅计划</th>
                 <th>到期时间</th>
                 <th>状态</th>
@@ -949,9 +949,9 @@
                 </td>
                 <td data-label="Account ID"><span class="text-muted small">{{ team.account_id or '-' }}</span></td>
                 <td data-label="Team 名称">{{ team.team_name or '-' }}</td>
-                <td data-label="成员数">
-                    <span class="member-count">
-                        {{ team.current_members }}/{{ team.max_members }}
+                <td data-label="占用/上限">
+                    <span class="member-count" title="本地占用 / 操作上限，不是上游订阅容量">
+                        {{ (team.occupancy.occupancy_text if team.occupancy else (team.current_members ~ '/' ~ team.max_members)) }}
                     </span>
                 </td>
                 <td data-label="订阅计划">{{ team.subscription_plan or '-' }}</td>
@@ -978,6 +978,9 @@
                         未知
                         {% endif %}
                     </span>
+                    {% if team.risk_label and team.risk_level and team.risk_level != 'normal' %}
+                    <span class="risk-chip tone-{{ team.risk_level }}">{{ team.risk_label }}</span>
+                    {% endif %}
                 </td>
                 <td class="team-actions-cell" data-label="操作">
                     <div class="action-buttons">

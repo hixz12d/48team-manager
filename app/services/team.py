@@ -315,9 +315,10 @@ class TeamService:
             # 虽然提示错误，但在业务逻辑上应视为加入成功
             return False # 返回 False 表示不是致命故障，允许后续逻辑（如下车/同步）继续
 
-        # 3. 判定是否为 Token 过期 (需刷新)
-        is_token_expired = error_code == "token_expired" or "token_expired" in error_msg or "token is expired" in error_msg
-        
+        # 3. 判定是否为 Access Token 过期 (先换票，不要当成母号掉线)
+        is_token_expired = self._is_access_token_error(result)
+        has_refresh_secret = bool(team.refresh_token_encrypted or team.session_token_encrypted)
+
         # 4. 处理其他所有非致命错误 (累加错误次数)
         # 只要走到这里，说明不是封号也不是满员，统统记录错误
         logger.warning(f"Team {team.id} ({team.email}) 请求出错 (code={error_code}, msg={error_msg})")
@@ -332,13 +333,13 @@ class TeamService:
                 logger.error(f"Team {team.id} 连续错误 {team.error_count} 次，标记为 error")
                 team.status = "error"
         
-        # 如果是 Token 过期，标记状态等待后台调度任务去刷新。
-        # 注意：以前这里会同步调用 self.ensure_access_token，而 ensure_access_token 在
-        # 刷新失败时又会回调 _handle_api_error，形成 _handle_api_error ↔ ensure_access_token
-        # 互相递归的风险；这里改为仅更新状态，刷新交给上层（手动刷新接口、调度任务）统一触发。
+        # AT 过期只说明当前票失效。有 RT/ST 时留给上层换票，不要第一次就写成 expired。
         if is_token_expired and team.status not in {"banned", "expired"}:
-            logger.error(f"Team {team.id} Token 过期，标记为 expired 并等待下一次刷新")
-            team.status = "expired"
+            if not has_refresh_secret:
+                logger.error(f"Team {team.id} Access Token 过期且没有可换票凭证，标记为 expired")
+                team.status = "expired"
+            else:
+                logger.warning(f"Team {team.id} Access Token 过期，保留现有状态并等待换票")
 
         await db_session.commit()
         return True
@@ -370,6 +371,17 @@ class TeamService:
             "deactivated_workspace",
         )
         return any(keyword in error_msg for keyword in ban_keywords)
+
+    @staticmethod
+    def _is_access_token_error(result: Dict[str, Any]) -> bool:
+        error_code = str(result.get("error_code") or "").strip().lower()
+        error_msg = str(result.get("error") or "").lower()
+        status_code = int(result.get("status_code") or 0)
+        if error_code in {"token_expired", "unauthorized"}:
+            return True
+        if status_code == 401 and error_code != "token_invalidated":
+            return True
+        return any(marker in error_msg for marker in ("token_expired", "token is expired", "unauthorized"))
 
     @staticmethod
     def _remote_delete_succeeded(result: Dict[str, Any]) -> bool:
@@ -2983,6 +2995,18 @@ class TeamService:
                 db_session,
                 identifier=team.email
             )
+            if not self._remote_delete_succeeded(delete_result) and self._is_access_token_error(delete_result):
+                refreshed = await self.ensure_access_token(team, db_session, force_refresh=True)
+                if refreshed:
+                    logger.info("Team %s 踢人遇到 Access Token 失效，换票后重试一次", team.id)
+                    access_token = refreshed
+                    delete_result = await self.chatgpt_service.delete_member(
+                        access_token,
+                        team.account_id,
+                        user_id,
+                        db_session,
+                        identifier=team.email
+                    )
             remote_removed = self._remote_delete_succeeded(delete_result)
             if remote_removed:
                 vacancy = delete_result.get("vacancy") or parse_policy_notice(delete_result.get("data"))
@@ -3389,6 +3413,7 @@ class TeamService:
                     "proxy": getattr(team, "proxy", None) or "",
                     "seat_cycle_days": getattr(team, "seat_cycle_days", 7) or 7,
                 })
+            team_list = await vacancy_service.attach_to_cards(db_session, team_list)
 
             logger.info(f"获取所有 Team 列表成功: 第 {page} 页, 共 {len(team_list)} 个 / 总数 {total}")
 

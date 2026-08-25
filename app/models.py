@@ -26,8 +26,8 @@ class Team(Base):
     plan_type = Column(String(50), comment="计划类型")
     subscription_plan = Column(String(100), comment="订阅计划")
     expires_at = Column(DateTime, comment="订阅到期时间")
-    current_members = Column(Integer, default=0, comment="当前成员数")
-    max_members = Column(Integer, default=6, comment="最大成员数")
+    current_members = Column(Integer, default=0, comment="本地占用：已加入 + 待接受邀请")
+    max_members = Column(Integer, default=6, comment="本地操作上限，不是上游订阅容量")
     status = Column(String(20), default="active", comment="状态: active/full/expired/error/banned")
     account_role = Column(String(50), comment="账号角色: account-owner/standard-user 等")
     device_code_auth_enabled = Column(Boolean, default=False, comment="是否开启设备代码身份验证")
@@ -232,6 +232,8 @@ class ChildAccount(Base):
     account_id = Column(String(100), comment="ChatGPT account-id")
     sub2api_account_id = Column(Integer, comment="Sub2API 账号 ID")
     last_error = Column(Text, comment="最近一次拉人/踢人错误")
+    last_stage = Column(String(40), comment="最近一次拉人阶段")
+    last_job_id = Column(String(32), comment="最近一次拉人任务 ID")
     created_at = Column(DateTime, default=get_now, comment="创建时间")
     updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
 
@@ -267,7 +269,7 @@ class SeatEvent(Base):
 
 
 class SeatVacancyEvent(Base):
-    """踢人响应里的 policy_notice / 席位阈值历史。"""
+    """踢人响应里的 policy_notice / billing_notice 历史。只当证据，不驱动自动补位。"""
     __tablename__ = "seat_vacancy_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -280,7 +282,13 @@ class SeatVacancyEvent(Base):
     free_vacancy_threshold = Column(Integer, comment="free_vacancy_threshold")
     billing_starts_at = Column(DateTime, comment="席位开始时间(本地)")
     expires_at = Column(DateTime, comment="席位释放时间(本地)")
-    is_free = Column(Boolean, comment="ordinal < threshold 或 policy_notice 为 null")
+    is_free = Column(Boolean, comment="ordinal < threshold；缺失视为未知")
+    has_billing_notice = Column(Boolean, default=False, nullable=False, comment="是否带回执账单")
+    policy_kind = Column(String(80), comment="policy_notice.kind")
+    billed_seat_delta = Column(Integer, comment="policy_notice.billed_seat_delta")
+    replacement_required = Column(Boolean, comment="policy_notice.replacement_required")
+    policy_notice_json = Column(Text, comment="policy_notice 原文")
+    billing_notice_json = Column(Text, comment="billing_notice 原文")
     captured_at = Column(DateTime, default=get_now, nullable=False, comment="记录时间")
 
     __table_args__ = (

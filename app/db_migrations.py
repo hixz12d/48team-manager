@@ -309,6 +309,8 @@ def run_auto_migration():
                     account_id VARCHAR(100),
                     sub2api_account_id INTEGER,
                     last_error TEXT,
+                    last_stage VARCHAR(40),
+                    last_job_id VARCHAR(32),
                     created_at DATETIME,
                     updated_at DATETIME,
                     FOREIGN KEY(current_team_id) REFERENCES teams(id)
@@ -354,6 +356,16 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE team_email_mappings ADD COLUMN cycle_days INTEGER DEFAULT 7")
             migrations_applied.append("team_email_mappings.cycle_days")
 
+        if table_exists(cursor, "child_accounts") and not column_exists(cursor, "child_accounts", "last_stage"):
+            logger.info("添加 child_accounts.last_stage 字段")
+            cursor.execute("ALTER TABLE child_accounts ADD COLUMN last_stage VARCHAR(40)")
+            migrations_applied.append("child_accounts.last_stage")
+
+        if table_exists(cursor, "child_accounts") and not column_exists(cursor, "child_accounts", "last_job_id"):
+            logger.info("添加 child_accounts.last_job_id 字段")
+            cursor.execute("ALTER TABLE child_accounts ADD COLUMN last_job_id VARCHAR(32)")
+            migrations_applied.append("child_accounts.last_job_id")
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_status ON child_accounts (status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_team ON child_accounts (current_team_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_email ON seat_events (email)")
@@ -374,11 +386,34 @@ def run_auto_migration():
                     billing_starts_at DATETIME,
                     expires_at DATETIME,
                     is_free BOOLEAN,
+                    has_billing_notice BOOLEAN NOT NULL DEFAULT 0,
+                    policy_kind VARCHAR(80),
+                    billed_seat_delta INTEGER,
+                    replacement_required BOOLEAN,
+                    policy_notice_json TEXT,
+                    billing_notice_json TEXT,
                     captured_at DATETIME NOT NULL,
                     FOREIGN KEY(team_id) REFERENCES teams(id) ON DELETE CASCADE
                 )
             """)
             migrations_applied.append("seat_vacancy_events")
+
+        vacancy_columns = (
+            ("has_billing_notice", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("policy_kind", "VARCHAR(80)"),
+            ("billed_seat_delta", "INTEGER"),
+            ("replacement_required", "BOOLEAN"),
+            ("policy_notice_json", "TEXT"),
+            ("billing_notice_json", "TEXT"),
+        )
+        if table_exists(cursor, "seat_vacancy_events"):
+            for column_name, column_sql in vacancy_columns:
+                if not column_exists(cursor, "seat_vacancy_events", column_name):
+                    logger.info("添加 seat_vacancy_events.%s 字段", column_name)
+                    cursor.execute(
+                        f"ALTER TABLE seat_vacancy_events ADD COLUMN {column_name} {column_sql}"
+                    )
+                    migrations_applied.append(f"seat_vacancy_events.{column_name}")
 
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_vacancy_team_captured ON seat_vacancy_events (team_id, captured_at)"

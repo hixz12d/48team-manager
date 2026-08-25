@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import logging
-import time
 from pathlib import Path
-from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict, Optional
 
 from app.config import settings
 from app.services.mail_otp import wait_for_mailbox_item
 from app.services.sms import chrome_proxy_config, require_proxy, sms_client
 
 logger = logging.getLogger(__name__)
+
+StageCallback = Optional[Callable[[str, str], None]]
 
 
 def _click_first(page, selectors: list[str]) -> bool:
@@ -90,14 +90,23 @@ def run_browser_onboard(
     cf_base_url: str = "",
     cf_address: str = "",
     cf_admin_password: str = "",
+    on_stage: StageCallback = None,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
     from playwright.sync_api import sync_playwright
+
+    def report(stage: str, message: str) -> None:
+        if on_stage:
+            try:
+                on_stage(stage, message)
+            except Exception:  # noqa: BLE001
+                logger.debug("on_stage failed", exc_info=True)
 
     profile_dir = Path(settings.database_url.split("///")[-1]).resolve().parent.parent / "data" / "chrome-profiles" / email.replace("@", "_at_")
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode}
+    with sync_playwright() as playwright:
         launch_kwargs = {
             "user_data_dir": str(profile_dir),
             "headless": bool(settings.browser_headless),
@@ -113,13 +122,16 @@ def run_browser_onboard(
         page.set_default_timeout(60000)
         try:
             target = start_url or "https://chatgpt.com/auth/login"
+            report("browser_open", "正在打开注册/登录页")
             page.goto(target, wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
+            report("fill_email", "正在填写邮箱")
             _fill_first(page, ['input[name="email"]', 'input[type="email"]'], email)
             _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Next")'])
             page.wait_for_timeout(2500)
 
             if mode == "register":
+                report("create_account", "正在进入创建账号")
                 _click_first(page, ['button:has-text("Create account")', 'button:has-text("Sign up")', 'a:has-text("Create account")'])
                 page.wait_for_timeout(1500)
 
@@ -127,6 +139,7 @@ def run_browser_onboard(
                 url = (page.url or "").lower()
                 otp_el = _find_otp(page)
                 if otp_el:
+                    report("email_otp", "等待邮箱验证码")
                     code = ""
                     if pickup_url or use_cloudflare:
                         try:
@@ -142,8 +155,10 @@ def run_browser_onboard(
                             ) or ""
                         except Exception as exc:  # noqa: BLE001
                             result["error"] = f"email OTP failed: {exc}"
+                            result["error_code"] = "mail_otp_timeout"
                     if not code:
                         result["error"] = result.get("error") or "email OTP not found"
+                        result["error_code"] = result.get("error_code") or "mail_otp_timeout"
                         break
                     otp_el.fill(code)
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
@@ -151,14 +166,17 @@ def run_browser_onboard(
                     continue
 
                 if page.locator('input[type="password"]').count() > 0:
+                    report("password", "正在填写密码")
                     _fill_first(page, ['input[type="password"]', 'input[name="password"]'], password)
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")'])
                     page.wait_for_timeout(2500)
                     continue
 
                 if page.locator('input[type="tel"]').count() > 0 or "add-phone" in url:
+                    report("add_phone", "页面要求添加手机号")
                     if not phone or not sms_url:
                         result["error"] = "需要接码，但未提供手机号"
+                        result["error_code"] = "sms_missing"
                         break
                     digits = "".join(ch for ch in phone if ch.isdigit())
                     national = digits[1:] if digits.startswith("1") and len(digits) == 11 else digits
@@ -166,6 +184,7 @@ def run_browser_onboard(
                     _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")'])
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
                     page.wait_for_timeout(2500)
+                    report("sms_otp", "等待短信验证码")
                     sms_code = sms_client.wait_for_code(sms_url, proxy=proxy, timeout_sec=90)
                     otp_el = _find_otp(page)
                     if otp_el:
@@ -175,6 +194,7 @@ def run_browser_onboard(
                     continue
 
                 if page.locator('input[name="name"], input[name="fullName"]').count() > 0:
+                    report("profile", "正在填写资料")
                     _fill_first(page, ['input[name="name"]', 'input[name="fullName"]'], "James Smith")
                     _fill_first(page, ['input[name="birthdate"]', 'input[name="age"]'], "28")
                     _click_first(page, ['button:has-text("Finish creating account")', 'button[type="submit"]', 'button:has-text("Continue")'])
@@ -188,6 +208,7 @@ def run_browser_onboard(
                     continue
                 page.wait_for_timeout(1200)
 
+            report("session", "正在读取登录态")
             session = _extract_session(page)
             js = session.get("json") if isinstance(session.get("json"), dict) else {}
             access_token = str((js or {}).get("accessToken") or (js or {}).get("access_token") or "").strip()
@@ -202,8 +223,10 @@ def run_browser_onboard(
             })
             if not access_token:
                 result["error"] = result.get("error") or "no accessToken in session"
+                result["error_code"] = result.get("error_code") or "session_missing"
         except Exception as exc:  # noqa: BLE001
             result["error"] = str(exc)
+            result["error_code"] = result.get("error_code") or "browser_failed"
             result["ok"] = False
         finally:
             try:

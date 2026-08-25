@@ -5,7 +5,7 @@ import asyncio
 import logging
 import secrets
 import string
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,24 +15,65 @@ from app.models import ChildAccount, Team, TeamEmailMapping
 from app.services.child_accounts import (
     ACTIVE_CHILD_STATUSES,
     CHILD_STATUS_ACTIVE,
+    CHILD_STATUS_INVITED,
+    CHILD_STATUS_STANDBY,
+    OWNER_ROLES,
     child_account_service,
+    is_workspace_account_id,
     normalize_email,
 )
 from app.services.mail_otp import parse_mail_line, wait_for_mailbox_item
+from app.services import onboard_jobs
 from app.services.sms import parse_phone_line, require_proxy
 from app.services.sub2api import sub2api_service
 from app.services.team import team_service
 from app.services.chatgpt import ChatGPTService
-from app.services.vacancy import summarize_for_message
+from app.services.team_view import present_occupancy
+from app.services.vacancy import is_safe_to_refill, summarize_for_message
 from app.utils.proxy import normalize_proxy_url
 from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
 
+KICK_COOLDOWN_SECONDS = 10 * 60
+MEMBER_LOOKUP_RETRIES = 3
+MEMBER_LOOKUP_INTERVAL = 3.0
+
 
 def _random_password() -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(12)) + "Aa1!"
+
+
+def classify_onboard_error(error: str, *, stage: str = "") -> str:
+    text = (error or "").lower()
+    if "cancelled" in text or "已取消" in error:
+        return "cancelled"
+    if "coroutine" in text:
+        return "browser_await_bug"
+    if "otp" in text or "mailbox" in text or "验证码" in error:
+        return "mail_otp_timeout"
+    if "接码" in error or "sms" in text:
+        return "sms_failed"
+    if "代理" in error or "proxy" in text:
+        return "proxy_failed"
+    if "已满" in error or "full" in text:
+        return "team_full"
+    if "降级" in error or "degraded" in text:
+        return "master_degraded"
+    if "封禁" in error or "banned" in text:
+        return "master_banned"
+    if "过期" in error or "expired" in text:
+        return "master_expired"
+    if "冷却" in error or "cooldown" in text:
+        return "kick_cooldown"
+    if stage == "push" or "sub2api" in text:
+        return "push_failed"
+    if stage == "reconcile" or "对账" in error or "未看到该成员" in error:
+        return "not_joined"
+    if stage == "invite":
+        return "invite_failed"
+    return "browser_failed"
 
 
 class OnboardService:
@@ -69,6 +110,32 @@ class OnboardService:
                 return True
         return False
 
+    async def _lookup_live_member(
+        self,
+        db_session: AsyncSession,
+        team_id: int,
+        email: str,
+        *,
+        retries: int = MEMBER_LOOKUP_RETRIES,
+        interval: float = MEMBER_LOOKUP_INTERVAL,
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        target = normalize_email(email)
+        last: Dict[str, Any] = {"success": False, "members": [], "error": "未查询成员"}
+        attempts = max(1, int(retries))
+        for attempt in range(attempts):
+            last = await team_service.get_team_members(team_id, db_session)
+            if last.get("success"):
+                for item in last.get("members") or []:
+                    if normalize_email(item.get("email")) == target:
+                        return last, item
+            elif attempt < attempts - 1:
+                await asyncio.sleep(interval)
+                continue
+            if attempt < attempts - 1:
+                logger.info("成员列表暂无 %s，%.1fs 后重试 (%s/%s)", email, interval, attempt + 1, attempts - 1)
+                await asyncio.sleep(interval)
+        return last, None
+
     async def _cf_config(self, db_session: AsyncSession) -> Dict[str, str]:
         from app.services.cloudflare_mail import (
             CF_SETTING_ADDRESS,
@@ -85,38 +152,297 @@ class OnboardService:
             "admin_password": (await settings_service.get_setting(db_session, CF_SETTING_ADMIN_PASSWORD, "") or "").strip(),
         }
 
-    async def _run_browser(
-        self,
-        *,
-        email: str,
-        password: str,
-        pickup_url: str,
-        phone: str,
-        sms_url: str,
-        proxy: str,
-        start_url: str = "",
-        mode: str = "register",
-        use_cloudflare: bool = False,
-        cf_base_url: str = "",
-        cf_address: str = "",
-        cf_admin_password: str = "",
-    ) -> Dict[str, Any]:
+    def _run_browser(self, **kwargs: Any) -> Dict[str, Any]:
         from app.services.browser_onboard import run_browser_onboard
 
-        return run_browser_onboard(
-            email=email,
-            password=password,
-            pickup_url=pickup_url,
-            phone=phone,
-            sms_url=sms_url,
-            proxy=proxy,
-            start_url=start_url,
-            mode=mode,
-            use_cloudflare=use_cloudflare,
-            cf_base_url=cf_base_url,
-            cf_address=cf_address,
-            cf_admin_password=cf_admin_password,
+        return run_browser_onboard(**kwargs)
+
+    def _cancelled(self, job_id: Optional[str]) -> bool:
+        return onboard_jobs.is_cancelled(job_id)
+
+    async def _progress(
+        self,
+        db_session: AsyncSession,
+        child: Optional[ChildAccount],
+        *,
+        job_id: Optional[str],
+        stage: str,
+        message: str,
+        error: str = "",
+        error_code: str = "",
+    ) -> None:
+        onboard_jobs.note(job_id, stage, message, error=error, error_code=error_code)
+        if child is not None:
+            await child_account_service.set_progress(
+                db_session,
+                child,
+                stage=stage,
+                job_id=job_id,
+                error=error or None,
+                clear_error=not error,
+            )
+            await db_session.commit()
+
+    def _master_block_reason(self, team: Team) -> Optional[str]:
+        if team.status == "banned":
+            return "母号已封禁，停止拉人"
+        if team.status == "expired":
+            return "母号已过期，停止拉人"
+        role = (getattr(team, "account_role", None) or "").strip()
+        if role and role not in OWNER_ROLES:
+            return f"母号角色已降级为 {role}，停止拉人"
+        return None
+
+    async def preview_reconcile(self, db_session: AsyncSession, team_id: int) -> Dict[str, Any]:
+        team = await self._load_team(db_session, team_id)
+        live = await team_service.get_team_members(team_id, db_session)
+        if not live.get("success"):
+            return {"success": False, "error": live.get("error") or "读取上游成员失败", "findings": []}
+
+        children = await child_account_service.list_accounts(db_session)
+        local_by_email = {
+            item.email: item
+            for item in children
+            if item.current_team_id == team.id or item.last_team_id == team.id
+        }
+        findings = []
+        owner = normalize_email(team.email)
+        live_emails = set()
+        for member in live.get("members") or []:
+            email = normalize_email(member.get("email"))
+            if not email or email == owner:
+                continue
+            live_emails.add(email)
+            child = local_by_email.get(email)
+            if child is None:
+                findings.append({
+                    "type": "ghost",
+                    "email": email,
+                    "live_status": member.get("status"),
+                    "detail": "上游有、本地子号库没有",
+                })
+            elif child.status == CHILD_STATUS_STANDBY:
+                findings.append({
+                    "type": "misaligned",
+                    "email": email,
+                    "live_status": member.get("status"),
+                    "local_status": child.status,
+                    "detail": "上游还在，本地已标 standby",
+                })
+            elif child.status == "unused" and member.get("status") == "invited":
+                findings.append({
+                    "type": "leftover_invite",
+                    "email": email,
+                    "live_status": member.get("status"),
+                    "local_status": child.status,
+                    "detail": "上游邀请还在，本地已回到未使用",
+                })
+        for child in children:
+            if child.current_team_id != team.id:
+                continue
+            if child.email not in live_emails and child.status in ACTIVE_CHILD_STATUSES:
+                findings.append({
+                    "type": "leftover_local",
+                    "email": child.email,
+                    "live_status": None,
+                    "local_status": child.status,
+                    "detail": "本地还占着这个 Team，上游已经看不到",
+                })
+        occupancy = present_occupancy({
+            "current_members": team.current_members,
+            "max_members": team.max_members,
+            "live_members": live.get("members") or [],
+        })
+        return {
+            "success": True,
+            "team_id": team.id,
+            "findings": findings,
+            "occupancy": occupancy,
+            "dry_run": True,
+        }
+
+    async def _team_by_id(self, db_session: AsyncSession, team_id: Optional[int]) -> Optional[Team]:
+        if not team_id:
+            return None
+        try:
+            return await self._load_team(db_session, int(team_id))
+        except Exception:
+            return None
+
+    async def resolve_workspace_account_id(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        team: Optional[Team] = None,
+    ) -> str:
+        candidates = [team] if team else []
+        for team_id in (child.current_team_id, child.last_team_id):
+            if team and team_id == team.id:
+                continue
+            found = await self._team_by_id(db_session, team_id)
+            if found:
+                candidates.append(found)
+        for item in candidates:
+            if item and is_workspace_account_id(item.account_id):
+                return str(item.account_id).strip()
+        if is_workspace_account_id(child.account_id):
+            return str(child.account_id).strip()
+        return ""
+
+    async def fix_child_account_id(
+        self,
+        db_session: AsyncSession,
+        *,
+        child_id: Optional[int] = None,
+        email: str = "",
+        team_id: Optional[int] = None,
+        push: bool = True,
+    ) -> Dict[str, Any]:
+        child = None
+        if child_id:
+            child = await child_account_service.get_by_id(db_session, child_id)
+        elif email:
+            child = await child_account_service.get_by_email(db_session, email)
+        if not child:
+            return {"success": False, "error": "子号不存在"}
+
+        team = await self._team_by_id(db_session, team_id or child.current_team_id or child.last_team_id)
+        workspace = await self.resolve_workspace_account_id(db_session, child, team)
+        if not workspace:
+            return {"success": False, "error": "找不到可用的 workspace account_id，先把母号 account_id 修成 UUID"}
+
+        old = (child.account_id or "").strip()
+        child.account_id = workspace
+        push_result = None
+        if push:
+            access_token = child_account_service.decrypt_secret(child.access_token_encrypted)
+            if not access_token:
+                await child_account_service.record_event(
+                    db_session,
+                    email=child.email,
+                    action="fix_account_id",
+                    team_id=team.id if team else None,
+                    child_id=child.id,
+                    success=True,
+                    detail=f"{old or '-'} -> {workspace}，无 token 未回推",
+                )
+                await db_session.commit()
+                return {
+                    "success": True,
+                    "message": f"已把 {child.email} 的 account_id 改成 {workspace}，但没有 access token，未回推 Sub2API",
+                    "old_account_id": old,
+                    "account_id": workspace,
+                    "pushed": False,
+                    "child": child_account_service.serialize(child),
+                }
+            try:
+                push_result = await sub2api_service.import_session(
+                    db_session,
+                    email=child.email,
+                    access_token=access_token,
+                    refresh_token=child_account_service.decrypt_secret(child.refresh_token_encrypted),
+                    id_token=child_account_service.decrypt_secret(child.id_token_encrypted),
+                    account_id=workspace,
+                    client_id=child.client_id or "",
+                    existing_id=child.sub2api_account_id,
+                )
+                if push_result.get("account_id"):
+                    child.sub2api_account_id = int(push_result["account_id"])
+            except Exception as exc:  # noqa: BLE001
+                await child_account_service.record_event(
+                    db_session,
+                    email=child.email,
+                    action="fix_account_id",
+                    team_id=team.id if team else None,
+                    child_id=child.id,
+                    success=False,
+                    detail=str(exc),
+                    error_code="push_failed",
+                )
+                await db_session.commit()
+                return {
+                    "success": False,
+                    "error": f"account_id 已改成 {workspace}，但回推 Sub2API 失败: {exc}",
+                    "old_account_id": old,
+                    "account_id": workspace,
+                    "child": child_account_service.serialize(child),
+                }
+
+        await child_account_service.record_event(
+            db_session,
+            email=child.email,
+            action="fix_account_id",
+            team_id=team.id if team else None,
+            child_id=child.id,
+            success=True,
+            detail=f"{old or '-'} -> {workspace}",
         )
+        await db_session.commit()
+        message = f"已把 {child.email} 的 account_id 改成 {workspace}"
+        if push_result:
+            message += "，并已回推 Sub2API"
+        return {
+            "success": True,
+            "message": message,
+            "old_account_id": old,
+            "account_id": workspace,
+            "pushed": bool(push_result),
+            "push": push_result,
+            "child": child_account_service.serialize(child),
+        }
+
+    async def apply_reconcile(self, db_session: AsyncSession, team_id: int) -> Dict[str, Any]:
+        preview = await self.preview_reconcile(db_session, team_id)
+        if not preview.get("success"):
+            return preview
+
+        applied: list[Dict[str, Any]] = []
+        skipped: list[Dict[str, Any]] = []
+        for finding in preview.get("findings") or []:
+            kind = finding.get("type")
+            email = finding.get("email") or ""
+            if kind == "leftover_invite":
+                result = await self.kick_to_standby(db_session, team_id=team_id, email=email)
+                applied.append({**finding, "action": "revoke_invite", "result": result.get("message") or result.get("error")})
+                continue
+            if kind == "leftover_local":
+                child = await child_account_service.get_by_email(db_session, email)
+                if not child:
+                    skipped.append({**finding, "reason": "本地子号已不在"})
+                    continue
+                mapping = await self._mapping(db_session, team_id, email)
+                if child.status == CHILD_STATUS_INVITED:
+                    await child_account_service.mark_unused(db_session, child, mapping=mapping, stage="reconcile")
+                    action = "mark_unused"
+                else:
+                    await child_account_service.mark_standby(db_session, child, mapping=mapping)
+                    action = "mark_standby"
+                await child_account_service.record_event(
+                    db_session,
+                    email=email,
+                    action="reconcile",
+                    team_id=team_id,
+                    child_id=child.id,
+                    success=True,
+                    detail=action,
+                )
+                applied.append({**finding, "action": action, "result": "已纠正本地状态"})
+                continue
+            skipped.append({**finding, "reason": "需人工确认，未自动踢上游"})
+
+        await db_session.commit()
+        message = f"已修 {len(applied)} 条本地/邀请错位"
+        if skipped:
+            message += f"，另有 {len(skipped)} 条需人工确认"
+        return {
+            "success": True,
+            "message": message,
+            "applied": applied,
+            "skipped": skipped,
+            "findings": preview.get("findings") or [],
+            "occupancy": preview.get("occupancy"),
+            "dry_run": False,
+        }
 
     async def invite_and_onboard(
         self,
@@ -128,6 +454,9 @@ class OnboardService:
         proxy: str = "",
         password: str = "",
         reuse_existing: bool = True,
+        skip_invite: bool = False,
+        force: bool = False,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         parsed = parse_mail_line(email_line)
         email = normalize_email(parsed["email"] or email_line)
@@ -138,8 +467,22 @@ class OnboardService:
         self._team_proxy(team)
         child_proxy = proxy or ""
         existing = await child_account_service.get_by_email(db_session, email)
-        if existing and existing.status in ACTIVE_CHILD_STATUSES and existing.current_team_id == team.id:
+        if existing and existing.status in ACTIVE_CHILD_STATUSES and existing.current_team_id == team.id and existing.status == CHILD_STATUS_ACTIVE:
             return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(existing)}
+
+        block = self._master_block_reason(team)
+        if block:
+            return {"success": False, "error": block, "error_code": classify_onboard_error(block), "status": "blocked"}
+
+        if existing and existing.kicked_at and existing.status == CHILD_STATUS_STANDBY and not force:
+            elapsed = (get_now() - existing.kicked_at).total_seconds()
+            if elapsed < KICK_COOLDOWN_SECONDS:
+                remain = int((KICK_COOLDOWN_SECONDS - elapsed) / 60) + 1
+                error = f"{email} 刚被踢出，{remain} 分钟内不要再拉进任何 Team，避免 token_revoked"
+                return {"success": False, "error": error, "error_code": "kick_cooldown", "status": "blocked"}
+
+        if self._cancelled(job_id):
+            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
         phone, sms_url = parse_phone_line(phone_line)
         if existing:
@@ -164,32 +507,77 @@ class OnboardService:
         password = password or child_account_service.decrypt_secret(child.password_encrypted) or _random_password()
         if not child.password_encrypted:
             child.password_encrypted = child_account_service.encrypt_secret(password)
+        await self._progress(db_session, child, job_id=job_id, stage="checking", message="正在检查母号和占用")
 
-        invite = await team_service.add_team_member(team_id, email, db_session)
-        if not invite.get("success"):
+        live, live_item = await self._lookup_live_member(db_session, team.id, email, retries=1)
+        occupancy = present_occupancy({
+            "current_members": team.current_members,
+            "max_members": team.max_members,
+            "live_members": (live.get("members") if live.get("success") else None),
+            "live_error": None if live.get("success") else live.get("error"),
+        })
+        already_invited = bool(live_item and live_item.get("status") == "invited")
+        already_joined = bool(live_item and live_item.get("status") == "joined")
+        if already_joined:
+            await child_account_service.mark_active(db_session, child, team, mapping=await self._mapping(db_session, team.id, email))
+            await db_session.commit()
+            return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(child)}
+
+        if not skip_invite and not already_invited:
+            capacity = occupancy.get("capacity")
+            occupied = occupancy.get("upstream_occupied")
+            if occupied is None:
+                occupied = occupancy.get("occupied")
+            if capacity is not None and occupied is not None and occupied >= capacity:
+                error = f"占用 {occupied}/{capacity}，不能再邀请"
+                await self._progress(db_session, child, job_id=job_id, stage="blocked", message=error, error=error, error_code="team_full")
+                return {"success": False, "error": error, "error_code": "team_full", "status": "blocked", "occupancy": occupancy}
+
+        if self._cancelled(job_id):
+            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
+
+        if already_invited:
+            await child_account_service.mark_invited(db_session, child, team)
+            await child_account_service.record_event(
+                db_session,
+                email=email,
+                action="reregister" if skip_invite else "invite",
+                team_id=team.id,
+                child_id=child.id,
+                success=True,
+                detail="复用已发出的邀请" if already_invited else "跳过重复邀请",
+            )
+            await self._progress(db_session, child, job_id=job_id, stage="invited", message="邀请已存在，开始重新注册")
+        else:
+            await self._progress(db_session, child, job_id=job_id, stage="inviting", message="正在发送 Team 邀请")
+            invite = await team_service.add_team_member(team_id, email, db_session)
+            if not invite.get("success"):
+                error = invite.get("error") or "邀请失败"
+                code = classify_onboard_error(error, stage="invite")
+                await child_account_service.record_event(
+                    db_session,
+                    email=email,
+                    action="invite",
+                    team_id=team.id,
+                    child_id=child.id,
+                    success=False,
+                    detail=error,
+                    error_code=code,
+                )
+                await self._progress(db_session, child, job_id=job_id, stage="invite_failed", message=error, error=error, error_code=code)
+                return {"success": False, "error": error, "error_code": code, "status": "invite_failed"}
+
+            await child_account_service.mark_invited(db_session, child, team)
             await child_account_service.record_event(
                 db_session,
                 email=email,
                 action="invite",
                 team_id=team.id,
                 child_id=child.id,
-                success=False,
-                detail=invite.get("error") or "邀请失败",
+                success=True,
+                detail=invite.get("message") or "邀请已发送",
             )
-            await db_session.commit()
-            return {"success": False, "error": invite.get("error") or "邀请失败"}
-
-        await child_account_service.mark_invited(db_session, child, team)
-        await child_account_service.record_event(
-            db_session,
-            email=email,
-            action="invite",
-            team_id=team.id,
-            child_id=child.id,
-            success=True,
-            detail=invite.get("message") or "邀请已发送",
-        )
-        await db_session.commit()
+            await self._progress(db_session, child, job_id=job_id, stage="invited", message="邀请已发送，准备注册")
 
         has_session = bool(child_account_service.decrypt_secret(child.access_token_encrypted) or child_account_service.decrypt_secret(child.session_token_encrypted))
         should_register = not (reuse_existing and has_session and child_account_service.decrypt_secret(child.password_encrypted))
@@ -199,10 +587,16 @@ class OnboardService:
         cf_config = await self._cf_config(db_session)
         use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
         if not pickup_url and not use_cloudflare:
-            raise ValueError("请先在系统中心配置 Cloudflare 邮箱，或输入 email----pickup_url")
+            error = "请先在系统中心配置 Cloudflare 邮箱，或输入 email----pickup_url"
+            await self._progress(db_session, child, job_id=job_id, stage="mail_missing", message=error, error=error, error_code="mail_missing")
+            return {"success": False, "error": error, "error_code": "mail_missing", "status": "mail_missing"}
+
+        if self._cancelled(job_id):
+            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
         invite_url = ""
         try:
+            await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message="等待邀请邮件")
             invite_url = await asyncio.to_thread(
                 wait_for_mailbox_item,
                 email=email,
@@ -216,8 +610,23 @@ class OnboardService:
             ) or ""
         except Exception as exc:  # noqa: BLE001
             logger.warning("等待邀请邮件失败: %s", exc)
+            await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message=f"邀请邮件未拿到，继续尝试直接打开登录页：{exc}")
+
+        if self._cancelled(job_id):
+            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
         browser_mode = "register" if should_register else "relogin"
+        await self._progress(
+            db_session,
+            child,
+            job_id=job_id,
+            stage="browser",
+            message="正在打开浏览器走注册" if browser_mode == "register" else "正在打开浏览器复用登录",
+        )
+
+        def on_stage(stage: str, message: str) -> None:
+            onboard_jobs.note(job_id, stage, message)
+
         try:
             browser_result = await asyncio.to_thread(
                 self._run_browser,
@@ -230,12 +639,14 @@ class OnboardService:
                 start_url=invite_url,
                 mode=browser_mode,
                 use_cloudflare=use_cloudflare,
-                cf_base_url=cf_config["base_url"] if use_cloudflare else "",
-                cf_address=cf_config["address"] if use_cloudflare else "",
-                cf_admin_password=cf_config["admin_password"] if use_cloudflare else "",
+                cf_base_url=cf_config["base_url"],
+                cf_address=cf_config["address"],
+                cf_admin_password=cf_config["admin_password"],
+                on_stage=on_stage,
             )
         except Exception as exc:  # noqa: BLE001
-            child.last_error = str(exc)
+            error = str(exc)
+            code = classify_onboard_error(error, stage="browser")
             await child_account_service.record_event(
                 db_session,
                 email=email,
@@ -243,13 +654,20 @@ class OnboardService:
                 team_id=team.id,
                 child_id=child.id,
                 success=False,
-                detail=str(exc),
+                detail=error,
+                error_code=code,
             )
-            await db_session.commit()
-            return {"success": False, "error": str(exc), "status": "browser_failed"}
+            await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code=code)
+            return {"success": False, "error": error, "error_code": code, "status": "browser_failed"}
+
+        if not isinstance(browser_result, dict):
+            error = f"浏览器流程返回了无效结果: {type(browser_result).__name__}"
+            await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code="browser_await_bug")
+            return {"success": False, "error": error, "error_code": "browser_await_bug", "status": "browser_failed"}
 
         if not browser_result.get("ok"):
-            child.last_error = browser_result.get("error") or "浏览器流程失败"
+            error = browser_result.get("error") or "浏览器流程失败"
+            code = browser_result.get("error_code") or classify_onboard_error(error, stage="browser")
             await child_account_service.record_event(
                 db_session,
                 email=email,
@@ -257,17 +675,18 @@ class OnboardService:
                 team_id=team.id,
                 child_id=child.id,
                 success=False,
-                detail=child.last_error,
+                detail=error,
+                error_code=code,
             )
-            await db_session.commit()
-            return {"success": False, "error": child.last_error, "status": "browser_failed"}
+            await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code=code)
+            return {"success": False, "error": error, "error_code": code, "status": "browser_failed"}
 
         await child_account_service.save_tokens(db_session, child, {
             "access_token": browser_result.get("access_token") or "",
             "refresh_token": browser_result.get("refresh_token") or "",
             "session_token": browser_result.get("session_token") or "",
             "id_token": browser_result.get("id_token") or "",
-            "account_id": browser_result.get("account_id") or "",
+            "account_id": team.account_id if is_workspace_account_id(team.account_id) else (browser_result.get("account_id") or ""),
             "client_id": browser_result.get("client_id") or "",
         })
         if browser_result.get("password"):
@@ -275,7 +694,10 @@ class OnboardService:
 
         joined = False
         last_error = ""
+        await self._progress(db_session, child, job_id=job_id, stage="reconciling", message="注册完成，正在对账是否已加入")
         for _ in range(8):
+            if self._cancelled(job_id):
+                return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
             try:
                 joined = await self._confirm_joined(db_session, team.id, email)
                 if joined:
@@ -286,7 +708,7 @@ class OnboardService:
 
         if not joined:
             detail = last_error or "邀请后对账未看到该成员，未推送 Sub2API"
-            child.last_error = detail
+            code = classify_onboard_error(detail, stage="reconcile")
             await child_account_service.record_event(
                 db_session,
                 email=email,
@@ -295,15 +717,18 @@ class OnboardService:
                 child_id=child.id,
                 success=False,
                 detail=detail,
+                error_code=code,
             )
-            await db_session.commit()
-            return {"success": False, "error": detail, "status": "not_joined"}
+            await self._progress(db_session, child, job_id=job_id, stage="not_joined", message=detail, error=detail, error_code=code)
+            return {"success": False, "error": detail, "error_code": code, "status": "not_joined"}
 
         mapping = await self._mapping(db_session, team.id, email)
         await child_account_service.mark_active(db_session, child, team, mapping=mapping)
+        await child_account_service.set_progress(db_session, child, stage="pushing", job_id=job_id, clear_error=True)
 
         push_result = None
         try:
+            await self._progress(db_session, child, job_id=job_id, stage="pushing", message="已入组，正在推送 Sub2API")
             push_result = await sub2api_service.import_session(
                 db_session,
                 email=email,
@@ -326,7 +751,7 @@ class OnboardService:
                 detail=push_result.get("strategy") or "pushed",
             )
         except Exception as exc:  # noqa: BLE001
-            child.last_error = str(exc)
+            error = f"已入组，但推送 Sub2API 失败: {exc}"
             await child_account_service.record_event(
                 db_session,
                 email=email,
@@ -335,15 +760,18 @@ class OnboardService:
                 child_id=child.id,
                 success=False,
                 detail=str(exc),
+                error_code="push_failed",
             )
-            await db_session.commit()
+            await self._progress(db_session, child, job_id=job_id, stage="push_failed", message=error, error=error, error_code="push_failed")
             return {
                 "success": False,
-                "error": f"已入组，但推送 Sub2API 失败: {exc}",
+                "error": error,
+                "error_code": "push_failed",
                 "status": "push_failed",
                 "child": child_account_service.serialize(child),
             }
 
+        await child_account_service.set_progress(db_session, child, stage="done", job_id=job_id, clear_error=True)
         await db_session.commit()
         return {
             "success": True,
@@ -366,20 +794,70 @@ class OnboardService:
         target = normalize_email(email)
         child = await child_account_service.get_by_email(db_session, target)
 
-        needs_lookup = not user_id or (isinstance(user_id, str) and not user_id.startswith("user-"))
-        if needs_lookup:
-            members = await team_service.get_team_members(team_id, db_session)
-            if members.get("success"):
-                for item in members.get("members") or []:
-                    if normalize_email(item.get("email")) != target:
-                        continue
-                    live_id = ChatGPTService.pick_user_id(item)
-                    if live_id:
-                        user_id = live_id
-                    break
+        live, live_item = await self._lookup_live_member(db_session, team_id, target)
+        if live.get("success") is False:
+            return {"success": False, "error": f"{live.get('error') or '读取成员失败'}，未执行踢人/撤回"}
+        live_status = (live_item or {}).get("status")
+        if live_item:
+            live_id = ChatGPTService.pick_user_id(live_item)
+            if live_id:
+                user_id = live_id
+            elif live_item.get("user_id"):
+                user_id = live_item.get("user_id")
+
+        should_revoke = live_status == "invited" or (
+            live_item is None and (child is None or child.status != CHILD_STATUS_ACTIVE)
+        )
+        if should_revoke:
+            result = await team_service.revoke_team_invite(team_id, target, db_session)
+            if not result.get("success") and live_item is None:
+                result = {
+                    "success": True,
+                    "message": f"{target} 上游已看不到邀请，按已撤回处理",
+                    "already_absent": True,
+                }
+            if not result.get("success"):
+                await child_account_service.record_event(
+                    db_session,
+                    email=target,
+                    action="revoke",
+                    team_id=team.id,
+                    child_id=child.id if child else None,
+                    success=False,
+                    detail=result.get("error") or "撤回邀请失败",
+                    error_code="revoke_failed",
+                )
+                await db_session.commit()
+                return {"success": False, "error": result.get("error") or "撤回邀请失败"}
+
+            mapping = await self._mapping(db_session, team.id, target)
+            if child:
+                await child_account_service.mark_unused(db_session, child, mapping=mapping, stage="revoked")
+            await child_account_service.record_event(
+                db_session,
+                email=target,
+                action="revoke",
+                team_id=team.id,
+                child_id=child.id if child else None,
+                success=True,
+                detail="已撤回邀请，子号回到未使用",
+            )
+            await db_session.commit()
+            return {
+                "success": True,
+                "status": "revoked",
+                "message": f"{target} 已撤回邀请，子号回到未使用",
+                "child": child_account_service.serialize(child) if child else None,
+            }
 
         if user_id:
             result = await team_service.delete_team_member(team_id, user_id, db_session, email=target)
+        elif live_item is None:
+            result = {
+                "success": True,
+                "message": f"{target} 重试后仍不在成员列表，按已不在 Team 处理",
+                "already_absent": True,
+            }
         else:
             result = await team_service.revoke_team_invite(team_id, target, db_session)
 
@@ -392,6 +870,7 @@ class OnboardService:
                 child_id=child.id if child else None,
                 success=False,
                 detail=result.get("error") or "踢人失败",
+                error_code="kick_failed",
             )
             await db_session.commit()
             return {"success": False, "error": result.get("error") or "踢人失败"}
@@ -416,6 +895,7 @@ class OnboardService:
             message = f"{message}。{summary}"
         return {
             "success": True,
+            "status": "standby",
             "message": message,
             "child": child_account_service.serialize(child) if child else None,
             "vacancy": vacancy,
@@ -430,6 +910,7 @@ class OnboardService:
         phone_line: str = "",
         proxy: str = "",
         child_id: Optional[int] = None,
+        force_refill: bool = False,
     ) -> Dict[str, Any]:
         team = await self._load_team(db_session, team_id)
         due = await child_account_service.list_due_accounts(db_session, team_id=team.id)
@@ -440,6 +921,18 @@ class OnboardService:
         kick_result = await self.kick_to_standby(db_session, team_id=team.id, email=kick_target.email)
         if not kick_result.get("success"):
             return kick_result
+
+        vacancy = kick_result.get("vacancy")
+        if not force_refill and not is_safe_to_refill(vacancy):
+            summary = summarize_for_message(vacancy) or "踢人回执不能证明席位已释放"
+            return {
+                "success": False,
+                "error": f"已踢出 {kick_target.email}，但{summary}。已停止自动补位，核对 Billing 后可勾选强制补位。",
+                "error_code": "vacancy_not_safe_to_refill",
+                "needs_confirm": True,
+                "kick": kick_result,
+                "vacancy": vacancy,
+            }
 
         replacement = None
         if child_id:
@@ -452,6 +945,8 @@ class OnboardService:
             standby = await child_account_service.list_accounts(db_session, status="standby")
             for item in standby:
                 if item.email != kick_target.email:
+                    if item.kicked_at and (get_now() - item.kicked_at).total_seconds() < KICK_COOLDOWN_SECONDS:
+                        continue
                     replacement = item
                     break
 
@@ -470,6 +965,7 @@ class OnboardService:
             phone_line=phone_line or ((replacement.phone or "") + ("----" + replacement.sms_url if replacement and replacement.sms_url else "")),
             proxy=proxy or (replacement.proxy if replacement else ""),
             reuse_existing=True,
+            force=force_refill,
         )
         if not invite_result.get("success"):
             return {
