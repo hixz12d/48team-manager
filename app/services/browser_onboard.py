@@ -515,6 +515,9 @@ def run_browser_onboard(
                 page.wait_for_timeout(1200)
 
             result["debug_dir"] = _save_debug(page, profile_dir)
+            if result.get("error_code") and not session_access_token(session):
+                result["final_url"] = page.url or ""
+                return result
             report("session", f"正在读取登录态 {page.url or ''}")
             if not session_access_token(session):
                 session = _extract_session(page)
