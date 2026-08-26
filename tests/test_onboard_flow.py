@@ -13,6 +13,7 @@ from app.services.browser_onboard import (
     looks_like_about_you,
     looks_like_cloudflare,
     looks_like_email_gate,
+    looks_like_session_ended,
     looks_like_otp_input,
     session_access_token,
 )
@@ -73,6 +74,8 @@ class OnboardHelperTests(unittest.TestCase):
             classify_onboard_error("卡在 ChatGPT 邮箱页，没有进入 OpenAI 注册"),
             "email_gate_stuck",
         )
+        self.assertTrue(looks_like_session_ended(title="Your session has ended - OpenAI", body="Continue by logging in"))
+        self.assertFalse(looks_like_session_ended(title="Get started | ChatGPT", body="Log in or sign up"))
 
     def test_age_page_is_not_otp(self):
         self.assertTrue(looks_like_about_you(title="How old are you? - OpenAI", body="How old are you?", url="https://auth.openai.com/about-you"))

@@ -159,7 +159,7 @@ EMAIL_INPUT_SELECTOR = (
     'input[autocomplete="email"], input[placeholder="Email address"], '
     'input[aria-label="Email address"]'
 )
-REGISTER_START_URL = "https://auth.openai.com/create-account"
+REGISTER_START_URL = "https://chatgpt.com/auth/login"
 LOGIN_START_URL = "https://chatgpt.com/auth/login"
 
 
@@ -184,6 +184,11 @@ def looks_like_email_gate(*, title: str = "", body: str = "", url: str = "") -> 
     if "/auth/login" in url_l:
         return True
     return False
+
+
+def looks_like_session_ended(*, title: str = "", body: str = "") -> bool:
+    blob = f"{title}\n{body}".lower()
+    return "session has ended" in blob
 
 
 def _email_input_visible(page) -> bool:
@@ -616,6 +621,12 @@ def run_browser_onboard(
                     break
 
                 page_text = _page_text(page)
+                if looks_like_session_ended(title=page.title() or "", body=page_text):
+                    report("session_ended", "OpenAI 会话已结束，改走登录/注册页")
+                    if not _click_exact(page, ["Log in", "Sign up", "Continue"]):
+                        page.goto(LOGIN_START_URL, wait_until="load")
+                    page.wait_for_timeout(2000)
+                    continue
                 if (
                     _email_input_visible(page)
                     and not _visible(page, 'input[type="password"], input[name="current-password"]')
@@ -773,7 +784,12 @@ def run_browser_onboard(
                         report("login", "未登录首页，点 Log in 回去")
                     page.wait_for_timeout(2000)
                     continue
-                if "auth.openai.com" in url:
+                if "auth.openai.com" in url and (
+                    _visible(page, 'input[type="password"], input[name="current-password"]')
+                    or bool(_find_otp(page) or _otp_boxes(page))
+                    or "email-verification" in url
+                    or looks_like_about_you(title=page.title() or "", body=page_text, url=url)
+                ):
                     page.wait_for_timeout(1200)
                     continue
                 if _pick_workspace(page, team_name):
