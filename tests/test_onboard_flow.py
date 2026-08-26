@@ -14,6 +14,7 @@ from app.services.browser_onboard import (
     looks_like_cloudflare,
     looks_like_email_gate,
     looks_like_session_ended,
+    split_phone,
     looks_like_otp_input,
     session_access_token,
 )
@@ -76,6 +77,8 @@ class OnboardHelperTests(unittest.TestCase):
         )
         self.assertTrue(looks_like_session_ended(title="Your session has ended - OpenAI", body="Continue by logging in"))
         self.assertFalse(looks_like_session_ended(title="Get started | ChatGPT", body="Log in or sign up"))
+        self.assertEqual(split_phone("+8613434986375"), ("China", "13434986375"))
+        self.assertEqual(split_phone("+13434986375"), ("United States", "3434986375"))
 
     def test_age_page_is_not_otp(self):
         self.assertTrue(looks_like_about_you(title="How old are you? - OpenAI", body="How old are you?", url="https://auth.openai.com/about-you"))

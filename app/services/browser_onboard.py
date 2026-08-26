@@ -191,6 +191,49 @@ def looks_like_session_ended(*, title: str = "", body: str = "") -> bool:
     return "session has ended" in blob
 
 
+def split_phone(phone: str) -> tuple[str, str]:
+    digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if digits.startswith("86") and len(digits) >= 12:
+        return "China", digits[2:]
+    if digits.startswith("1") and len(digits) == 11:
+        return "United States", digits[1:]
+    if len(digits) == 10:
+        return "United States", digits
+    return "", digits
+
+
+def _fill_phone_number(page, phone: str) -> bool:
+    country, national = split_phone(phone)
+    if country and country != "United States":
+        clicked = False
+        for name in ("United States (+1)", "United States", "+1"):
+            try:
+                loc = page.get_by_role("button", name=name)
+                if loc.count() > 0 and loc.first.is_visible():
+                    loc.first.click(timeout=2500)
+                    clicked = True
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        if clicked:
+            page.wait_for_timeout(400)
+            try:
+                search = page.locator('input[type="search"], input[placeholder*="Search" i]')
+                if search.count() > 0 and search.first.is_visible():
+                    search.first.fill(country)
+                    page.wait_for_timeout(500)
+            except Exception:  # noqa: BLE001
+                pass
+            for label in ((f"{country} (+86)" if country == "China" else country), country):
+                try:
+                    page.get_by_text(label, exact=False).first.click(timeout=2500)
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
+            page.wait_for_timeout(400)
+    return _fill_first(page, ['input[type="tel"]', 'input[name="phone"]'], national)
+
+
 def _page_past_otp(page) -> bool:
     url = (getattr(page, "url", "") or "").lower()
     title = ""
@@ -761,9 +804,11 @@ def run_browser_onboard(
                         break
                     if not phone or not sms_url:
                         break
-                    digits = "".join(ch for ch in phone if ch.isdigit())
-                    national = digits[1:] if digits.startswith("1") and len(digits) == 11 else digits
-                    _fill_first(page, ['input[type="tel"]', 'input[name="phone"]'], national)
+                    if "is not valid" in _page_text(page).lower():
+                        result["error"] = "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+                        result["error_code"] = "sms_rejected"
+                        break
+                    _fill_phone_number(page, phone)
                     _click_exact(page, ["Text", "SMS", "Send", "Continue"])
                     _click_first(page, ['button[type="submit"]', 'label:has-text("Text")'])
                     page.wait_for_timeout(2500)

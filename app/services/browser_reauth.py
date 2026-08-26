@@ -10,6 +10,7 @@ from app.services.browser_onboard import (
     _click_first,
     _fill_about_you,
     _fill_first,
+    _fill_phone_number,
     _find_otp,
     _mail_kwargs,
     _page_text,
@@ -157,9 +158,11 @@ def run_browser_oauth_reauth(
                         result["error_code"] = "sms_missing"
                         break
                     if page.locator('input[type="tel"]').count() > 0:
-                        digits = "".join(ch for ch in phone if ch.isdigit())
-                        national = digits[1:] if digits.startswith("1") and len(digits) == 11 else digits
-                        _fill_first(page, ['input[type="tel"]', 'input[name="phone"]'], national)
+                        if "is not valid" in _page_text(page).lower():
+                            result["error"] = "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+                            result["error_code"] = "sms_rejected"
+                            break
+                        _fill_phone_number(page, phone)
                         _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")'])
                         _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
                         page.wait_for_timeout(2500)
