@@ -59,7 +59,7 @@ class ProxiedLauncherTests(unittest.TestCase):
         script = launcher_script(stored, "https://48team.example/admin/seats/oauth/complete")
         self.assertIn('"proxyServer":"http://10.0.0.8:8000"', script)
         self.assertIn("--proxy-server=' + $cfg.proxyServer", script)
-        self.assertIn("proxy-bypass-list=localhost;127.0.0.1;<-loopback>", script)
+        self.assertIn("proxy-bypass-list=<-loopback>;localhost;127.0.0.1;::1;[::1]", script)
         self.assertIn("secret", script)
         self.assertNotIn("hidden", script)
 

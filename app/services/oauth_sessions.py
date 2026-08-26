@@ -61,6 +61,8 @@ def create_session(
     role: str = "child",
     mode: str = "manual",
     proxy: str = "",
+    password: str = "",
+    team_name: str = "",
 ) -> Dict[str, Any]:
     ticket = secrets.token_urlsafe(24)
     now = get_now()
@@ -72,6 +74,8 @@ def create_session(
         "mode": "auto" if mode == "auto" else "manual",
         "job_id": "",
         "proxy": (proxy or "").strip(),
+        "login_password": password or "",
+        "team_name": (team_name or "").strip(),
         "authorize_url": authorize.get("authorize_url") or "",
         "code_verifier": authorize.get("code_verifier") or "",
         "state": authorize.get("state") or "",
@@ -148,6 +152,9 @@ def launch_payload(session: Dict[str, Any], complete_url: str) -> Dict[str, Any]
         "proxyUser": parts.get("username") or "",
         "proxyPass": parts.get("password") or "",
         "proxyLabel": parts.get("label") or "",
+        "loginEmail": session.get("email") or "",
+        "loginPassword": session.get("login_password") or "",
+        "teamName": session.get("team_name") or "",
     }
 
 
@@ -165,6 +172,27 @@ def socks_bridge_source() -> str:
     return _SOCKS_BRIDGE_CS.read_text(encoding="utf-8")
 
 
+_OAUTH_FILL_JS = Path(__file__).with_name("team48_oauth_fill.js")
+_OAUTH_BG_JS = Path(__file__).with_name("team48_oauth_bg.js")
+
+
+def oauth_fill_source() -> str:
+    return _OAUTH_FILL_JS.read_text(encoding="utf-8")
+
+
+def oauth_bg_source() -> str:
+    return _OAUTH_BG_JS.read_text(encoding="utf-8")
+
+
+def _oauth_fill_src_ps1() -> str:
+    fill = base64.b64encode(oauth_fill_source().encode("utf-8")).decode("ascii")
+    bg = base64.b64encode(oauth_bg_source().encode("utf-8")).decode("ascii")
+    return (
+        f"$fillSrc = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{fill}'))\n"
+        f"$bgSrc = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{bg}'))\n"
+    )
+
+
 def _socks_bridge_setup_ps1() -> str:
     payload = base64.b64encode(socks_bridge_source().encode("utf-8")).decode("ascii")
     return (
@@ -179,8 +207,7 @@ def _socks_bridge_setup_ps1() -> str:
         "        $cfg.proxyUser = ''\n"
         "        $cfg.proxyPass = ''\n"
         "    } catch {\n"
-        "        [System.Windows.Forms.MessageBox]::Show([string]$_.Exception.Message, 'Team48 重新授权')\n"
-        "        exit 1\n"
+        "        throw\n"
         "    }\n"
         "}\n"
     )
@@ -188,24 +215,73 @@ def _socks_bridge_setup_ps1() -> str:
 
 def _chrome_oauth_ps1() -> str:
     return (
-        r"""if (-not $cfg.proxyServer) {
+        r"""if (-not ('Team48Native.Win' -as [type])) {
+    Add-Type -Namespace Team48Native -Name Win -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();'
+}
+[Team48Native.Win]::ShowWindow([Team48Native.Win]::GetConsoleWindow(), 0)
+$script:listener = $null
+$script:workDir = $null
+function Release-Team48Listen {
+    if ($script:listener) {
+        try { if ($script:listener.IsListening) { $script:listener.Stop() } } catch {}
+        try { $script:listener.Close() } catch {}
+        $script:listener = $null
+    }
+}
+function Stop-Team48Oauth {
+    Release-Team48Listen
+    if ($script:team48Bridge) {
+        try { $script:team48Bridge.Dispose() } catch {}
+        $script:team48Bridge = $null
+    }
+    if ($script:workDir) {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -and $_.CommandLine.Contains($script:workDir) -and $_.Name -match 'chrome|msedge'
+        } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 200
+        Remove-Item -LiteralPath $script:workDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+function Clear-Team48Port {
+    Release-Team48Listen
+    try {
+        Get-NetTCPConnection -LocalPort 1455 -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.OwningProcess -and $_.OwningProcess -ne $PID) {
+                $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+                if ($proc -and ($proc.ProcessName -match '^(powershell|pwsh)$')) {
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        Start-Sleep -Milliseconds 400
+    } catch {}
+}
+if (-not $cfg.proxyServer) {
     [System.Windows.Forms.MessageBox]::Show('这个号没有静态 ISP 代理，不能弹出授权页。', 'Team48 重新授权')
     exit 1
 }
 """
+        + r"""try {
+"""
         + _socks_bridge_setup_ps1()
-        + r"""$prefix = 'http://127.0.0.1:1455/'
-$listener = [System.Net.HttpListener]::new()
-$listener.Prefixes.Add($prefix)
-try {
-    $listener.Start()
-} catch {
-    if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
-    [System.Windows.Forms.MessageBox]::Show('无法监听 localhost:1455，请先关掉占用这个端口的程序。', 'Team48 重新授权')
-    exit 1
+        + _oauth_fill_src_ps1()
+        + r"""$script:listener = [System.Net.HttpListener]::new()
+foreach ($prefix in @('http://127.0.0.1:1455/','http://localhost:1455/','http://[::1]:1455/')) {
+    try { $script:listener.Prefixes.Add($prefix) } catch {}
 }
-$work = Join-Path $env:TEMP ('team48-oauth-' + $cfg.ticket.Substring(0, [Math]::Min(8, $cfg.ticket.Length)))
-New-Item -ItemType Directory -Force -Path $work | Out-Null
+try {
+    $script:listener.Start()
+} catch {
+    Clear-Team48Port
+    $script:listener = [System.Net.HttpListener]::new()
+    foreach ($prefix in @('http://127.0.0.1:1455/','http://localhost:1455/','http://[::1]:1455/')) {
+        try { $script:listener.Prefixes.Add($prefix) } catch {}
+    }
+    $script:listener.Start()
+}
+$script:workDir = Join-Path $env:TEMP ('team48-oauth-' + $cfg.ticket.Substring(0, [Math]::Min(8, $cfg.ticket.Length)))
+if (Test-Path -LiteralPath $script:workDir) { Remove-Item -LiteralPath $script:workDir -Recurse -Force -ErrorAction SilentlyContinue }
+New-Item -ItemType Directory -Force -Path $script:workDir | Out-Null
 $chrome = @(
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
     "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
@@ -213,40 +289,40 @@ $chrome = @(
     "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
     "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $chrome) {
-    $listener.Stop(); $listener.Close()
-    if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
-    [System.Windows.Forms.MessageBox]::Show('找不到 Chrome / Edge，无法弹出授权页。', 'Team48 重新授权')
-    exit 1
+if (-not $chrome) { throw '找不到 Chrome / Edge，无法弹出授权页。' }
+$ext = Join-Path $script:workDir 'ext'
+New-Item -ItemType Directory -Force -Path $ext | Out-Null
+$manifest = '{ "manifest_version": 2, "name": "Team48 OAuth", "version": "1.0", "permissions": ["webRequest", "webRequestBlocking", "<all_urls>"], "background": { "scripts": ["background.js"], "persistent": true }, "content_scripts": [{ "matches": ["https://auth.openai.com/*", "https://auth0.openai.com/*", "https://chatgpt.com/*"], "js": ["fill.js"], "run_at": "document_idle", "all_frames": true }] }'
+if ($cfg.proxyUser) {
+    $auth = 'chrome.webRequest.onAuthRequired.addListener(function(){return {authCredentials:{username:' + (ConvertTo-Json $cfg.proxyUser -Compress) + ',password:' + (ConvertTo-Json $cfg.proxyPass -Compress) + '}};},{urls:["<all_urls>"]},["blocking"]);'
+    $bgSrc = $bgSrc + "`n" + $auth
 }
+Set-Content -LiteralPath (Join-Path $ext 'background.js') -Value $bgSrc -Encoding utf8
+Set-Content -LiteralPath (Join-Path $ext 'manifest.json') -Value $manifest -Encoding utf8
+$head = 'window.TEAM48_EMAIL = ' + (ConvertTo-Json ([string]$cfg.loginEmail) -Compress) + ";`nwindow.TEAM48_PASSWORD = " + (ConvertTo-Json ([string]$cfg.loginPassword) -Compress) + ";`nwindow.TEAM48_TEAM = " + (ConvertTo-Json ([string]$cfg.teamName) -Compress) + ";`n"
+Set-Content -LiteralPath (Join-Path $ext 'fill.js') -Value ($head + $fillSrc) -Encoding utf8
 $args = @(
-    ('--user-data-dir=' + (Join-Path $work 'chrome-profile')),
+    ('--user-data-dir=' + (Join-Path $script:workDir 'chrome-profile')),
     '--no-first-run',
     '--no-default-browser-check',
     '--new-window',
+    '--disable-background-networking',
+    '--disable-sync',
+    '--disable-component-update',
+    '--disable-client-side-phishing-detection',
+    '--disable-features=Translate,MediaRouter,OptimizationHints',
     ('--proxy-server=' + $cfg.proxyServer),
-    '--proxy-bypass-list=localhost;127.0.0.1;<-loopback>',
+    '--proxy-bypass-list=<-loopback>;localhost;127.0.0.1;::1;[::1]',
+    ('--disable-extensions-except=' + $ext),
+    ('--load-extension=' + $ext),
     $cfg.authorizeUrl
 )
-if ($cfg.proxyUser) {
-    $ext = Join-Path $work 'proxy-auth'
-    New-Item -ItemType Directory -Force -Path $ext | Out-Null
-    $manifest = '{ "manifest_version": 2, "name": "Team48 Proxy Auth", "version": "1.0", "permissions": ["webRequest", "webRequestBlocking", "<all_urls>"], "background": { "scripts": ["background.js"], "persistent": true } }'
-    $bg = 'chrome.webRequest.onAuthRequired.addListener(function(){return {authCredentials:{username:' + (ConvertTo-Json $cfg.proxyUser -Compress) + ',password:' + (ConvertTo-Json $cfg.proxyPass -Compress) + '}};},{urls:["<all_urls>"]},["blocking"]);'
-    Set-Content -LiteralPath (Join-Path $ext 'manifest.json') -Value $manifest -Encoding utf8
-    Set-Content -LiteralPath (Join-Path $ext 'background.js') -Value $bg -Encoding utf8
-    $args = @($args[0], $args[1], $args[2], $args[3], $args[4], $args[5], ('--load-extension=' + $ext), $args[6])
-}
 Start-Process -FilePath $chrome -ArgumentList $args | Out-Null
-$task = $listener.GetContextAsync()
+$task = $script:listener.GetContextAsync()
+$deadline = [DateTime]::UtcNow.AddMinutes(18)
 while (-not $task.AsyncWaitHandle.WaitOne(200)) {
     [System.Windows.Forms.Application]::DoEvents()
-}
-if (-not $task.IsCompleted) {
-    $listener.Stop()
-    $listener.Close()
-    if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
-    exit 1
+    if ([DateTime]::UtcNow -gt $deadline) { throw '授权超时，已释放 1455 端口。' }
 }
 $context = $task.Result
 $callback = $context.Request.Url.AbsoluteUri
@@ -254,19 +330,19 @@ $html = '<html><body style="font-family:sans-serif;padding:24px">认证回调已
 $buffer = [System.Text.Encoding]::UTF8.GetBytes($html)
 $context.Response.StatusCode = 200
 $context.Response.ContentType = 'text/html; charset=utf-8'
+$context.Response.ContentLength64 = $buffer.Length
 $context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
 $context.Response.Close()
-$listener.Stop()
-$listener.Close()
-if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
+Release-Team48Listen
 $body = @{ ticket = $cfg.ticket; callback_text = $callback } | ConvertTo-Json
-try {
-    $resp = Invoke-RestMethod -Method Post -Uri $cfg.completeUrl -ContentType 'application/json; charset=utf-8' -Body $body
-    $msg = if ($resp.message) { [string]$resp.message } else { '重新授权完成' }
-    [System.Windows.Forms.MessageBox]::Show($msg, 'Team48 重新授权')
+$resp = Invoke-RestMethod -Method Post -Uri $cfg.completeUrl -ContentType 'application/json; charset=utf-8' -Body $body
+$msg = if ($resp.message) { [string]$resp.message } else { '重新授权完成' }
+[System.Windows.Forms.MessageBox]::Show($msg, 'Team48 重新授权')
 } catch {
-    [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Team48 重新授权失败')
+    [System.Windows.Forms.MessageBox]::Show([string]$_.Exception.Message, 'Team48 重新授权')
     exit 1
+} finally {
+    Stop-Team48Oauth
 }
 """
     )

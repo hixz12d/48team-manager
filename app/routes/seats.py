@@ -668,6 +668,8 @@ async def seats_oauth_start(
         role=role,
         mode="auto" if plan["auto"] else "manual",
         proxy=proxy,
+        password=password,
+        team_name=team.team_name or "",
     )
     base = _public_base(request, payload.origin)
     complete_url = f"{base}/admin/seats/oauth/complete"

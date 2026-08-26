@@ -29,6 +29,43 @@ public sealed class Team48SocksBridge : IDisposable
         var thread = new Thread(AcceptLoop);
         thread.IsBackground = true;
         thread.Start();
+        var warm = new Thread(Warm);
+        warm.IsBackground = true;
+        warm.Start();
+    }
+
+    public void Warm()
+    {
+        TcpClient client = null;
+        try
+        {
+            client = new TcpClient();
+            client.NoDelay = true;
+            client.ReceiveTimeout = 8000;
+            client.SendTimeout = 8000;
+            client.Connect(_upHost, _upPort);
+            var stream = client.GetStream();
+            stream.Write(new byte[] { 5, 1, 2 }, 0, 3);
+            var greet = new byte[2];
+            ReadExact(stream, greet, 2);
+            if (greet[0] != 5 || greet[1] != 2) return;
+            var auth = new byte[3 + _user.Length + _pass.Length];
+            auth[0] = 1;
+            auth[1] = (byte)_user.Length;
+            Buffer.BlockCopy(_user, 0, auth, 2, _user.Length);
+            auth[2 + _user.Length] = (byte)_pass.Length;
+            Buffer.BlockCopy(_pass, 0, auth, 3 + _user.Length, _pass.Length);
+            stream.Write(auth, 0, auth.Length);
+            var reply = new byte[2];
+            ReadExact(stream, reply, 2);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            try { if (client != null) client.Close(); } catch { }
+        }
     }
 
     public void Dispose()
@@ -82,6 +119,22 @@ public sealed class Team48SocksBridge : IDisposable
             if (addr == null) return;
             var portb = new byte[2];
             ReadExact(cin, portb, 2);
+            int destPort = (portb[0] << 8) | portb[1];
+            if (IsLoopback(head[3], addr))
+            {
+                upstream = new TcpClient();
+                upstream.NoDelay = true;
+                upstream.Connect(IPAddress.Loopback, destPort);
+                cin.Write(new byte[] { 5, 0, 0, 1, 127, 0, 0, 1, 0, 0 }, 0, 10);
+                var local = upstream.GetStream();
+                chrome.ReceiveTimeout = 0;
+                chrome.SendTimeout = 0;
+                var localPump = new Thread(() => Pump(cin, local));
+                localPump.IsBackground = true;
+                localPump.Start();
+                Pump(local, cin);
+                return;
+            }
 
             upstream = new TcpClient();
             upstream.NoDelay = true;
@@ -137,6 +190,27 @@ public sealed class Team48SocksBridge : IDisposable
             try { chrome.Close(); } catch { }
             try { if (upstream != null) upstream.Close(); } catch { }
         }
+    }
+
+
+    static bool IsLoopback(byte atyp, byte[] addr)
+    {
+        if (addr == null) return false;
+        if (atyp == 1)
+            return addr.Length >= 4 && addr[0] == 127;
+        if (atyp == 4)
+        {
+            if (addr.Length < 16) return false;
+            for (int i = 0; i < 15; i++)
+                if (addr[i] != 0) return false;
+            return addr[15] == 1;
+        }
+        if (atyp == 3 && addr.Length > 1)
+        {
+            var name = Encoding.ASCII.GetString(addr, 1, addr[0]).Trim().ToLowerInvariant();
+            return name == "localhost" || name == "127.0.0.1" || name == "::1";
+        }
+        return false;
     }
 
     static byte[] ReadAddr(NetworkStream stream, byte atyp)
