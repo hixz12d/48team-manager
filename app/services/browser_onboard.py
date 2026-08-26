@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 from app.config import settings
 from app.services.mail_otp import wait_for_mailbox_item
@@ -57,6 +58,43 @@ def _find_otp(page):
     return None
 
 
+_SESSION_JS = """async () => {
+  const r = await fetch('/api/auth/session', {credentials:'include', cache:'no-store'});
+  const text = await r.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch (e) {}
+  return {status: r.status, json};
+}"""
+_PEEK_HOSTS = {"chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"}
+
+
+def session_access_token(session: dict[str, Any] | None) -> str:
+    payload = session if isinstance(session, dict) else {}
+    js = payload.get("json") if isinstance(payload.get("json"), dict) else {}
+    return str((js or {}).get("accessToken") or (js or {}).get("access_token") or "").strip()
+
+
+def session_user(session: dict[str, Any] | None) -> dict[str, Any]:
+    payload = session if isinstance(session, dict) else {}
+    js = payload.get("json") if isinstance(payload.get("json"), dict) else {}
+    user = (js or {}).get("user") if isinstance((js or {}).get("user"), dict) else {}
+    return user or {}
+
+
+def can_peek_session(url: str) -> bool:
+    host = (urlparse(url or "").netloc or "").lower()
+    return host in _PEEK_HOSTS
+
+
+def _peek_session(page) -> dict[str, Any]:
+    try:
+        if not can_peek_session(page.url or ""):
+            return {}
+        return page.evaluate(_SESSION_JS) or {}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
 def _extract_session(page) -> dict[str, Any]:
     try:
         page.goto("https://chatgpt.com/", wait_until="domcontentloaded", timeout=30000)
@@ -64,17 +102,23 @@ def _extract_session(page) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        return page.evaluate(
-            """async () => {
-              const r = await fetch('/api/auth/session', {credentials:'include', cache:'no-store'});
-              const text = await r.text();
-              let json = null;
-              try { json = JSON.parse(text); } catch (e) {}
-              return {status: r.status, json};
-            }"""
-        ) or {}
+        return page.evaluate(_SESSION_JS) or {}
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
+
+
+def _session_failure(page, session: dict[str, Any]) -> str:
+    title = ""
+    try:
+        title = page.title() or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return (
+        "no accessToken in session; "
+        f"url={getattr(page, 'url', '') or ''}; "
+        f"title={title}; "
+        f"status={session.get('status')}"
+    )
 
 
 def run_browser_onboard(
@@ -123,7 +167,7 @@ def run_browser_onboard(
         page.set_default_timeout(60000)
         try:
             target = start_url or "https://chatgpt.com/auth/login"
-            report("browser_open", "正在打开注册/登录页")
+            report("browser_open", f"正在打开注册/登录页 {target}")
             page.goto(target, wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
             report("fill_email", "正在填写邮箱")
@@ -136,8 +180,13 @@ def run_browser_onboard(
                 _click_first(page, ['button:has-text("Create account")', 'button:has-text("Sign up")', 'a:has-text("Create account")'])
                 page.wait_for_timeout(1500)
 
-            for _ in range(18):
+            session: dict[str, Any] = {}
+            last_url = ""
+            for _ in range(24):
                 url = (page.url or "").lower()
+                if url != last_url:
+                    last_url = url
+                    logger.info("onboard page %s", page.url)
                 otp_el = _find_otp(page)
                 if otp_el:
                     report("email_otp", "等待邮箱验证码")
@@ -202,19 +251,22 @@ def run_browser_onboard(
                     page.wait_for_timeout(2500)
                     continue
 
-                if "chatgpt.com" in url and "auth" not in url and "login" not in url:
+                peeked = _peek_session(page)
+                if session_access_token(peeked):
+                    session = peeked
                     break
                 if _click_first(page, ['button:has-text("Continue")', 'button:has-text("Accept")', 'button:has-text("I agree")', 'button:has-text("Okay")']):
                     page.wait_for_timeout(1500)
                     continue
                 page.wait_for_timeout(1200)
 
-            report("session", "正在读取登录态")
-            session = _extract_session(page)
+            report("session", f"正在读取登录态 {page.url or ''}")
+            if not session_access_token(session):
+                session = _extract_session(page)
+            access_token = session_access_token(session)
             js = session.get("json") if isinstance(session.get("json"), dict) else {}
-            access_token = str((js or {}).get("accessToken") or (js or {}).get("access_token") or "").strip()
             session_token = str((js or {}).get("sessionToken") or "").strip()
-            user = (js or {}).get("user") if isinstance((js or {}).get("user"), dict) else {}
+            user = session_user(session)
             result.update({
                 "ok": bool(access_token),
                 "access_token": access_token,
@@ -223,7 +275,7 @@ def run_browser_onboard(
                 "final_url": page.url or "",
             })
             if not access_token:
-                result["error"] = result.get("error") or "no accessToken in session"
+                result["error"] = result.get("error") or _session_failure(page, session)
                 result["error_code"] = result.get("error_code") or "session_missing"
         except Exception as exc:  # noqa: BLE001
             result["error"] = str(exc)

@@ -659,7 +659,10 @@ class OnboardService:
             child,
             job_id=job_id,
             stage="browser",
-            message="正在打开浏览器走注册" if browser_mode == "register" else "正在打开浏览器复用登录",
+            message=(
+                ("正在打开浏览器走注册" if browser_mode == "register" else "正在打开浏览器复用登录")
+                + (f" {invite_url}" if invite_url else "（默认登录页）")
+            ),
         )
 
         def on_stage(stage: str, message: str) -> None:

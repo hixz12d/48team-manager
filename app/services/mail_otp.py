@@ -27,7 +27,22 @@ CODE_RES = [
     re.compile(r"(?:code|验证码)\s*[:=：]\s*(\d{6})\b", re.I),
     re.compile(r"\b(\d{6})\b"),
 ]
-INVITE_RE = re.compile(r"https?://(?:chatgpt|chat\.openai)\.com/[^\s\"'<>]+", re.I)
+_CHAT_HOST = r"(?:chatgpt|chat\.openai)\.com"
+INVITE_RE = re.compile(rf"https?://{_CHAT_HOST}/[^\s\"'<>]+", re.I)
+_INVITE_URL_RES = [
+    re.compile(rf"https?://{_CHAT_HOST}/[^\s\"'<>]*(?:invite|accept-invite)[^\s\"'<>]*", re.I),
+    re.compile(rf"https?://{_CHAT_HOST}/auth/login\?[^\s\"'<>]+", re.I),
+]
+_SKIP_INVITE_BITS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".woff",
+    "favicon", "/assets/", "/cdn", "/images/",
+)
+_BARE_CHAT_HOMES = {
+    "https://chatgpt.com",
+    "http://chatgpt.com",
+    "https://chat.openai.com",
+    "http://chat.openai.com",
+}
 
 
 def extract_code(text: str) -> Optional[str]:
@@ -40,8 +55,20 @@ def extract_code(text: str) -> Optional[str]:
 
 
 def extract_invite_url(text: str) -> Optional[str]:
-    match = INVITE_RE.search(str(text or ""))
-    return match.group(0) if match else None
+    blob = str(text or "")
+    for pattern in _INVITE_URL_RES:
+        match = pattern.search(blob)
+        if match:
+            return match.group(0).rstrip(").,;")
+    for match in INVITE_RE.finditer(blob):
+        url = match.group(0).rstrip(").,;")
+        lower = url.lower()
+        if lower.rstrip("/") in _BARE_CHAT_HOMES:
+            continue
+        if any(bit in lower for bit in _SKIP_INVITE_BITS):
+            continue
+        return url
+    return None
 
 
 def parse_mail_line(value: str) -> dict[str, str]:

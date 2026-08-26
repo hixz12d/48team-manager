@@ -6,7 +6,7 @@ from app.services.cloudflare_mail import (
     normalize_cloudflare_base_url,
     parse_cloudflare_message,
 )
-from app.services.mail_otp import parse_mail_line
+from app.services.mail_otp import extract_invite_url, parse_mail_line
 
 
 class CloudflareMailTests(unittest.TestCase):
@@ -86,6 +86,19 @@ class CloudflareMailTests(unittest.TestCase):
         self.assertEqual(captured["headers"]["x-admin-auth"], "test-secret")
         self.assertEqual(captured["params"]["address"], "icloud@xiaozhudf2026.foo")
 
+
+class InviteUrlTests(unittest.TestCase):
+    def test_prefers_invite_over_homepage(self):
+        blob = "Visit https://chatgpt.com/ then https://chatgpt.com/invite/abc123"
+        self.assertEqual(extract_invite_url(blob), "https://chatgpt.com/invite/abc123")
+
+    def test_skips_bare_homepage_and_assets(self):
+        blob = "Hello https://chatgpt.com/ logo https://chatgpt.com/favicon.ico"
+        self.assertIsNone(extract_invite_url(blob))
+
+    def test_auth_login_next(self):
+        url = "https://chatgpt.com/auth/login?next=%2Forganization%2Faccept-invite"
+        self.assertEqual(extract_invite_url(f"click {url}"), url)
 
 if __name__ == "__main__":
     unittest.main()

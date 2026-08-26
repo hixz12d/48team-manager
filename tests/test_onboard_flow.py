@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.database import Base
 from app.models import Team
 from app.services.child_accounts import child_account_service
+from app.services.browser_onboard import can_peek_session, session_access_token
 from app.services.onboard import OnboardService, classify_onboard_error
 from app.utils.time_utils import get_now
 
@@ -21,6 +22,15 @@ class OnboardHelperTests(unittest.TestCase):
 
     def test_run_browser_is_sync(self):
         self.assertFalse(inspect.iscoroutinefunction(OnboardService._run_browser))
+
+    def test_session_helpers(self):
+        self.assertTrue(can_peek_session("https://chatgpt.com/invite/abc"))
+        self.assertFalse(can_peek_session("https://auth.openai.com/create-account"))
+        self.assertEqual(
+            session_access_token({"status": 200, "json": {"accessToken": "tok"}}),
+            "tok",
+        )
+        self.assertEqual(session_access_token({"status": 200, "json": {}}), "")
 
 
 class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
