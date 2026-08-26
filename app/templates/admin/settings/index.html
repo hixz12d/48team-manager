@@ -416,6 +416,16 @@
             <input type="text" id="sub2apiGroupIds" class="form-control" value="{{ sub2api_group_ids or '' }}" placeholder="112">
             <p class="form-help">模板没带分组时的兜底。当前 Team轮转模板会覆盖这个值。</p>
         </div>
+        <div class="form-group">
+            <label for="sub2apiFreeTemplateName">免费号模板名</label>
+            <input type="text" id="sub2apiFreeTemplateName" class="form-control" value="{{ sub2api_free_template_name or 'Free模板' }}" placeholder="Free模板">
+            <p class="form-help">免费号推送套这个模板。当前线上是 Free模板，进 GPT Luna 线路。</p>
+        </div>
+        <div class="form-group">
+            <label for="freeAccountProxy">免费号默认 ISP</label>
+            <input type="text" id="freeAccountProxy" class="form-control" value="{{ free_account_proxy or '' }}" placeholder="socks5h://user:pass@host:443">
+            <p class="form-help">席位页注册免费号时，表单没填代理就用这个。</p>
+        </div>
         <button type="submit" class="btn btn-primary">保存 Sub2API 配置</button>
     </form>
 </div>
@@ -918,7 +928,9 @@
                         admin_email: document.getElementById('sub2apiAdminEmail').value.trim(),
                         admin_password: document.getElementById('sub2apiAdminPassword').value.trim(),
                         group_ids: document.getElementById('sub2apiGroupIds').value.trim(),
-                        template_name: document.getElementById('sub2apiTemplateName').value.trim()
+                        template_name: document.getElementById('sub2apiTemplateName').value.trim(),
+                        free_template_name: document.getElementById('sub2apiFreeTemplateName').value.trim(),
+                        free_account_proxy: document.getElementById('freeAccountProxy').value.trim()
                     })
                 });
                 const data = await response.json();

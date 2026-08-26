@@ -19,6 +19,7 @@ from app.services.child_accounts import child_account_service, normalize_email
 from app.services.onboard import onboard_service
 from app.services import onboard_jobs
 from app.services.sub2api import sub2api_service
+from app.services.settings import settings_service
 from app.services.team import team_service
 from app.services.vacancy import vacancy_service
 from app.utils.time_utils import get_now
@@ -201,6 +202,13 @@ class OnboardRequest(BaseModel):
     force: bool = False
 
 
+class FreeOnboardRequest(BaseModel):
+    email: str = Field(..., description="iCloud 别名，或 email----pickup_url")
+    phone: str = Field("", description="+1xxxx----https://api668.com/sms/by_key?key=...")
+    proxy: str = Field("", description="子号静态 ISP，不填则用系统中心默认免费号代理")
+    password: str = ""
+
+
 class KickRequest(BaseModel):
     team_id: int
     email: str
@@ -307,6 +315,7 @@ async def seats_page(
         "children": [child_account_service.serialize(item) for item in await child_account_service.list_accounts(db)],
         "stats": await child_account_service.stats(db),
         "sub2api_status": sub2api_status,
+        "free_account_proxy": await settings_service.get_setting(db, "free_account_proxy", ""),
     })
     return templates.TemplateResponse(request, "admin/seats/index.html", context)
 
@@ -542,6 +551,25 @@ async def _run_onboard_job(job_id: str, payload: OnboardRequest) -> None:
             onboard_jobs.finish(job_id, result)
         except Exception as exc:
             logger.exception("后台拉人失败")
+            onboard_jobs.finish(job_id, {"success": False, "error": str(exc), "error_code": "browser_failed"})
+        finally:
+            await db.close()
+
+
+async def _run_free_onboard_job(job_id: str, payload: FreeOnboardRequest) -> None:
+    async with AsyncSessionLocal() as db:
+        try:
+            result = await onboard_service.register_free_account(
+                db,
+                email_line=payload.email,
+                phone_line=payload.phone,
+                proxy=payload.proxy,
+                password=payload.password,
+                job_id=job_id,
+            )
+            onboard_jobs.finish(job_id, result)
+        except Exception as exc:
+            logger.exception("后台免费号注册失败")
             onboard_jobs.finish(job_id, {"success": False, "error": str(exc), "error_code": "browser_failed"})
         finally:
             await db.close()
@@ -797,6 +825,20 @@ async def seats_onboard(
     return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始拉人，进度会留在本页", "job": job}
 
 
+@router.post("/seats/onboard-free")
+async def seats_onboard_free(
+    payload: FreeOnboardRequest,
+    current_user: dict = Depends(require_admin),
+):
+    email = normalize_email(payload.email.split("----", 1)[0] if payload.email else "")
+    active = onboard_jobs.active_job_for_email(email)
+    if active:
+        return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的任务", "job": active}
+    job = onboard_jobs.create_job(team_id=0, email=email or payload.email, action="free_register")
+    asyncio.create_task(_run_free_onboard_job(job["id"], payload))
+    return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始注册免费号，进度会留在本页", "job": job}
+
+
 @router.post("/seats/reregister")
 async def seats_reregister(
     payload: ReregisterRequest,
@@ -811,8 +853,20 @@ async def seats_reregister(
     if not child:
         return JSONResponse(status_code=404, content={"success": False, "error": "子号不存在"})
     team_id = payload.team_id or child.current_team_id or child.last_team_id
-    if not team_id:
-        return JSONResponse(status_code=400, content={"success": False, "error": "这个子号没有关联 Team，请先在表单里选 Team 再拉"})
+    if child.status == "free" or not team_id:
+        if child.status in {"active", "invited"} and not team_id:
+            return JSONResponse(status_code=400, content={"success": False, "error": "这个子号没有关联 Team，请先在表单里选 Team 再拉"})
+        active = onboard_jobs.active_job_for_email(child.email)
+        if active:
+            return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的任务", "job": active}
+        request = FreeOnboardRequest(
+            email=payload.email or child.mail_raw or child.email,
+            phone=payload.phone or ((child.phone or "") + ("----" + child.sms_url if child.sms_url else "")),
+            proxy=payload.proxy or child.proxy or "",
+        )
+        job = onboard_jobs.create_job(team_id=0, email=child.email, action="free_register")
+        asyncio.create_task(_run_free_onboard_job(job["id"], request))
+        return {"success": True, "accepted": True, "job_id": job["id"], "message": f"开始注册免费号 {child.email}", "job": job}
     active = onboard_jobs.active_job_for_email(child.email)
     if active:
         return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的拉人任务", "job": active}

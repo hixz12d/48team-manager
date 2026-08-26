@@ -307,8 +307,8 @@ class Sub2ApiStatusTests(unittest.TestCase):
             "schedulable": True,
             "credentials": {"email": "child21@example.com"},
             "extra": {
-                "codex_5h_used_percent": 100,
-                "codex_primary_used_percent": 88,
+                "codex_5h_used_percent": 50,
+                "codex_primary_used_percent": 50,
                 "codex_7d_used_percent": 42,
             },
         })
@@ -316,7 +316,7 @@ class Sub2ApiStatusTests(unittest.TestCase):
         self.assertEqual(row["quota_label"], "7日 42%")
         self.assertEqual(row["schedule"], "ok")
 
-    def test_five_hour_rate_limit_is_not_shown(self):
+    def test_five_hour_rate_limit_is_shown(self):
         soon = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
         row = self.service.summarize_account({
             "id": 22,
@@ -333,8 +333,8 @@ class Sub2ApiStatusTests(unittest.TestCase):
             },
         })
         self.assertEqual(row["quota_label"], "7日 40%")
-        self.assertEqual(row["schedule"], "ok")
-        self.assertEqual(row["schedule_label"], "可调度")
+        self.assertEqual(row["schedule"], "5h")
+        self.assertIn("5h限制", row["schedule_label"])
 
     def test_weekly_limit_still_shows_429(self):
         later = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()

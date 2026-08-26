@@ -21,6 +21,7 @@ CHILD_STATUS_ACTIVE = "active"
 CHILD_STATUS_STANDBY = "standby"
 CHILD_STATUS_DISABLED = "disabled"
 CHILD_STATUS_DELETED = "deleted"
+CHILD_STATUS_FREE = "free"
 
 ACTIVE_CHILD_STATUSES = (CHILD_STATUS_INVITED, CHILD_STATUS_ACTIVE)
 REUSABLE_CHILD_STATUSES = (CHILD_STATUS_UNUSED, CHILD_STATUS_STANDBY, CHILD_STATUS_DISABLED)
@@ -32,6 +33,7 @@ STATUS_LABELS = {
     CHILD_STATUS_STANDBY: "已踢出待复用",
     CHILD_STATUS_DISABLED: "停用",
     CHILD_STATUS_DELETED: "已删除",
+    CHILD_STATUS_FREE: "免费号",
 }
 
 
@@ -96,12 +98,14 @@ class ChildAccountService:
             status_label = "已邀请，注册失败"
         elif child.status == CHILD_STATUS_ACTIVE and child.last_error:
             status_label = "已入组，未完成"
+        elif child.status == CHILD_STATUS_FREE and child.last_error:
+            status_label = "免费号，未完成"
         data = {
             "id": child.id,
             "email": child.email,
             "status": child.status,
             "status_label": status_label,
-            "can_reregister": child.status == CHILD_STATUS_INVITED or bool(child.last_error and child.status in REUSABLE_CHILD_STATUSES),
+            "can_reregister": child.status in (CHILD_STATUS_INVITED, CHILD_STATUS_FREE) or bool(child.last_error and child.status in REUSABLE_CHILD_STATUSES),
             "current_team_id": child.current_team_id,
             "last_team_id": child.last_team_id,
             "joined_at": child.joined_at.isoformat() if child.joined_at else None,
@@ -300,6 +304,19 @@ class ChildAccountService:
             mapping.joined_at = child.joined_at
             mapping.kicked_at = None
             mapping.cycle_days = child.cycle_days
+        await db_session.flush()
+
+    async def mark_free(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+    ) -> None:
+        now = get_now()
+        child.status = CHILD_STATUS_FREE
+        child.current_team_id = None
+        if not child.joined_at:
+            child.joined_at = now
+        child.updated_at = now
         await db_session.flush()
 
     async def mark_standby(

@@ -139,6 +139,16 @@ async def create_default_settings():
                 value="Team轮转",
                 description="推子号时套用的 Sub2API 账号创建模板名"
             ),
+            Setting(
+                key="sub2api_free_template_name",
+                value="Free模板",
+                description="推免费号时套用的 Sub2API 账号创建模板名"
+            ),
+            Setting(
+                key="free_account_proxy",
+                value="",
+                description="免费号默认静态 ISP"
+            ),
         ]
 
         session.add_all(default_settings)

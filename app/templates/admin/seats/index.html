@@ -240,6 +240,23 @@
                 <button class="btn btn-primary" type="submit" id="onboardSubmit">邀请并授权</button>
                 <button class="btn btn-secondary" type="button" id="onboardCancel" onclick="cancelOnboardJob()" hidden>停止</button>
             </form>
+            <form id="freeOnboardForm" class="settings-form" onsubmit="return handleFreeOnboard(event)">
+                <h4>注册免费号</h4>
+                <p class="form-help">只注册 ChatGPT 免费号，走 Codex 授权后推进 Sub2API 的 Free模板 / Luna 组，不拉 Team。</p>
+                <div class="form-group">
+                    <label>邮箱</label>
+                    <input id="freeOnboardEmail" class="form-control" required placeholder="afraid-16.scepter@icloud.com">
+                </div>
+                <div class="form-group">
+                    <label>接码</label>
+                    <input id="freeOnboardPhone" class="form-control" placeholder="+1xxxx----https://...">
+                </div>
+                <div class="form-group">
+                    <label>子号 ISP</label>
+                    <input id="freeOnboardProxy" class="form-control" value="{{ free_account_proxy or '' }}" placeholder="不填则用系统中心默认免费号代理">
+                </div>
+                <button class="btn btn-primary" type="submit" id="freeOnboardSubmit">注册并授权</button>
+            </form>
             <div id="onboardProgress" class="onboard-progress" hidden>
                 <div class="onboard-progress-head">
                     <strong id="onboardProgressTitle">拉人进度</strong>
@@ -252,6 +269,7 @@
         <div class="seat-tools-proxy">
             <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('rotateProxy')">测轮转代理</button>
             <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('onboardProxy')">测拉人代理</button>
+            <button class="btn btn-secondary" type="button" onclick="checkNamedProxy('freeOnboardProxy')">测免费号代理</button>
             <button class="btn btn-secondary" type="button" onclick="checkAllProxies()">检测全部已绑定代理</button>
             <pre id="proxyBatchResult" class="form-help" style="white-space:pre-wrap;margin-top:12px;"></pre>
         </div>
@@ -397,6 +415,23 @@ async function handleOnboard(event) {
             proxy: document.getElementById('onboardProxy').value
         });
         showToast(result.message || '已开始拉人', 'info');
+        if (result.job) renderOnboardJob(result.job);
+        if (result.job_id) await pollOnboardJob(result.job_id);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+    return false;
+}
+
+async function handleFreeOnboard(event) {
+    event.preventDefault();
+    try {
+        const result = await postJSON('/admin/seats/onboard-free', {
+            email: document.getElementById('freeOnboardEmail').value,
+            phone: document.getElementById('freeOnboardPhone').value,
+            proxy: document.getElementById('freeOnboardProxy').value
+        });
+        showToast(result.message || '已开始注册免费号', 'info');
         if (result.job) renderOnboardJob(result.job);
         if (result.job_id) await pollOnboardJob(result.job_id);
     } catch (error) {

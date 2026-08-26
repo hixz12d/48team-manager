@@ -206,6 +206,25 @@ class Sub2ApiImportTests(unittest.TestCase):
         self.assertEqual(self.service.classify_probe(status_code=403, error="forbidden")["kind"], "403")
         self.assertEqual(self.service.classify_probe(status_code=200, payload={"ok": True})["kind"], "200")
 
+    def test_builds_next_free_account_name(self):
+        accounts = [
+            {"id": 1, "name": "Free 1", "credentials": {"email": "a@icloud.com"}},
+            {"id": 2, "name": "Free 27", "credentials": {"email": "b@icloud.com"}},
+            {"id": 3, "name": "Free 26", "credentials": {"email": "c@icloud.com"}},
+        ]
+        self.assertEqual(self.service.build_free_account_name(email="fresh@icloud.com", accounts=accounts), "Free 28")
+        self.assertEqual(self.service.build_free_account_name(email="b@icloud.com", accounts=accounts), "Free 27")
+
+    def test_picks_free_template(self):
+        picked = self.service.pick_account_create_template(
+            [
+                {"name": "Team轮转", "platform": "openai", "type": "oauth", "id": "team"},
+                {"name": "Free模板", "platform": "openai", "type": "oauth", "id": "free"},
+            ],
+            name="Free模板",
+        )
+        self.assertEqual(picked["id"], "free")
+
 
 
 if __name__ == "__main__":

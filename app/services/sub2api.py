@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 _TEAM_PREFIX_RE = re.compile(r"^(?:GPT\s+)?Team\s*", re.IGNORECASE)
 _CHILD_RE = re.compile(r"子号\s*(\d+)")
+_FREE_NAME_RE = re.compile(r"^Free\s+(\d+)\s*$", re.IGNORECASE)
+_DEFAULT_FREE_TEMPLATE = "Free模板"
 _EMAIL_FAMILY_RE = re.compile(r"(?:xiaozhudf\.?)?(\d{4}\.\d+)", re.IGNORECASE)
 _XIAOZHU_DOTTED_RE = re.compile(r"xiaozhudf\.(\d{4}\.\d+)", re.IGNORECASE)
 _XIAOZHU_PLAIN_RE = re.compile(r"xiaozhudf(\d{4}\.\d+)", re.IGNORECASE)
@@ -53,6 +55,7 @@ class Sub2ApiService:
                 if part.isdigit():
                     group_ids.append(int(part))
         template_name = (await settings_service.get_setting(db_session, "sub2api_template_name", _DEFAULT_CHILD_TEMPLATE)).strip()
+        free_template_name = (await settings_service.get_setting(db_session, "sub2api_free_template_name", _DEFAULT_FREE_TEMPLATE)).strip()
         return {
             "base_url": base_url or "http://sub2api-canary:8080",
             "api_key": api_key,
@@ -60,6 +63,7 @@ class Sub2ApiService:
             "password": password,
             "group_ids": group_ids,
             "template_name": template_name or _DEFAULT_CHILD_TEMPLATE,
+            "free_template_name": free_template_name or _DEFAULT_FREE_TEMPLATE,
         }
 
     def _unwrap(self, data: Any) -> Any:
@@ -172,6 +176,14 @@ class Sub2ApiService:
         extra = self._account_extra(account)
         return extra.get("codex_7d_reset_at") or extra.get("codex_secondary_reset_at")
 
+    def _five_hour_percent(self, account: Dict[str, Any]) -> Optional[int]:
+        extra = self._account_extra(account)
+        return self._parse_percent(extra.get("codex_5h_used_percent") or extra.get("codex_primary_used_percent"))
+
+    def _five_hour_reset_at(self, account: Dict[str, Any]) -> Any:
+        extra = self._account_extra(account)
+        return extra.get("codex_5h_reset_at") or extra.get("codex_primary_reset_at")
+
     def _looks_weekly_reset(self, value: Any) -> bool:
         when = self._parse_when(value)
         if when is None:
@@ -200,6 +212,16 @@ class Sub2ApiService:
                     remain = self._format_remain(generic)
             label = f"429 {remain}" if remain else "429 限额"
             return {"kind": "429", "label": label, "tone": "warn"}
+        five_pct = self._five_hour_percent(account)
+        five_reset = self._five_hour_reset_at(account)
+        if five_pct is not None and five_pct >= 100 and (not five_reset or self._is_future(five_reset)):
+            remain = self._format_remain(five_reset)
+            if not remain:
+                generic = account.get("rate_limit_reset_at")
+                if generic and not self._looks_weekly_reset(generic):
+                    remain = self._format_remain(generic)
+            label = f"5h限制 {remain}" if remain else "5h限制"
+            return {"kind": "5h", "label": label, "tone": "warn"}
         if account.get("status") == "error":
             return {"kind": "error", "label": "异常", "tone": "danger"}
         if account.get("schedulable") is False:
@@ -567,6 +589,28 @@ class Sub2ApiService:
             if match:
                 used.append(int(match.group(1)))
         return (max(used) + 1) if used else 1
+
+    def next_free_order(self, accounts: List[Dict[str, Any]]) -> int:
+        used = []
+        for account in accounts:
+            match = _FREE_NAME_RE.search(str(account.get("name") or "").strip())
+            if match:
+                used.append(int(match.group(1)))
+        return (max(used) + 1) if used else 1
+
+    def build_free_account_name(
+        self,
+        *,
+        email: str,
+        accounts: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        accounts = accounts or []
+        target = (email or "").strip().lower()
+        for account in accounts:
+            name = str(account.get("name") or "").strip()
+            if name and self._account_email(account).strip().lower() == target:
+                return name
+        return f"Free {self.next_free_order(accounts)}"
 
     def find_existing_account(
         self,
@@ -1342,6 +1386,8 @@ class Sub2ApiService:
             team: Any = None,
             proxy_url: str = "",
             role: str = "child",
+            template_name: str = "",
+            name_style: str = "",
         ) -> Dict[str, Any]:
             cfg = await self._config(db_session)
             if not cfg["base_url"]:
@@ -1403,6 +1449,8 @@ class Sub2ApiService:
                     logger.warning("读取 Sub2API 代理列表失败: %s", exc)
 
                 searches = ["Team", "2026", "Pedro"]
+                if name_style == "free":
+                    searches.append("Free")
                 for extra in (team_email.split("@", 1)[0], self.derive_family_label(team_email, team_name), email.split("@", 1)[0]):
                     extra = (extra or "").strip()
                     if extra and extra not in searches:
@@ -1423,8 +1471,12 @@ class Sub2ApiService:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("读取 Sub2API 账号列表失败: %s", exc)
 
-                template = self.pick_account_create_template(templates, name=cfg.get("template_name") or "") if role == "child" else None
-                template_fields = self.template_import_fields(template, cfg["group_ids"]) if role == "child" else {
+                wanted_template = (template_name or "").strip()
+                if not wanted_template:
+                    wanted_template = cfg.get("free_template_name") if name_style == "free" else cfg.get("template_name")
+                template = self.pick_account_create_template(templates, name=wanted_template or "") if role == "child" else None
+                fallback_groups = [] if name_style == "free" else list(cfg["group_ids"] or [])
+                template_fields = self.template_import_fields(template, fallback_groups) if role == "child" else {
                     "name": "",
                     "group_ids": list(cfg["group_ids"] or []),
                     "concurrency": None,
@@ -1438,20 +1490,23 @@ class Sub2ApiService:
                 siblings = self.family_accounts(accounts, team_email or email, team_name)
                 family_label = self.derive_family_label(team_email or email, team_name)
                 proxy_id = self.match_proxy_id(proxies, proxy_url, siblings, family_label=family_label)
-                account_name = self.build_account_name(
-                    role=role,
-                    email=email,
-                    team_email=team_email or email,
-                    team_name=team_name,
-                    accounts=accounts,
-                )
+                if name_style == "free":
+                    account_name = self.build_free_account_name(email=email, accounts=accounts)
+                else:
+                    account_name = self.build_account_name(
+                        role=role,
+                        email=email,
+                        team_email=team_email or email,
+                        team_name=team_name,
+                        accounts=accounts,
+                    )
                 session_payload = self.build_codex_import_payload(
                     content=access_token,
                     name=account_name,
                     role=role,
                     existing=existing,
                     template_fields=template_fields,
-                    fallback_group_ids=cfg["group_ids"],
+                    fallback_group_ids=fallback_groups,
                     proxy_id=proxy_id,
                 )
                 logger.info(

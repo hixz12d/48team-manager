@@ -211,6 +211,14 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["status_label"], "已入组，未完成")
         self.assertFalse(view["can_reregister"])
 
+    async def test_serialize_free_unfinished_label(self):
+        child = await child_account_service.upsert_from_input(self.session, email="free@icloud.com")
+        await child_account_service.mark_free(self.session, child)
+        child.last_error = "授权成功但没有 refresh_token，未推送"
+        view = child_account_service.serialize(child)
+        self.assertEqual(view["status_label"], "免费号，未完成")
+        self.assertTrue(view["can_reregister"])
+
 
     async def test_live_lookup_failure_does_not_revoke(self):
         team = await self._team()
@@ -507,6 +515,144 @@ class OnboardOauthTests(unittest.IsolatedAsyncioTestCase):
         service._run_oauth_browser.assert_not_called()
         mocks["import_session"].assert_not_called()
         self.assertFalse(child_account_service.decrypt_secret(child.password_encrypted))
+
+
+class OnboardFreeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.session = self.session_maker()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        await self.engine.dispose()
+
+    def _patch(self):
+        from app.services import onboard as onboard_mod
+        from app.services.settings import settings_service
+
+        originals = {
+            "import_session": onboard_mod.sub2api_service.import_session,
+            "create_auth": onboard_mod.chatgpt_service.create_oauth_authorize_url,
+            "exchange": onboard_mod.chatgpt_service.exchange_oauth_code,
+            "get_setting": settings_service.get_setting,
+        }
+        onboard_mod.sub2api_service.import_session = AsyncMock(return_value={
+            "account_id": 77,
+            "strategy": "apply_oauth_credentials",
+            "probe": {"kind": "200", "label": "200"},
+        })
+        onboard_mod.chatgpt_service.create_oauth_authorize_url = MagicMock(return_value={
+            "authorize_url": "https://auth.openai.com/oauth/authorize",
+            "code_verifier": "ver",
+            "state": "st",
+        })
+        onboard_mod.chatgpt_service.exchange_oauth_code = AsyncMock(return_value={
+            "success": True,
+            "access_token": "at-oauth",
+            "refresh_token": "rt-oauth",
+            "id_token": "id-oauth",
+        })
+
+        async def fake_setting(_db, key, default=""):
+            if key == "free_account_proxy":
+                return ""
+            return default
+
+        settings_service.get_setting = fake_setting
+        return onboard_mod, settings_service, originals
+
+    def _restore(self, onboard_mod, settings_service, originals):
+        onboard_mod.sub2api_service.import_session = originals["import_session"]
+        onboard_mod.chatgpt_service.create_oauth_authorize_url = originals["create_auth"]
+        onboard_mod.chatgpt_service.exchange_oauth_code = originals["exchange"]
+        settings_service.get_setting = originals["get_setting"]
+
+    def _service(self) -> OnboardService:
+        service = OnboardService()
+        service._cf_config = AsyncMock(return_value={
+            "base_url": "https://cf.example",
+            "address": "inbox@example.com",
+            "admin_password": "pw",
+        })
+        service._run_browser = MagicMock(return_value={
+            "ok": True,
+            "access_token": "at-browser",
+            "refresh_token": "",
+            "session_token": "st",
+            "id_token": "",
+            "password": "Passw0rd!",
+        })
+        service._run_oauth_browser = MagicMock(return_value={
+            "ok": True,
+            "callback_url": "http://localhost:1455/auth/callback?code=abc&state=st",
+        })
+        return service
+
+    async def test_requires_proxy(self):
+        service = self._service()
+        onboard_mod, settings_service, originals = self._patch()
+        try:
+            result = await service.register_free_account(self.session, email_line="free@icloud.com")
+        finally:
+            self._restore(onboard_mod, settings_service, originals)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "proxy_missing")
+        service._run_browser.assert_not_called()
+
+    async def test_refuses_team_seat(self):
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+            account_role="account-owner",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        child = await child_account_service.upsert_from_input(self.session, email="kid@example.com", password="Passw0rd!")
+        await child_account_service.mark_active(self.session, child, team)
+        service = self._service()
+        result = await service.register_free_account(
+            self.session,
+            email_line="kid@example.com",
+            proxy="socks5h://127.0.0.1:1080",
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "already_on_team")
+        service._run_browser.assert_not_called()
+
+    async def test_register_oauth_and_push_free_template(self):
+        service = self._service()
+        onboard_mod, settings_service, originals = self._patch()
+        try:
+            result = await service.register_free_account(
+                self.session,
+                email_line="free@icloud.com",
+                phone_line="+15551234567----https://sms.example/key",
+                proxy="socks5h://127.0.0.1:1080",
+            )
+            import_mock = onboard_mod.sub2api_service.import_session
+        finally:
+            self._restore(onboard_mod, settings_service, originals)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "free")
+        self.assertTrue(result["oauth"])
+        service._run_browser.assert_called_once()
+        service._run_oauth_browser.assert_called_once()
+        import_mock.assert_awaited_once()
+        kwargs = import_mock.await_args.kwargs
+        self.assertEqual(kwargs["name_style"], "free")
+        self.assertIsNone(kwargs["team"])
+        child = await child_account_service.get_by_email(self.session, "free@icloud.com")
+        self.assertEqual(child.status, "free")
+        self.assertEqual(child.sub2api_account_id, 77)
+        self.assertEqual(child_account_service.decrypt_secret(child.refresh_token_encrypted), "rt-oauth")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from app.services.child_accounts import (
     CHILD_STATUS_ACTIVE,
     CHILD_STATUS_INVITED,
     CHILD_STATUS_STANDBY,
+    CHILD_STATUS_FREE,
     OWNER_ROLES,
     child_account_service,
     coerce_local_datetime,
@@ -102,8 +103,11 @@ class OnboardService:
             raise ValueError(f"Team {team_id} 不存在")
         return team
 
-    def _child_proxy(self, child: ChildAccount, team: Team) -> str:
-        return require_proxy(child.proxy or team.proxy, "子号浏览器/接码")
+    def _child_proxy(self, child: ChildAccount, team: Optional[Team] = None) -> str:
+        return require_proxy(child.proxy or (team.proxy if team else ""), "子号浏览器/接码")
+
+    def _done_verb(self, team: Optional[Team]) -> str:
+        return "已入组" if team is not None else "已注册"
 
     def _team_proxy(self, team: Team) -> str:
         return require_proxy(team.proxy, "母号 Team API")
@@ -805,7 +809,7 @@ class OnboardService:
         self,
         db_session: AsyncSession,
         child: ChildAccount,
-        team: Team,
+        team: Optional[Team],
         *,
         email: str,
         job_id: Optional[str],
@@ -816,7 +820,7 @@ class OnboardService:
             db_session,
             email=email,
             action="oauth",
-            team_id=team.id,
+            team_id=team.id if team else None,
             child_id=child.id,
             success=False,
             detail=error,
@@ -843,12 +847,13 @@ class OnboardService:
         self,
         db_session: AsyncSession,
         child: ChildAccount,
-        team: Team,
+        team: Optional[Team],
         *,
         email: str,
         job_id: Optional[str],
     ) -> Dict[str, Any]:
-        await self._progress(db_session, child, job_id=job_id, stage="pushing", message="已入组，正在推送可用会话到 Sub2API")
+        verb = self._done_verb(team)
+        await self._progress(db_session, child, job_id=job_id, stage="pushing", message=f"{verb}，正在推送可用会话到 Sub2API")
         try:
             push_result = await sub2api_service.import_session(
                 db_session,
@@ -860,16 +865,17 @@ class OnboardService:
                 client_id=child.client_id or "",
                 existing_id=child.sub2api_account_id,
                 team=team,
-                proxy_url=child.proxy or team.proxy or "",
+                proxy_url=child.proxy or ((team.proxy if team else "") or ""),
                 role="child",
+                name_style="free" if team is None else "",
             )
         except Exception as exc:  # noqa: BLE001
-            error = f"已入组，但推送 Sub2API 失败: {exc}"
+            error = f"{verb}，但推送 Sub2API 失败: {exc}"
             await child_account_service.record_event(
                 db_session,
                 email=email,
                 action="push",
-                team_id=team.id,
+                team_id=team.id if team else None,
                 child_id=child.id,
                 success=False,
                 detail=str(exc),
@@ -890,7 +896,7 @@ class OnboardService:
             db_session,
             email=email,
             action="push",
-            team_id=team.id,
+            team_id=team.id if team else None,
             child_id=child.id,
             success=True,
             detail=push_result.get("strategy") or "pushed",
@@ -901,7 +907,7 @@ class OnboardService:
         self,
         db_session: AsyncSession,
         child: ChildAccount,
-        team: Team,
+        team: Optional[Team],
         *,
         email: str,
         job_id: Optional[str],
@@ -916,7 +922,7 @@ class OnboardService:
                 team,
                 email=email,
                 job_id=job_id,
-                error="已入组，但没有密码，无法自动走 Codex 授权",
+                error=f"{self._done_verb(team)}，但没有密码，无法自动走 Codex 授权",
                 error_code="oauth_missing_password",
             )
         pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") or ""
@@ -929,7 +935,7 @@ class OnboardService:
                 team,
                 email=email,
                 job_id=job_id,
-                error="已入组，但没有邮箱读码配置，无法自动授权",
+                error=f"{self._done_verb(team)}，但没有邮箱读码配置，无法自动授权",
                 error_code="mail_missing",
             )
         if self._cancelled(job_id):
@@ -1053,13 +1059,17 @@ class OnboardService:
             "refresh_token": exchange.get("refresh_token") or "",
             "id_token": id_token,
             "client_id": oauth_sessions.CLIENT_ID,
-            "account_id": team.account_id if is_workspace_account_id(team.account_id) else (child.account_id or ""),
+            "account_id": (
+                team.account_id
+                if team is not None and is_workspace_account_id(team.account_id)
+                else (child.account_id or "")
+            ),
         })
         await child_account_service.record_event(
             db_session,
             email=email,
             action="oauth",
-            team_id=team.id,
+            team_id=team.id if team else None,
             child_id=child.id,
             success=True,
             detail="codex-oauth",
@@ -1070,7 +1080,7 @@ class OnboardService:
         self,
         db_session: AsyncSession,
         child: ChildAccount,
-        team: Team,
+        team: Optional[Team],
         *,
         email: str,
         job_id: Optional[str],
@@ -1088,15 +1098,168 @@ class OnboardService:
             return push_result
         await child_account_service.set_progress(db_session, child, stage="done", job_id=job_id, clear_error=True)
         await db_session.commit()
-        message = f"{email} 已入组、授权并推送到 Sub2API" if oauth_ran else f"{email} 已入组并推送到 Sub2API"
+        verb = self._done_verb(team)
+        message = f"{email} {verb}、授权并推送到 Sub2API" if oauth_ran else f"{email} {verb}并推送到 Sub2API"
         return {
             "success": True,
-            "status": "active",
+            "status": "free" if team is None else "active",
             "message": message,
             "child": child_account_service.serialize(child),
             "push": push_result.get("push"),
             "oauth": oauth_ran,
         }
+
+    async def register_free_account(
+        self,
+        db_session: AsyncSession,
+        *,
+        email_line: str,
+        phone_line: str = "",
+        proxy: str = "",
+        password: str = "",
+        job_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from app.services.settings import settings_service
+
+        parsed = parse_mail_line(email_line)
+        email = normalize_email(parsed["email"] or email_line)
+        if not email or "@" not in email:
+            raise ValueError("请输入有效邮箱")
+
+        existing = await child_account_service.get_by_email(db_session, email)
+        if existing and existing.status in ACTIVE_CHILD_STATUSES and existing.current_team_id:
+            return {
+                "success": False,
+                "error": f"{email} 已是 Team 席位号，请走拉进 Team",
+                "error_code": "already_on_team",
+                "status": "blocked",
+                "child": child_account_service.serialize(existing),
+            }
+        if existing and existing.status == CHILD_STATUS_FREE and child_account_service.decrypt_secret(existing.refresh_token_encrypted):
+            return await self._finish_callable_child(db_session, existing, None, email=email, job_id=job_id)
+
+        if self._cancelled(job_id):
+            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
+
+        phone, sms_url = parse_phone_line(phone_line)
+        saved_proxy = (await settings_service.get_setting(db_session, "free_account_proxy", "")).strip()
+        child_proxy = proxy or (existing.proxy if existing else "") or saved_proxy
+        if child_proxy:
+            child_proxy = normalize_proxy_url(child_proxy) or child_proxy
+        if not child_proxy:
+            return {
+                "success": False,
+                "error": "免费号需要静态 ISP。表单里填，或到系统中心保存默认免费号代理",
+                "error_code": "proxy_missing",
+                "status": "blocked",
+            }
+        if existing:
+            phone = phone or existing.phone or ""
+            sms_url = sms_url or existing.sms_url or ""
+            password = password or child_account_service.decrypt_secret(existing.password_encrypted)
+
+        child = await child_account_service.upsert_from_input(
+            db_session,
+            email=email,
+            password=password,
+            mail_raw=parsed.get("raw") or email_line,
+            phone=phone,
+            sms_url=sms_url,
+            proxy=child_proxy,
+        )
+        password = password or child_account_service.decrypt_secret(child.password_encrypted)
+        if not password:
+            password = _random_password()
+            child.password_encrypted = child_account_service.encrypt_secret(password)
+        await self._progress(db_session, child, job_id=job_id, stage="checking", message="正在注册免费号")
+
+        pickup_url = parsed.get("pickup_url") or ""
+        if not pickup_url and child.mail_raw:
+            pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") or ""
+        cf_config = await self._cf_config(db_session)
+        use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
+        if not pickup_url and not use_cloudflare:
+            error = "请先在系统中心配置 Cloudflare 邮箱，或输入 email----pickup_url"
+            await self._progress(db_session, child, job_id=job_id, stage="mail_missing", message=error, error=error, error_code="mail_missing")
+            return {"success": False, "error": error, "error_code": "mail_missing", "status": "mail_missing"}
+
+        if self._cancelled(job_id):
+            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
+
+        def on_stage(stage: str, message: str) -> None:
+            onboard_jobs.note(job_id, stage, message)
+
+        await self._progress(db_session, child, job_id=job_id, stage="browser", message="正在打开浏览器注册免费 ChatGPT")
+        try:
+            browser_result = await asyncio.to_thread(
+                self._run_browser,
+                email=email,
+                password=password,
+                pickup_url=pickup_url,
+                phone=phone,
+                sms_url=sms_url,
+                proxy=self._child_proxy(child),
+                start_url="",
+                mode="register",
+                team_name="",
+                use_cloudflare=use_cloudflare,
+                cf_base_url=cf_config["base_url"],
+                cf_address=cf_config["address"],
+                cf_admin_password=cf_config["admin_password"],
+                on_stage=on_stage,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            code = classify_onboard_error(error, stage="browser")
+            await child_account_service.record_event(
+                db_session,
+                email=email,
+                action="register",
+                child_id=child.id,
+                success=False,
+                detail=error,
+                error_code=code,
+            )
+            await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code=code)
+            return {"success": False, "error": error, "error_code": code, "status": "browser_failed"}
+
+        if not isinstance(browser_result, dict) or not browser_result.get("ok"):
+            error = (browser_result or {}).get("error") if isinstance(browser_result, dict) else f"浏览器流程返回了无效结果: {type(browser_result).__name__}"
+            error = error or "浏览器流程失败"
+            code = (browser_result or {}).get("error_code") if isinstance(browser_result, dict) else "browser_await_bug"
+            code = code or classify_onboard_error(error, stage="browser")
+            await child_account_service.record_event(
+                db_session,
+                email=email,
+                action="register",
+                child_id=child.id,
+                success=False,
+                detail=error,
+                error_code=code,
+            )
+            await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code=code)
+            return {"success": False, "error": error, "error_code": code, "status": "browser_failed"}
+
+        await child_account_service.save_tokens(db_session, child, {
+            "access_token": browser_result.get("access_token") or "",
+            "refresh_token": browser_result.get("refresh_token") or "",
+            "session_token": browser_result.get("session_token") or "",
+            "id_token": browser_result.get("id_token") or "",
+            "account_id": browser_result.get("account_id") or "",
+            "client_id": browser_result.get("client_id") or "",
+        })
+        if browser_result.get("password"):
+            child.password_encrypted = child_account_service.encrypt_secret(browser_result["password"])
+        await child_account_service.mark_free(db_session, child)
+        await child_account_service.record_event(
+            db_session,
+            email=email,
+            action="register",
+            child_id=child.id,
+            success=True,
+            detail="free-register",
+        )
+        return await self._finish_callable_child(db_session, child, None, email=email, job_id=job_id)
 
     async def kick_to_standby(
         self,
