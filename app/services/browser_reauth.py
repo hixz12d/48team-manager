@@ -6,7 +6,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from app.config import settings
-from app.services.browser_onboard import _click_first, _fill_first, _find_otp, chromium_context_kwargs, wait_cloudflare
+from app.services.browser_onboard import (
+    _click_first,
+    _fill_first,
+    _find_otp,
+    _mail_kwargs,
+    _snapshot_mailbox_codes,
+    chromium_context_kwargs,
+    wait_cloudflare,
+)
 from app.services.mail_otp import wait_for_mailbox_item
 from app.services.reauth import is_oauth_callback
 from app.services.sms import require_proxy, sms_client
@@ -83,6 +91,18 @@ def run_browser_oauth_reauth(
             wait_cloudflare(page)
             page.wait_for_timeout(1500)
             remember(page.url or "")
+            known_codes = _snapshot_mailbox_codes(
+                **_mail_kwargs(
+                    email=email,
+                    pickup_url=pickup_url,
+                    proxy=proxy,
+                    use_cloudflare=use_cloudflare,
+                    cf_base_url=cf_base_url,
+                    cf_address=cf_address,
+                    cf_admin_password=cf_admin_password,
+                )
+            )
+            otp_submits = 0
 
             for _ in range(24):
                 remember(page.url or "")
@@ -92,7 +112,11 @@ def run_browser_oauth_reauth(
                 url = (page.url or "").lower()
                 otp_el = _find_otp(page)
                 if otp_el:
-                    report("email_otp", "等待邮箱验证码")
+                    if otp_submits >= 2:
+                        result["error"] = "邮箱验证码提交后仍未通过，没有继续连交"
+                        result["error_code"] = "mail_otp_rejected"
+                        break
+                    report("email_otp", "等待新的邮箱验证码" if otp_submits else "等待邮箱验证码")
                     code = ""
                     if pickup_url or use_cloudflare:
                         try:
@@ -105,6 +129,7 @@ def run_browser_oauth_reauth(
                                 cf_base_url=cf_base_url if use_cloudflare else "",
                                 cf_address=cf_address if use_cloudflare else "",
                                 cf_admin_password=cf_admin_password if use_cloudflare else "",
+                                ignore_values=known_codes,
                             ) or ""
                         except Exception as exc:  # noqa: BLE001
                             result["error"] = f"email OTP failed: {exc}"
@@ -115,7 +140,10 @@ def run_browser_oauth_reauth(
                         break
                     otp_el.fill(code)
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
-                    page.wait_for_timeout(2500)
+                    known_codes.add(code)
+                    otp_submits += 1
+                    report("email_otp", f"已提交验证码（第 {otp_submits} 次）")
+                    page.wait_for_timeout(4000)
                     continue
 
                 if page.locator('input[type="password"]').count() > 0:

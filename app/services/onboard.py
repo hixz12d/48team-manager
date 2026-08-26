@@ -54,6 +54,8 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "browser_await_bug"
     if "too many" in text or "限流" in error or "max_check" in text:
         return "openai_rate_limited"
+    if "仍未通过" in error or "mail_otp_rejected" in text:
+        return "mail_otp_rejected"
     if "otp" in text or "mailbox" in text or "验证码" in error:
         return "mail_otp_timeout"
     if "接码" in error or "sms" in text:

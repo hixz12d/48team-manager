@@ -43,6 +43,10 @@ class OnboardHelperTests(unittest.TestCase):
             classify_onboard_error("OpenAI 限流：验证码试太多次"),
             "openai_rate_limited",
         )
+        self.assertEqual(
+            classify_onboard_error("邮箱验证码提交后仍未通过，没有继续连交"),
+            "mail_otp_rejected",
+        )
 
 
 class OnboardKickTests(unittest.IsolatedAsyncioTestCase):

@@ -25,8 +25,12 @@ CODE_RES = [
     ),
     re.compile(r"\b(\d{6})\b[^\w]{0,40}(?:is your|verification|one-time|security|验证码|是你的)", re.I),
     re.compile(r"(?:code|验证码)\s*[:=：]\s*(\d{6})\b", re.I),
-    re.compile(r"\b(\d{6})\b"),
 ]
+_VERIFY_HINT = re.compile(
+    r"verification code|one-time code|security code|login code|your code|enter code|"
+    r"temporary (?:verification )?code|验证码|临时验证码|一次性(?:验证)?码|安全码",
+    re.I,
+)
 _CHAT_HOST = r"(?:chatgpt|chat\.openai)\.com"
 INVITE_RE = re.compile(rf"https?://{_CHAT_HOST}/[^\s\"'<>]+", re.I)
 _INVITE_URL_RES = [
@@ -47,8 +51,16 @@ _BARE_CHAT_HOMES = {
 
 def extract_code(text: str) -> Optional[str]:
     blob = str(text or "")
+    if not blob.strip():
+        return None
+    if extract_invite_url(blob) and not _VERIFY_HINT.search(blob):
+        return None
     for pattern in CODE_RES:
         match = pattern.search(blob)
+        if match:
+            return match.group(1)
+    if _VERIFY_HINT.search(blob):
+        match = re.search(r"\b(\d{6})\b", blob)
         if match:
             return match.group(1)
     return None
@@ -215,6 +227,41 @@ class MailOtpClient:
 mail_otp_client = MailOtpClient()
 
 
+def list_mailbox_codes(
+    *,
+    email: str,
+    pickup_url: str = "",
+    proxy: str = "",
+    cf_base_url: str = "",
+    cf_address: str = "",
+    cf_admin_password: str = "",
+) -> list[str]:
+    from app.services.cloudflare_mail import cloudflare_mail_client
+
+    codes: list[str] = []
+
+    def add(code: Optional[str]) -> None:
+        value = str(code or "").strip()
+        if value and value not in codes:
+            codes.append(value)
+
+    use_cf = bool(cf_base_url and cf_address and cf_admin_password and not pickup_url)
+    if use_cf:
+        for message in cloudflare_mail_client.fetch_messages(
+            base_url=cf_base_url,
+            address=cf_address,
+            admin_password=cf_admin_password,
+            alias=email,
+        ):
+            add(extract_code("\n".join([message.get("subject", ""), message.get("preview", ""), message.get("match", "")])))
+        return codes
+    if pickup_url:
+        for blob in mail_otp_client.fetch_mailbox(pickup_url, proxy=proxy, email=email):
+            add(extract_code(blob))
+        return codes
+    raise ValueError("未配置邮箱读码方式")
+
+
 def wait_for_mailbox_item(
     *,
     email: str,
@@ -226,34 +273,41 @@ def wait_for_mailbox_item(
     cf_base_url: str = "",
     cf_address: str = "",
     cf_admin_password: str = "",
+    ignore_values: Optional[set[str]] = None,
 ) -> Optional[str]:
     from app.services.cloudflare_mail import cloudflare_mail_client
 
     deadline = time.time() + timeout_sec
     last_error: Optional[Exception] = None
+    ignore = {str(item).strip() for item in (ignore_values or set()) if str(item).strip()}
     use_cf = bool(cf_base_url and cf_address and cf_admin_password and not pickup_url)
     while time.time() < deadline:
         try:
-            if use_cf:
-                if kind == "invite":
-                    found = cloudflare_mail_client.find_invite(
-                        base_url=cf_base_url,
-                        address=cf_address,
-                        admin_password=cf_admin_password,
-                        alias=email,
-                    )
-                else:
-                    found = cloudflare_mail_client.find_code(
-                        base_url=cf_base_url,
-                        address=cf_address,
-                        admin_password=cf_admin_password,
-                        alias=email,
-                    )
+            if kind == "code":
+                found = next(
+                    (
+                        code
+                        for code in list_mailbox_codes(
+                            email=email,
+                            pickup_url=pickup_url,
+                            proxy=proxy,
+                            cf_base_url=cf_base_url,
+                            cf_address=cf_address,
+                            cf_admin_password=cf_admin_password,
+                        )
+                        if code not in ignore
+                    ),
+                    None,
+                )
+            elif use_cf:
+                found = cloudflare_mail_client.find_invite(
+                    base_url=cf_base_url,
+                    address=cf_address,
+                    admin_password=cf_admin_password,
+                    alias=email,
+                )
             elif pickup_url:
-                if kind == "invite":
-                    found = mail_otp_client.find_invite(pickup_url, proxy=proxy, email=email)
-                else:
-                    found = mail_otp_client.find_code(pickup_url, proxy=proxy, email=email)
+                found = mail_otp_client.find_invite(pickup_url, proxy=proxy, email=email)
             else:
                 raise ValueError("未配置邮箱读码方式")
             if found:

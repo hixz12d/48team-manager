@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from app.config import settings
-from app.services.mail_otp import wait_for_mailbox_item
+from app.services.mail_otp import list_mailbox_codes, wait_for_mailbox_item
 from app.services.sms import require_proxy, sms_client
 from app.services.socks_bridge import chrome_proxy_launch
 
@@ -269,6 +269,36 @@ def _save_debug(page, profile_dir: Path) -> str:
     return str(dest)
 
 
+def _mail_kwargs(
+    *,
+    email: str,
+    pickup_url: str,
+    proxy: str,
+    use_cloudflare: bool,
+    cf_base_url: str,
+    cf_address: str,
+    cf_admin_password: str,
+) -> dict[str, str]:
+    return {
+        "email": email,
+        "pickup_url": pickup_url,
+        "proxy": proxy,
+        "cf_base_url": cf_base_url if use_cloudflare else "",
+        "cf_address": cf_address if use_cloudflare else "",
+        "cf_admin_password": cf_admin_password if use_cloudflare else "",
+    }
+
+
+def _snapshot_mailbox_codes(**kwargs: str) -> set[str]:
+    if not (kwargs.get("pickup_url") or kwargs.get("cf_admin_password")):
+        return set()
+    try:
+        return set(list_mailbox_codes(**kwargs))
+    except Exception:  # noqa: BLE001
+        logger.warning("快照邮箱验证码失败", exc_info=True)
+        return set()
+
+
 def _wait_mailbox_code(
     *,
     email: str,
@@ -278,6 +308,7 @@ def _wait_mailbox_code(
     cf_base_url: str,
     cf_address: str,
     cf_admin_password: str,
+    ignore: Optional[set[str]] = None,
 ) -> str:
     if not (pickup_url or use_cloudflare):
         return ""
@@ -291,6 +322,7 @@ def _wait_mailbox_code(
             cf_base_url=cf_base_url if use_cloudflare else "",
             cf_address=cf_address if use_cloudflare else "",
             cf_admin_password=cf_admin_password if use_cloudflare else "",
+            ignore_values=ignore,
         )
         or ""
     )
@@ -358,6 +390,16 @@ def run_browser_onboard(
                 result["debug_dir"] = _save_debug(page, profile_dir)
                 return result
             page.wait_for_timeout(1500)
+            mail_kw = _mail_kwargs(
+                email=email,
+                pickup_url=pickup_url,
+                proxy=proxy,
+                use_cloudflare=use_cloudflare,
+                cf_base_url=cf_base_url,
+                cf_address=cf_address,
+                cf_admin_password=cf_admin_password,
+            )
+            known_codes = _snapshot_mailbox_codes(**mail_kw)
             report("fill_email", f"页面已打开：{page.title() or page.url}")
             _fill_first(page, ['input#email', 'input[name="email"]', 'input[type="email"]'], email)
             _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
@@ -372,6 +414,7 @@ def run_browser_onboard(
             last_url = ""
             password_tried = False
             otp_sent = False
+            otp_submits = 0
             has_mail = bool(pickup_url or use_cloudflare)
             debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
@@ -395,7 +438,11 @@ def run_browser_onboard(
                 on_verify = "email-verification" in url or "check your inbox" in _page_text(page).lower()
                 otp_ready = bool(_find_otp(page) or _otp_boxes(page))
                 if otp_ready and (on_verify or not _visible(page, 'input[type="password"], input[name="current-password"]')):
-                    report("email_otp", "等待邮箱验证码")
+                    if otp_submits >= 2:
+                        result["error"] = "邮箱验证码提交后仍未通过，没有继续连交"
+                        result["error_code"] = "mail_otp_rejected"
+                        break
+                    report("email_otp", "等待新的邮箱验证码" if otp_submits else "等待邮箱验证码")
                     try:
                         code = _wait_mailbox_code(
                             email=email,
@@ -405,6 +452,7 @@ def run_browser_onboard(
                             cf_base_url=cf_base_url,
                             cf_address=cf_address,
                             cf_admin_password=cf_admin_password,
+                            ignore=known_codes,
                         )
                     except Exception as exc:  # noqa: BLE001
                         result["error"] = f"email OTP failed: {exc}"
@@ -419,7 +467,10 @@ def run_browser_onboard(
                         result["error_code"] = "mail_otp_timeout"
                         break
                     _click_exact(page, ["Continue", "Verify"]) or _click_first(page, ['button[type="submit"]'])
-                    page.wait_for_timeout(2500)
+                    known_codes.add(code)
+                    otp_submits += 1
+                    report("email_otp", f"已提交验证码（第 {otp_submits} 次）")
+                    page.wait_for_timeout(4000)
                     continue
                 if on_verify:
                     report("email_otp", "验证码页还没出现输入框，继续等")

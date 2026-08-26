@@ -6,7 +6,7 @@ from app.services.cloudflare_mail import (
     normalize_cloudflare_base_url,
     parse_cloudflare_message,
 )
-from app.services.mail_otp import extract_invite_url, parse_mail_line
+from app.services.mail_otp import extract_code, extract_invite_url, parse_mail_line, wait_for_mailbox_item
 
 
 class CloudflareMailTests(unittest.TestCase):
@@ -99,6 +99,30 @@ class InviteUrlTests(unittest.TestCase):
     def test_auth_login_next(self):
         url = "https://chatgpt.com/auth/login?next=%2Forganization%2Faccept-invite"
         self.assertEqual(extract_invite_url(f"click {url}"), url)
+
+
+class MailCodeTests(unittest.TestCase):
+    def test_skips_invite_email_digits(self):
+        blob = "Join workspace https://chatgpt.com/invite/abc123 id 123456"
+        self.assertIsNone(extract_code(blob))
+
+    def test_reads_verification_code(self):
+        self.assertEqual(extract_code("Your verification code is 654321"), "654321")
+
+    def test_wait_skips_ignored_code(self):
+        def fake_list(**kwargs):
+            return ["111111", "222222"]
+
+        with patch("app.services.mail_otp.list_mailbox_codes", fake_list):
+            found = wait_for_mailbox_item(
+                email="a@b.com",
+                pickup_url="https://pickup.example/show/x",
+                proxy="http://127.0.0.1:1",
+                kind="code",
+                timeout_sec=5,
+                ignore_values={"111111"},
+            )
+        self.assertEqual(found, "222222")
 
 if __name__ == "__main__":
     unittest.main()
