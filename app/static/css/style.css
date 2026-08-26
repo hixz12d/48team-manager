@@ -6717,6 +6717,12 @@ body.style-classic .btn {
     font-weight: 800;
 }
 
+.sub2api-totals-week {
+    margin-left: 0.35rem;
+    font-weight: 650;
+    color: var(--text-muted);
+}
+
 .sub2api-box-totals {
     display: flex;
     flex-wrap: wrap;

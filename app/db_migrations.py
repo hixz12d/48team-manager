@@ -444,6 +444,29 @@ def run_auto_migration():
             "CREATE INDEX IF NOT EXISTS idx_vacancy_team_captured ON seat_vacancy_events (team_id, captured_at)"
         )
 
+        if not table_exists(cursor, "sub2api_usage_ledgers"):
+            logger.info("创建 sub2api_usage_ledgers 表")
+            cursor.execute("""
+                CREATE TABLE sub2api_usage_ledgers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ledger_key VARCHAR(255) NOT NULL UNIQUE,
+                    email VARCHAR(255),
+                    sub2api_account_id INTEGER,
+                    family VARCHAR(255),
+                    last_account_cost FLOAT,
+                    last_user_cost FLOAT,
+                    lifetime_account_cost FLOAT DEFAULT 0,
+                    lifetime_user_cost FLOAT DEFAULT 0,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            """)
+            migrations_applied.append("sub2api_usage_ledgers")
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sub2api_ledger_email ON sub2api_usage_ledgers (email)"
+        )
+
         # 提交更改
         conn.commit()
         

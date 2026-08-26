@@ -2,7 +2,7 @@
 数据库模型定义
 定义所有数据库表的 SQLAlchemy 模型
 """
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -298,4 +298,25 @@ class SeatVacancyEvent(Base):
 
     __table_args__ = (
         Index("idx_vacancy_team_captured", "team_id", "captured_at"),
+    )
+
+
+class Sub2ApiUsageLedger(Base):
+    """Sub2API 7日窗口消费的本地累计账本。窗口回零或下滑时保留历史。"""
+    __tablename__ = "sub2api_usage_ledgers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ledger_key = Column(String(255), unique=True, nullable=False, comment="email:xxx 或 id:123")
+    email = Column(String(255), comment="账号邮箱")
+    sub2api_account_id = Column(Integer, comment="最近一次 Sub2API 账号 ID")
+    family = Column(String(255), comment="分组名")
+    last_account_cost = Column(Float, comment="上次见到的 7日账号消费")
+    last_user_cost = Column(Float, comment="上次见到的 7日倍率消费")
+    lifetime_account_cost = Column(Float, default=0, comment="累计账号消费")
+    lifetime_user_cost = Column(Float, default=0, comment="累计倍率消费")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
+
+    __table_args__ = (
+        Index("idx_sub2api_ledger_email", "email"),
     )

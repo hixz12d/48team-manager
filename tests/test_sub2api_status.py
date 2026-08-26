@@ -1,5 +1,9 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.database import Base
+from app.models import Sub2ApiUsageLedger
 
 from app.services.sub2api import Sub2ApiService
 
@@ -294,6 +298,135 @@ class Sub2ApiStatusTests(unittest.TestCase):
         })
         self.assertEqual(row["schedule"], "phone")
         self.assertEqual(row["schedule_label"], "未接码")
+
+    def test_quota_uses_only_seven_day_percent(self):
+        row = self.service.summarize_account({
+            "id": 21,
+            "name": "Team .2026.12 子号 1",
+            "status": "active",
+            "schedulable": True,
+            "credentials": {"email": "child21@example.com"},
+            "extra": {
+                "codex_5h_used_percent": 100,
+                "codex_primary_used_percent": 88,
+                "codex_7d_used_percent": 42,
+            },
+        })
+        self.assertEqual(row["quota"], 42)
+        self.assertEqual(row["quota_label"], "7日 42%")
+        self.assertEqual(row["schedule"], "ok")
+
+    def test_five_hour_rate_limit_is_not_shown(self):
+        soon = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        row = self.service.summarize_account({
+            "id": 22,
+            "name": "Team .2026.12 子号 2",
+            "status": "active",
+            "schedulable": True,
+            "rate_limited_at": soon,
+            "rate_limit_reset_at": soon,
+            "credentials": {"email": "child22@example.com"},
+            "extra": {
+                "codex_5h_used_percent": 100,
+                "codex_5h_reset_at": soon,
+                "codex_7d_used_percent": 40,
+            },
+        })
+        self.assertEqual(row["quota_label"], "7日 40%")
+        self.assertEqual(row["schedule"], "ok")
+        self.assertEqual(row["schedule_label"], "可调度")
+
+    def test_weekly_limit_still_shows_429(self):
+        later = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        row = self.service.summarize_account({
+            "id": 23,
+            "name": "Team .2026.12 子号 3",
+            "status": "active",
+            "schedulable": False,
+            "credentials": {"email": "child23@example.com"},
+            "extra": {
+                "codex_7d_used_percent": 100,
+                "codex_7d_reset_at": later,
+                "codex_5h_used_percent": 12,
+            },
+        })
+        self.assertEqual(row["quota_label"], "7日 100%")
+        self.assertEqual(row["schedule"], "429")
+        self.assertIn("天", row["schedule_label"])
+
+    def test_advance_cost_keeps_history_after_reset(self):
+        last, lifetime = self.service.advance_cost(0, 0, 10)
+        last, lifetime = self.service.advance_cost(last, lifetime, 25)
+        last, lifetime = self.service.advance_cost(last, lifetime, 0)
+        last, lifetime = self.service.advance_cost(last, lifetime, 5)
+        self.assertEqual(last, 5)
+        self.assertEqual(lifetime, 30)
+
+    def test_advance_cost_ignores_missing_sample(self):
+        self.assertEqual(self.service.advance_cost(12.5, 40, None), (12.5, 40))
+
+    def test_annotate_cost_totals_sums_lifetime(self):
+        boxes = [
+            {
+                "title": ".2026.21",
+                "accounts": [
+                    {"account_cost": 1, "user_cost": 0.2, "lifetime_account_cost": 100, "lifetime_user_cost": 10},
+                    {"account_cost": 2, "user_cost": 0.3, "lifetime_account_cost": 50, "lifetime_user_cost": 5},
+                ],
+            },
+        ]
+        grand = self.service.annotate_cost_totals(boxes)
+        self.assertEqual(boxes[0]["account_cost_label"], "A $3.00")
+        self.assertEqual(boxes[0]["lifetime_account_cost_label"], "A $150.00")
+        self.assertEqual(boxes[0]["lifetime_user_cost_label"], "U $15.00")
+        self.assertEqual(grand["lifetime_account_cost_label"], "A $150.00")
+        self.assertEqual(grand["user_cost_label"], "U $0.50")
+
+
+class Sub2ApiLifetimeCostTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.session = self.session_maker()
+        self.service = Sub2ApiService()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        await self.engine.dispose()
+
+    async def test_apply_lifetime_costs_survives_window_reset(self):
+        row = {
+            "id": 88,
+            "email": "child88@example.com",
+            "family": ".2026.12",
+            "account_cost": 110.14,
+            "user_cost": 13.95,
+        }
+        await self.service.apply_lifetime_costs(self.session, [row])
+        await self.session.commit()
+        self.assertEqual(row["lifetime_account_cost_label"], "A $110.14")
+        self.assertEqual(row["lifetime_user_cost_label"], "U $13.95")
+
+        row["account_cost"] = 0
+        row["user_cost"] = 0
+        await self.service.apply_lifetime_costs(self.session, [row])
+        await self.session.commit()
+        self.assertEqual(row["lifetime_account_cost_label"], "A $110.14")
+        self.assertEqual(row["lifetime_user_cost_label"], "U $13.95")
+
+        row["account_cost"] = 8.5
+        row["user_cost"] = 1.2
+        await self.service.apply_lifetime_costs(self.session, [row])
+        await self.session.commit()
+        self.assertEqual(row["lifetime_account_cost_label"], "A $118.64")
+        self.assertEqual(row["lifetime_user_cost_label"], "U $15.15")
+
+        stored = await self.session.get(Sub2ApiUsageLedger, 1)
+        self.assertEqual(stored.ledger_key, "email:child88@example.com")
+        self.assertEqual(stored.lifetime_account_cost, 118.64)
+        self.assertEqual(stored.last_account_cost, 8.5)
 
 
 if __name__ == "__main__":

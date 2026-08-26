@@ -12,6 +12,9 @@ from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.models import Sub2ApiUsageLedger
 
 from app.services.settings import settings_service
 from app.config import settings
@@ -146,17 +149,32 @@ class Sub2ApiService:
             return f"{hours}小时"
         return f"{minutes}分"
 
+    def _account_extra(self, account: Dict[str, Any]) -> Dict[str, Any]:
+        extra = account.get("extra")
+        return extra if isinstance(extra, dict) else {}
+
+    def _parse_percent(self, value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        try:
+            return max(0, min(100, int(round(float(value)))))
+        except (TypeError, ValueError):
+            return None
+
     def _quota_percent(self, account: Dict[str, Any]) -> Optional[int]:
-        extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
-        for key in ("codex_7d_used_percent", "codex_primary_used_percent", "codex_5h_used_percent"):
-            raw = extra.get(key)
-            if raw in (None, ""):
-                continue
-            try:
-                return max(0, min(100, int(round(float(raw)))))
-            except (TypeError, ValueError):
-                continue
-        return None
+        return self._parse_percent(self._account_extra(account).get("codex_7d_used_percent"))
+
+    def _weekly_reset_at(self, account: Dict[str, Any]) -> Any:
+        extra = self._account_extra(account)
+        return extra.get("codex_7d_reset_at") or extra.get("codex_secondary_reset_at")
+
+    def _looks_weekly_reset(self, value: Any) -> bool:
+        when = self._parse_when(value)
+        if when is None:
+            return False
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return (when - datetime.now(timezone.utc)).total_seconds() >= 6 * 3600
 
     def _schedule_state(self, account: Dict[str, Any]) -> Dict[str, str]:
         error = str(account.get("error_message") or "").strip()
@@ -164,14 +182,18 @@ class Sub2ApiService:
         if probe["kind"] == "phone":
             return {"kind": "phone", "label": "未接码", "tone": "warn"}
         lowered = error.lower()
-        reset_at = account.get("rate_limit_reset_at")
-        limited = bool(account.get("rate_limited_at")) or self._is_future(reset_at)
         if probe["kind"] == "401" or "401" in error or "revoked" in lowered or "invalidated oauth" in lowered:
             return {"kind": "401", "label": "401 失效", "tone": "danger"}
         if probe["kind"] == "403":
             return {"kind": "403", "label": "403", "tone": "danger"}
-        if limited or "429" in error or "rate limit" in lowered:
-            remain = self._format_remain(reset_at)
+        weekly_pct = self._quota_percent(account)
+        weekly_reset = self._weekly_reset_at(account)
+        if weekly_pct is not None and weekly_pct >= 100:
+            remain = self._format_remain(weekly_reset)
+            if not remain:
+                generic = account.get("rate_limit_reset_at")
+                if self._looks_weekly_reset(generic):
+                    remain = self._format_remain(generic)
             label = f"429 {remain}" if remain else "429 限额"
             return {"kind": "429", "label": label, "tone": "warn"}
         if account.get("status") == "error":
@@ -666,6 +688,10 @@ class Sub2ApiService:
             "user_cost": None,
             "account_cost_label": "",
             "user_cost_label": "",
+            "lifetime_account_cost": None,
+            "lifetime_user_cost": None,
+            "lifetime_account_cost_label": "",
+            "lifetime_user_cost_label": "",
         }
 
     def _is_relevant_account(self, account: Dict[str, Any]) -> bool:
@@ -923,24 +949,35 @@ class Sub2ApiService:
         except (TypeError, ValueError):
             return None
 
-    def cost_fields(self, account_cost: Any = None, user_cost: Any = None) -> Dict[str, Any]:
+    def cost_fields(
+        self,
+        account_cost: Any = None,
+        user_cost: Any = None,
+        *,
+        prefix: str = "",
+    ) -> Dict[str, Any]:
         account = self.parse_cost(account_cost)
         user = self.parse_cost(user_cost)
         return {
-            "account_cost": account,
-            "user_cost": user,
-            "account_cost_label": f"A ${usd}" if (usd := self.format_usd(account)) is not None else "",
-            "user_cost_label": f"U ${usd}" if (usd := self.format_usd(user)) is not None else "",
+            f"{prefix}account_cost": account,
+            f"{prefix}user_cost": user,
+            f"{prefix}account_cost_label": f"A ${usd}" if (usd := self.format_usd(account)) is not None else "",
+            f"{prefix}user_cost_label": f"U ${usd}" if (usd := self.format_usd(user)) is not None else "",
         }
 
-    def sum_costs(self, rows: List[Dict[str, Any]]) -> tuple[Optional[float], Optional[float]]:
+    def sum_costs(
+        self,
+        rows: List[Dict[str, Any]],
+        account_key: str = "account_cost",
+        user_key: str = "user_cost",
+    ) -> tuple[Optional[float], Optional[float]]:
         account_total = 0.0
         user_total = 0.0
         has_account = False
         has_user = False
         for row in rows:
-            account = self.parse_cost(row.get("account_cost"))
-            user = self.parse_cost(row.get("user_cost"))
+            account = self.parse_cost(row.get(account_key))
+            user = self.parse_cost(row.get(user_key))
             if account is not None:
                 account_total += account
                 has_account = True
@@ -957,9 +994,98 @@ class Sub2ApiService:
         for box in boxes:
             rows = list(box.get("accounts") or [])
             all_rows.extend(rows)
-            account_cost, user_cost = self.sum_costs(rows)
-            box.update(self.cost_fields(account_cost, user_cost))
-        return self.cost_fields(*self.sum_costs(all_rows))
+            box.update(self.cost_fields(*self.sum_costs(rows)))
+            box.update(self.cost_fields(
+                *self.sum_costs(rows, "lifetime_account_cost", "lifetime_user_cost"),
+                prefix="lifetime_",
+            ))
+        totals = self.cost_fields(*self.sum_costs(all_rows))
+        totals.update(self.cost_fields(
+            *self.sum_costs(all_rows, "lifetime_account_cost", "lifetime_user_cost"),
+            prefix="lifetime_",
+        ))
+        return totals
+
+    def usage_ledger_key(self, row: Dict[str, Any]) -> str:
+        email = str(row.get("email") or "").strip().lower()
+        if email:
+            return f"email:{email}"
+        try:
+            return f"id:{int(row['id'])}"
+        except (TypeError, ValueError, KeyError):
+            name = str(row.get("name") or "").strip().lower()
+            return f"name:{name}" if name else ""
+
+    def advance_cost(
+        self,
+        last: Any,
+        lifetime: Any,
+        current: Any,
+    ) -> tuple[Optional[float], Optional[float]]:
+        current_value = self.parse_cost(current)
+        last_value = self.parse_cost(last)
+        lifetime_value = self.parse_cost(lifetime)
+        if current_value is None:
+            return last_value, lifetime_value
+        current_value = round(current_value, 2)
+        last_value = round(last_value or 0.0, 2)
+        lifetime_value = round(lifetime_value or 0.0, 2)
+        if current_value >= last_value:
+            lifetime_value = round(lifetime_value + current_value - last_value, 2)
+        return current_value, lifetime_value
+
+    async def apply_lifetime_costs(
+        self,
+        db_session: AsyncSession,
+        rows: List[Dict[str, Any]],
+    ) -> None:
+        keyed: List[tuple[str, Dict[str, Any]]] = []
+        for row in rows:
+            key = self.usage_ledger_key(row)
+            if key:
+                keyed.append((key, row))
+        if not keyed:
+            return
+        result = await db_session.execute(
+            select(Sub2ApiUsageLedger).where(
+                Sub2ApiUsageLedger.ledger_key.in_([key for key, _ in keyed])
+            )
+        )
+        existing = {item.ledger_key: item for item in result.scalars().all()}
+        now = get_now()
+        for key, row in keyed:
+            item = existing.get(key)
+            if item is None:
+                item = Sub2ApiUsageLedger(ledger_key=key, created_at=now)
+                db_session.add(item)
+                existing[key] = item
+            last_account, lifetime_account = self.advance_cost(
+                item.last_account_cost,
+                item.lifetime_account_cost,
+                row.get("account_cost"),
+            )
+            last_user, lifetime_user = self.advance_cost(
+                item.last_user_cost,
+                item.lifetime_user_cost,
+                row.get("user_cost"),
+            )
+            item.last_account_cost = last_account
+            item.last_user_cost = last_user
+            item.lifetime_account_cost = lifetime_account
+            item.lifetime_user_cost = lifetime_user
+            item.updated_at = now
+            email = str(row.get("email") or "").strip().lower()
+            if email:
+                item.email = email
+            try:
+                item.sub2api_account_id = int(row["id"])
+            except (TypeError, ValueError, KeyError):
+                pass
+            family = str(row.get("family") or "").strip()
+            if family:
+                item.family = family
+            row.update(self.cost_fields(lifetime_account, lifetime_user, prefix="lifetime_"))
+        await db_session.flush()
 
     def apply_window_costs(self, row: Dict[str, Any], usage: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = usage if isinstance(usage, dict) else {}
@@ -980,6 +1106,13 @@ class Sub2ApiService:
         rows = [account for box in boxes for account in (box.get("accounts") or []) if account.get("id") is not None]
         if not rows:
             return boxes
+
+        async def finish() -> List[Dict[str, Any]]:
+            try:
+                await self.apply_lifetime_costs(db_session, rows)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("累计消费记账失败: %s", exc)
+            return boxes
         now = time.monotonic()
         missing: List[Dict[str, Any]] = []
         for row in rows:
@@ -993,10 +1126,10 @@ class Sub2ApiService:
             else:
                 missing.append(row)
         if not missing:
-            return boxes
+            return await finish()
         cfg = await self._config(db_session)
         if not cfg["base_url"]:
-            return boxes
+            return await finish()
         ids: List[int] = []
         seen: set[int] = set()
         for row in missing:
@@ -1041,7 +1174,7 @@ class Sub2ApiService:
             payload = payload_by_id.get(account_id, {})
             _USAGE_COST_CACHE[account_id] = (stamp, payload)
             self.apply_window_costs(row, payload)
-        return boxes
+        return await finish()
 
     async def dashboard_status(
         self,

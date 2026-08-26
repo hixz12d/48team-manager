@@ -35,17 +35,30 @@
             {% elif not sub2api_status.boxes %}
             <p class="form-help">没有匹配到 Team 账号</p>
             {% else %}
-            {% if sub2api_status.account_cost_label or sub2api_status.user_cost_label %}
-            <div class="sub2api-totals" title="全部 Team 7日合计">
-                <span>7日合计</span>
+            {% if sub2api_status.lifetime_account_cost_label or sub2api_status.lifetime_user_cost_label or sub2api_status.account_cost_label or sub2api_status.user_cost_label %}
+            <div class="sub2api-totals" title="累计不会因账号重置或 7 日窗口回零而清掉">
+                {% if sub2api_status.lifetime_account_cost_label or sub2api_status.lifetime_user_cost_label %}
+                <span>累计</span>
+                {% if sub2api_status.lifetime_account_cost_label %}<span class="sub2api-money" title="累计账号消费">{{ sub2api_status.lifetime_account_cost_label }}</span>{% endif %}
+                {% if sub2api_status.lifetime_user_cost_label %}<span class="sub2api-money" title="累计倍率下消费">{{ sub2api_status.lifetime_user_cost_label }}</span>{% endif %}
+                {% endif %}
+                {% if sub2api_status.account_cost_label or sub2api_status.user_cost_label %}
+                <span{% if sub2api_status.lifetime_account_cost_label or sub2api_status.lifetime_user_cost_label %} class="sub2api-totals-week"{% endif %}>7日</span>
                 {% if sub2api_status.account_cost_label %}<span class="sub2api-money" title="7日总消费">{{ sub2api_status.account_cost_label }}</span>{% endif %}
                 {% if sub2api_status.user_cost_label %}<span class="sub2api-money" title="7日总倍率下消费">{{ sub2api_status.user_cost_label }}</span>{% endif %}
+                {% endif %}
             </div>
             {% endif %}
             {% for group in sub2api_status.boxes %}
             <article class="sub2api-box tone-{{ group.tone or 'ok' }}">
                 <header><span>{{ group.title }}</span>{% if group.team_id %}<span class="rotation-stepper" data-team-id="{{ group.team_id }}" data-count="{{ group.rotation_count or 0 }}" title="今天轮了几次，可手调"><button type="button" class="rotation-step" onclick="adjustRotationCount(this, -1)" {% if not group.rotation_count %}disabled{% endif %}>−</button><span class="rotation-value tone-{{ group.rotation_tone or 'muted' }}" data-rotation-label>{{ group.rotation_label or '今日未轮' }}</span><button type="button" class="rotation-step" onclick="adjustRotationCount(this, 1)">+</button></span>{% else %}<span class="rotation-value tone-{{ group.rotation_tone or 'muted' }}">{{ group.rotation_label or '今日未轮' }}</span>{% endif %}</header>
-                {% if group.account_cost_label or group.user_cost_label %}
+                {% if group.lifetime_account_cost_label or group.lifetime_user_cost_label %}
+                <div class="sub2api-box-totals" title="本组累计收益">
+                    <span>累计</span>
+                    {% if group.lifetime_account_cost_label %}<span class="sub2api-money" title="本组累计消费">{{ group.lifetime_account_cost_label }}</span>{% endif %}
+                    {% if group.lifetime_user_cost_label %}<span class="sub2api-money" title="本组累计倍率下消费">{{ group.lifetime_user_cost_label }}</span>{% endif %}
+                </div>
+                {% elif group.account_cost_label or group.user_cost_label %}
                 <div class="sub2api-box-totals" title="本组 7日合计">
                     {% if group.account_cost_label %}<span class="sub2api-money" title="本组7日消费">{{ group.account_cost_label }}</span>{% endif %}
                     {% if group.user_cost_label %}<span class="sub2api-money" title="本组7日倍率下消费">{{ group.user_cost_label }}</span>{% endif %}
@@ -56,8 +69,8 @@
                     <span class="sub2api-name" title="{{ item.name or item.email or '' }}">{{ item.short_name or item.name }}</span>
                     <span class="sub2api-quota">
                         <span>{{ item.quota_label or '额度 -' }}</span>
-                        {% if item.account_cost_label %}<span class="sub2api-money" title="7日账号计费">{{ item.account_cost_label }}</span>{% endif %}
-                        {% if item.user_cost_label %}<span class="sub2api-money" title="7日用户计费">{{ item.user_cost_label }}</span>{% endif %}
+                        {% if item.lifetime_account_cost_label %}<span class="sub2api-money" title="累计账号计费">{{ item.lifetime_account_cost_label }}</span>{% elif item.account_cost_label %}<span class="sub2api-money" title="7日账号计费">{{ item.account_cost_label }}</span>{% endif %}
+                        {% if item.lifetime_user_cost_label %}<span class="sub2api-money" title="累计用户计费">{{ item.lifetime_user_cost_label }}</span>{% elif item.user_cost_label %}<span class="sub2api-money" title="7日用户计费">{{ item.user_cost_label }}</span>{% endif %}
                     </span>
                     <span class="sub2api-chip tone-{{ item.tone or 'muted' }}">{{ item.schedule_label or '-' }}</span>
                 </div>
@@ -659,20 +672,33 @@ function patchSeatQuotaFromIndex() {
     });
 }
 
+function moneySpans(item, accountKey, userKey, accountTitle, userTitle) {
+    let html = '';
+    if (item && item[accountKey]) html += '<span class="sub2api-money" title="' + escapeSeatHtml(accountTitle) + '">' + escapeSeatHtml(item[accountKey]) + '</span>';
+    if (item && item[userKey]) html += '<span class="sub2api-money" title="' + escapeSeatHtml(userTitle) + '">' + escapeSeatHtml(item[userKey]) + '</span>';
+    return html;
+}
+
 function costTotalsHtml(item, className, titles) {
-    if (!item || (!item.account_cost_label && !item.user_cost_label)) return '';
+    if (!item) return '';
     titles = titles || {};
+    const life = moneySpans(item, 'lifetime_account_cost_label', 'lifetime_user_cost_label', titles.lifetimeAccount || '累计账号消费', titles.lifetimeUser || '累计倍率下消费');
+    const week = (titles.includeWeek === false && life) ? '' : moneySpans(item, 'account_cost_label', 'user_cost_label', titles.account || '7日账号计费', titles.user || '7日用户计费');
+    if (!life && !week) return '';
     let html = '<div class="' + className + '"' + (titles.wrapTitle ? ' title="' + escapeSeatHtml(titles.wrapTitle) + '"' : '') + '>';
-    if (titles.prefix) html += '<span>' + escapeSeatHtml(titles.prefix) + '</span>';
-    if (item.account_cost_label) html += '<span class="sub2api-money" title="' + escapeSeatHtml(titles.account || '7日账号计费') + '">' + escapeSeatHtml(item.account_cost_label) + '</span>';
-    if (item.user_cost_label) html += '<span class="sub2api-money" title="' + escapeSeatHtml(titles.user || '7日用户计费') + '">' + escapeSeatHtml(item.user_cost_label) + '</span>';
+    if (life) html += '<span>' + escapeSeatHtml(titles.lifetimePrefix || '累计') + '</span>' + life;
+    if (week) {
+        html += '<span' + (life ? ' class="sub2api-totals-week"' : '') + '>' + escapeSeatHtml(titles.prefix || '7日') + '</span>' + week;
+    }
     return html + '</div>';
 }
 
 function quotaCellHtml(item) {
     let html = '<span class="sub2api-quota"><span>' + escapeSeatHtml(item.quota_label || '额度 -') + '</span>';
-    if (item.account_cost_label) html += '<span class="sub2api-money" title="7日账号计费">' + escapeSeatHtml(item.account_cost_label) + '</span>';
-    if (item.user_cost_label) html += '<span class="sub2api-money" title="7日用户计费">' + escapeSeatHtml(item.user_cost_label) + '</span>';
+    const accountLabel = item.lifetime_account_cost_label || item.account_cost_label;
+    const userLabel = item.lifetime_user_cost_label || item.user_cost_label;
+    if (accountLabel) html += '<span class="sub2api-money" title="' + (item.lifetime_account_cost_label ? '累计账号计费' : '7日账号计费') + '">' + escapeSeatHtml(accountLabel) + '</span>';
+    if (userLabel) html += '<span class="sub2api-money" title="' + (item.lifetime_user_cost_label ? '累计用户计费' : '7日用户计费') + '">' + escapeSeatHtml(userLabel) + '</span>';
     return html + '</span>';
 }
 
@@ -739,7 +765,7 @@ function renderSub2apiStatus(data) {
         box.innerHTML = '<p class="form-help">' + (data.pending ? '加载中…' : '没有匹配到 Team 账号') + '</p>';
         return;
     }
-    box.innerHTML = costTotalsHtml(data, 'sub2api-totals', { prefix: '7日合计', wrapTitle: '全部 Team 7日合计', account: '7日总消费', user: '7日总倍率下消费' }) + boxes.map((group) => {
+    box.innerHTML = costTotalsHtml(data, 'sub2api-totals', { prefix: '7日', wrapTitle: '累计不会因账号重置或 7 日窗口回零而清掉', account: '7日总消费', user: '7日总倍率下消费', lifetimeAccount: '累计账号消费', lifetimeUser: '累计倍率下消费' }) + boxes.map((group) => {
         const rows = (group.accounts || []).map((item) => (
             '<div class="sub2api-row">' +
                 '<span class="sub2api-name" title="' + escapeSeatHtml(item.name || item.email || '') + '">' + escapeSeatHtml(item.short_name || item.name) + '</span>' +
@@ -747,7 +773,7 @@ function renderSub2apiStatus(data) {
                 '<span class="sub2api-chip tone-' + escapeSeatHtml(item.tone || 'muted') + '">' + escapeSeatHtml(item.schedule_label || '-') + '</span>' +
             '</div>'
         )).join('');
-        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span>' + rotationChipHtml(group) + '</header>' + costTotalsHtml(group, 'sub2api-box-totals', { wrapTitle: '本组 7日合计', account: '本组7日消费', user: '本组7日倍率下消费' }) + rows + '</article>';
+        return '<article class="sub2api-box tone-' + escapeSeatHtml(group.tone || 'ok') + '"><header><span>' + escapeSeatHtml(group.title) + '</span>' + rotationChipHtml(group) + '</header>' + costTotalsHtml(group, 'sub2api-box-totals', { includeWeek: false, wrapTitle: '本组累计收益', lifetimeAccount: '本组累计消费', lifetimeUser: '本组累计倍率下消费' }) + rows + '</article>';
     }).join('');
     indexSub2apiAccounts(boxes);
     patchSeatQuotaFromIndex();
