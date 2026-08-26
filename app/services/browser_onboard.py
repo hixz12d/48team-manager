@@ -154,6 +154,83 @@ def looks_like_about_you(*, title: str = "", body: str = "", url: str = "") -> b
     )
 
 
+EMAIL_INPUT_SELECTOR = (
+    'input#email, input[name="email"], input[type="email"], '
+    'input[autocomplete="email"], input[placeholder="Email address"], '
+    'input[aria-label="Email address"]'
+)
+REGISTER_START_URL = "https://auth.openai.com/create-account"
+LOGIN_START_URL = "https://chatgpt.com/auth/login"
+
+
+def looks_like_email_gate(*, title: str = "", body: str = "", url: str = "") -> bool:
+    title_l = str(title or "").lower()
+    body_l = str(body or "").lower()
+    url_l = str(url or "").lower()
+    blob = f"{title_l}\n{body_l}\n{url_l}"
+    if any(token in blob for token in (
+        "email-verification",
+        "check your inbox",
+        "enter your password",
+        "how old are you",
+        "about-you",
+        "log-in/password",
+    )):
+        return False
+    if "log in or sign up" in blob:
+        return True
+    if "get started" in title_l and "chatgpt" in title_l:
+        return True
+    if "/auth/login" in url_l:
+        return True
+    return False
+
+
+def _email_input_visible(page) -> bool:
+    return _visible(page, EMAIL_INPUT_SELECTOR)
+
+
+def _current_email_value(page) -> str:
+    try:
+        loc = page.locator(EMAIL_INPUT_SELECTOR)
+        if loc.count() == 0:
+            return ""
+        return (loc.first.input_value() or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _fill_email(page, email: str) -> bool:
+    selectors = [
+        'input#email',
+        'input[name="email"]',
+        'input[type="email"]',
+        'input[autocomplete="email"]',
+        'input[placeholder="Email address"]',
+        'input[aria-label="Email address"]',
+    ]
+    if _fill_first(page, selectors, email) and _current_email_value(page).lower() == email.lower():
+        return True
+    try:
+        ok = page.evaluate(
+            """([sel, val]) => {
+                const el = document.querySelector(sel);
+                if (!el) return false;
+                el.focus();
+                const proto = window.HTMLInputElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                desc.set.call(el, val);
+                el.dispatchEvent(new Event('input', {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                return el.value === val;
+            }""",
+            [EMAIL_INPUT_SELECTOR, email],
+        )
+        return bool(ok) or _current_email_value(page).lower() == email.lower()
+    except Exception:  # noqa: BLE001
+        return _current_email_value(page).lower() == email.lower()
+
+
 def _find_otp(page):
     for selector in [
         'input[autocomplete="one-time-code"]',
@@ -257,6 +334,13 @@ def _extract_session(page) -> dict[str, Any]:
     peeked = _peek_session(page)
     if session_access_token(peeked):
         return peeked
+    title = ""
+    try:
+        title = page.title() or ""
+    except Exception:  # noqa: BLE001
+        title = ""
+    if _email_input_visible(page) or looks_like_email_gate(title=title, url=getattr(page, "url", "") or ""):
+        return polled if polled.get("status") else peeked or polled
     try:
         page.goto("https://chatgpt.com/", wait_until="load", timeout=30000)
         wait_cloudflare(page, timeout_sec=30)
@@ -469,7 +553,7 @@ def run_browser_onboard(
         page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
         try:
-            target = start_url or "https://chatgpt.com/auth/login"
+            target = start_url or (REGISTER_START_URL if mode == "register" else LOGIN_START_URL)
             report("browser_open", f"正在打开注册/登录页 {target}")
             page.goto(target, wait_until="load")
             if not wait_cloudflare(page):
@@ -478,6 +562,10 @@ def run_browser_onboard(
                 result["debug_dir"] = _save_debug(page, profile_dir)
                 return result
             page.wait_for_timeout(1500)
+            try:
+                page.wait_for_selector(EMAIL_INPUT_SELECTOR, timeout=15000)
+            except Exception:  # noqa: BLE001
+                pass
             mail_kw = _mail_kwargs(
                 email=email,
                 pickup_url=pickup_url,
@@ -489,9 +577,12 @@ def run_browser_onboard(
             )
             known_codes = _snapshot_mailbox_codes(**mail_kw)
             report("fill_email", f"页面已打开：{page.title() or page.url}")
-            _fill_first(page, ['input#email', 'input[name="email"]', 'input[type="email"]'], email)
-            _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
-            page.wait_for_timeout(2500)
+            if _email_input_visible(page):
+                if not _fill_email(page, email):
+                    report("fill_email", "邮箱框在，但没填进去，后面会再试")
+                else:
+                    _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
+                    page.wait_for_timeout(2500)
             wait_cloudflare(page, timeout_sec=20)
 
             if mode == "register" and _click_exact(page, ["Create account", "Sign up"]):
@@ -503,6 +594,7 @@ def run_browser_onboard(
             password_tried = False
             otp_sent = False
             otp_submits = 0
+            email_submits = 0
             has_mail = bool(pickup_url or use_cloudflare)
             debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
@@ -524,6 +616,25 @@ def run_browser_onboard(
                     break
 
                 page_text = _page_text(page)
+                if (
+                    _email_input_visible(page)
+                    and not _visible(page, 'input[type="password"], input[name="current-password"]')
+                    and not _find_otp(page)
+                    and not _otp_boxes(page)
+                ):
+                    if email_submits >= 5:
+                        result["error"] = "卡在 ChatGPT 邮箱页，没有进入 OpenAI 注册"
+                        result["error_code"] = "email_gate_stuck"
+                        break
+                    report("fill_email", f"正在提交邮箱（第 {email_submits + 1} 次）")
+                    if not _fill_email(page, email):
+                        result["error"] = "登录页找不到可用的邮箱输入框"
+                        result["error_code"] = "email_input_missing"
+                        break
+                    _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
+                    email_submits += 1
+                    page.wait_for_timeout(3000)
+                    continue
                 if looks_like_about_you(title=page.title() or "", body=page_text, url=url) or _visible(page, 'input[name="age"], input[placeholder*="Age" i]'):
                     report("about_you", "验证码已过，正在填写年龄")
                     _fill_about_you(page)
@@ -650,8 +761,16 @@ def run_browser_onboard(
                     session = polled
                     break
                 title = (page.title() or "").lower()
-                if "chat, work, create" in title and _click_exact(page, ["Log in"]):
-                    report("login", "未登录首页，点 Log in 回去")
+                if "chat, work, create" in title or "where should we begin" in page_text.lower():
+                    if mode == "register" and (
+                        _click_exact(page, ["Sign up for free", "Sign up"])
+                        or _click_first(page, ['a:has-text("Sign up")', 'button:has-text("Sign up")'])
+                    ):
+                        report("signup", "未登录首页，点 Sign up")
+                        page.wait_for_timeout(2000)
+                        continue
+                    if _click_exact(page, ["Log in"]):
+                        report("login", "未登录首页，点 Log in 回去")
                     page.wait_for_timeout(2000)
                     continue
                 if "auth.openai.com" in url:
@@ -661,7 +780,7 @@ def run_browser_onboard(
                     report("workspace", "已选择工作空间")
                     page.wait_for_timeout(1500)
                     continue
-                if _click_exact(page, ["Accept", "I agree", "Okay", "Next", "Get started"]):
+                if _click_exact(page, ["Accept", "I agree", "Okay", "Next"]):
                     page.wait_for_timeout(1500)
                     continue
                 page.wait_for_timeout(1200)
@@ -686,10 +805,14 @@ def run_browser_onboard(
             })
             if not access_token:
                 result["debug_dir"] = _save_debug(page, profile_dir)
-                result["error"] = result.get("error") or _session_failure(page, session)
-                result["error_code"] = result.get("error_code") or (
-                    "cloudflare_challenge" if page_is_cloudflare(page) else "session_missing"
-                )
+                if looks_like_email_gate(title=page.title() or "", body=_page_text(page), url=page.url or "") or _email_input_visible(page):
+                    result["error"] = result.get("error") or "卡在 ChatGPT 邮箱页，没有进入 OpenAI 注册"
+                    result["error_code"] = result.get("error_code") or "email_gate_stuck"
+                else:
+                    result["error"] = result.get("error") or _session_failure(page, session)
+                    result["error_code"] = result.get("error_code") or (
+                        "cloudflare_challenge" if page_is_cloudflare(page) else "session_missing"
+                    )
         except Exception as exc:  # noqa: BLE001
             result["error"] = str(exc)
             result["error_code"] = result.get("error_code") or "browser_failed"

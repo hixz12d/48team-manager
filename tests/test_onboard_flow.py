@@ -12,6 +12,7 @@ from app.services.browser_onboard import (
     can_peek_session,
     looks_like_about_you,
     looks_like_cloudflare,
+    looks_like_email_gate,
     looks_like_otp_input,
     session_access_token,
 )
@@ -52,6 +53,25 @@ class OnboardHelperTests(unittest.TestCase):
         self.assertEqual(
             classify_onboard_error("邮箱验证码提交后仍未通过，没有继续连交"),
             "mail_otp_rejected",
+        )
+
+    def test_email_gate_detection(self):
+        self.assertTrue(looks_like_email_gate(
+            title="Get started | ChatGPT",
+            url="https://chatgpt.com/auth/login?email=a@b.com",
+        ))
+        self.assertTrue(looks_like_email_gate(
+            title="Log in or sign up",
+            body="Email address",
+            url="https://chatgpt.com/auth/login",
+        ))
+        self.assertFalse(looks_like_email_gate(
+            title="Check your inbox - OpenAI",
+            url="https://auth.openai.com/email-verification",
+        ))
+        self.assertEqual(
+            classify_onboard_error("卡在 ChatGPT 邮箱页，没有进入 OpenAI 注册"),
+            "email_gate_stuck",
         )
 
     def test_age_page_is_not_otp(self):

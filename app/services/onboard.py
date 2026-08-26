@@ -63,6 +63,8 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "mail_otp_rejected"
     if "otp" in text or "mailbox" in text or "验证码" in error:
         return "mail_otp_timeout"
+    if "邮箱页" in error or "email_gate" in text or "email_input_missing" in text:
+        return "email_gate_stuck"
     if "接码" in error or "sms" in text:
         return "sms_failed"
     if "cloudflare" in text or "just a moment" in text or "turnstile" in text:
