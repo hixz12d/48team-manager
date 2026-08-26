@@ -1,0 +1,25 @@
+<div id="seatOauthModal" class="modal-overlay">
+    <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+            <h3 id="seatOauthTitle">重新授权</h3>
+            <button type="button" class="modal-close" onclick="closeSeatOauth()">×</button>
+        </div>
+        <div class="modal-body">
+            <p id="seatOauthHelp" class="form-help">母号 / Team 会先尝试 RT/ST 自动换票。换不了再用该号 ISP 代理弹出 Chrome；iCloud 子号在服务器上带着代理自动登录。</p>
+            <div id="seatOauthManual">
+                <div class="oauth-quick-btn-row">
+                    <button type="button" class="btn btn-primary" onclick="launchSeatOauthWindow()">弹出带代理的授权窗口</button>
+                </div>
+                <textarea id="seatOauthCallback" class="form-control" rows="3" placeholder="如果没跑本机窗口，把跳到 localhost 的完整地址贴这里"></textarea>
+                <div class="oauth-quick-btn-row">
+                    <button type="button" class="btn btn-primary" onclick="submitSeatOauthCallback()">解析回调并推送</button>
+                    <button type="button" class="btn btn-secondary" onclick="startSeatOauthManual()">改走手动</button>
+                </div>
+            </div>
+            <div class="oauth-quick-btn-row">
+                <button id="seatOauthCancel" type="button" class="btn btn-secondary" hidden onclick="cancelSeatOauthJob()">停止自动授权</button>
+            </div>
+            <pre id="seatOauthLog" class="onboard-progress-log"></pre>
+        </div>
+    </div>
+</div>

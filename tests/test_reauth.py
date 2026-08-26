@@ -1,13 +1,19 @@
 import unittest
 
 from app.services.oauth_sessions import chrome_proxy_parts, create_session, get_session, launcher_script
-from app.services.reauth import auto_reauth_plan, is_icloud_email, is_oauth_callback
+from app.services.reauth import auto_reauth_plan, is_icloud_email, is_oauth_callback, owner_refresh_allows_oauth
 
 
 class ReauthPlanTests(unittest.TestCase):
     def test_owner_is_manual(self):
         plan = auto_reauth_plan(email="mom@gmail.com", role="owner", password="x", proxy="socks5h://u:p@1.2.3.4:1080")
         self.assertFalse(plan["auto"])
+
+    def test_owner_refresh_only_falls_back_when_tokens_are_dead(self):
+        self.assertTrue(owner_refresh_allows_oauth("token_refresh_failed"))
+        self.assertTrue(owner_refresh_allows_oauth(""))
+        self.assertFalse(owner_refresh_allows_oauth("team_banned"))
+        self.assertFalse(owner_refresh_allows_oauth("token_identity_mismatch"))
 
     def test_icloud_with_password_mail_and_proxy_is_auto(self):
         self.assertTrue(is_icloud_email("kid@icloud.com"))

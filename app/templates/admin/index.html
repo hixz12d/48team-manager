@@ -994,6 +994,11 @@
                             <i data-lucide="edit-3" style="width: 16px; height: 16px;"></i>
                             <span class="btn-icon-fallback" aria-hidden="true">编</span>
                         </button>
+                        <button class="btn btn-sm btn-icon btn-minimal {% if team.status in ['expired', 'error'] %}btn-warning{% else %}btn-secondary{% endif %} btn-reauth-team"
+                            data-id="{{ team.id }}" data-email="{{ team.email }}" title="重新授权 Team" aria-label="重新授权 Team">
+                            <i data-lucide="key-round" style="width: 16px; height: 16px;"></i>
+                            <span class="btn-icon-fallback" aria-hidden="true">授</span>
+                        </button>
                         <button class="btn btn-sm btn-icon btn-minimal btn-secondary btn-refresh-team"
                             data-id="{{ team.id }}" title="刷新" aria-label="刷新">
                             <i data-lucide="refresh-cw" style="width: 16px; height: 16px;"></i>
@@ -1167,25 +1172,10 @@
             <form id="editTeamForm" onsubmit="handleEditTeam(event)">
                 <input type="hidden" id="edit-team-id" name="teamId">
                 <div class="form-group" style="margin-bottom: 0.9rem;">
-                    <button type="button" class="btn btn-primary" onclick="toggleEditTokenRenewSection()">
-                        <i data-lucide="key-round" style="width: 14px; height: 14px;"></i> 更新 Token（OAuth 回调）
+                    <button type="button" class="btn btn-primary" onclick="startTeamReauthFromEdit()">
+                        <i data-lucide="key-round" style="width: 14px; height: 14px;"></i> 重新授权 Team
                     </button>
-                </div>
-                <div id="editTeamTokenRenewSection" class="import-mode-card oauth-quick-card" style="display: none; margin-bottom: 1rem;">
-                    <div class="oauth-quick-head">
-                        <label>更新过期 Team 的 Token</label>
-                        <p class="oauth-quick-subtitle">流程同导入 Team：获取授权链接 → 粘贴回调 → 替换现有 Token。</p>
-                    </div>
-                    <div class="oauth-quick-action-row">
-                        <button type="button" class="btn btn-primary oauth-main-btn" onclick="generateEditOAuthAuthorizeLink()">获取授权链接</button>
-                    </div>
-                    <div class="oauth-quick-fields">
-                        <input type="text" id="editOAuthAuthorizeUrlOutput" class="form-control" placeholder="授权链接会自动复制，这里仅作备份显示" readonly>
-                        <textarea id="editOAuthCallbackInput" class="form-control" rows="3" placeholder="登录后粘贴完整回调 URL"></textarea>
-                    </div>
-                    <div class="oauth-quick-btn-row">
-                        <button type="button" class="btn btn-primary" onclick="parseEditOAuthCallbackAndFill()">解析并替换 Team 信息</button>
-                    </div>
+                    <p class="form-help">先用 RT/ST 自动换票并拉成员；换不了再用该号 ISP 代理弹出 Chrome，不用再复制授权链接去 Team 窗口开。</p>
                 </div>
                 <div class="form-group">
                     <label>邮箱 <span class="required">*</span></label>
@@ -1259,6 +1249,7 @@
         </div>
     </div>
 </div>
+{% include "admin/_oauth_reauth_modal.html" %}
 {% endblock %}
 
 {% block extra_js %}
@@ -1267,6 +1258,11 @@
         const editTeamModal = document.getElementById('editTeamModal');
         if (editTeamModal && editTeamModal.parentElement !== document.body) {
             document.body.appendChild(editTeamModal);
+        }
+
+        const seatOauthModal = document.getElementById('seatOauthModal');
+        if (seatOauthModal && seatOauthModal.parentElement !== document.body) {
+            document.body.appendChild(seatOauthModal);
         }
 
         const welfareCodeTeamModal = document.getElementById('welfareCodeTeamModal');
@@ -1315,6 +1311,14 @@
             btn.addEventListener('click', () => {
                 const id = btn.getAttribute('data-id');
                 editTeam(id);
+            });
+        });
+
+        document.querySelectorAll('.btn-reauth-team').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.getAttribute('data-id');
+                const email = btn.getAttribute('data-email');
+                startSeatOauth(Number(id), email);
             });
         });
 
@@ -1579,146 +1583,17 @@
         }
     }
 
-    let editOauthDraft = {
-        codeVerifier: '',
-        state: '',
-        clientId: ''
-    };
-
     function resetEditTokenRenewUI() {
-        const section = document.getElementById('editTeamTokenRenewSection');
-        const urlOutput = document.getElementById('editOAuthAuthorizeUrlOutput');
-        const callbackInput = document.getElementById('editOAuthCallbackInput');
-        if (section) section.style.display = 'none';
-        if (urlOutput) urlOutput.value = '';
-        if (callbackInput) callbackInput.value = '';
-        editOauthDraft = {
-            codeVerifier: '',
-            state: '',
-            clientId: ''
-        };
     }
 
-    function toggleEditTokenRenewSection() {
-        const section = document.getElementById('editTeamTokenRenewSection');
-        if (!section) return;
-        section.style.display = section.style.display === 'none' ? 'block' : 'none';
-        if (window.lucide) {
-            lucide.createIcons();
-        }
-    }
-
-    async function generateEditOAuthAuthorizeLink() {
-        const clientIdInput = document.getElementById('edit-team-client-id');
-        const defaultClientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
-        const clientId = (clientIdInput && clientIdInput.value ? clientIdInput.value.trim() : '') || defaultClientId;
-
-        showToast('正在生成并复制授权链接...', 'info');
-
-        try {
-            const result = await apiCall('/admin/oauth/openai/authorize', {
-                method: 'POST',
-                body: JSON.stringify({
-                    client_id: clientId,
-                    redirect_uri: 'http://localhost:1455/auth/callback'
-                })
-            });
-
-            if (!result.success) {
-                showToast(result.error || '生成授权链接失败', 'error');
-                return;
-            }
-
-            const data = unwrapApiPayload(result) || {};
-            editOauthDraft.codeVerifier = data.code_verifier || '';
-            editOauthDraft.state = data.state || '';
-            editOauthDraft.clientId = data.client_id || clientId;
-
-            const output = document.getElementById('editOAuthAuthorizeUrlOutput');
-            if (output) output.value = data.authorize_url || '';
-
-            const authUrl = (data.authorize_url || '').trim();
-            if (!authUrl) {
-                showToast('授权链接生成失败，请重试', 'error');
-                return;
-            }
-
-            const copied = await copyTextSilently(authUrl);
-            if (copied) {
-                showToast('链接已复制，去浏览器登录后粘贴回调', 'success');
-            } else {
-                showToast('授权链接已生成，请手动复制', 'warning');
-            }
-        } catch (error) {
-            showToast('生成授权链接失败', 'error');
-        }
-    }
-
-    async function parseEditOAuthCallbackAndFill() {
-        const callbackInput = document.getElementById('editOAuthCallbackInput');
-        const callbackText = callbackInput ? callbackInput.value.trim() : '';
-        const clientIdInput = document.getElementById('edit-team-client-id');
-        const defaultClientId = 'app_EMoamEEZ73f0CkXaXp7hrann';
-        const currentClientId = (clientIdInput && clientIdInput.value ? clientIdInput.value.trim() : '') || editOauthDraft.clientId || defaultClientId;
-
-        if (!callbackText) {
-            showToast('请先粘贴回调 URL', 'error');
+    function startTeamReauthFromEdit() {
+        const teamId = document.getElementById('edit-team-id').value;
+        const email = document.getElementById('edit-team-email').value;
+        if (!teamId || !email) {
+            showToast('先打开一个 Team', 'error');
             return;
         }
-
-        try {
-            const result = await apiCall('/admin/oauth/openai/parse-callback', {
-                method: 'POST',
-                body: JSON.stringify({
-                    callback_text: callbackText,
-                    code_verifier: editOauthDraft.codeVerifier || null,
-                    expected_state: editOauthDraft.state || null,
-                    client_id: currentClientId,
-                    redirect_uri: 'http://localhost:1455/auth/callback'
-                })
-            });
-
-            if (!result.success) {
-                showToast(result.error || '解析回调失败', 'error');
-                return;
-            }
-
-            const parsed = unwrapApiPayload(result) || {};
-            const normalized = buildOAuthJsonTemplate(parsed);
-            const raw = parsed.raw || {};
-            const accessToken = normalized.access_token || parsed.access_token || '';
-            const refreshToken = normalized.refresh_token || parsed.refresh_token || '';
-            const idToken = normalized.id_token || parsed.id_token || '';
-            const payload = decodeJwtPayload(accessToken) || {};
-            const accessAuth = payload['https://api.openai.com/auth'] || {};
-            const accessProfile = payload['https://api.openai.com/profile'] || {};
-
-            document.getElementById('edit-team-token').value = accessToken || '';
-            document.getElementById('edit-team-id-token').value = idToken || '';
-            document.getElementById('edit-team-refresh-token').value = refreshToken || '';
-            if (clientIdInput) {
-                clientIdInput.value = parsed.client_id || normalized.client_id || '';
-            }
-
-            const emailInput = document.getElementById('edit-team-email');
-            if (emailInput && !emailInput.value.trim()) {
-                emailInput.value = normalized.email || raw.email || parsed.email || accessProfile.email || '';
-            }
-
-            const accountIdInput = document.getElementById('edit-team-account-id');
-            if (accountIdInput && !accountIdInput.value.trim()) {
-                accountIdInput.value = normalized.account_id || raw.account_id || parsed.account_id || accessAuth.chatgpt_account_id || '';
-            }
-
-            const teamNameInput = document.getElementById('edit-team-name');
-            if (teamNameInput && !teamNameInput.value.trim()) {
-                teamNameInput.value = raw.team_name || parsed.team_name || accessAuth.chatgpt_org_name || '';
-            }
-
-            showToast('Token 已更新，已按规则补全空白字段，请保存', 'success');
-        } catch (error) {
-            showToast(error.message || '解析回调失败', 'error');
-        }
+        startSeatOauth(Number(teamId), email);
     }
 
     async function handleEditTeam(event) {
@@ -2352,5 +2227,11 @@
         url.searchParams.set('page', 1);
         window.location.href = url.toString();
     }
+</script>
+<script src="/static/js/oauth_reauth.js?v=20260826-team-reauth"></script>
+<script>
+    window.oauthReauthOnDone = function () {
+        setTimeout(() => location.reload(), 800);
+    };
 </script>
 {% endblock %}

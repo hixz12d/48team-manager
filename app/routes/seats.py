@@ -410,8 +410,13 @@ async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str
         await db.flush()
         push_result = await sub2api_service.push_team(db, team)
         await db.commit()
+        sync_result = await team_service.sync_team_info(team.id, db, force_refresh=False)
         probe = push_result.get("probe") or {}
         message = push_result.get("message") or f"{email} 已重新授权并推送到 Sub2API"
+        if sync_result.get("success"):
+            message += "，Team 成员信息已重新拉取"
+        elif sync_result.get("error"):
+            message += f"，但拉 Team 信息失败：{sync_result.get('error')}"
         result = {
             "success": True,
             "message": message,
@@ -484,6 +489,39 @@ async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str
     oauth_sessions.mark_session(ticket, status="done", message=message, error="", result=result)
     return result
 
+async def _try_refresh_owner_team(db: AsyncSession, team: Team) -> Optional[Dict[str, Any]]:
+    """母号 / Team 先用 RT/ST 换票。换成功就拉成员并推 Sub2API；换不了返回 None 走弹窗。"""
+    sync = await team_service.sync_team_info(team.id, db, force_refresh=True)
+    if sync.get("success"):
+        push_result = await sub2api_service.push_team(db, team)
+        await db.commit()
+        message = sync.get("message") or "母号凭证仍可用，已重新拉到 Team 信息"
+        if push_result.get("message"):
+            message = f"{message}；{push_result['message']}"
+        return {
+            "success": True,
+            "mode": "refreshed",
+            "message": message,
+            "email": team.email,
+            "role": "owner",
+            "account_id": push_result.get("account_id"),
+            "probe": push_result.get("probe") or {},
+            "push": {
+                "strategy": push_result.get("strategy") or "owner",
+                "proxy_id": push_result.get("proxy_id"),
+                "template": push_result.get("template"),
+            },
+        }
+    from app.services.reauth import owner_refresh_allows_oauth
+
+    error_code = str(sync.get("error_code") or "")
+    if owner_refresh_allows_oauth(error_code):
+        return None
+    return {
+        "success": False,
+        "error": sync.get("error") or "Team 换票失败",
+        "error_code": error_code,
+    }
 
 async def _run_onboard_job(job_id: str, payload: OnboardRequest) -> None:
     async with AsyncSessionLocal() as db:
@@ -588,6 +626,12 @@ async def seats_oauth_start(
     if not email or "@" not in email:
         return JSONResponse(status_code=400, content={"success": False, "error": "邮箱不对"})
     role = "owner" if normalize_email(team.email) == email else "child"
+    if role == "owner" and not payload.force_manual:
+        refreshed = await _try_refresh_owner_team(db, team)
+        if refreshed is not None:
+            if refreshed.get("success"):
+                return refreshed
+            return JSONResponse(status_code=400, content=refreshed)
     child = None if role == "owner" else await child_account_service.get_by_email(db, email)
     password = child_account_service.decrypt_secret(child.password_encrypted) if child else ""
     pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""

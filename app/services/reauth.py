@@ -21,6 +21,11 @@ def is_oauth_callback(url: str) -> bool:
     return "code=" in text or "/auth/callback" in text
 
 
+def owner_refresh_allows_oauth(error_code: str) -> bool:
+    """RT/ST 换票失败才改走弹窗；封号/串号不要打开授权页。"""
+    return str(error_code or "") in {"", "token_refresh_failed"}
+
+
 def auto_reauth_plan(
     *,
     email: str,
