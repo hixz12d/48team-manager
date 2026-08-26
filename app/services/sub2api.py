@@ -35,6 +35,10 @@ _USAGE_COST_CACHE: Dict[int, Tuple[float, Dict[str, Any]]] = {}
 _USAGE_COST_TTL = 90.0
 
 
+def invalidate_status_cache() -> None:
+    _STATUS_CACHE.clear()
+
+
 class Sub2ApiService:
     async def _config(self, db_session: AsyncSession) -> Dict[str, Any]:
         base_url = (await settings_service.get_setting(db_session, "sub2api_base_url", "")).strip().rstrip("/")
@@ -651,6 +655,28 @@ class Sub2ApiService:
         if proxy_id and (create or not self._account_proxy_id(existing)):
             payload["proxy_id"] = proxy_id
         return payload
+
+
+    def build_oauth_credentials(
+        self,
+        *,
+        email: str,
+        access_token: str,
+        refresh_token: str = "",
+        id_token: str = "",
+        account_id: str = "",
+        client_id: str = "",
+    ) -> Dict[str, Any]:
+        credentials: Dict[str, Any] = {"access_token": access_token, "email": email}
+        if refresh_token:
+            credentials["refresh_token"] = refresh_token
+        if id_token:
+            credentials["id_token"] = id_token
+        if account_id:
+            credentials["chatgpt_account_id"] = account_id
+        if client_id:
+            credentials["client_id"] = client_id
+        return credentials
 
     def summarize_account(self, account: Dict[str, Any]) -> Dict[str, Any]:
         name = str(account.get("name") or "").strip()
@@ -1355,6 +1381,7 @@ class Sub2ApiService:
                         email=email,
                         proxy_url=proxy_url,
                     )
+                    invalidate_status_cache()
                     return result
 
                 templates: List[Dict[str, Any]] = []
@@ -1436,6 +1463,44 @@ class Sub2ApiService:
                     session_payload.get("proxy_id"),
                     existing is None,
                 )
+                existing_pk = existing_id or (existing or {}).get("id")
+                try:
+                    existing_pk = int(existing_pk) if existing_pk else None
+                except (TypeError, ValueError):
+                    existing_pk = None
+                if existing_pk:
+                    apply_payload = {
+                        "type": "oauth",
+                        "credentials": self.build_oauth_credentials(
+                            email=email,
+                            access_token=access_token,
+                            refresh_token=refresh_token,
+                            id_token=id_token,
+                            account_id=account_id,
+                            client_id=client_id,
+                        ),
+                        "extra": {"email": email} if email else {},
+                    }
+                    try:
+                        response = await client.post(
+                            f"/api/v1/admin/accounts/{existing_pk}/apply-oauth-credentials",
+                            headers=headers,
+                            json=apply_payload,
+                        )
+                        if response.status_code < 400:
+                            data = self._unwrap(response.json())
+                            return await finish({
+                                "strategy": "apply_oauth_credentials",
+                                "account_id": self._extract_account_id(data) or existing_pk,
+                                "data": data,
+                                "name": account_name,
+                                "proxy_id": session_payload.get("proxy_id"),
+                                "template": template_fields.get("name") or None,
+                            })
+                        errors.append(f"apply_oauth_credentials: {response.status_code} {response.text[:240]}")
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"apply_oauth_credentials: {exc}")
+
                 try:
                     response = await client.post(
                         "/api/v1/admin/accounts/import/codex-session",
@@ -1456,18 +1521,14 @@ class Sub2ApiService:
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"import_codex_session: {exc}")
 
-                credentials = {
-                    "access_token": access_token,
-                    "email": email,
-                }
-                if refresh_token:
-                    credentials["refresh_token"] = refresh_token
-                if id_token:
-                    credentials["id_token"] = id_token
-                if account_id:
-                    credentials["chatgpt_account_id"] = account_id
-                if client_id:
-                    credentials["client_id"] = client_id
+                credentials = self.build_oauth_credentials(
+                    email=email,
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    id_token=id_token,
+                    account_id=account_id,
+                    client_id=client_id,
+                )
 
                 create_payload = {
                     "name": account_name,

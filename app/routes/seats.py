@@ -249,6 +249,7 @@ class SeatOAuthStartRequest(BaseModel):
     team_id: int
     email: str
     origin: str = ""
+    force_manual: bool = False
 
 
 class SeatOAuthCompleteRequest(BaseModel):
@@ -396,6 +397,37 @@ async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str
     team = await db.get(Team, int(session["team_id"]))
     if not team:
         return {"success": False, "error": "Team 不存在"}
+    role = session.get("role") or ("owner" if normalize_email(team.email) == email else "child")
+    if role == "owner":
+        from app.services.encryption import encryption_service
+
+        team.access_token_encrypted = encryption_service.encrypt_token(access_token)
+        if exchange.get("refresh_token"):
+            team.refresh_token_encrypted = encryption_service.encrypt_token(str(exchange["refresh_token"]))
+        if id_token:
+            team.id_token_encrypted = encryption_service.encrypt_token(id_token)
+        team.client_id = session.get("client_id") or oauth_sessions.CLIENT_ID
+        await db.flush()
+        push_result = await sub2api_service.push_team(db, team)
+        await db.commit()
+        probe = push_result.get("probe") or {}
+        message = push_result.get("message") or f"{email} 已重新授权并推送到 Sub2API"
+        result = {
+            "success": True,
+            "message": message,
+            "email": email,
+            "role": "owner",
+            "account_id": push_result.get("account_id"),
+            "probe": probe,
+            "push": {
+                "strategy": push_result.get("strategy") or "owner",
+                "proxy_id": push_result.get("proxy_id"),
+                "template": push_result.get("template"),
+            },
+        }
+        oauth_sessions.mark_session(ticket, status="done", message=message, error="", result=result)
+        return result
+
     child = await child_account_service.upsert_from_input(db, email=email)
     await child_account_service.save_tokens(db, child, {
         "access_token": access_token,
@@ -433,13 +465,14 @@ async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str
     )
     await db.commit()
     probe = push_result.get("probe") or {}
-    message = f"{email} 已认证并推送到 Sub2API"
+    message = f"{email} 已重新授权并推送到 Sub2API"
     if probe.get("label"):
         message += f"，探测 {probe.get('label')}"
     result = {
         "success": True,
         "message": message,
         "email": email,
+        "role": "child",
         "account_id": push_result.get("account_id"),
         "probe": probe,
         "push": {
@@ -475,6 +508,67 @@ async def _run_onboard_job(job_id: str, payload: OnboardRequest) -> None:
             await db.close()
 
 
+async def _run_auto_reauth_job(job_id: str, ticket: str) -> None:
+    from app.services import oauth_sessions
+    from app.services.browser_reauth import run_browser_oauth_reauth
+    from app.services.mail_otp import parse_mail_line
+
+    async with AsyncSessionLocal() as db:
+        try:
+            session = oauth_sessions.get_session(ticket)
+            if not session:
+                onboard_jobs.finish(job_id, {"success": False, "error": "认证会话不存在或已过期", "error_code": "oauth_expired"})
+                return
+            team = await db.get(Team, int(session["team_id"]))
+            email = str(session.get("email") or "")
+            child = await child_account_service.get_by_email(db, email)
+            password = child_account_service.decrypt_secret(child.password_encrypted) if child else ""
+            pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""
+            cf_config = await onboard_service._cf_config(db)
+            use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
+            phone = (child.phone if child else "") or ""
+            sms_url = (child.sms_url if child else "") or ""
+            proxy = ((child.proxy if child else "") or (team.proxy if team else "") or "")
+
+            def on_stage(stage: str, message: str) -> None:
+                onboard_jobs.note(job_id, stage, message)
+                oauth_sessions.mark_session(ticket, status="running", message=message)
+
+            onboard_jobs.note(job_id, "browser", "正在自动登录并完成授权")
+            browser = await asyncio.to_thread(
+                run_browser_oauth_reauth,
+                email=email,
+                password=password,
+                authorize_url=str(session.get("authorize_url") or ""),
+                proxy=proxy,
+                pickup_url=pickup_url or "",
+                phone=phone,
+                sms_url=sms_url,
+                use_cloudflare=use_cloudflare,
+                cf_base_url=cf_config["base_url"],
+                cf_address=cf_config["address"],
+                cf_admin_password=cf_config["admin_password"],
+                on_stage=on_stage,
+            )
+            if not browser.get("ok"):
+                error = str(browser.get("error") or "自动授权失败")
+                oauth_sessions.mark_session(ticket, status="error", error=error, message=error)
+                onboard_jobs.finish(job_id, {
+                    "success": False,
+                    "error": error,
+                    "error_code": browser.get("error_code") or "browser_failed",
+                })
+                return
+            result = await _complete_seat_oauth(db, ticket, str(browser.get("callback_url") or ""))
+            onboard_jobs.finish(job_id, result)
+        except Exception as exc:
+            logger.exception("自动重新授权失败")
+            oauth_sessions.mark_session(ticket, status="error", error=str(exc), message=str(exc))
+            onboard_jobs.finish(job_id, {"success": False, "error": str(exc), "error_code": "browser_failed"})
+        finally:
+            await db.close()
+
+
 @router.post("/seats/oauth/start")
 async def seats_oauth_start(
     payload: SeatOAuthStartRequest,
@@ -484,6 +578,8 @@ async def seats_oauth_start(
 ):
     from app.services import oauth_sessions
     from app.services.chatgpt import chatgpt_service
+    from app.services.mail_otp import parse_mail_line
+    from app.services.reauth import auto_reauth_plan
 
     email = normalize_email(payload.email)
     team = await db.get(Team, payload.team_id)
@@ -491,20 +587,72 @@ async def seats_oauth_start(
         return JSONResponse(status_code=404, content={"success": False, "error": "Team 不存在"})
     if not email or "@" not in email:
         return JSONResponse(status_code=400, content={"success": False, "error": "邮箱不对"})
+    role = "owner" if normalize_email(team.email) == email else "child"
+    child = None if role == "owner" else await child_account_service.get_by_email(db, email)
+    password = child_account_service.decrypt_secret(child.password_encrypted) if child else ""
+    pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""
+    cf_config = await onboard_service._cf_config(db)
+    use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
+    proxy = ((child.proxy if child else "") or team.proxy or "").strip()
+    plan = {"auto": False, "reason": "已改走手动授权"} if payload.force_manual else auto_reauth_plan(
+        email=email,
+        role=role,
+        password=password,
+        pickup_url=pickup_url or "",
+        cf_ready=use_cloudflare,
+        proxy=proxy,
+    )
     auth = chatgpt_service.create_oauth_authorize_url(
         client_id=oauth_sessions.CLIENT_ID,
         redirect_uri=oauth_sessions.REDIRECT_URI,
+        login_hint=email,
     )
     auth["client_id"] = oauth_sessions.CLIENT_ID
-    session = oauth_sessions.create_session(team_id=team.id, email=email, authorize=auth)
+    session = oauth_sessions.create_session(
+        team_id=team.id,
+        email=email,
+        authorize=auth,
+        role=role,
+        mode="auto" if plan["auto"] else "manual",
+        proxy=proxy,
+    )
     base = _public_base(request, payload.origin)
     complete_url = f"{base}/admin/seats/oauth/complete"
+    launcher_url = f"{base}/admin/seats/oauth/{session['ticket']}/launcher.ps1"
+    if plan["auto"]:
+        active = onboard_jobs.active_job_for_email(email)
+        if active:
+            return {
+                "success": True,
+                "mode": "auto",
+                "job_id": active["id"],
+                "session": session,
+                "complete_url": complete_url,
+                "launcher_url": launcher_url,
+                "message": "该邮箱已有进行中的任务",
+                "job": active,
+            }
+        job = onboard_jobs.create_job(team_id=team.id, email=email, action="reauth")
+        oauth_sessions.mark_session(session["ticket"], job_id=job["id"], status="running", message=plan["reason"])
+        live = oauth_sessions.get_session(session["ticket"]) or {}
+        asyncio.create_task(_run_auto_reauth_job(job["id"], session["ticket"]))
+        return {
+            "success": True,
+            "mode": "auto",
+            "job_id": job["id"],
+            "session": oauth_sessions.public_session(live),
+            "complete_url": complete_url,
+            "launcher_url": launcher_url,
+            "message": plan["reason"],
+            "job": job,
+        }
     return {
         "success": True,
+        "mode": "manual",
         "session": session,
         "complete_url": complete_url,
-        "launcher_url": f"{base}/admin/seats/oauth/{session['ticket']}/launcher.ps1",
-        "message": "已生成授权链接。点本机窗口会下载 PowerShell 脚本，跑完会自动吃 localhost 回调。",
+        "launcher_url": launcher_url,
+        "message": plan["reason"] + "。会用该号静态 ISP 代理弹出 Chrome，登完把 localhost 地址贴回来，或直接跑本机窗口脚本。",
     }
 
 

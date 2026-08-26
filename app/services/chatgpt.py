@@ -652,6 +652,7 @@ class ChatGPTService:
         redirect_uri: str,
         scope: str = "openid email profile offline_access",
         audience: Optional[str] = None,
+        login_hint: str = "",
         codex_cli_simplified_flow: bool = True,
         id_token_add_organizations: bool = True,
     ) -> Dict[str, str]:
@@ -676,6 +677,10 @@ class ChatGPTService:
         }
         if audience:
             query_dict["audience"] = audience
+        hint = (login_hint or "").strip()
+        if hint:
+            query_dict["login_hint"] = hint
+            query_dict["hint"] = hint
 
         query = urlencode(query_dict)
         return {
