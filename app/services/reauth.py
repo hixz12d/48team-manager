@@ -22,8 +22,8 @@ def is_oauth_callback(url: str) -> bool:
 
 
 def owner_refresh_allows_oauth(error_code: str) -> bool:
-    """RT/ST 换票失败才改走弹窗；封号/串号不要打开授权页。"""
-    return str(error_code or "") in {"", "token_refresh_failed"}
+    """换票失败就改走弹窗；只有串号不要打开授权页。"""
+    return str(error_code or "") != "token_identity_mismatch"
 
 
 def auto_reauth_plan(

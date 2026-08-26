@@ -1175,7 +1175,6 @@
                     <button type="button" class="btn btn-primary" onclick="startTeamReauthFromEdit()">
                         <i data-lucide="key-round" style="width: 14px; height: 14px;"></i> 重新授权 Team
                     </button>
-                    <p class="form-help">先用 RT/ST 自动换票并拉成员；换不了再用该号 ISP 代理弹出 Chrome，不用再复制授权链接去 Team 窗口开。</p>
                 </div>
                 <div class="form-group">
                     <label>邮箱 <span class="required">*</span></label>
@@ -2228,7 +2227,7 @@
         window.location.href = url.toString();
     }
 </script>
-<script src="/static/js/oauth_reauth.js?v=20260826-team-reauth"></script>
+<script src="/static/js/oauth_reauth.js?v=20260826-popup"></script>
 <script>
     window.oauthReauthOnDone = function () {
         setTimeout(() => location.reload(), 800);

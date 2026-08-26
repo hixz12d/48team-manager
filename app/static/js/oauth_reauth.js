@@ -1,6 +1,7 @@
 let seatOauthState = null;
 let seatOauthTimer = null;
 let seatOauthJobTimer = null;
+let seatOauthLaunchTimer = null;
 
 function seatOauthLog(text) {
     const box = document.getElementById('seatOauthLog');
@@ -10,6 +11,11 @@ function seatOauthLog(text) {
 function setSeatOauthManualVisible(show) {
     const manual = document.getElementById('seatOauthManual');
     if (manual) manual.hidden = !show;
+}
+
+function setSeatOauthInstallVisible(show) {
+    const install = document.getElementById('seatOauthInstall');
+    if (install) install.hidden = !show;
 }
 
 function notifyOauthReauthDone(payload) {
@@ -29,19 +35,22 @@ function closeSeatOauth() {
         clearInterval(seatOauthJobTimer);
         seatOauthJobTimer = null;
     }
+    if (seatOauthLaunchTimer) {
+        clearTimeout(seatOauthLaunchTimer);
+        seatOauthLaunchTimer = null;
+    }
 }
 
 function applySeatOauthMode(data) {
     const help = document.getElementById('seatOauthHelp');
     const cancelBtn = document.getElementById('seatOauthCancel');
     const auto = data && data.mode === 'auto';
-    const proxyLabel = data && data.session && data.session.proxy_label;
     setSeatOauthManualVisible(!auto);
+    setSeatOauthInstallVisible(false);
     if (cancelBtn) cancelBtn.hidden = !auto;
     if (help) {
-        help.textContent = auto
-            ? ('iCloud 子号正在服务器上带着代理自动登录、读码、接码' + (proxyLabel ? '（' + proxyLabel + '）' : '') + '。')
-            : ((data.message || '会用该号静态 ISP 代理弹出 Chrome。母号请在这个窗口里走 Gmail。') + (proxyLabel ? ' 代理 ' + proxyLabel : ''));
+        help.hidden = true;
+        help.textContent = '';
     }
     if (auto && data.job_id) pollSeatOauthJob(data.job_id);
     if (!auto) launchSeatOauthWindow();
@@ -54,9 +63,10 @@ async function startSeatOauth(teamId, email, forceManual) {
     if (title) title.textContent = '重新授权 ' + email;
     if (callback) callback.value = '';
     setSeatOauthManualVisible(false);
+    setSeatOauthInstallVisible(false);
     const cancelBtn = document.getElementById('seatOauthCancel');
     if (cancelBtn) cancelBtn.hidden = true;
-    seatOauthLog('正在准备重新授权，母号会先尝试自动换票…');
+    seatOauthLog('正在准备重新授权…');
     if (modal) modal.classList.add('show');
     try {
         const response = await fetch('/admin/seats/oauth/start', {
@@ -72,16 +82,17 @@ async function startSeatOauth(teamId, email, forceManual) {
         const data = await response.json();
         if (!response.ok || data.success === false) throw new Error(data.error || '启动失败');
         seatOauthState = data;
-        seatOauthLog(data.message || '已生成授权链接');
+        seatOauthLog(data.message || '已准备好');
         if (data.mode === 'refreshed') {
-            showToast(data.message || '已自动换票并拉回 Team 信息', 'success');
+            showToast(data.message || '已重新拉回 Team 信息', 'success');
             notifyOauthReauthDone(data);
             return;
         }
         applySeatOauthMode(data);
         pollSeatOauth();
     } catch (error) {
-        setSeatOauthManualVisible(true);
+        setSeatOauthManualVisible(false);
+        setSeatOauthInstallVisible(false);
         seatOauthLog(error.message);
         showToast(error.message, 'error');
     }
@@ -95,27 +106,58 @@ function startSeatOauthManual() {
     startSeatOauth(seatOauthState.session.team_id, seatOauthState.session.email, true);
 }
 
+function wakeTeam48OauthProtocol(url) {
+    try {
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = url;
+        document.body.appendChild(iframe);
+        setTimeout(() => {
+            try { iframe.remove(); } catch (error) { /* ignore */ }
+        }, 3000);
+    } catch (error) {
+        window.location.href = url;
+    }
+}
+
 function launchSeatOauthWindow() {
-    if (!seatOauthState || !seatOauthState.launcher_url) {
-        showToast('还没有本机窗口脚本', 'error');
+    if (!seatOauthState || !seatOauthState.session) {
+        showToast('还没准备好授权', 'error');
         return;
     }
     if (seatOauthState.session && !seatOauthState.session.proxy_label) {
         showToast('这个号没有静态 ISP 代理，不能弹出授权页', 'error');
-        seatOauthLog('缺少代理，拒绝用本机默认浏览器打开，避免登录 IP 对不上。');
+        seatOauthLog('缺少代理，不能弹出授权窗口。');
         return;
     }
+    const proto = seatOauthState.protocol_url || (
+        'team48-oauth://launch?ticket=' + encodeURIComponent(seatOauthState.session.ticket) +
+        '&origin=' + encodeURIComponent(window.location.origin)
+    );
+    seatOauthState.localLaunched = false;
+    wakeTeam48OauthProtocol(proto);
+    seatOauthLog('正在唤起本机授权窗口…');
+    if (seatOauthLaunchTimer) clearTimeout(seatOauthLaunchTimer);
+    seatOauthLaunchTimer = setTimeout(() => {
+        if (!seatOauthState || seatOauthState.localLaunched) return;
+        setSeatOauthInstallVisible(true);
+        seatOauthLog('本机还没装弹出组件，或浏览器拦住了。点「安装本机弹出」跑一次，允许打开应用后再点弹出。');
+    }, 2800);
+}
+
+function installSeatOauthProtocol() {
+    const url = (seatOauthState && seatOauthState.install_url) || '/admin/seats/oauth/install.ps1';
     const link = document.createElement('a');
-    link.href = seatOauthState.launcher_url;
-    link.download = 'team48-oauth.ps1';
+    link.href = url;
+    link.download = 'install-team48-oauth.ps1';
     document.body.appendChild(link);
     link.click();
     link.remove();
-    const cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File .\\team48-oauth.ps1';
+    const cmd = 'powershell -NoProfile -ExecutionPolicy Bypass -File .\\install-team48-oauth.ps1';
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(cmd).catch(() => {});
     }
-    seatOauthLog('已下载带代理的 Chrome 窗口脚本。在下载目录执行：\n' + cmd + '\n会用该号 ISP 代理弹出授权页，localhost 回调不走代理。跑完会自动回写 Team 和 Sub2API。');
+    seatOauthLog('已下载安装脚本。在下载目录执行：\n' + cmd + '\n装好后回到这里再点「弹出授权窗口」，浏览器问是否打开时选允许。');
 }
 
 async function submitSeatOauthCallback() {
@@ -153,6 +195,10 @@ function pollSeatOauth() {
             const data = await response.json();
             if (!response.ok || data.success === false) return;
             const session = data.session || {};
+            if (session.message && session.message.indexOf('本机授权窗口已打开') >= 0) {
+                seatOauthState.localLaunched = true;
+                setSeatOauthInstallVisible(false);
+            }
             if (session.message) seatOauthLog(session.message);
             if (session.status === 'done') {
                 clearInterval(seatOauthTimer);

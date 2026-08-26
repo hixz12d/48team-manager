@@ -133,9 +133,12 @@ def consume_verifier(ticket: str) -> Optional[Dict[str, Any]]:
         return dict(session)
 
 
-def launcher_script(session: Dict[str, Any], complete_url: str) -> str:
+PROTOCOL_NAME = "team48-oauth"
+
+
+def launch_payload(session: Dict[str, Any], complete_url: str) -> Dict[str, Any]:
     parts = chrome_proxy_parts(str(session.get("proxy") or ""))
-    payload = {
+    return {
         "authorizeUrl": session.get("authorize_url") or "",
         "ticket": session.get("ticket") or "",
         "completeUrl": complete_url or "",
@@ -144,13 +147,17 @@ def launcher_script(session: Dict[str, Any], complete_url: str) -> str:
         "proxyPass": parts.get("password") or "",
         "proxyLabel": parts.get("label") or "",
     }
-    cfg_json = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
-    return r"""$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-$cfg = @'
-__CFG_JSON__
-'@ | ConvertFrom-Json
-if (-not $cfg.proxyServer) {
+
+
+def protocol_url(ticket: str, origin: str) -> str:
+    from urllib.parse import quote
+
+    base = (origin or "").strip().rstrip("/")
+    return f"{PROTOCOL_NAME}://launch?ticket={quote(ticket or '', safe='')}&origin={quote(base, safe='')}"
+
+
+def _chrome_oauth_ps1() -> str:
+    return r"""if (-not $cfg.proxyServer) {
     [System.Windows.Forms.MessageBox]::Show('这个号没有静态 ISP 代理，不能弹出授权页。', 'Team48 重新授权')
     exit 1
 }
@@ -174,13 +181,14 @@ $chrome = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $chrome) {
     $listener.Stop(); $listener.Close()
-    [System.Windows.Forms.MessageBox]::Show('找不到 Chrome / Edge，无法带代理弹出授权页。', 'Team48 重新授权')
+    [System.Windows.Forms.MessageBox]::Show('找不到 Chrome / Edge，无法弹出授权页。', 'Team48 重新授权')
     exit 1
 }
 $args = @(
     ('--user-data-dir=' + (Join-Path $work 'chrome-profile')),
     '--no-first-run',
     '--no-default-browser-check',
+    '--new-window',
     ('--proxy-server=' + $cfg.proxyServer),
     '--proxy-bypass-list=localhost;127.0.0.1;<-loopback>',
     $cfg.authorizeUrl
@@ -192,25 +200,12 @@ if ($cfg.proxyUser) {
     $bg = 'chrome.webRequest.onAuthRequired.addListener(function(){return {authCredentials:{username:' + (ConvertTo-Json $cfg.proxyUser -Compress) + ',password:' + (ConvertTo-Json $cfg.proxyPass -Compress) + '}};},{urls:["<all_urls>"]},["blocking"]);'
     Set-Content -LiteralPath (Join-Path $ext 'manifest.json') -Value $manifest -Encoding utf8
     Set-Content -LiteralPath (Join-Path $ext 'background.js') -Value $bg -Encoding utf8
-    $args = @($args[0], $args[1], $args[2], $args[3], $args[4], ('--load-extension=' + $ext), $args[5])
+    $args = @($args[0], $args[1], $args[2], $args[3], $args[4], $args[5], ('--load-extension=' + $ext), $args[6])
 }
-$form = New-Object System.Windows.Forms.Form
-$form.Text = 'Team48 重新授权'
-$form.Width = 480
-$form.Height = 180
-$form.StartPosition = 'CenterScreen'
-$label = New-Object System.Windows.Forms.Label
-$label.AutoSize = $false
-$label.Dock = 'Fill'
-$label.Padding = New-Object System.Windows.Forms.Padding(16)
-$label.Text = '已用代理 ' + $cfg.proxyLabel + ' 弹出 Chrome。请在这个窗口里登录，跳到 localhost 后会自动回收回调。'
-$form.Controls.Add($label)
 Start-Process -FilePath $chrome -ArgumentList $args | Out-Null
-$form.Add_Shown({ $form.Activate() })
 $task = $listener.GetContextAsync()
 while (-not $task.AsyncWaitHandle.WaitOne(200)) {
     [System.Windows.Forms.Application]::DoEvents()
-    if (-not $form.Visible) { break }
 }
 if (-not $task.IsCompleted) {
     $listener.Stop()
@@ -236,4 +231,81 @@ try {
     [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Team48 重新授权失败')
     exit 1
 }
-""".replace("__CFG_JSON__", cfg_json)
+"""
+
+
+def launcher_script(session: Dict[str, Any], complete_url: str) -> str:
+    cfg_json = json.dumps(launch_payload(session, complete_url), ensure_ascii=True, separators=(",", ":"))
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        "Add-Type -AssemblyName System.Windows.Forms\n"
+        "$cfg = @'\n"
+        f"{cfg_json}\n"
+        "'@ | ConvertFrom-Json\n"
+        + _chrome_oauth_ps1()
+    )
+
+
+def protocol_handler_script() -> str:
+    return (
+        r"""param(
+    [Parameter(Position = 0)]
+    [string]$Uri = ''
+)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+if (-not $Uri) { $Uri = [string]$args[0] }
+$raw = [string]$Uri
+if ($raw.StartsWith('"') -and $raw.EndsWith('"')) { $raw = $raw.Substring(1, $raw.Length - 2) }
+$query = $raw
+if ($raw.Contains('?')) { $query = $raw.Split('?', 2)[1] }
+$map = @{}
+foreach ($pair in $query.Split('&')) {
+    if (-not $pair) { continue }
+    $kv = $pair.Split('=', 2)
+    $k = [Uri]::UnescapeDataString($kv[0])
+    $v = if ($kv.Count -gt 1) { [Uri]::UnescapeDataString($kv[1]) } else { '' }
+    $map[$k] = $v
+}
+$ticket = [string]$map['ticket']
+$origin = ([string]$map['origin']).TrimEnd('/')
+if (-not $ticket -or -not $origin) {
+    [System.Windows.Forms.MessageBox]::Show('授权参数不完整。', 'Team48 重新授权')
+    exit 1
+}
+$cfg = Invoke-RestMethod -Uri ($origin + '/admin/seats/oauth/' + $ticket + '/launch.json') -TimeoutSec 20
+try {
+    Invoke-RestMethod -Method Post -Uri ($origin + '/admin/seats/oauth/' + $ticket + '/ack') -ContentType 'application/json; charset=utf-8' -Body '{}' -TimeoutSec 10 | Out-Null
+} catch {}
+"""
+        + _chrome_oauth_ps1()
+    )
+
+
+def install_protocol_script() -> str:
+    handler = protocol_handler_script()
+    if "'@" in handler:
+        raise ValueError("handler contains powershell here-string terminator")
+    template = r"""$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+$dir = Join-Path $env:LOCALAPPDATA 'team48-oauth'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$handlerPath = Join-Path $dir 'handler.ps1'
+Set-Content -LiteralPath $handlerPath -Value @'
+__HANDLER__
+'@ -Encoding utf8
+$ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$cmd = '"' + $ps + '" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $handlerPath + '" "%1"'
+$base = 'HKCU:\Software\Classes\team48-oauth'
+New-Item -Path $base -Force | Out-Null
+Set-ItemProperty -Path $base -Name '(Default)' -Value 'URL:Team48 OAuth'
+Set-ItemProperty -Path $base -Name 'URL Protocol' -Value ''
+$icon = Join-Path $base 'DefaultIcon'
+New-Item -Path $icon -Force | Out-Null
+Set-ItemProperty -Path $icon -Name '(Default)' -Value 'powershell.exe,0'
+$shell = Join-Path $base 'shell\open\command'
+New-Item -Path $shell -Force | Out-Null
+Set-ItemProperty -Path $shell -Name '(Default)' -Value $cmd
+[System.Windows.Forms.MessageBox]::Show('本机弹出已装好。回到网页再点一次弹出授权窗口，浏览器问是否打开时选允许。', 'Team48 重新授权')
+"""
+    return template.replace("__HANDLER__", handler)

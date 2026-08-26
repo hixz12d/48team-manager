@@ -9,10 +9,10 @@ class ReauthPlanTests(unittest.TestCase):
         plan = auto_reauth_plan(email="mom@gmail.com", role="owner", password="x", proxy="socks5h://u:p@1.2.3.4:1080")
         self.assertFalse(plan["auto"])
 
-    def test_owner_refresh_only_falls_back_when_tokens_are_dead(self):
+    def test_owner_refresh_falls_back_except_identity_mismatch(self):
         self.assertTrue(owner_refresh_allows_oauth("token_refresh_failed"))
         self.assertTrue(owner_refresh_allows_oauth(""))
-        self.assertFalse(owner_refresh_allows_oauth("team_banned"))
+        self.assertTrue(owner_refresh_allows_oauth("team_banned"))
         self.assertFalse(owner_refresh_allows_oauth("token_identity_mismatch"))
 
     def test_icloud_with_password_mail_and_proxy_is_auto(self):

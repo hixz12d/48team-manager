@@ -267,6 +267,15 @@ def _public_base(request: Request, origin: str = "") -> str:
         return f"{proto}://{host}".rstrip("/")
     return str(request.base_url).rstrip("/")
 
+
+def _ps1_response(script: str, filename: str) -> PlainTextResponse:
+    body = "\ufeff" + script.replace("\n", "\r\n")
+    return PlainTextResponse(
+        body,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 class ChildUpdateRequest(BaseModel):
     phone: Optional[str] = None
     sms_url: Optional[str] = None
@@ -663,6 +672,8 @@ async def seats_oauth_start(
     base = _public_base(request, payload.origin)
     complete_url = f"{base}/admin/seats/oauth/complete"
     launcher_url = f"{base}/admin/seats/oauth/{session['ticket']}/launcher.ps1"
+    proto_url = oauth_sessions.protocol_url(session["ticket"], base)
+    install_url = f"{base}/admin/seats/oauth/install.ps1"
     if plan["auto"]:
         active = onboard_jobs.active_job_for_email(email)
         if active:
@@ -673,6 +684,8 @@ async def seats_oauth_start(
                 "session": session,
                 "complete_url": complete_url,
                 "launcher_url": launcher_url,
+                "protocol_url": proto_url,
+                "install_url": install_url,
                 "message": "该邮箱已有进行中的任务",
                 "job": active,
             }
@@ -687,6 +700,8 @@ async def seats_oauth_start(
             "session": oauth_sessions.public_session(live),
             "complete_url": complete_url,
             "launcher_url": launcher_url,
+            "protocol_url": proto_url,
+            "install_url": install_url,
             "message": plan["reason"],
             "job": job,
         }
@@ -696,9 +711,38 @@ async def seats_oauth_start(
         "session": session,
         "complete_url": complete_url,
         "launcher_url": launcher_url,
-        "message": plan["reason"] + "。会用该号静态 ISP 代理弹出 Chrome，登完把 localhost 地址贴回来，或直接跑本机窗口脚本。",
+        "protocol_url": proto_url,
+        "install_url": install_url,
+        "message": "等待本机授权窗口",
     }
 
+
+@router.get("/seats/oauth/install.ps1")
+async def seats_oauth_install(current_user: dict = Depends(require_admin)):
+    from app.services import oauth_sessions
+
+    return _ps1_response(oauth_sessions.install_protocol_script(), "install-team48-oauth.ps1")
+
+
+@router.get("/seats/oauth/{ticket}/launch.json")
+async def seats_oauth_launch_json(ticket: str, request: Request):
+    from app.services import oauth_sessions
+
+    session = oauth_sessions.get_session(ticket)
+    if not session:
+        return JSONResponse(status_code=404, content={"success": False, "error": "认证会话不存在或已过期"})
+    complete_url = f"{_public_base(request)}/admin/seats/oauth/complete"
+    return oauth_sessions.launch_payload(session, complete_url)
+
+
+@router.post("/seats/oauth/{ticket}/ack")
+async def seats_oauth_ack(ticket: str):
+    from app.services import oauth_sessions
+
+    session = oauth_sessions.mark_session(ticket, message="本机授权窗口已打开")
+    if not session:
+        return JSONResponse(status_code=404, content={"success": False, "error": "认证会话不存在或已过期"})
+    return {"success": True, "session": oauth_sessions.public_session(session)}
 
 @router.get("/seats/oauth/{ticket}")
 async def seats_oauth_status(
