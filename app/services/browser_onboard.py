@@ -341,6 +341,9 @@ def run_browser_onboard(
             session: dict[str, Any] = {}
             last_url = ""
             password_tried = False
+            has_mail = bool(pickup_url or use_cloudflare)
+            debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
+            debug_log.parent.mkdir(parents=True, exist_ok=True)
             for _ in range(30):
                 wait_cloudflare(page, timeout_sec=15)
                 url = (page.url or "").lower()
@@ -348,9 +351,13 @@ def run_browser_onboard(
                     last_url = url
                     logger.info("onboard page %s", page.url)
                     report("wait_page", f"当前页面 {page.title() or page.url}")
+                    try:
+                        debug_log.open("a", encoding="utf-8").write(f"{time.strftime('%H:%M:%S')} {page.url} | {page.title()}\n")
+                    except Exception:  # noqa: BLE001
+                        pass
 
                 otp_el = _find_otp(page)
-                if otp_el:
+                if otp_el and not _visible(page, 'input[type="password"], input[name="current-password"]'):
                     report("email_otp", "等待邮箱验证码")
                     try:
                         code = _wait_mailbox_code(
@@ -376,6 +383,15 @@ def run_browser_onboard(
                     continue
 
                 if _visible(page, 'input[type="password"], input[name="current-password"]'):
+                    if has_mail and _click_exact(page, [
+                        "Log in with a one-time code",
+                        "Email me a code",
+                        "Send a code",
+                        "Use a one-time code",
+                    ]):
+                        report("email_otp", "密码页改走邮箱一次性验证码")
+                        page.wait_for_timeout(2500)
+                        continue
                     body = _page_text(page).lower()
                     if password and not password_tried:
                         report("password", "正在填写密码")
@@ -389,14 +405,8 @@ def run_browser_onboard(
                         page.wait_for_timeout(2500)
                         continue
                     password_bad = (not password) or any(token in body for token in _PASSWORD_ERRORS)
-                    if password_tried and password_bad:
-                        report("password", "密码不对，改走一次性验证码")
-                    if password_bad and _click_exact(page, ["Log in with a one-time code"]):
-                        report("email_otp", "已改走邮箱一次性验证码")
-                        page.wait_for_timeout(2500)
-                        continue
                     if not password:
-                        result["error"] = "登录页要密码，但子号没有保存密码"
+                        result["error"] = "登录页要密码，但子号没有保存密码，也没有邮箱验证码入口"
                         result["error_code"] = "password_missing"
                         break
                     page.wait_for_timeout(1200)
@@ -446,11 +456,17 @@ def run_browser_onboard(
                 if session_access_token(polled):
                     session = polled
                     break
+                title = (page.title() or "").lower()
+                if "chat, work, create" in title and _click_exact(page, ["Log in"]):
+                    report("login", "未登录首页，点 Log in 回去")
+                    page.wait_for_timeout(2000)
+                    continue
                 if _click_exact(page, ["Continue", "Accept", "Accept invite", "Join workspace", "Join", "I agree", "Okay", "Next"]):
                     page.wait_for_timeout(1500)
                     continue
                 page.wait_for_timeout(1200)
 
+            result["debug_dir"] = _save_debug(page, profile_dir)
             report("session", f"正在读取登录态 {page.url or ''}")
             if not session_access_token(session):
                 session = _extract_session(page)
