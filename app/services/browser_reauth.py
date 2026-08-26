@@ -14,9 +14,11 @@ from app.services.browser_onboard import (
     _mail_kwargs,
     _page_text,
     _pick_workspace,
+    _save_debug,
     _snapshot_mailbox_codes,
     chromium_context_kwargs,
     looks_like_about_you,
+    looks_like_session_ended,
     wait_cloudflare,
 )
 from app.services.mail_otp import wait_for_mailbox_item
@@ -86,10 +88,24 @@ def run_browser_oauth_reauth(
         )
         page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
+
+        def attach(target) -> None:
+            try:
+                target.route("http://localhost:1455/**", fulfill_callback)
+                target.route("http://127.0.0.1:1455/**", fulfill_callback)
+                target.on("framenavigated", lambda frame: remember(frame.url or ""))
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
-            page.route("http://localhost:1455/**", fulfill_callback)
-            page.route("http://127.0.0.1:1455/**", fulfill_callback)
-            page.on("framenavigated", lambda frame: remember(frame.url or ""))
+            try:
+                browser.route("http://localhost:1455/**", fulfill_callback)
+                browser.route("http://127.0.0.1:1455/**", fulfill_callback)
+            except Exception:  # noqa: BLE001
+                pass
+            browser.on("page", attach)
+            for existing in list(browser.pages):
+                attach(existing)
             report("browser_open", "正在打开 ChatGPT 授权页")
             page.goto(authorize_url, wait_until="load")
             wait_cloudflare(page)
@@ -118,6 +134,16 @@ def run_browser_oauth_reauth(
                     report("about_you", "验证码已过，正在填写年龄")
                     _fill_about_you(page)
                     page.wait_for_timeout(2500)
+                    continue
+                if looks_like_session_ended(title=page.title() or "", body=_page_text(page)):
+                    report("session_ended", "授权页会话结束，点 Log in")
+                    _click_first(page, ['button:has-text("Log in")', 'a:has-text("Log in")'])
+                    page.wait_for_timeout(2000)
+                    continue
+                if "you're all set" in _page_text(page).lower() or "you’re all set" in _page_text(page).lower():
+                    report("all_set", "注册完成页，点 Continue")
+                    _click_first(page, ['button:has-text("Continue")'])
+                    page.wait_for_timeout(2000)
                     continue
                 if _pick_workspace(page):
                     report("workspace", "已选择工作空间")
@@ -248,6 +274,7 @@ def run_browser_oauth_reauth(
             if not callback:
                 result["error"] = result.get("error") or "没有拿到 OAuth 回调"
                 result["error_code"] = result.get("error_code") or "oauth_callback_missing"
+                result["debug_dir"] = _save_debug(page, profile_dir)
         except Exception as exc:  # noqa: BLE001
             result["error"] = str(exc)
             result["error_code"] = result.get("error_code") or "browser_failed"
