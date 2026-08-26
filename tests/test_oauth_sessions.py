@@ -4,6 +4,14 @@ from app.services import oauth_sessions
 
 
 class OAuthSessionTests(unittest.TestCase):
+
+    def test_parse_oauth_callback(self):
+        parsed = oauth_sessions.parse_oauth_callback(
+            "http://localhost:1455/auth/callback?code=abc.def&scope=openid+offline_access&state=xyz"
+        )
+        self.assertEqual(parsed["code"], "abc.def")
+        self.assertEqual(parsed["state"], "xyz")
+        self.assertEqual(oauth_sessions.parse_oauth_callback("")["code"], "")
     def test_public_session_hides_verifier(self):
         session = oauth_sessions.create_session(
             team_id=9,

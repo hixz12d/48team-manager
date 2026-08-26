@@ -350,8 +350,6 @@ async def seats_live(
 
 
 async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str) -> Dict[str, Any]:
-    from urllib.parse import parse_qs, urlparse
-
     from app.services import oauth_sessions
     from app.services.chatgpt import chatgpt_service
     from app.utils.jwt_parser import JWTParser
@@ -362,20 +360,14 @@ async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str
     if session.get("status") == "done":
         return {"success": True, **oauth_sessions.public_session(session)}
 
-    text = (callback_text or "").strip()
-    if not text:
-        return {"success": False, "error": "回调内容为空"}
-    parsed = urlparse(text)
-    merged: Dict[str, str] = {}
-    for source in (parse_qs(parsed.query), parse_qs(parsed.fragment)):
-        for key, values in source.items():
-            if values:
-                merged[key] = values[0]
-    code = merged.get("code") or ""
+    parsed = oauth_sessions.parse_oauth_callback(callback_text)
+    code = parsed["code"]
     if not code:
+        if not (callback_text or "").strip():
+            return {"success": False, "error": "回调内容为空"}
         oauth_sessions.mark_session(ticket, status="error", error="回调里没有 code")
         return {"success": False, "error": "回调里没有 code"}
-    if session.get("state") and merged.get("state") and merged.get("state") != session.get("state"):
+    if session.get("state") and parsed.get("state") and parsed.get("state") != session.get("state"):
         oauth_sessions.mark_session(ticket, status="error", error="state 不匹配")
         return {"success": False, "error": "state 不匹配，请重新点认证"}
 

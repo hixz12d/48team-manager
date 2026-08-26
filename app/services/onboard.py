@@ -1,4 +1,4 @@
-"""子号拉人引擎：邀请 -> 注册/复用登录 -> 接码 -> 对账 -> 推 Sub2API。"""
+"""子号拉人引擎：邀请 -> 注册/复用登录 -> 接码 -> 对账 -> Codex 授权换 RT -> 推 Sub2API。"""
 from __future__ import annotations
 
 import asyncio
@@ -24,11 +24,11 @@ from app.services.child_accounts import (
     normalize_email,
 )
 from app.services.mail_otp import parse_mail_line, wait_for_mailbox_item
-from app.services import onboard_jobs
+from app.services import oauth_sessions, onboard_jobs
 from app.services.sms import parse_phone_line, require_proxy
 from app.services.sub2api import sub2api_service
 from app.services.team import team_service
-from app.services.chatgpt import ChatGPTService
+from app.services.chatgpt import ChatGPTService, chatgpt_service
 from app.services.team_view import present_occupancy
 from app.services.vacancy import chatgpt_member_ids, is_safe_to_refill, summarize_for_message
 from app.utils.proxy import normalize_proxy_url
@@ -84,6 +84,12 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "not_joined"
     if stage == "invite":
         return "invite_failed"
+    if "refresh_token" in text or "没有 refresh" in error:
+        return "oauth_no_refresh"
+    if "登录的是" in error:
+        return "oauth_identity_mismatch"
+    if stage == "oauth" or "无法自动授权" in error or "自动授权" in error:
+        return "oauth_failed"
     return "browser_failed"
 
 
@@ -167,6 +173,11 @@ class OnboardService:
         from app.services.browser_onboard import run_browser_onboard
 
         return run_browser_onboard(**kwargs)
+
+    def _run_oauth_browser(self, **kwargs: Any) -> Dict[str, Any]:
+        from app.services.browser_reauth import run_browser_oauth_reauth
+
+        return run_browser_oauth_reauth(**kwargs)
 
     def _cancelled(self, job_id: Optional[str]) -> bool:
         return onboard_jobs.is_cancelled(job_id)
@@ -515,7 +526,12 @@ class OnboardService:
         self._team_proxy(team)
         child_proxy = proxy or ""
         existing = await child_account_service.get_by_email(db_session, email)
-        if existing and existing.status in ACTIVE_CHILD_STATUSES and existing.current_team_id == team.id and existing.status == CHILD_STATUS_ACTIVE:
+        if (
+            existing
+            and existing.status == CHILD_STATUS_ACTIVE
+            and existing.current_team_id == team.id
+            and child_account_service.decrypt_secret(existing.refresh_token_encrypted)
+        ):
             return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(existing)}
 
         block = self._master_block_reason(team)
@@ -545,16 +561,14 @@ class OnboardService:
         child = await child_account_service.upsert_from_input(
             db_session,
             email=email,
-            password=password or _random_password(),
+            password=password,
             mail_raw=parsed.get("raw") or email_line,
             phone=phone,
             sms_url=sms_url,
             proxy=child_proxy,
             cycle_days=team.seat_cycle_days or 7,
         )
-        password = password or child_account_service.decrypt_secret(child.password_encrypted) or _random_password()
-        if not child.password_encrypted:
-            child.password_encrypted = child_account_service.encrypt_secret(password)
+        password = password or child_account_service.decrypt_secret(child.password_encrypted)
         await self._progress(db_session, child, job_id=job_id, stage="checking", message="正在检查母号和占用")
 
         live, live_item = await self._lookup_live_member(db_session, team.id, email, retries=1)
@@ -569,7 +583,13 @@ class OnboardService:
         if already_joined:
             await child_account_service.mark_active(db_session, child, team, mapping=await self._mapping(db_session, team.id, email))
             await db_session.commit()
-            return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(child)}
+            if child_account_service.decrypt_secret(child.refresh_token_encrypted):
+                return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(child)}
+            return await self._finish_callable_child(db_session, child, team, email=email, job_id=job_id)
+
+        if not password:
+            password = _random_password()
+            child.password_encrypted = child_account_service.encrypt_secret(password)
 
         if not skip_invite and not already_invited:
             capacity = occupancy.get("capacity")
@@ -779,11 +799,57 @@ class OnboardService:
 
         mapping = await self._mapping(db_session, team.id, email)
         await child_account_service.mark_active(db_session, child, team, mapping=mapping)
-        await child_account_service.set_progress(db_session, child, stage="pushing", job_id=job_id, clear_error=True)
+        return await self._finish_callable_child(db_session, child, team, email=email, job_id=job_id)
 
-        push_result = None
+    async def _oauth_failed(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        team: Team,
+        *,
+        email: str,
+        job_id: Optional[str],
+        error: str,
+        error_code: str,
+    ) -> Dict[str, Any]:
+        await child_account_service.record_event(
+            db_session,
+            email=email,
+            action="oauth",
+            team_id=team.id,
+            child_id=child.id,
+            success=False,
+            detail=error,
+            error_code=error_code,
+        )
+        await self._progress(
+            db_session,
+            child,
+            job_id=job_id,
+            stage="oauth_failed",
+            message=error,
+            error=error,
+            error_code=error_code,
+        )
+        return {
+            "success": False,
+            "error": error,
+            "error_code": error_code,
+            "status": "oauth_failed",
+            "child": child_account_service.serialize(child),
+        }
+
+    async def _push_child(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        team: Team,
+        *,
+        email: str,
+        job_id: Optional[str],
+    ) -> Dict[str, Any]:
+        await self._progress(db_session, child, job_id=job_id, stage="pushing", message="已入组，正在推送可用会话到 Sub2API")
         try:
-            await self._progress(db_session, child, job_id=job_id, stage="pushing", message="已入组，正在推送 Sub2API")
             push_result = await sub2api_service.import_session(
                 db_session,
                 email=email,
@@ -796,18 +862,6 @@ class OnboardService:
                 team=team,
                 proxy_url=child.proxy or team.proxy or "",
                 role="child",
-            )
-            if push_result.get("account_id"):
-                child.sub2api_account_id = int(push_result["account_id"])
-            await child_account_service.save_probe(db_session, child, push_result.get("probe"))
-            await child_account_service.record_event(
-                db_session,
-                email=email,
-                action="push",
-                team_id=team.id,
-                child_id=child.id,
-                success=True,
-                detail=push_result.get("strategy") or "pushed",
             )
         except Exception as exc:  # noqa: BLE001
             error = f"已入组，但推送 Sub2API 失败: {exc}"
@@ -829,15 +883,219 @@ class OnboardService:
                 "status": "push_failed",
                 "child": child_account_service.serialize(child),
             }
+        if push_result.get("account_id"):
+            child.sub2api_account_id = int(push_result["account_id"])
+        await child_account_service.save_probe(db_session, child, push_result.get("probe"))
+        await child_account_service.record_event(
+            db_session,
+            email=email,
+            action="push",
+            team_id=team.id,
+            child_id=child.id,
+            success=True,
+            detail=push_result.get("strategy") or "pushed",
+        )
+        return {"success": True, "push": push_result}
 
+    async def _oauth_child(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        team: Team,
+        *,
+        email: str,
+        job_id: Optional[str],
+    ) -> Dict[str, Any]:
+        from app.utils.jwt_parser import JWTParser
+
+        password = child_account_service.decrypt_secret(child.password_encrypted)
+        if not password:
+            return await self._oauth_failed(
+                db_session,
+                child,
+                team,
+                email=email,
+                job_id=job_id,
+                error="已入组，但没有密码，无法自动走 Codex 授权",
+                error_code="oauth_missing_password",
+            )
+        pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") or ""
+        cf_config = await self._cf_config(db_session)
+        use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
+        if not pickup_url and not use_cloudflare:
+            return await self._oauth_failed(
+                db_session,
+                child,
+                team,
+                email=email,
+                job_id=job_id,
+                error="已入组，但没有邮箱读码配置，无法自动授权",
+                error_code="mail_missing",
+            )
+        if self._cancelled(job_id):
+            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
+
+        await self._progress(db_session, child, job_id=job_id, stage="oauth", message="正在走 Codex 授权，换可用 refresh token")
+        auth = chatgpt_service.create_oauth_authorize_url(
+            client_id=oauth_sessions.CLIENT_ID,
+            redirect_uri=oauth_sessions.REDIRECT_URI,
+            login_hint=email,
+        )
+
+        def on_stage(stage: str, message: str) -> None:
+            onboard_jobs.note(job_id, stage, message)
+
+        try:
+            browser = await asyncio.to_thread(
+                self._run_oauth_browser,
+                email=email,
+                password=password,
+                authorize_url=auth["authorize_url"],
+                proxy=self._child_proxy(child, team),
+                pickup_url=pickup_url,
+                phone=child.phone or "",
+                sms_url=child.sms_url or "",
+                use_cloudflare=use_cloudflare,
+                cf_base_url=cf_config["base_url"],
+                cf_address=cf_config["address"],
+                cf_admin_password=cf_config["admin_password"],
+                on_stage=on_stage,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            code = classify_onboard_error(error, stage="oauth")
+            return await self._oauth_failed(
+                db_session, child, team, email=email, job_id=job_id, error=error, error_code=code
+            )
+        if not browser.get("ok"):
+            error = str(browser.get("error") or "自动授权失败")
+            code = str(browser.get("error_code") or classify_onboard_error(error, stage="oauth"))
+            return await self._oauth_failed(
+                db_session, child, team, email=email, job_id=job_id, error=error, error_code=code
+            )
+
+        parsed = oauth_sessions.parse_oauth_callback(str(browser.get("callback_url") or ""))
+        if not parsed["code"]:
+            return await self._oauth_failed(
+                db_session,
+                child,
+                team,
+                email=email,
+                job_id=job_id,
+                error="授权回调里没有 code",
+                error_code="oauth_failed",
+            )
+        if parsed["state"] and parsed["state"] != auth["state"]:
+            return await self._oauth_failed(
+                db_session,
+                child,
+                team,
+                email=email,
+                job_id=job_id,
+                error="授权 state 不匹配",
+                error_code="oauth_failed",
+            )
+
+        exchange = await chatgpt_service.exchange_oauth_code(
+            code=parsed["code"],
+            client_id=oauth_sessions.CLIENT_ID,
+            redirect_uri=oauth_sessions.REDIRECT_URI,
+            code_verifier=auth["code_verifier"],
+            db_session=db_session,
+            identifier=f"oauth_{email}",
+        )
+        if not exchange.get("success"):
+            error = str(exchange.get("error") or "兑换 token 失败")
+            return await self._oauth_failed(
+                db_session,
+                child,
+                team,
+                email=email,
+                job_id=job_id,
+                error=error,
+                error_code=classify_onboard_error(error, stage="oauth"),
+            )
+        if not exchange.get("refresh_token"):
+            return await self._oauth_failed(
+                db_session,
+                child,
+                team,
+                email=email,
+                job_id=job_id,
+                error="授权成功但没有 refresh_token，未推送",
+                error_code="oauth_no_refresh",
+            )
+
+        access_token = str(exchange.get("access_token") or "")
+        id_token = str(exchange.get("id_token") or "")
+        token_email = ""
+        jwt = JWTParser()
+        for token in (access_token, id_token):
+            if (token or "").count(".") < 2:
+                continue
+            token_email = normalize_email(jwt.extract_email(token) or "")
+            if token_email:
+                break
+        if token_email and token_email != normalize_email(email):
+            error = f"登录的是 {token_email}，不是 {email}"
+            return await self._oauth_failed(
+                db_session,
+                child,
+                team,
+                email=email,
+                job_id=job_id,
+                error=error,
+                error_code="oauth_identity_mismatch",
+            )
+
+        await child_account_service.save_tokens(db_session, child, {
+            "access_token": access_token,
+            "refresh_token": exchange.get("refresh_token") or "",
+            "id_token": id_token,
+            "client_id": oauth_sessions.CLIENT_ID,
+            "account_id": team.account_id if is_workspace_account_id(team.account_id) else (child.account_id or ""),
+        })
+        await child_account_service.record_event(
+            db_session,
+            email=email,
+            action="oauth",
+            team_id=team.id,
+            child_id=child.id,
+            success=True,
+            detail="codex-oauth",
+        )
+        return {"success": True}
+
+    async def _finish_callable_child(
+        self,
+        db_session: AsyncSession,
+        child: ChildAccount,
+        team: Team,
+        *,
+        email: str,
+        job_id: Optional[str],
+    ) -> Dict[str, Any]:
+        oauth_ran = False
+        if not child_account_service.decrypt_secret(child.refresh_token_encrypted):
+            oauth_result = await self._oauth_child(db_session, child, team, email=email, job_id=job_id)
+            if not oauth_result.get("success"):
+                return oauth_result
+            oauth_ran = True
+        else:
+            await self._progress(db_session, child, job_id=job_id, stage="oauth", message="已有 refresh token，跳过 Codex 授权")
+        push_result = await self._push_child(db_session, child, team, email=email, job_id=job_id)
+        if not push_result.get("success"):
+            return push_result
         await child_account_service.set_progress(db_session, child, stage="done", job_id=job_id, clear_error=True)
         await db_session.commit()
+        message = f"{email} 已入组、授权并推送到 Sub2API" if oauth_ran else f"{email} 已入组并推送到 Sub2API"
         return {
             "success": True,
             "status": "active",
-            "message": f"{email} 已入组并推送到 Sub2API",
+            "message": message,
             "child": child_account_service.serialize(child),
-            "push": push_result,
+            "push": push_result.get("push"),
+            "oauth": oauth_ran,
         }
 
     async def kick_to_standby(

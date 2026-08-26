@@ -8,7 +8,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from app.utils.proxy import mask_proxy_url, normalize_proxy_url
 from app.utils.time_utils import get_now
@@ -16,6 +16,16 @@ from app.utils.time_utils import get_now
 REDIRECT_URI = "http://localhost:1455/auth/callback"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 TTL = timedelta(minutes=20)
+
+
+def parse_oauth_callback(callback_text: str) -> Dict[str, str]:
+    parsed = urlparse((callback_text or "").strip())
+    merged: Dict[str, str] = {}
+    for source in (parse_qs(parsed.query), parse_qs(parsed.fragment)):
+        for key, values in source.items():
+            if values:
+                merged[key] = values[0]
+    return {"code": merged.get("code") or "", "state": merged.get("state") or ""}
 
 _LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}

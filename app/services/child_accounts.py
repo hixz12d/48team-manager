@@ -94,6 +94,8 @@ class ChildAccountService:
         status_label = STATUS_LABELS.get(child.status or "", child.status or "未知")
         if child.status == CHILD_STATUS_INVITED and child.last_error:
             status_label = "已邀请，注册失败"
+        elif child.status == CHILD_STATUS_ACTIVE and child.last_error:
+            status_label = "已入组，未完成"
         data = {
             "id": child.id,
             "email": child.email,

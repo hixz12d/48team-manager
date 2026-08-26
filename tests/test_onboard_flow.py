@@ -63,6 +63,14 @@ class OnboardHelperTests(unittest.TestCase):
         self.assertFalse(should_wait_for_invite_mail(True))
         self.assertTrue(should_wait_for_invite_mail(False))
 
+    def test_classify_oauth_errors(self):
+        self.assertEqual(classify_onboard_error("授权成功但没有 refresh_token，未推送"), "oauth_no_refresh")
+        self.assertEqual(classify_onboard_error("登录的是 a@b.com，不是 c@d.com"), "oauth_identity_mismatch")
+        self.assertEqual(classify_onboard_error("无法自动授权", stage="oauth"), "oauth_failed")
+
+    def test_run_oauth_browser_is_sync(self):
+        self.assertFalse(inspect.iscoroutinefunction(OnboardService._run_oauth_browser))
+
 
 class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -194,6 +202,15 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["status_label"], "已邀请，注册失败")
         self.assertTrue(view["can_reregister"])
 
+    async def test_serialize_active_unfinished_label(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(self.session, email="kid@example.com")
+        await child_account_service.mark_active(self.session, child, team)
+        child.last_error = "授权成功但没有 refresh_token，未推送"
+        view = child_account_service.serialize(child)
+        self.assertEqual(view["status_label"], "已入组，未完成")
+        self.assertFalse(view["can_reregister"])
+
 
     async def test_live_lookup_failure_does_not_revoke(self):
         team = await self._team()
@@ -265,6 +282,231 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(child.account_id, team.account_id)
         self.assertFalse(result["pushed"])
         self.assertFalse(child_account_service.serialize(child)["needs_account_id_fix"])
+
+
+class OnboardOauthTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.session = self.session_maker()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        await self.engine.dispose()
+
+    async def _team(self) -> Team:
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+            account_role="account-owner",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        return team
+
+    def _patch_services(self):
+        from app.services import onboard as onboard_mod
+
+        originals = {
+            "add_team_member": onboard_mod.team_service.add_team_member,
+            "wait_mail": onboard_mod.wait_for_mailbox_item,
+            "create_auth": onboard_mod.chatgpt_service.create_oauth_authorize_url,
+            "exchange": onboard_mod.chatgpt_service.exchange_oauth_code,
+            "import_session": onboard_mod.sub2api_service.import_session,
+        }
+        onboard_mod.team_service.add_team_member = AsyncMock(return_value={"success": True, "message": "invited"})
+        onboard_mod.wait_for_mailbox_item = MagicMock(return_value="")
+        onboard_mod.chatgpt_service.create_oauth_authorize_url = MagicMock(return_value={
+            "authorize_url": "https://auth.openai.com/oauth/authorize",
+            "code_verifier": "ver",
+            "state": "st",
+        })
+        onboard_mod.chatgpt_service.exchange_oauth_code = AsyncMock(return_value={
+            "success": True,
+            "access_token": "at-oauth",
+            "refresh_token": "rt-oauth",
+            "id_token": "id-oauth",
+        })
+        onboard_mod.sub2api_service.import_session = AsyncMock(return_value={
+            "account_id": 99,
+            "strategy": "apply_oauth_credentials",
+            "probe": {"kind": "200", "label": "200"},
+        })
+        mocks = {
+            "add_team_member": onboard_mod.team_service.add_team_member,
+            "import_session": onboard_mod.sub2api_service.import_session,
+        }
+        return onboard_mod, originals, mocks
+
+    def _restore(self, onboard_mod, originals):
+        onboard_mod.team_service.add_team_member = originals["add_team_member"]
+        onboard_mod.wait_for_mailbox_item = originals["wait_mail"]
+        onboard_mod.chatgpt_service.create_oauth_authorize_url = originals["create_auth"]
+        onboard_mod.chatgpt_service.exchange_oauth_code = originals["exchange"]
+        onboard_mod.sub2api_service.import_session = originals["import_session"]
+
+    def _service(self, team: Team) -> OnboardService:
+        service = OnboardService()
+        service._load_team = AsyncMock(return_value=team)
+        service._team_proxy = MagicMock(return_value="socks5h://127.0.0.1:1080")
+        service._child_proxy = MagicMock(return_value="socks5h://127.0.0.1:1080")
+        service._cf_config = AsyncMock(return_value={
+            "base_url": "https://cf.example",
+            "address": "inbox@example.com",
+            "admin_password": "pw",
+        })
+        service._confirm_joined = AsyncMock(return_value=True)
+        service._lookup_live_member = AsyncMock(return_value=(
+            {"success": True, "members": []},
+            None,
+        ))
+        service._run_browser = MagicMock(return_value={
+            "ok": True,
+            "access_token": "at-browser",
+            "refresh_token": "",
+            "session_token": "st",
+            "id_token": "",
+            "account_id": "",
+            "client_id": "",
+            "password": "Passw0rd!",
+        })
+        service._run_oauth_browser = MagicMock(return_value={
+            "ok": True,
+            "callback_url": "http://localhost:1455/auth/callback?code=abc&state=st",
+        })
+        return service
+
+    async def test_active_with_refresh_skips_everything(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(
+            self.session, email="kid@example.com", password="Passw0rd!"
+        )
+        await child_account_service.mark_active(self.session, child, team)
+        await child_account_service.save_tokens(self.session, child, {"refresh_token": "rt-existing"})
+        service = self._service(team)
+        onboard_mod, originals, mocks = self._patch_services()
+        try:
+            result = await service.invite_and_onboard(self.session, team_id=team.id, email_line="kid@example.com")
+        finally:
+            self._restore(onboard_mod, originals)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "already_exists")
+        service._run_browser.assert_not_called()
+        service._run_oauth_browser.assert_not_called()
+        mocks["import_session"].assert_not_called()
+
+    async def test_already_joined_without_refresh_goes_oauth(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(
+            self.session, email="kid@example.com", password="Passw0rd!"
+        )
+        child.mail_raw = "kid@example.com"
+        service = self._service(team)
+        joined = {"email": "kid@example.com", "status": "joined", "user_id": "user-1"}
+        service._lookup_live_member = AsyncMock(return_value=(
+            {"success": True, "members": [joined]}, joined,
+        ))
+        onboard_mod, originals, mocks = self._patch_services()
+        try:
+            result = await service.invite_and_onboard(self.session, team_id=team.id, email_line="kid@example.com")
+        finally:
+            self._restore(onboard_mod, originals)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["oauth"])
+        self.assertEqual(result["status"], "active")
+        service._run_browser.assert_not_called()
+        service._run_oauth_browser.assert_called_once()
+        mocks["add_team_member"].assert_not_called()
+        mocks["import_session"].assert_awaited_once()
+        self.assertTrue(child_account_service.decrypt_secret(child.refresh_token_encrypted))
+
+    async def test_register_then_oauth_then_push(self):
+        team = await self._team()
+        service = self._service(team)
+        onboard_mod, originals, mocks = self._patch_services()
+        try:
+            result = await service.invite_and_onboard(
+                self.session,
+                team_id=team.id,
+                email_line="new@icloud.com",
+                phone_line="+15551234567----https://sms.example/key",
+            )
+        finally:
+            self._restore(onboard_mod, originals)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["oauth"])
+        self.assertEqual(result["status"], "active")
+        service._run_browser.assert_called_once()
+        service._run_oauth_browser.assert_called_once()
+        mocks["import_session"].assert_awaited_once()
+        child = await child_account_service.get_by_email(self.session, "new@icloud.com")
+        self.assertEqual(child_account_service.decrypt_secret(child.refresh_token_encrypted), "rt-oauth")
+        self.assertEqual(child.sub2api_account_id, 99)
+
+    async def test_oauth_failure_does_not_mark_done_or_push(self):
+        team = await self._team()
+        service = self._service(team)
+        service._run_oauth_browser = MagicMock(return_value={"ok": False, "error": "email OTP timeout", "error_code": "mail_otp_timeout"})
+        onboard_mod, originals, mocks = self._patch_services()
+        try:
+            result = await service.invite_and_onboard(self.session, team_id=team.id, email_line="new@icloud.com")
+        finally:
+            self._restore(onboard_mod, originals)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "oauth_failed")
+        self.assertEqual(result["error_code"], "mail_otp_timeout")
+        mocks["import_session"].assert_not_called()
+        child = await child_account_service.get_by_email(self.session, "new@icloud.com")
+        self.assertEqual(child.status, "active")
+        self.assertEqual(child.last_stage, "oauth_failed")
+        self.assertFalse(child_account_service.decrypt_secret(child.refresh_token_encrypted))
+
+    async def test_existing_refresh_skips_oauth_and_pushes(self):
+        team = await self._team()
+        service = self._service(team)
+        service._run_browser = MagicMock(return_value={
+            "ok": True,
+            "access_token": "at-browser",
+            "refresh_token": "rt-browser",
+            "session_token": "st",
+            "id_token": "",
+            "password": "Passw0rd!",
+        })
+        onboard_mod, originals, mocks = self._patch_services()
+        try:
+            result = await service.invite_and_onboard(self.session, team_id=team.id, email_line="new@icloud.com")
+        finally:
+            self._restore(onboard_mod, originals)
+        self.assertTrue(result["success"])
+        self.assertFalse(result["oauth"])
+        service._run_oauth_browser.assert_not_called()
+        mocks["import_session"].assert_awaited_once()
+
+    async def test_already_joined_without_password_does_not_invent_one(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(self.session, email="kid@example.com")
+        service = self._service(team)
+        joined = {"email": "kid@example.com", "status": "joined", "user_id": "user-1"}
+        service._lookup_live_member = AsyncMock(return_value=(
+            {"success": True, "members": [joined]}, joined,
+        ))
+        onboard_mod, originals, mocks = self._patch_services()
+        try:
+            result = await service.invite_and_onboard(self.session, team_id=team.id, email_line="kid@example.com")
+        finally:
+            self._restore(onboard_mod, originals)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "oauth_missing_password")
+        service._run_oauth_browser.assert_not_called()
+        mocks["import_session"].assert_not_called()
+        self.assertFalse(child_account_service.decrypt_secret(child.password_encrypted))
 
 
 if __name__ == "__main__":
