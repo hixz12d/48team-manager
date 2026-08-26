@@ -191,6 +191,21 @@ def looks_like_session_ended(*, title: str = "", body: str = "") -> bool:
     return "session has ended" in blob
 
 
+def _page_past_otp(page) -> bool:
+    url = (getattr(page, "url", "") or "").lower()
+    title = ""
+    try:
+        title = page.title() or ""
+    except Exception:  # noqa: BLE001
+        title = ""
+    body = _page_text(page)
+    if looks_like_about_you(title=title, body=body, url=url) or "about-you" in url:
+        return True
+    if _visible(page, 'input[name="age"], input[placeholder*="Age" i]'):
+        return True
+    return bool(session_access_token(_peek_session(page)))
+
+
 def _email_input_visible(page) -> bool:
     return _visible(page, EMAIL_INPUT_SELECTOR)
 
@@ -671,14 +686,23 @@ def run_browser_onboard(
                             ignore=known_codes,
                         )
                     except Exception as exc:  # noqa: BLE001
+                        if _page_past_otp(page):
+                            report("email_otp", "没读到验证码，但页面已经过了验证")
+                            continue
                         result["error"] = f"email OTP failed: {exc}"
                         result["error_code"] = "mail_otp_timeout"
                         break
                     if not code:
+                        if _page_past_otp(page):
+                            report("email_otp", "没读到验证码，但页面已经过了验证")
+                            continue
                         result["error"] = result.get("error") or "email OTP not found"
                         result["error_code"] = result.get("error_code") or "mail_otp_timeout"
                         break
                     if not _fill_otp(page, code):
+                        if _page_past_otp(page):
+                            report("email_otp", "验证码输入框已消失，页面已过验证")
+                            continue
                         result["error"] = "email OTP input not found"
                         result["error_code"] = "mail_otp_timeout"
                         break
