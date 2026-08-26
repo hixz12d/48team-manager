@@ -1116,6 +1116,12 @@ body.admin-theme .toast {
     min-width: 132px;
 }
 
+.oauth-quick-btn-row .btn[hidden],
+#seatOauthManual[hidden],
+#seatOauthHelp[hidden] {
+    display: none !important;
+}
+
 
 .json-import-box {
     border: 1px dashed var(--border-base);

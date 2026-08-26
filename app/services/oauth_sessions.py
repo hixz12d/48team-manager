@@ -253,6 +253,7 @@ def protocol_handler_script() -> str:
     [string]$Uri = ''
 )
 $ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName System.Windows.Forms
 if (-not $Uri) { $Uri = [string]$args[0] }
 $raw = [string]$Uri
@@ -273,7 +274,12 @@ if (-not $ticket -or -not $origin) {
     [System.Windows.Forms.MessageBox]::Show('授权参数不完整。', 'Team48 重新授权')
     exit 1
 }
-$cfg = Invoke-RestMethod -Uri ($origin + '/admin/seats/oauth/' + $ticket + '/launch.json') -TimeoutSec 20
+try {
+    $cfg = Invoke-RestMethod -Uri ($origin + '/admin/seats/oauth/' + $ticket + '/launch.json') -TimeoutSec 20
+} catch {
+    [System.Windows.Forms.MessageBox]::Show([string]$_.Exception.Message, 'Team48 重新授权')
+    exit 1
+}
 try {
     Invoke-RestMethod -Method Post -Uri ($origin + '/admin/seats/oauth/' + $ticket + '/ack') -ContentType 'application/json; charset=utf-8' -Body '{}' -TimeoutSec 10 | Out-Null
 } catch {}
@@ -291,9 +297,10 @@ Add-Type -AssemblyName System.Windows.Forms
 $dir = Join-Path $env:LOCALAPPDATA 'team48-oauth'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $handlerPath = Join-Path $dir 'handler.ps1'
-Set-Content -LiteralPath $handlerPath -Value @'
+$utf8 = New-Object System.Text.UTF8Encoding $true
+[System.IO.File]::WriteAllText($handlerPath, @'
 __HANDLER__
-'@ -Encoding utf8
+'@, $utf8)
 $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $cmd = '"' + $ps + '" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $handlerPath + '" "%1"'
 $base = 'HKCU:\Software\Classes\team48-oauth'
@@ -306,6 +313,6 @@ Set-ItemProperty -Path $icon -Name '(Default)' -Value 'powershell.exe,0'
 $shell = Join-Path $base 'shell\open\command'
 New-Item -Path $shell -Force | Out-Null
 Set-ItemProperty -Path $shell -Name '(Default)' -Value $cmd
-[System.Windows.Forms.MessageBox]::Show('本机弹出已装好。这必须装在你正在用的 Windows 电脑上，不要装到 VPS。回到网页再点弹出授权窗口。', 'Team48 重新授权')
+[System.Windows.Forms.MessageBox]::Show('本机弹出已装好。回到网页再点弹出授权窗口。', 'Team48 重新授权')
 """
     return template.replace("__HANDLER__", handler)

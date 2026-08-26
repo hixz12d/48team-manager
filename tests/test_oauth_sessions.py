@@ -29,11 +29,13 @@ class OAuthSessionTests(unittest.TestCase):
         self.assertIn("launch.json", script)
         self.assertIn("/ack", script)
         self.assertIn("127.0.0.1:1455", script)
+        self.assertIn("Tls12", script)
 
     def test_install_registers_protocol(self):
         script = oauth_sessions.install_protocol_script()
         self.assertIn(r"HKCU:\Software\Classes\team48-oauth", script)
         self.assertIn("launch.json", script)
+        self.assertIn("UTF8Encoding $true", script)
         url = oauth_sessions.protocol_url("abc", "https://48team.example")
         self.assertTrue(url.startswith("team48-oauth://launch?"))
         self.assertIn("ticket=abc", url)

@@ -53,7 +53,10 @@ function applySeatOauthMode(data) {
         help.textContent = '';
     }
     if (auto && data.job_id) pollSeatOauthJob(data.job_id);
-    if (!auto) seatOauthLog('点「弹出授权窗口」。第一次先在这台 Windows 电脑装一次，不要在 VPS 上装。');
+    if (!auto) {
+        bindSeatOauthLaunchHref();
+        seatOauthLog('点「弹出授权窗口」。');
+    }
 }
 
 async function startSeatOauth(teamId, email, forceManual) {
@@ -106,39 +109,37 @@ function startSeatOauthManual() {
     startSeatOauth(seatOauthState.session.team_id, seatOauthState.session.email, true);
 }
 
-function wakeTeam48OauthProtocol(url) {
-    const a = document.createElement('a');
-    a.href = url;
-    a.rel = 'noopener';
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+function bindSeatOauthLaunchHref() {
+    const launch = document.getElementById('seatOauthLaunch');
+    if (!launch || !seatOauthState) return '';
+    const proto = seatOauthState.protocol_url || (
+        'team48-oauth://launch?ticket=' + encodeURIComponent((seatOauthState.session || {}).ticket || '') +
+        '&origin=' + encodeURIComponent(window.location.origin)
+    );
+    launch.href = proto;
+    return proto;
 }
 
 function launchSeatOauthWindow() {
     if (!seatOauthState || !seatOauthState.session) {
         showToast('还没准备好授权', 'error');
-        return;
+        return false;
     }
     if (seatOauthState.session && !seatOauthState.session.proxy_label) {
         showToast('这个号没有静态 ISP 代理，不能弹出授权页', 'error');
         seatOauthLog('缺少代理，不能弹出授权窗口。');
-        return;
+        return false;
     }
-    const proto = seatOauthState.protocol_url || (
-        'team48-oauth://launch?ticket=' + encodeURIComponent(seatOauthState.session.ticket) +
-        '&origin=' + encodeURIComponent(window.location.origin)
-    );
+    bindSeatOauthLaunchHref();
     seatOauthState.localLaunched = false;
-    wakeTeam48OauthProtocol(proto);
     seatOauthLog('正在唤起本机授权窗口…');
     if (seatOauthLaunchTimer) clearTimeout(seatOauthLaunchTimer);
     seatOauthLaunchTimer = setTimeout(() => {
         if (!seatOauthState || seatOauthState.localLaunched) return;
         setSeatOauthInstallVisible(true);
-        seatOauthLog('没唤起本机窗口。在你正在用的这台 Windows 电脑点「安装本机弹出」，不要 SSH 到 VPS 上装。');
+        seatOauthLog('没唤起本机窗口。点「安装本机弹出」后再试一次。');
     }, 2800);
+    return true;
 }
 
 function installSeatOauthProtocol() {

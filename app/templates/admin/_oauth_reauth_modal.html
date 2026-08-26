@@ -6,9 +6,9 @@
         </div>
         <div class="modal-body">
             <p id="seatOauthHelp" class="form-help" hidden></p>
-            <div id="seatOauthManual">
+            <div id="seatOauthManual" hidden>
                 <div class="oauth-quick-btn-row">
-                    <button type="button" class="btn btn-primary" onclick="launchSeatOauthWindow()">弹出授权窗口</button>
+                    <a id="seatOauthLaunch" class="btn btn-primary" href="#" onclick="return launchSeatOauthWindow()">弹出授权窗口</a>
                     <button id="seatOauthInstall" type="button" class="btn btn-secondary" hidden onclick="installSeatOauthProtocol()">安装本机弹出</button>
                 </div>
                 <textarea id="seatOauthCallback" class="form-control" rows="3" placeholder="如果窗口没弹出来，把跳到 localhost 的完整地址贴这里"></textarea>
