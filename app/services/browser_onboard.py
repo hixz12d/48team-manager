@@ -361,8 +361,22 @@ def _wait_mailbox_code(
     )
 
 
+def _set_input(page, selectors: list[str], value: str) -> bool:
+    for selector in selectors:
+        try:
+            loc = page.locator(selector)
+            if loc.count() == 0 or not loc.first.is_visible():
+                continue
+            loc.first.click(timeout=2500)
+            loc.first.fill(value)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def _fill_about_you(page) -> bool:
-    _fill_first(
+    name_ok = _set_input(
         page,
         [
             'input[name="name"]',
@@ -373,17 +387,21 @@ def _fill_about_you(page) -> bool:
         ],
         "James Smith",
     )
-    _fill_first(
+    age_ok = _set_input(
         page,
         [
             'input[name="age"]',
-            'input[name="birthdate"]',
+            'input[type="number"]',
             'input[placeholder="Age"]',
             'input[placeholder*="Age" i]',
         ],
         "28",
     )
-    return _click_exact(page, ["Finish creating account", "Continue"]) or _click_first(page, ['button[type="submit"]'])
+    clicked = (
+        _click_exact(page, ["Finish creating account", "Continue"])
+        or _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")'])
+    )
+    return bool((name_ok or age_ok) and clicked)
 
 
 def _pick_workspace(page, team_name: str = "") -> bool:

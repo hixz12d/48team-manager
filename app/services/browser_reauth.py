@@ -123,6 +123,32 @@ def run_browser_oauth_reauth(
                     report("workspace", "已选择工作空间")
                     page.wait_for_timeout(1500)
                     continue
+                on_phone = any(bit in url for bit in ("add-phone", "phone-verification", "/phone")) or page.locator('input[type="tel"]').count() > 0
+                if on_phone:
+                    report("add_phone", "授权页要求手机号/短信验证码")
+                    if not phone or not sms_url:
+                        result["error"] = "需要接码，但未提供手机号"
+                        result["error_code"] = "sms_missing"
+                        break
+                    if page.locator('input[type="tel"]').count() > 0:
+                        digits = "".join(ch for ch in phone if ch.isdigit())
+                        national = digits[1:] if digits.startswith("1") and len(digits) == 11 else digits
+                        _fill_first(page, ['input[type="tel"]', 'input[name="phone"]'], national)
+                        _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")'])
+                        _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
+                        page.wait_for_timeout(2500)
+                        continue
+                    otp_el = _find_otp(page)
+                    if otp_el:
+                        report("sms_otp", "等待短信验证码")
+                        sms_code = sms_client.wait_for_code(sms_url, proxy=proxy, timeout_sec=90)
+                        otp_el.fill(sms_code)
+                        _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
+                        page.wait_for_timeout(2500)
+                    else:
+                        page.wait_for_timeout(1500)
+                    continue
+
                 otp_el = _find_otp(page)
                 if otp_el:
                     if otp_submits >= 2:
@@ -174,27 +200,6 @@ def run_browser_oauth_reauth(
                         email,
                     )
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Next")'])
-                    page.wait_for_timeout(2500)
-                    continue
-
-                if page.locator('input[type="tel"]').count() > 0 or "add-phone" in url or "phone" in url:
-                    report("add_phone", "页面要求添加手机号")
-                    if not phone or not sms_url:
-                        result["error"] = "需要接码，但未提供手机号"
-                        result["error_code"] = "sms_missing"
-                        break
-                    digits = "".join(ch for ch in phone if ch.isdigit())
-                    national = digits[1:] if digits.startswith("1") and len(digits) == 11 else digits
-                    _fill_first(page, ['input[type="tel"]', 'input[name="phone"]'], national)
-                    _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")'])
-                    _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
-                    page.wait_for_timeout(2500)
-                    report("sms_otp", "等待短信验证码")
-                    sms_code = sms_client.wait_for_code(sms_url, proxy=proxy, timeout_sec=90)
-                    otp_el = _find_otp(page)
-                    if otp_el:
-                        otp_el.fill(sms_code)
-                    _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
                     page.wait_for_timeout(2500)
                     continue
 
