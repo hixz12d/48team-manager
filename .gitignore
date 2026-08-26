@@ -66,3 +66,6 @@ openai-api.md
 team_manage.db-shm
 team_manage.db-wal
 DATABASE_MIGRATION.md
+data/debug/
+data/probe_*.py
+data/chrome-profiles/

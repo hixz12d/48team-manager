@@ -35,9 +35,12 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
     && python -m playwright install --with-deps chromium
 
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY app /app/app
 COPY init_db.py /app/init_db.py
 
 EXPOSE 8008
 
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8008}"]
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x900x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 & export DISPLAY=${DISPLAY:-:99}; exec uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8008}"]

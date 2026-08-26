@@ -56,6 +56,8 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "mail_otp_timeout"
     if "接码" in error or "sms" in text:
         return "sms_failed"
+    if "cloudflare" in text or "just a moment" in text or "turnstile" in text:
+        return "cloudflare_challenge"
     if "代理" in error or "proxy" in text:
         return "proxy_failed"
     if "已满" in error or "full" in text:

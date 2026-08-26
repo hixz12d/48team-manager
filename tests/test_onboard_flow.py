@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.database import Base
 from app.models import Team
 from app.services.child_accounts import child_account_service
-from app.services.browser_onboard import can_peek_session, session_access_token
+from app.services.browser_onboard import can_peek_session, looks_like_cloudflare, session_access_token
 from app.services.onboard import OnboardService, classify_onboard_error
 from app.utils.time_utils import get_now
 
@@ -31,6 +31,14 @@ class OnboardHelperTests(unittest.TestCase):
             "tok",
         )
         self.assertEqual(session_access_token({"status": 200, "json": {}}), "")
+
+    def test_cloudflare_detection(self):
+        self.assertTrue(looks_like_cloudflare("Just a moment...", "Verifying..."))
+        self.assertFalse(looks_like_cloudflare("Accept invite | ChatGPT", "Join workspace"))
+        self.assertEqual(
+            classify_onboard_error("cloudflare challenge; no accessToken"),
+            "cloudflare_challenge",
+        )
 
 
 class OnboardKickTests(unittest.IsolatedAsyncioTestCase):

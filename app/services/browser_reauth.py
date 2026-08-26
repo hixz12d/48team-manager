@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from app.config import settings
-from app.services.browser_onboard import _click_first, _fill_first, _find_otp
+from app.services.browser_onboard import _click_first, _fill_first, _find_otp, chromium_context_kwargs, wait_cloudflare
 from app.services.mail_otp import wait_for_mailbox_item
 from app.services.reauth import is_oauth_callback
 from app.services.sms import require_proxy, sms_client
@@ -69,17 +69,9 @@ def run_browser_oauth_reauth(
         )
 
     with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
-        launch_kwargs = {
-            "user_data_dir": str(profile_dir),
-            "headless": bool(settings.browser_headless),
-            "proxy": proxy_config,
-            "locale": "en-US",
-            "viewport": {"width": 1280, "height": 900},
-            "args": ["--disable-features=Translate", "--disable-dev-shm-usage"],
-        }
-        if settings.browser_channel:
-            launch_kwargs["channel"] = settings.browser_channel
-        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
+        browser = playwright.chromium.launch_persistent_context(
+            **chromium_context_kwargs(profile_dir, proxy_config)
+        )
         page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
         try:
@@ -87,8 +79,9 @@ def run_browser_oauth_reauth(
             page.route("http://127.0.0.1:1455/**", fulfill_callback)
             page.on("framenavigated", lambda frame: remember(frame.url or ""))
             report("browser_open", "正在打开 ChatGPT 授权页")
-            page.goto(authorize_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            page.goto(authorize_url, wait_until="load")
+            wait_cloudflare(page)
+            page.wait_for_timeout(1500)
             remember(page.url or "")
 
             for _ in range(24):

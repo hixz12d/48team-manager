@@ -52,9 +52,9 @@ class Settings(BaseSettings):
     # 时区配置
     timezone: str = "Asia/Shanghai"
 
-    # Docker / VPS 上没有桌面，浏览器拉人走 headless Chromium
+    # Docker 里用 Xvfb 跑有头 Chromium，无头会被 Cloudflare 拦
     browser_headless: bool = False
-    browser_channel: str = "chrome"
+    browser_channel: str = ""
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

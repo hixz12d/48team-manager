@@ -19,8 +19,9 @@ services:
       APP_HOST: "0.0.0.0"
       APP_PORT: "8008"
       DATABASE_URL: "sqlite+aiosqlite:////app/data/team_manage.db"
-      BROWSER_HEADLESS: "true"
+      BROWSER_HEADLESS: "false"
       BROWSER_CHANNEL: ""
+      DISPLAY: ":99"
       TZ: "Asia/Shanghai"
     volumes:
       - ../data:/app/data
