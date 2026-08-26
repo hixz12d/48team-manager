@@ -109,6 +109,23 @@ class MailCodeTests(unittest.TestCase):
     def test_reads_verification_code(self):
         self.assertEqual(extract_code("Your verification code is 654321"), "654321")
 
+    def test_openai_html_uses_isolated_code_not_theme_color(self):
+        blob = """
+        Subject: Your temporary ChatGPT verification code
+        <html><head><title>Your temporary ChatGPT verification code</title>
+        <style>.top{color:#202123}</style></head>
+        <body>
+          <div class="top" style="background-color: #ffffff;color:#202123;">
+          <![endif]-->                          805572                          <!--[if mso]>
+          </div>
+        </body></html>
+        """
+        self.assertEqual(extract_code(blob), "805572")
+
+    def test_ignores_hex_color_when_no_isolated_code(self):
+        blob = "Your temporary ChatGPT verification code <div style=\"color:#202123\">hello</div>"
+        self.assertIsNone(extract_code(blob))
+
     def test_wait_skips_ignored_code(self):
         def fake_list(**kwargs):
             return ["111111", "222222"]

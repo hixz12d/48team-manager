@@ -31,6 +31,10 @@ _VERIFY_HINT = re.compile(
     r"temporary (?:verification )?code|验证码|临时验证码|一次性(?:验证)?码|安全码",
     re.I,
 )
+_ISOLATED_CODE_RE = re.compile(r"(?:-->|>)\s*(\d{6})\s*(?:<!--|<)")
+_BARE_CODE_RE = re.compile(r"(?<![#\w])(\d{6})(?!\w)")
+_STYLE_BLOCK_RE = re.compile(r"(?is)<style\b[^>]*>.*?</style>")
+_HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{3,8}")
 _CHAT_HOST = r"(?:chatgpt|chat\.openai)\.com"
 INVITE_RE = re.compile(rf"https?://{_CHAT_HOST}/[^\s\"'<>]+", re.I)
 _INVITE_URL_RES = [
@@ -49,18 +53,28 @@ _BARE_CHAT_HOMES = {
 }
 
 
+def _plain_mail_text(text: str) -> str:
+    cleaned = _STYLE_BLOCK_RE.sub(" ", str(text or ""))
+    return _HEX_COLOR_RE.sub(" ", cleaned)
+
+
 def extract_code(text: str) -> Optional[str]:
     blob = str(text or "")
     if not blob.strip():
         return None
-    if extract_invite_url(blob) and not _VERIFY_HINT.search(blob):
+    invite_only = bool(extract_invite_url(blob) and not _VERIFY_HINT.search(blob))
+    isolated = _ISOLATED_CODE_RE.search(blob)
+    if isolated and not invite_only:
+        return isolated.group(1)
+    cleaned = _plain_mail_text(blob)
+    if extract_invite_url(cleaned) and not _VERIFY_HINT.search(cleaned):
         return None
     for pattern in CODE_RES:
-        match = pattern.search(blob)
+        match = pattern.search(cleaned)
         if match:
             return match.group(1)
-    if _VERIFY_HINT.search(blob):
-        match = re.search(r"\b(\d{6})\b", blob)
+    if _VERIFY_HINT.search(cleaned):
+        match = _BARE_CODE_RE.search(cleaned)
         if match:
             return match.group(1)
     return None
