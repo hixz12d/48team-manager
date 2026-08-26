@@ -9,7 +9,8 @@ from app.config import settings
 from app.services.browser_onboard import _click_first, _fill_first, _find_otp
 from app.services.mail_otp import wait_for_mailbox_item
 from app.services.reauth import is_oauth_callback
-from app.services.sms import chrome_proxy_config, require_proxy, sms_client
+from app.services.sms import require_proxy, sms_client
+from app.services.socks_bridge import chrome_proxy_launch
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +68,11 @@ def run_browser_oauth_reauth(
             body="<html><body>ok</body></html>",
         )
 
-    with sync_playwright() as playwright:
+    with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
         launch_kwargs = {
             "user_data_dir": str(profile_dir),
             "headless": bool(settings.browser_headless),
-            "proxy": chrome_proxy_config(proxy),
+            "proxy": proxy_config,
             "locale": "en-US",
             "viewport": {"width": 1280, "height": 900},
             "args": ["--disable-features=Translate", "--disable-dev-shm-usage"],

@@ -7,7 +7,8 @@ from typing import Any, Callable, Dict, Optional
 
 from app.config import settings
 from app.services.mail_otp import wait_for_mailbox_item
-from app.services.sms import chrome_proxy_config, require_proxy, sms_client
+from app.services.sms import require_proxy, sms_client
+from app.services.socks_bridge import chrome_proxy_launch
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +107,11 @@ def run_browser_onboard(
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode}
-    with sync_playwright() as playwright:
+    with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
         launch_kwargs = {
             "user_data_dir": str(profile_dir),
             "headless": bool(settings.browser_headless),
-            "proxy": chrome_proxy_config(proxy),
+            "proxy": proxy_config,
             "locale": "en-US",
             "viewport": {"width": 1280, "height": 900},
             "args": ["--disable-features=Translate", "--disable-dev-shm-usage"],
