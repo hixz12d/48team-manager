@@ -1,10 +1,12 @@
 """子号本机 OAuth 会话。ticket 一次性，给 Windows 回调窗口用。"""
 from __future__ import annotations
 
+import base64
 import json
 import secrets
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlparse
 
@@ -156,17 +158,49 @@ def protocol_url(ticket: str, origin: str) -> str:
     return f"{PROTOCOL_NAME}://launch?ticket={quote(ticket or '', safe='')}&origin={quote(base, safe='')}"
 
 
+_SOCKS_BRIDGE_CS = Path(__file__).with_name("team48_socks_bridge.cs")
+
+
+def socks_bridge_source() -> str:
+    return _SOCKS_BRIDGE_CS.read_text(encoding="utf-8")
+
+
+def _socks_bridge_setup_ps1() -> str:
+    payload = base64.b64encode(socks_bridge_source().encode("utf-8")).decode("ascii")
+    return (
+        "$script:team48Bridge = $null\n"
+        "if ($cfg.proxyUser -and ([string]$cfg.proxyServer).ToLower().StartsWith('socks5')) {\n"
+        "    try {\n"
+        f"        $src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}'))\n"
+        "        Add-Type -TypeDefinition $src -Language CSharp\n"
+        "        $u = [Uri]$cfg.proxyServer\n"
+        "        $script:team48Bridge = New-Object Team48SocksBridge($u.Host, [int]$u.Port, [string]$cfg.proxyUser, [string]$cfg.proxyPass)\n"
+        "        $cfg.proxyServer = 'socks5://127.0.0.1:' + $script:team48Bridge.Port\n"
+        "        $cfg.proxyUser = ''\n"
+        "        $cfg.proxyPass = ''\n"
+        "    } catch {\n"
+        "        [System.Windows.Forms.MessageBox]::Show([string]$_.Exception.Message, 'Team48 重新授权')\n"
+        "        exit 1\n"
+        "    }\n"
+        "}\n"
+    )
+
+
 def _chrome_oauth_ps1() -> str:
-    return r"""if (-not $cfg.proxyServer) {
+    return (
+        r"""if (-not $cfg.proxyServer) {
     [System.Windows.Forms.MessageBox]::Show('这个号没有静态 ISP 代理，不能弹出授权页。', 'Team48 重新授权')
     exit 1
 }
-$prefix = 'http://127.0.0.1:1455/'
+"""
+        + _socks_bridge_setup_ps1()
+        + r"""$prefix = 'http://127.0.0.1:1455/'
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add($prefix)
 try {
     $listener.Start()
 } catch {
+    if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
     [System.Windows.Forms.MessageBox]::Show('无法监听 localhost:1455，请先关掉占用这个端口的程序。', 'Team48 重新授权')
     exit 1
 }
@@ -181,6 +215,7 @@ $chrome = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $chrome) {
     $listener.Stop(); $listener.Close()
+    if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
     [System.Windows.Forms.MessageBox]::Show('找不到 Chrome / Edge，无法弹出授权页。', 'Team48 重新授权')
     exit 1
 }
@@ -210,6 +245,7 @@ while (-not $task.AsyncWaitHandle.WaitOne(200)) {
 if (-not $task.IsCompleted) {
     $listener.Stop()
     $listener.Close()
+    if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
     exit 1
 }
 $context = $task.Result
@@ -222,6 +258,7 @@ $context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
 $context.Response.Close()
 $listener.Stop()
 $listener.Close()
+if ($script:team48Bridge) { $script:team48Bridge.Dispose() }
 $body = @{ ticket = $cfg.ticket; callback_text = $callback } | ConvertTo-Json
 try {
     $resp = Invoke-RestMethod -Method Post -Uri $cfg.completeUrl -ContentType 'application/json; charset=utf-8' -Body $body
@@ -232,6 +269,7 @@ try {
     exit 1
 }
 """
+    )
 
 
 def launcher_script(session: Dict[str, Any], complete_url: str) -> str:
