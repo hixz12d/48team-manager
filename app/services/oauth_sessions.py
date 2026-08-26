@@ -306,6 +306,6 @@ Set-ItemProperty -Path $icon -Name '(Default)' -Value 'powershell.exe,0'
 $shell = Join-Path $base 'shell\open\command'
 New-Item -Path $shell -Force | Out-Null
 Set-ItemProperty -Path $shell -Name '(Default)' -Value $cmd
-[System.Windows.Forms.MessageBox]::Show('本机弹出已装好。回到网页再点一次弹出授权窗口，浏览器问是否打开时选允许。', 'Team48 重新授权')
+[System.Windows.Forms.MessageBox]::Show('本机弹出已装好。这必须装在你正在用的 Windows 电脑上，不要装到 VPS。回到网页再点弹出授权窗口。', 'Team48 重新授权')
 """
     return template.replace("__HANDLER__", handler)

@@ -46,14 +46,14 @@ function applySeatOauthMode(data) {
     const cancelBtn = document.getElementById('seatOauthCancel');
     const auto = data && data.mode === 'auto';
     setSeatOauthManualVisible(!auto);
-    setSeatOauthInstallVisible(false);
+    setSeatOauthInstallVisible(!auto);
     if (cancelBtn) cancelBtn.hidden = !auto;
     if (help) {
         help.hidden = true;
         help.textContent = '';
     }
     if (auto && data.job_id) pollSeatOauthJob(data.job_id);
-    if (!auto) launchSeatOauthWindow();
+    if (!auto) seatOauthLog('点「弹出授权窗口」。第一次先在这台 Windows 电脑装一次，不要在 VPS 上装。');
 }
 
 async function startSeatOauth(teamId, email, forceManual) {
@@ -107,17 +107,13 @@ function startSeatOauthManual() {
 }
 
 function wakeTeam48OauthProtocol(url) {
-    try {
-        const iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        iframe.src = url;
-        document.body.appendChild(iframe);
-        setTimeout(() => {
-            try { iframe.remove(); } catch (error) { /* ignore */ }
-        }, 3000);
-    } catch (error) {
-        window.location.href = url;
-    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 }
 
 function launchSeatOauthWindow() {
@@ -141,7 +137,7 @@ function launchSeatOauthWindow() {
     seatOauthLaunchTimer = setTimeout(() => {
         if (!seatOauthState || seatOauthState.localLaunched) return;
         setSeatOauthInstallVisible(true);
-        seatOauthLog('本机还没装弹出组件，或浏览器拦住了。点「安装本机弹出」跑一次，允许打开应用后再点弹出。');
+        seatOauthLog('没唤起本机窗口。在你正在用的这台 Windows 电脑点「安装本机弹出」，不要 SSH 到 VPS 上装。');
     }, 2800);
 }
 
@@ -157,7 +153,7 @@ function installSeatOauthProtocol() {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(cmd).catch(() => {});
     }
-    seatOauthLog('已下载安装脚本。在下载目录执行：\n' + cmd + '\n装好后回到这里再点「弹出授权窗口」，浏览器问是否打开时选允许。');
+    seatOauthLog('已下载。在你这台 Windows 电脑的下载目录执行：\n' + cmd + '\n不要在 VPS 上跑。装好后回到网页再点「弹出授权窗口」，浏览器问是否打开时选允许。');
 }
 
 async function submitSeatOauthCallback() {
