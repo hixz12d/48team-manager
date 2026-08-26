@@ -126,6 +126,13 @@ class MailCodeTests(unittest.TestCase):
         blob = "Your temporary ChatGPT verification code <div style=\"color:#202123\">hello</div>"
         self.assertIsNone(extract_code(blob))
 
+    def test_icloud_hme_plaintext_preview(self):
+        blob = "Your temporary ChatGPT verification code\nEnter this temporary verification code to continue:\n142056"
+        self.assertEqual(extract_code(blob), "142056")
+
+    def test_ignores_year_when_falling_back(self):
+        self.assertEqual(extract_code("Your verification code\n2026 login notice 551908"), "551908")
+
     def test_wait_skips_ignored_code(self):
         def fake_list(**kwargs):
             return ["111111", "222222"]

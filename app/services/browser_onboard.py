@@ -129,12 +129,38 @@ def _visible(page, selector: str) -> bool:
         return False
 
 
+def looks_like_otp_input(*, name: str = "", placeholder: str = "", autocomplete: str = "", input_type: str = "") -> bool:
+    name_l = str(name or "").lower()
+    ph = str(placeholder or "").lower()
+    ac = str(autocomplete or "").lower()
+    itype = str(input_type or "").lower()
+    if itype == "email":
+        return False
+    skip_bits = ("age", "name", "birth", "email", "user", "full")
+    if name_l in {"email", "name", "age", "fullname", "firstname", "lastname", "username", "birthdate", "birthday"}:
+        return False
+    if any(bit in name_l for bit in skip_bits) or any(bit in ph for bit in skip_bits):
+        return False
+    if ac in {"name", "bday", "email", "username"}:
+        return False
+    return True
+
+
+def looks_like_about_you(*, title: str = "", body: str = "", url: str = "") -> bool:
+    blob = f"{title}\n{body}\n{url}".lower()
+    return any(
+        token in blob
+        for token in ("how old are you", "about-you", "finish creating account", "about you")
+    )
+
+
 def _find_otp(page):
     for selector in [
         'input[autocomplete="one-time-code"]',
-        'input[inputmode="numeric"]',
         'input[name="code"]',
         'input[name="otp"]',
+        'input[name="pin"]',
+        'input[placeholder="Code"]',
         'input[placeholder*="Code" i]',
         'input[aria-label*="code" i]',
         'input[aria-label*="verification" i]',
@@ -142,7 +168,14 @@ def _find_otp(page):
         loc = page.locator(selector)
         try:
             if loc.count() > 0 and loc.first.is_visible():
-                return loc.first
+                el = loc.first
+                if looks_like_otp_input(
+                    name=el.get_attribute("name") or "",
+                    placeholder=el.get_attribute("placeholder") or "",
+                    autocomplete=el.get_attribute("autocomplete") or "",
+                    input_type=el.get_attribute("type") or "",
+                ):
+                    return el
         except Exception:  # noqa: BLE001
             continue
     return None
@@ -328,6 +361,42 @@ def _wait_mailbox_code(
     )
 
 
+def _fill_about_you(page) -> bool:
+    _fill_first(
+        page,
+        [
+            'input[name="name"]',
+            'input[name="fullName"]',
+            'input[autocomplete="name"]',
+            'input[placeholder="Full name"]',
+            'input[placeholder*="Full name" i]',
+        ],
+        "James Smith",
+    )
+    _fill_first(
+        page,
+        [
+            'input[name="age"]',
+            'input[name="birthdate"]',
+            'input[placeholder="Age"]',
+            'input[placeholder*="Age" i]',
+        ],
+        "28",
+    )
+    return _click_exact(page, ["Finish creating account", "Continue"]) or _click_first(page, ['button[type="submit"]'])
+
+
+def _pick_workspace(page, team_name: str = "") -> bool:
+    body = _page_text(page).lower()
+    url = (page.url or "").lower()
+    if not any(token in f"{body}\n{url}" for token in ("workspace", "工作空间", "organization", "accept-invite", "consent")):
+        return False
+    want = str(team_name or "").strip()
+    if want and _click_exact(page, [want]):
+        _click_exact(page, ["Continue", "Join", "Confirm", "Accept"])
+        return True
+    return _click_exact(page, ["Accept invite", "Join workspace", "Join", "Accept"])
+
 def _accept_terms(page) -> bool:
     if not _visible(page, "input[type='checkbox']"):
         return False
@@ -350,6 +419,7 @@ def run_browser_onboard(
     proxy: str,
     start_url: str = "",
     mode: str = "register",
+    team_name: str = "",
     use_cloudflare: bool = False,
     cf_base_url: str = "",
     cf_address: str = "",
@@ -435,6 +505,12 @@ def run_browser_onboard(
                     result["error_code"] = "openai_rate_limited"
                     break
 
+                page_text = _page_text(page)
+                if looks_like_about_you(title=page.title() or "", body=page_text, url=url) or _visible(page, 'input[name="age"], input[placeholder*="Age" i]'):
+                    report("about_you", "验证码已过，正在填写年龄")
+                    _fill_about_you(page)
+                    page.wait_for_timeout(2500)
+                    continue
                 on_verify = "email-verification" in url or "check your inbox" in _page_text(page).lower()
                 otp_ready = bool(_find_otp(page) or _otp_boxes(page))
                 if otp_ready and (on_verify or not _visible(page, 'input[type="password"], input[name="current-password"]')):
@@ -509,10 +585,17 @@ def run_browser_onboard(
                     continue
 
                 if _visible(page, 'input[type="tel"]') or "add-phone" in url:
-                    report("add_phone", "页面要求添加手机号")
-                    if not phone or not sms_url:
-                        result["error"] = "需要接码，但未提供手机号"
+                    if phone and sms_url:
+                        report("add_phone", "页面要求添加手机号")
+                    elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
+                        report("add_phone", "注册页出现手机号，已跳过")
+                        page.wait_for_timeout(1500)
+                        continue
+                    else:
+                        result["error"] = "注册页要手机号。正常邀请注册通常不需要，Codex 授权时才接码"
                         result["error_code"] = "sms_missing"
+                        break
+                    if not phone or not sms_url:
                         break
                     digits = "".join(ch for ch in phone if ch.isdigit())
                     national = digits[1:] if digits.startswith("1") and len(digits) == 11 else digits
@@ -531,11 +614,7 @@ def run_browser_onboard(
 
                 if _visible(page, 'input[name="name"], input[name="fullName"], input[name="firstName"]'):
                     report("profile", "正在填写资料")
-                    _fill_first(page, ['input[name="name"]', 'input[name="fullName"]'], "James Smith")
-                    _fill_first(page, ['input[name="firstName"]'], "James")
-                    _fill_first(page, ['input[name="lastName"]'], "Smith")
-                    _fill_first(page, ['input[name="birthdate"]', 'input[name="age"]'], "28")
-                    _click_exact(page, ["Finish creating account", "Continue"]) or _click_first(page, ['button[type="submit"]'])
+                    _fill_about_you(page)
                     page.wait_for_timeout(2500)
                     continue
 
@@ -560,7 +639,11 @@ def run_browser_onboard(
                 if "auth.openai.com" in url:
                     page.wait_for_timeout(1200)
                     continue
-                if _click_exact(page, ["Accept", "Accept invite", "Join workspace", "Join", "I agree", "Okay", "Next"]):
+                if _pick_workspace(page, team_name):
+                    report("workspace", "已选择工作空间")
+                    page.wait_for_timeout(1500)
+                    continue
+                if _click_exact(page, ["Accept", "I agree", "Okay", "Next", "Get started"]):
                     page.wait_for_timeout(1500)
                     continue
                 page.wait_for_timeout(1200)

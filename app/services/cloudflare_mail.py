@@ -238,7 +238,7 @@ class CloudflareMailClient:
             admin_password=admin_password,
             alias=alias,
         ):
-            code = extract_code("\n".join([message.get("subject", ""), message.get("preview", ""), message.get("match", "")]))
+            code = extract_code("\n".join([message.get("subject", ""), message.get("preview", "")])) or extract_code(message.get("match", ""))
             if code:
                 return code
         return None

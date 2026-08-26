@@ -8,11 +8,15 @@ from typing import Any, Callable, Dict, Optional
 from app.config import settings
 from app.services.browser_onboard import (
     _click_first,
+    _fill_about_you,
     _fill_first,
     _find_otp,
     _mail_kwargs,
+    _page_text,
+    _pick_workspace,
     _snapshot_mailbox_codes,
     chromium_context_kwargs,
+    looks_like_about_you,
     wait_cloudflare,
 )
 from app.services.mail_otp import wait_for_mailbox_item
@@ -110,6 +114,15 @@ def run_browser_oauth_reauth(
                     break
 
                 url = (page.url or "").lower()
+                if looks_like_about_you(title=page.title() or "", body=_page_text(page), url=url):
+                    report("about_you", "验证码已过，正在填写年龄")
+                    _fill_about_you(page)
+                    page.wait_for_timeout(2500)
+                    continue
+                if _pick_workspace(page):
+                    report("workspace", "已选择工作空间")
+                    page.wait_for_timeout(1500)
+                    continue
                 otp_el = _find_otp(page)
                 if otp_el:
                     if otp_submits >= 2:

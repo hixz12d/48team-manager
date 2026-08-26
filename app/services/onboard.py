@@ -46,6 +46,10 @@ def _random_password() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(12)) + "Aa1!"
 
 
+def should_wait_for_invite_mail(already_invited: bool) -> bool:
+    return not already_invited
+
+
 def classify_onboard_error(error: str, *, stage: str = "") -> str:
     text = (error or "").lower()
     if "cancelled" in text or "已取消" in error:
@@ -639,22 +643,25 @@ class OnboardService:
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
         invite_url = ""
-        try:
-            await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message="等待邀请邮件")
-            invite_url = await asyncio.to_thread(
-                wait_for_mailbox_item,
-                email=email,
-                pickup_url=pickup_url,
-                proxy=self._child_proxy(child, team),
-                kind="invite",
-                timeout_sec=90,
-                cf_base_url=cf_config["base_url"] if use_cloudflare else "",
-                cf_address=cf_config["address"] if use_cloudflare else "",
-                cf_admin_password=cf_config["admin_password"] if use_cloudflare else "",
-            ) or ""
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("等待邀请邮件失败: %s", exc)
-            await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message=f"邀请邮件未拿到，继续尝试直接打开登录页：{exc}")
+        if not should_wait_for_invite_mail(already_invited):
+            await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message="邀请已存在，不再等邀请邮件，直接打开登录页")
+        else:
+            try:
+                await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message="等待邀请邮件")
+                invite_url = await asyncio.to_thread(
+                    wait_for_mailbox_item,
+                    email=email,
+                    pickup_url=pickup_url,
+                    proxy=self._child_proxy(child, team),
+                    kind="invite",
+                    timeout_sec=90,
+                    cf_base_url=cf_config["base_url"] if use_cloudflare else "",
+                    cf_address=cf_config["address"] if use_cloudflare else "",
+                    cf_admin_password=cf_config["admin_password"] if use_cloudflare else "",
+                ) or ""
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("等待邀请邮件失败: %s", exc)
+                await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message=f"邀请邮件未拿到，继续尝试直接打开登录页：{exc}")
 
         if self._cancelled(job_id):
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
@@ -685,6 +692,7 @@ class OnboardService:
                 proxy=self._child_proxy(child, team),
                 start_url=invite_url,
                 mode=browser_mode,
+                team_name=str(team.team_name or ""),
                 use_cloudflare=use_cloudflare,
                 cf_base_url=cf_config["base_url"],
                 cf_address=cf_config["address"],

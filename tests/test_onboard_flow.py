@@ -8,8 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.database import Base
 from app.models import Team
 from app.services.child_accounts import child_account_service
-from app.services.browser_onboard import can_peek_session, looks_like_cloudflare, session_access_token
-from app.services.onboard import OnboardService, classify_onboard_error
+from app.services.browser_onboard import (
+    can_peek_session,
+    looks_like_about_you,
+    looks_like_cloudflare,
+    looks_like_otp_input,
+    session_access_token,
+)
+from app.services.onboard import OnboardService, classify_onboard_error, should_wait_for_invite_mail
 from app.utils.time_utils import get_now
 
 
@@ -47,6 +53,15 @@ class OnboardHelperTests(unittest.TestCase):
             classify_onboard_error("邮箱验证码提交后仍未通过，没有继续连交"),
             "mail_otp_rejected",
         )
+
+    def test_age_page_is_not_otp(self):
+        self.assertTrue(looks_like_about_you(title="How old are you? - OpenAI", body="How old are you?", url="https://auth.openai.com/about-you"))
+        self.assertFalse(looks_like_otp_input(name="age", placeholder="Age", input_type="text"))
+        self.assertTrue(looks_like_otp_input(name="code", placeholder="Code", autocomplete="one-time-code"))
+
+    def test_skip_invite_mail_when_already_invited(self):
+        self.assertFalse(should_wait_for_invite_mail(True))
+        self.assertTrue(should_wait_for_invite_mail(False))
 
 
 class OnboardKickTests(unittest.IsolatedAsyncioTestCase):

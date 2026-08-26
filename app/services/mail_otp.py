@@ -18,23 +18,25 @@ logger = logging.getLogger(__name__)
 
 CODE_RES = [
     re.compile(
-        r"(?:verification code|one-time code|security code|login code|your code|enter code|"
-        r"temporary (?:verification )?code|验证码|临时验证码|一次性(?:验证)?码|安全码)"
-        r"[^\d]{0,80}(\d{6})\b",
+        r"(?:verification code|one[-\s]?time(?:\s+password|\s+code)?|security code|login code|your code|enter code|"
+        r"temporary (?:verification )?code|otp|验证码|校验码|临时验证码|一次性(?:验证)?码|安全码|动态密码|確認碼|确认码)"
+        r"[^\d]{0,24}(\d{4,8})",
         re.I,
     ),
     re.compile(r"\b(\d{6})\b[^\w]{0,40}(?:is your|verification|one-time|security|验证码|是你的)", re.I),
     re.compile(r"(?:code|验证码)\s*[:=：]\s*(\d{6})\b", re.I),
 ]
 _VERIFY_HINT = re.compile(
-    r"verification code|one-time code|security code|login code|your code|enter code|"
-    r"temporary (?:verification )?code|验证码|临时验证码|一次性(?:验证)?码|安全码",
+    r"verification code|one[-\s]?time(?:\s+password|\s+code)?|security code|login code|your code|enter code|"
+    r"temporary (?:verification )?code|otp|验证码|校验码|临时验证码|一次性(?:验证)?码|安全码|动态密码|確認碼|确认码",
     re.I,
 )
 _ISOLATED_CODE_RE = re.compile(r"(?:-->|>)\s*(\d{6})\s*(?:<!--|<)")
 _BARE_CODE_RE = re.compile(r"(?<![#\w])(\d{6})(?!\w)")
 _STYLE_BLOCK_RE = re.compile(r"(?is)<style\b[^>]*>.*?</style>")
+_SCRIPT_BLOCK_RE = re.compile(r"(?is)<script\b[^>]*>.*?</script>")
 _HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{3,8}")
+_YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
 _CHAT_HOST = r"(?:chatgpt|chat\.openai)\.com"
 INVITE_RE = re.compile(rf"https?://{_CHAT_HOST}/[^\s\"'<>]+", re.I)
 _INVITE_URL_RES = [
@@ -53,32 +55,47 @@ _BARE_CHAT_HOMES = {
 }
 
 
+def _usable_code(code: str) -> Optional[str]:
+    value = str(code or "").strip()
+    if len(value) == 6 and value.isdigit() and not _YEAR_RE.fullmatch(value) and value != "000000":
+        return value
+    return None
+
+
 def _plain_mail_text(text: str) -> str:
     cleaned = _STYLE_BLOCK_RE.sub(" ", str(text or ""))
-    return _HEX_COLOR_RE.sub(" ", cleaned)
+    cleaned = _SCRIPT_BLOCK_RE.sub(" ", cleaned)
+    cleaned = _HEX_COLOR_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"(?is)<!--.*?-->", " ", cleaned)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned)
 
 
 def extract_code(text: str) -> Optional[str]:
     blob = str(text or "")
     if not blob.strip():
         return None
-    invite_only = bool(extract_invite_url(blob) and not _VERIFY_HINT.search(blob))
+    if extract_invite_url(blob) and not _VERIFY_HINT.search(blob):
+        return None
     isolated = _ISOLATED_CODE_RE.search(blob)
-    if isolated and not invite_only:
-        return isolated.group(1)
+    if isolated:
+        code = _usable_code(isolated.group(1))
+        if code:
+            return code
     cleaned = _plain_mail_text(blob)
     if extract_invite_url(cleaned) and not _VERIFY_HINT.search(cleaned):
         return None
     for pattern in CODE_RES:
         match = pattern.search(cleaned)
         if match:
-            return match.group(1)
+            code = _usable_code(match.group(1))
+            if code:
+                return code
     if _VERIFY_HINT.search(cleaned):
         match = _BARE_CODE_RE.search(cleaned)
         if match:
-            return match.group(1)
+            return _usable_code(match.group(1))
     return None
-
 
 def extract_invite_url(text: str) -> Optional[str]:
     blob = str(text or "")
@@ -267,7 +284,7 @@ def list_mailbox_codes(
             admin_password=cf_admin_password,
             alias=email,
         ):
-            add(extract_code("\n".join([message.get("subject", ""), message.get("preview", ""), message.get("match", "")])))
+            add(extract_code("\n".join([message.get("subject", ""), message.get("preview", "")])) or extract_code(message.get("match", "")))
         return codes
     if pickup_url:
         for blob in mail_otp_client.fetch_mailbox(pickup_url, proxy=proxy, email=email):
