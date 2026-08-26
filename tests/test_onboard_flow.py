@@ -39,6 +39,10 @@ class OnboardHelperTests(unittest.TestCase):
             classify_onboard_error("cloudflare challenge; no accessToken"),
             "cloudflare_challenge",
         )
+        self.assertEqual(
+            classify_onboard_error("OpenAI 限流：验证码试太多次"),
+            "openai_rate_limited",
+        )
 
 
 class OnboardKickTests(unittest.IsolatedAsyncioTestCase):

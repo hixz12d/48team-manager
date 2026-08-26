@@ -136,6 +136,8 @@ def _find_otp(page):
         'input[name="code"]',
         'input[name="otp"]',
         'input[placeholder*="Code" i]',
+        'input[aria-label*="code" i]',
+        'input[aria-label*="verification" i]',
     ]:
         loc = page.locator(selector)
         try:
@@ -144,6 +146,34 @@ def _find_otp(page):
         except Exception:  # noqa: BLE001
             continue
     return None
+
+
+def _otp_boxes(page):
+    try:
+        loc = page.locator("input[maxlength='1']")
+        if loc.count() >= 4 and loc.first.is_visible():
+            return loc
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _fill_otp(page, code: str) -> bool:
+    boxes = _otp_boxes(page)
+    if boxes is not None:
+        for index, char in enumerate(code[: boxes.count()]):
+            boxes.nth(index).fill(char)
+        return True
+    otp_el = _find_otp(page)
+    if otp_el:
+        otp_el.fill(code)
+        return True
+    return False
+
+
+def page_rate_limited(page) -> bool:
+    blob = _page_text(page).lower()
+    return any(token in blob for token in ("too many attempts", "too many tries", "max_check_attempts"))
 
 
 def _page_text(page) -> str:
@@ -341,6 +371,7 @@ def run_browser_onboard(
             session: dict[str, Any] = {}
             last_url = ""
             password_tried = False
+            otp_sent = False
             has_mail = bool(pickup_url or use_cloudflare)
             debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
@@ -356,8 +387,14 @@ def run_browser_onboard(
                     except Exception:  # noqa: BLE001
                         pass
 
-                otp_el = _find_otp(page)
-                if otp_el and not _visible(page, 'input[type="password"], input[name="current-password"]'):
+                if page_rate_limited(page):
+                    result["error"] = "OpenAI 限流：验证码试太多次，等几分钟再点重新注册"
+                    result["error_code"] = "openai_rate_limited"
+                    break
+
+                on_verify = "email-verification" in url or "check your inbox" in _page_text(page).lower()
+                otp_ready = bool(_find_otp(page) or _otp_boxes(page))
+                if otp_ready and (on_verify or not _visible(page, 'input[type="password"], input[name="current-password"]')):
                     report("email_otp", "等待邮箱验证码")
                     try:
                         code = _wait_mailbox_code(
@@ -377,18 +414,26 @@ def run_browser_onboard(
                         result["error"] = result.get("error") or "email OTP not found"
                         result["error_code"] = result.get("error_code") or "mail_otp_timeout"
                         break
-                    otp_el.fill(code)
+                    if not _fill_otp(page, code):
+                        result["error"] = "email OTP input not found"
+                        result["error_code"] = "mail_otp_timeout"
+                        break
                     _click_exact(page, ["Continue", "Verify"]) or _click_first(page, ['button[type="submit"]'])
                     page.wait_for_timeout(2500)
                     continue
+                if on_verify:
+                    report("email_otp", "验证码页还没出现输入框，继续等")
+                    page.wait_for_timeout(1500)
+                    continue
 
                 if _visible(page, 'input[type="password"], input[name="current-password"]'):
-                    if has_mail and _click_exact(page, [
+                    if has_mail and not otp_sent and _click_exact(page, [
                         "Log in with a one-time code",
                         "Email me a code",
                         "Send a code",
                         "Use a one-time code",
                     ]):
+                        otp_sent = True
                         report("email_otp", "密码页改走邮箱一次性验证码")
                         page.wait_for_timeout(2500)
                         continue
@@ -461,7 +506,10 @@ def run_browser_onboard(
                     report("login", "未登录首页，点 Log in 回去")
                     page.wait_for_timeout(2000)
                     continue
-                if _click_exact(page, ["Continue", "Accept", "Accept invite", "Join workspace", "Join", "I agree", "Okay", "Next"]):
+                if "auth.openai.com" in url:
+                    page.wait_for_timeout(1200)
+                    continue
+                if _click_exact(page, ["Accept", "Accept invite", "Join workspace", "Join", "I agree", "Okay", "Next"]):
                     page.wait_for_timeout(1500)
                     continue
                 page.wait_for_timeout(1200)
