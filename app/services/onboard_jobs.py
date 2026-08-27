@@ -61,6 +61,17 @@ def active_job_for_email(email: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def update_email(job_id: Optional[str], email: str) -> None:
+    if not job_id:
+        return
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        job["email"] = email
+        job["updated_at"] = get_now().isoformat()
+
+
 def note(job_id: Optional[str], stage: str, message: str, *, error: str = "", error_code: str = "") -> None:
     if not job_id:
         return

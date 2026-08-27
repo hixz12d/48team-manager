@@ -467,6 +467,63 @@ def run_auto_migration():
             "CREATE INDEX IF NOT EXISTS idx_sub2api_ledger_email ON sub2api_usage_ledgers (email)"
         )
 
+        if not table_exists(cursor, "hme_alias_leases"):
+            logger.info("创建 hme_alias_leases 表")
+            cursor.execute("""
+                CREATE TABLE hme_alias_leases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email VARCHAR(255) NOT NULL UNIQUE,
+                    anonymous_id VARCHAR(255) NOT NULL,
+                    account_id VARCHAR(100) NOT NULL,
+                    job_id VARCHAR(32),
+                    purpose VARCHAR(40),
+                    team_id INTEGER,
+                    expires_at DATETIME NOT NULL,
+                    created_at DATETIME
+                )
+            """)
+            migrations_applied.append("hme_alias_leases")
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hme_lease_expires ON hme_alias_leases (expires_at)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hme_lease_job ON hme_alias_leases (job_id)"
+        )
+
+
+        if not table_exists(cursor, "phone_pool"):
+            logger.info("创建 phone_pool 表")
+            cursor.execute("""
+                CREATE TABLE phone_pool (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    number VARCHAR(32) NOT NULL UNIQUE,
+                    sms_url TEXT NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'active',
+                    used_count INTEGER NOT NULL DEFAULT 0,
+                    max_uses INTEGER,
+                    last_used_at DATETIME,
+                    last_success_at DATETIME,
+                    last_error TEXT,
+                    last_error_type VARCHAR(40),
+                    reserved_by VARCHAR(64),
+                    reserved_at DATETIME,
+                    risk_count INTEGER NOT NULL DEFAULT 0,
+                    no_sms_streak INTEGER NOT NULL DEFAULT 0,
+                    note TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            """)
+            migrations_applied.append("phone_pool")
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phone_pool_status ON phone_pool (status)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phone_pool_reserved ON phone_pool (reserved_by)"
+        )
+
         # 提交更改
         conn.commit()
         

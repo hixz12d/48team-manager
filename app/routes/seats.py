@@ -240,7 +240,7 @@ async def load_sub2api_dashboard(
 
 class OnboardRequest(BaseModel):
     team_id: int
-    email: str = Field(..., description="邮箱，或 email----pickup_url；只填 iCloud 别名时走 Cloudflare 读码")
+    email: str = Field("", description="可空则自动领 HME；或 email----pickup_url；只填 iCloud 别名时走 Cloudflare 读码")
     phone: str = Field("", description="+1xxxx----https://api668.com/sms/by_key?key=...")
     proxy: str = Field("", description="子号静态 ISP，不填则用母号 ISP")
     password: str = ""
@@ -250,7 +250,7 @@ class OnboardRequest(BaseModel):
 
 
 class FreeOnboardRequest(BaseModel):
-    email: str = Field(..., description="iCloud 别名，或 email----pickup_url")
+    email: str = Field("", description="可空则自动领 HME；或 email----pickup_url")
     phone: str = Field("", description="+1xxxx----https://api668.com/sms/by_key?key=...")
     proxy: str = Field("", description="子号静态 ISP，不填则用系统中心默认免费号代理")
     password: str = ""
@@ -880,15 +880,27 @@ async def seats_oauth_complete(
 
 
 
+@router.get("/seats/hme-status")
+async def seats_hme_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.hme import probe_status
+
+    status = await probe_status(db)
+    return {"success": bool(status.get("ok")), **status}
+
+
 @router.post("/seats/onboard")
 async def seats_onboard(
     payload: OnboardRequest,
     current_user: dict = Depends(require_admin),
 ):
     email = normalize_email(payload.email.split("----", 1)[0] if payload.email else "")
-    active = onboard_jobs.active_job_for_email(email)
-    if active:
-        return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的拉人任务", "job": active}
+    if email:
+        active = onboard_jobs.active_job_for_email(email)
+        if active:
+            return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的拉人任务", "job": active}
     job = onboard_jobs.create_job(team_id=payload.team_id, email=email or payload.email, action="onboard")
     asyncio.create_task(_run_onboard_job(job["id"], payload))
     return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始拉人，进度会留在本页", "job": job}
@@ -900,9 +912,10 @@ async def seats_onboard_free(
     current_user: dict = Depends(require_admin),
 ):
     email = normalize_email(payload.email.split("----", 1)[0] if payload.email else "")
-    active = onboard_jobs.active_job_for_email(email)
-    if active:
-        return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的任务", "job": active}
+    if email:
+        active = onboard_jobs.active_job_for_email(email)
+        if active:
+            return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的任务", "job": active}
     job = onboard_jobs.create_job(team_id=0, email=email or payload.email, action="free_register")
     asyncio.create_task(_run_free_onboard_job(job["id"], payload))
     return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始注册免费号，进度会留在本页", "job": job}

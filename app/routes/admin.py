@@ -2301,6 +2301,10 @@ async def settings_page(
             "cf_mail_base_url": await settings_service.get_setting(db, "cf_mail_base_url", "https://apimail.xiaozhudf2026.foo"),
             "cf_mail_address": await settings_service.get_setting(db, "cf_mail_address", "icloud@xiaozhudf2026.foo"),
             "cf_mail_admin_password": await settings_service.get_setting(db, "cf_mail_admin_password", ""),
+            "hme_base_url": await settings_service.get_setting(db, "hme_base_url", "http://icloud-hme:8081"),
+            "hme_service_token": await settings_service.get_setting(db, "hme_service_token", ""),
+            "hme_account_id": await settings_service.get_setting(db, "hme_account_id", ""),
+            "hme_team_tag_map": await settings_service.get_setting(db, "hme_team_tag_map", ""),
             "warranty_expiration_mode": await settings_service.get_warranty_expiration_mode(db),
             "ui_theme": settings_service.normalize_ui_theme(await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)),
             "ui_style": settings_service.normalize_ui_style(await settings_service.get_setting(db, "ui_style", DEFAULT_UI_STYLE)),
@@ -2370,6 +2374,13 @@ class CloudflareMailSettingsRequest(BaseModel):
     base_url: str = Field("", description="Cloudflare Temp Email API 地址")
     address: str = Field("", description="Forward To 收件地址")
     admin_password: str = Field("", description="x-admin-auth 密钥")
+
+
+class HmeSettingsRequest(BaseModel):
+    base_url: str = Field("", description="HME 服务地址")
+    service_token: str = Field("", description="X-HME-Service-Token，留空沿用已保存")
+    account_id: str = Field("", description="HME 账号 ID，只有一个时可空")
+    team_tag_map: str = Field("", description="可选 JSON：team_id -> 标签")
 
 
 class TeamAutoRefreshSettingsRequest(BaseModel):
@@ -3394,3 +3405,102 @@ async def update_cloudflare_mail_settings(
     if success:
         return JSONResponse(content={"success": True, "message": "Cloudflare 邮箱配置已保存", "base_url": base_url, "address": address})
     return JSONResponse(status_code=500, content={"success": False, "error": "保存失败"})
+
+
+@router.post("/settings/hme")
+async def update_hme_settings(
+    payload: HmeSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.hme import (
+        DEFAULT_HME_BASE_URL,
+        HME_SETTING_ACCOUNT_ID,
+        HME_SETTING_BASE_URL,
+        HME_SETTING_SERVICE_TOKEN,
+        HME_SETTING_TEAM_TAG_MAP,
+        normalize_hme_base_url,
+        parse_team_tag_map,
+        probe_status,
+    )
+
+    base_url = normalize_hme_base_url(payload.base_url or DEFAULT_HME_BASE_URL)
+    token = payload.service_token.strip()
+    if not token:
+        token = (await settings_service.get_setting(db, HME_SETTING_SERVICE_TOKEN, "") or "").strip()
+    if not token:
+        return JSONResponse(status_code=400, content={"success": False, "error": "请输入 HME 服务 token"})
+    team_tag_map = payload.team_tag_map.strip()
+    if team_tag_map:
+        parse_team_tag_map(team_tag_map)
+    success = await settings_service.update_settings(db, {
+        HME_SETTING_BASE_URL: base_url,
+        HME_SETTING_SERVICE_TOKEN: token,
+        HME_SETTING_ACCOUNT_ID: payload.account_id.strip(),
+        HME_SETTING_TEAM_TAG_MAP: team_tag_map,
+    })
+    if not success:
+        return JSONResponse(status_code=500, content={"success": False, "error": "保存失败"})
+    probe = await probe_status(db)
+    if not probe.get("ok"):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": probe.get("error") or "探测失败", "base_url": base_url, **probe},
+        )
+    return JSONResponse(content={
+        "success": True,
+        "message": f"HME 已保存，未占用 {probe.get('unused', 0)}",
+        "base_url": base_url,
+        "account_id": probe.get("account_id") or payload.account_id.strip(),
+        **probe,
+    })
+
+
+@router.post("/settings/hme/probe")
+async def probe_hme_settings(
+    payload: HmeSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.hme import (
+        DEFAULT_HME_BASE_URL,
+        HME_SETTING_ACCOUNT_ID,
+        HME_SETTING_SERVICE_TOKEN,
+        normalize_hme_base_url,
+    )
+
+    base_url = normalize_hme_base_url(payload.base_url or DEFAULT_HME_BASE_URL)
+    token = payload.service_token.strip() or (await settings_service.get_setting(db, HME_SETTING_SERVICE_TOKEN, "") or "").strip()
+    account_id = payload.account_id.strip()
+    # 探测用表单值，不落盘；临时写入缓存会造成误会，所以直接调客户端。
+    from app.services import hme as hme_service
+
+    cfg = hme_service.HmeConfig(
+        base_url=base_url,
+        service_token=token,
+        account_id=account_id or (await settings_service.get_setting(db, HME_SETTING_ACCOUNT_ID, "") or "").strip(),
+    )
+    if not cfg.configured:
+        return JSONResponse(status_code=400, content={"success": False, "error": "请填写 HME 地址和 token"})
+    try:
+        accounts = await asyncio.to_thread(hme_service.hme_client.list_accounts, cfg)
+        account = hme_service.resolve_account(accounts, cfg.account_id)
+        aliases = await asyncio.to_thread(
+            hme_service.hme_client.list_aliases, cfg, str(account.get("id") or "")
+        )
+        await hme_service.purge_expired_leases(db)
+        leased = await hme_service.active_leased_emails(db)
+        unused = hme_service.pick_all_unoccupied(aliases, leased)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    return JSONResponse(content={
+        "success": True,
+        "ok": True,
+        "base_url": base_url,
+        "account_id": account.get("id"),
+        "account_name": account.get("name") or "",
+        "alias_total": len(aliases),
+        "unused": len(unused),
+        "message": f"连通，未占用 {len(unused)} / 共 {len(aliases)}",
+    })
+

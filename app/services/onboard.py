@@ -63,6 +63,8 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "mail_otp_rejected"
     if "sms_rejected" in text or "不被 openai 接受" in text or "停在美国" in error or "绑满" in error:
         return "sms_rejected"
+    if "号码池" in error or "phone_pool" in text:
+        return "phone_pool_empty"
     if "sms_missing" in text or "sms_failed" in text or "接码" in error or "手机号页" in error or "sms" in text:
         return "sms_failed"
     if "otp" in text or "mailbox" in text or "验证码" in error:
@@ -511,7 +513,107 @@ class OnboardService:
             "dry_run": False,
         }
 
+
     async def invite_and_onboard(
+        self,
+        db_session: AsyncSession,
+        *,
+        team_id: int,
+        email_line: str,
+        phone_line: str = "",
+        proxy: str = "",
+        password: str = "",
+        reuse_existing: bool = True,
+        skip_invite: bool = False,
+        force: bool = False,
+        job_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from app.services import hme as hme_service
+
+        claimed = None
+        try:
+            email_line, claimed = await hme_service.maybe_claim_alias(
+                db_session,
+                email_line,
+                job_id=job_id or "",
+                purpose="onboard",
+                team_id=team_id,
+            )
+            if claimed:
+                onboard_jobs.update_email(job_id, claimed.email)
+                onboard_jobs.note(job_id, "hme", f"已领取 HME 别名 {claimed.email}")
+            result = await self._invite_and_onboard_impl(
+                db_session,
+                team_id=team_id,
+                email_line=email_line,
+                phone_line=phone_line,
+                proxy=proxy,
+                password=password,
+                reuse_existing=reuse_existing,
+                skip_invite=skip_invite,
+                force=force,
+                job_id=job_id,
+            )
+            label = ""
+            if claimed and result.get("success"):
+                team = await self._load_team(db_session, team_id)
+                cfg = await hme_service.load_config(db_session)
+                label = hme_service.resolve_team_tag(team, cfg.team_tag_map)
+            await hme_service.finalize_claim(db_session, claimed, result, label)
+            return result
+        except hme_service.HmeError as exc:
+            await hme_service.finalize_claim(db_session, claimed, {"success": False})
+            if job_id:
+                onboard_jobs.note(job_id, "hme_failed", str(exc), error=str(exc), error_code=exc.code)
+            return {"success": False, "error": str(exc), "error_code": exc.code, "status": "hme_failed"}
+        except Exception:
+            await hme_service.finalize_claim(db_session, claimed, {"success": False})
+            raise
+
+    async def register_free_account(
+        self,
+        db_session: AsyncSession,
+        *,
+        email_line: str,
+        phone_line: str = "",
+        proxy: str = "",
+        password: str = "",
+        job_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from app.services import hme as hme_service
+
+        claimed = None
+        try:
+            email_line, claimed = await hme_service.maybe_claim_alias(
+                db_session,
+                email_line,
+                job_id=job_id or "",
+                purpose="free",
+            )
+            if claimed:
+                onboard_jobs.update_email(job_id, claimed.email)
+                onboard_jobs.note(job_id, "hme", f"已领取 HME 别名 {claimed.email}")
+            result = await self._register_free_account_impl(
+                db_session,
+                email_line=email_line,
+                phone_line=phone_line,
+                proxy=proxy,
+                password=password,
+                job_id=job_id,
+            )
+            label = hme_service.FREE_ACCOUNT_LABEL if claimed and result.get("success") else ""
+            await hme_service.finalize_claim(db_session, claimed, result, label)
+            return result
+        except hme_service.HmeError as exc:
+            await hme_service.finalize_claim(db_session, claimed, {"success": False})
+            if job_id:
+                onboard_jobs.note(job_id, "hme_failed", str(exc), error=str(exc), error_code=exc.code)
+            return {"success": False, "error": str(exc), "error_code": exc.code, "status": "hme_failed"}
+        except Exception:
+            await hme_service.finalize_claim(db_session, claimed, {"success": False})
+            raise
+
+    async def _invite_and_onboard_impl(
         self,
         db_session: AsyncSession,
         *,
@@ -1092,7 +1194,7 @@ class OnboardService:
             "oauth": oauth_ran,
         }
 
-    async def register_free_account(
+    async def _register_free_account_impl(
         self,
         db_session: AsyncSession,
         *,
@@ -1412,14 +1514,12 @@ class OnboardService:
                     replacement = item
                     break
 
-        if replacement is None and not email_line:
-            return {
-                "success": False,
-                "error": f"已踢出 {kick_target.email}，但没有可复用子号，也没有提供新邮箱",
-                "kick": kick_result,
-            }
-
-        invite_line = email_line or (replacement.mail_raw if replacement else replacement.email)
+        if replacement is None and not str(email_line or "").strip():
+            invite_line = ""
+        elif replacement is None:
+            invite_line = email_line
+        else:
+            invite_line = email_line or (replacement.mail_raw or replacement.email)
         invite_result = await self.invite_and_onboard(
             db_session,
             team_id=team.id,

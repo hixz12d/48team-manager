@@ -37,6 +37,7 @@
             <a href="#settings-team-import" class="settings-nav-pill settings-nav-link" data-target="settings-team-import">Team 导入</a>
             <a href="#settings-sub2api" class="settings-nav-pill settings-nav-link" data-target="settings-sub2api">Sub2API 推送</a>
             <a href="#settings-cfmail" class="settings-nav-pill settings-nav-link" data-target="settings-cfmail">Cloudflare 邮箱</a>
+            <a href="#settings-hme" class="settings-nav-pill settings-nav-link" data-target="settings-hme">iCloud HME</a>
         </div>
         <div class="settings-nav-group">
             <div class="settings-nav-group-title">账户与外观</div>
@@ -449,6 +450,35 @@
             <input type="password" id="cfMailAdminPassword" class="form-control" value="" placeholder="{{ '已保存，留空则沿用原密钥' if cf_mail_admin_password else 'x-admin-auth' }}" autocomplete="new-password">
         </div>
         <button type="submit" class="btn btn-primary">保存并测试连接</button>
+    </form>
+</div>
+
+<div class="content-section settings-panel" id="settings-hme">
+    <div class="section-header">
+        <h3>iCloud HME</h3>
+    </div>
+    <form id="hmeForm" class="settings-form">
+        <div class="form-group">
+            <label for="hmeBaseUrl">HME 地址</label>
+            <input type="text" id="hmeBaseUrl" class="form-control" value="{{ hme_base_url or 'http://icloud-hme:8081' }}" placeholder="http://icloud-hme:8081">
+            <p class="form-help">容器内用 http://icloud-hme:8081。本机调试可改成 http://127.0.0.1:8081。</p>
+        </div>
+        <div class="form-group">
+            <label for="hmeAccountId">HME 账号 ID</label>
+            <input type="text" id="hmeAccountId" class="form-control" value="{{ hme_account_id or '' }}" placeholder="只有一个账号时可空">
+        </div>
+        <div class="form-group">
+            <label for="hmeServiceToken">服务 token</label>
+            <input type="password" id="hmeServiceToken" class="form-control" value="" placeholder="{{ '已保存，留空则沿用原 token' if hme_service_token else 'X-HME-Service-Token' }}" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+            <label for="hmeTeamTagMap">Team 标签映射（可选）</label>
+            <input type="text" id="hmeTeamTagMap" class="form-control" value="{{ hme_team_tag_map or '' }}" placeholder='{"3":"某某Team"}'>
+            <p class="form-help">默认打 Team 名称；名称为空时用这里的映射，再空用母号邮箱 local-part。不要用 Team#3。</p>
+        </div>
+        <button type="submit" class="btn btn-primary">保存并探测</button>
+        <button type="button" class="btn btn-secondary" id="hmeProbeBtn">只探测不保存</button>
+        <p class="form-help" id="hmeProbeResult">探测会列出未占用别名数量。领号走 HME，读码仍走 Cloudflare。</p>
     </form>
 </div>
 {% endblock %}
@@ -938,6 +968,64 @@
                     showToast(data.message || 'Sub2API 配置已保存', 'success');
                 } else {
                     showToast(data.error || '保存失败', 'error');
+                }
+            } catch (error) {
+                showToast('网络错误', 'error');
+            }
+        });
+    }
+    function hmePayload() {
+        return {
+            base_url: document.getElementById('hmeBaseUrl').value.trim(),
+            account_id: document.getElementById('hmeAccountId').value.trim(),
+            service_token: document.getElementById('hmeServiceToken').value,
+            team_tag_map: document.getElementById('hmeTeamTagMap').value.trim()
+        };
+    }
+    const hmeForm = document.getElementById('hmeForm');
+    if (hmeForm) {
+        hmeForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const response = await fetch('/admin/settings/hme', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(hmePayload())
+                });
+                const data = await response.json();
+                const hint = document.getElementById('hmeProbeResult');
+                if (response.ok && data.success) {
+                    if (data.base_url) document.getElementById('hmeBaseUrl').value = data.base_url;
+                    if (data.account_id) document.getElementById('hmeAccountId').value = data.account_id;
+                    document.getElementById('hmeServiceToken').value = '';
+                    if (hint) hint.textContent = data.message || ('未占用 ' + (data.unused || 0));
+                    showToast(data.message || 'HME 配置已保存', 'success');
+                } else {
+                    if (hint) hint.textContent = data.error || '保存失败';
+                    showToast(data.error || '保存失败', 'error');
+                }
+            } catch (error) {
+                showToast('网络错误', 'error');
+            }
+        });
+    }
+    const hmeProbeBtn = document.getElementById('hmeProbeBtn');
+    if (hmeProbeBtn) {
+        hmeProbeBtn.addEventListener('click', async () => {
+            const hint = document.getElementById('hmeProbeResult');
+            try {
+                const response = await fetch('/admin/settings/hme/probe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(hmePayload())
+                });
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    if (hint) hint.textContent = data.message || ('未占用 ' + (data.unused || 0));
+                    showToast(data.message || '探测成功', 'success');
+                } else {
+                    if (hint) hint.textContent = data.error || '探测失败';
+                    showToast(data.error || '探测失败', 'error');
                 }
             } catch (error) {
                 showToast('网络错误', 'error');

@@ -320,3 +320,51 @@ class Sub2ApiUsageLedger(Base):
     __table_args__ = (
         Index("idx_sub2api_ledger_email", "email"),
     )
+
+
+class HmeAliasLease(Base):
+    """HME 别名领取租约。未过期视为占用，不用标签当锁。"""
+    __tablename__ = "hme_alias_leases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), unique=True, nullable=False, comment="领取到的别名")
+    anonymous_id = Column(String(255), nullable=False, comment="HME anonymousId")
+    account_id = Column(String(100), nullable=False, comment="HME 账号 ID")
+    job_id = Column(String(32), comment="拉人任务 ID")
+    purpose = Column(String(40), comment="onboard/free/rotate")
+    team_id = Column(Integer, comment="拉人时的 Team ID")
+    expires_at = Column(DateTime, nullable=False, comment="租约过期时间")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+
+    __table_args__ = (
+        Index("idx_hme_lease_expires", "expires_at"),
+        Index("idx_hme_lease_job", "job_id"),
+    )
+
+
+class PhonePool(Base):
+    """本地接码号码池。成功绑定才计数，领取只写租约。"""
+    __tablename__ = "phone_pool"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    number = Column(String(32), unique=True, nullable=False, comment="E.164 号码")
+    sms_url = Column(Text, nullable=False, comment="接码 URL")
+    status = Column(String(20), default="active", nullable=False, comment="active/maxed/disabled/risk")
+    used_count = Column(Integer, default=0, nullable=False, comment="成功或作废次数")
+    max_uses = Column(Integer, comment="单号次数上限，空则用系统默认")
+    last_used_at = Column(DateTime, comment="最近一次占用/成功/冷却起点")
+    last_success_at = Column(DateTime, comment="最近一次 OpenAI 接受短信")
+    last_error = Column(Text, comment="最近一次失败说明")
+    last_error_type = Column(String(40), comment="invalid/recently_used/risk/no_sms")
+    reserved_by = Column(String(64), comment="占用该号的 job_id")
+    reserved_at = Column(DateTime, comment="租约开始时间")
+    risk_count = Column(Integer, default=0, nullable=False, comment="累计 risk 次数")
+    no_sms_streak = Column(Integer, default=0, nullable=False, comment="连续收不到短信次数")
+    note = Column(Text, comment="备注")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
+
+    __table_args__ = (
+        Index("idx_phone_pool_status", "status"),
+        Index("idx_phone_pool_reserved", "reserved_by"),
+    )

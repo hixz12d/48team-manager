@@ -188,6 +188,7 @@
 
     <details class="content-section seat-tools">
         <summary>拉人 / 轮转 / 测代理</summary>
+        <p class="form-help" id="hmeUnusedHint">HME 未占用数量加载中…</p>
         <div class="seat-tools-grid">
             <form id="rotateForm" class="settings-form" onsubmit="return handleRotate(event)">
                 <h4>1 踢 1 拉</h4>
@@ -201,7 +202,7 @@
                 </div>
                 <div class="form-group">
                     <label>补位邮箱</label>
-                    <input id="rotateEmail" class="form-control" placeholder="可空，默认 standby">
+                    <input id="rotateEmail" class="form-control" placeholder="可空：先 standby，没有再领 HME">
                 </div>
                 <div class="form-group">
                     <label>接码</label>
@@ -227,7 +228,7 @@
                 </div>
                 <div class="form-group">
                     <label>邮箱</label>
-                    <input id="onboardEmail" class="form-control" required placeholder="afraid-16.scepter@icloud.com">
+                    <input id="onboardEmail" class="form-control" placeholder="可空则自动领 HME 别名">
                 </div>
                 <div class="form-group">
                     <label>接码</label>
@@ -245,7 +246,7 @@
                 <p class="form-help">只注册 ChatGPT 免费号，走 Codex 授权后推进 Sub2API 的 Free模板 / Luna 组，不拉 Team。</p>
                 <div class="form-group">
                     <label>邮箱</label>
-                    <input id="freeOnboardEmail" class="form-control" required placeholder="afraid-16.scepter@icloud.com">
+                    <input id="freeOnboardEmail" class="form-control" placeholder="可空则自动领 HME 别名">
                 </div>
                 <div class="form-group">
                     <label>接码</label>
@@ -434,6 +435,24 @@ async function pollOnboardJob(jobId, options) {
         onboardPollTimer = setInterval(tick, 2000);
     }
 }
+
+
+async function loadHmeStatus() {
+    const el = document.getElementById('hmeUnusedHint');
+    if (!el) return;
+    try {
+        const response = await fetch('/admin/seats/hme-status');
+        const data = await response.json();
+        if (data.ok) {
+            el.textContent = 'HME 未占用别名 ' + (data.unused || 0) + (data.account_name ? (' · ' + data.account_name) : '');
+        } else {
+            el.textContent = data.error || 'HME 未配置。邮箱留空将无法自动领号。';
+        }
+    } catch (error) {
+        el.textContent = 'HME 状态未知';
+    }
+}
+loadHmeStatus();
 
 async function handleOnboard(event) {
     event.preventDefault();
