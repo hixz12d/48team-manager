@@ -22,7 +22,9 @@
 
 ## VPS 怎么跑
 
-HME 只活在 `/opt/icloud-hme`，Compose 项目名 `icloud-hme`，容器 `icloud-hme`，端口 `127.0.0.1:8081`，网络 `team48_net`（external）。**不要**进 `/opt/sub2api`，不要 `docker compose down` / `--remove-orphans`。
+HME 代码在 `/opt/icloud-hme`，**数据在数据盘** `/data/icloud-hme`（`accounts.json` / Cookie）。Compose 项目名 `icloud-hme`，容器 `icloud-hme`，端口 `127.0.0.1:8081`，网络 `team48_net`（external）。**不要**进 `/opt/sub2api`，不要动 `/data/sub2api-backups`，不要 `docker compose down` / `--remove-orphans`。
+
+公网 UI：`https://icloud.xiaozhudf2026.foo`（Cloudflare Flexible，独立 Nginx `server_name`，回源 `127.0.0.1:8081`）。48team 容器内仍用 `http://icloud-hme:8081`，不走公网。
 
 ```bash
 # 代码：本机 push 后
@@ -31,10 +33,10 @@ git pull --ff-only
 docker compose -p icloud-hme up -d --build
 
 # 数据：另通道，绝不进 Git
-# 本机 accounts.json -> /opt/icloud-hme/data/accounts.json
+# 本机 accounts.json -> /data/icloud-hme/accounts.json
 ```
 
-`.env` 只在 VPS：`ICLOUD_HME_ADMIN_PASSWORD`、`ICLOUD_HME_SERVICE_TOKEN`。
+`.env` 只在 VPS：`ICLOUD_HME_ADMIN_PASSWORD`、`ICLOUD_HME_SERVICE_TOKEN`、`HME_DATA_DIR=/data/icloud-hme`。
 
 48team：
 
@@ -44,14 +46,14 @@ git pull --ff-only origin main
 docker compose -p team48 up -d --build --no-deps team48
 ```
 
-容器内 `hme_base_url` 用 `http://icloud-hme:8081`。备选 `http://host.docker.internal:8081`。临时看 HME UI 用 SSH 隧道 `8081`，不要改 Nginx。
+容器内 `hme_base_url` 用 `http://icloud-hme:8081`。备选 `http://host.docker.internal:8081`。人类 UI 走 `https://icloud.xiaozhudf2026.foo`，不要改 sub2api 的 Nginx。
 
-Cookie 会过期。更新后重新 scp `data/accounts.json`，或经隧道打开 HME UI 更新。
+Cookie 会过期。更新后重新同步到 `/data/icloud-hme/accounts.json`，或打开 HME UI 更新。
 
 ## 怎么验收
 
 1. 私有仓 diff 无私密
-2. VPS `127.0.0.1:8081` 可访问，data 来自本机 accounts
+2. VPS `127.0.0.1:8081` 与 `https://icloud.xiaozhudf2026.foo` 可访问，data 在 `/data/icloud-hme`
 3. 系统中心探测 HME，能看到未占用数量
 4. 空邮箱拉人/免费号会领无业务标签的下一个别名
 5. 手填邮箱走旧路径
