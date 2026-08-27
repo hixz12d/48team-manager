@@ -87,7 +87,7 @@ class OnboardHelperTests(unittest.TestCase):
 
     def test_skip_invite_mail_when_already_invited(self):
         self.assertFalse(should_wait_for_invite_mail(True))
-        self.assertTrue(should_wait_for_invite_mail(False))
+        self.assertFalse(should_wait_for_invite_mail(False))
 
     def test_classify_oauth_errors(self):
         self.assertEqual(classify_onboard_error("授权成功但没有 refresh_token，未推送"), "oauth_no_refresh")
@@ -350,13 +350,11 @@ class OnboardOauthTests(unittest.IsolatedAsyncioTestCase):
 
         originals = {
             "add_team_member": onboard_mod.team_service.add_team_member,
-            "wait_mail": onboard_mod.wait_for_mailbox_item,
             "create_auth": onboard_mod.chatgpt_service.create_oauth_authorize_url,
             "exchange": onboard_mod.chatgpt_service.exchange_oauth_code,
             "import_session": onboard_mod.sub2api_service.import_session,
         }
         onboard_mod.team_service.add_team_member = AsyncMock(return_value={"success": True, "message": "invited"})
-        onboard_mod.wait_for_mailbox_item = MagicMock(return_value="")
         onboard_mod.chatgpt_service.create_oauth_authorize_url = MagicMock(return_value={
             "authorize_url": "https://auth.openai.com/oauth/authorize",
             "code_verifier": "ver",
@@ -381,7 +379,6 @@ class OnboardOauthTests(unittest.IsolatedAsyncioTestCase):
 
     def _restore(self, onboard_mod, originals):
         onboard_mod.team_service.add_team_member = originals["add_team_member"]
-        onboard_mod.wait_for_mailbox_item = originals["wait_mail"]
         onboard_mod.chatgpt_service.create_oauth_authorize_url = originals["create_auth"]
         onboard_mod.chatgpt_service.exchange_oauth_code = originals["exchange"]
         onboard_mod.sub2api_service.import_session = originals["import_session"]
@@ -669,7 +666,7 @@ class OnboardFreeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "free")
         self.assertTrue(result["oauth"])
-        service._run_browser.assert_called_once()
+        service._run_browser.assert_not_called()
         service._run_oauth_browser.assert_called_once()
         import_mock.assert_awaited_once()
         kwargs = import_mock.await_args.kwargs

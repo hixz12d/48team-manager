@@ -263,6 +263,7 @@
                     <span id="onboardProgressStage" class="text-muted"></span>
                 </div>
                 <p id="onboardProgressMessage" class="onboard-progress-message">等待开始</p>
+                <p class="form-help">任务在服务器上跑。刷新页面或删别的子号不会停它。</p>
                 <pre id="onboardProgressLog" class="onboard-progress-log"></pre>
             </div>
         </div>
@@ -275,48 +276,42 @@
         </div>
     </details>
 
-    {% if children %}
+    {% if child_groups %}
     <div class="content-section">
         <div class="section-header"><h3>本地子号库</h3></div>
-        <div class="table-container">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>邮箱</th>
-                        <th>状态</th>
-                        <th>当前 Team</th>
-                        <th>account_id</th>
-                        <th>最近结果</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for child in children %}
-                    <tr>
-                        <td>{{ child.email }}</td>
-                        <td>{{ child.status_label or child.status }}</td>
-                        <td>{{ child.current_team_id or '-' }}</td>
-                        <td class="child-account-id" title="{{ child.account_id or '' }}">{% if child.needs_account_id_fix %}<span class="risk-chip tone-warning">需修复</span> {% endif %}{{ child.account_id or '-' }}</td>
-                        <td class="child-last-error" title="{{ child.last_error or child.last_stage or '' }}">{{ child.last_error or child.last_stage or '-' }}</td>
-                        <td>
-                            {% if child.needs_account_id_fix or child.status == 'active' %}
+        <div class="sub2api-status local-child-status">
+            {% for group in child_groups %}
+            <article class="sub2api-box">
+                <header>
+                    <span>{{ group.title }}</span>
+                    <span class="text-muted">{{ group.children|length }}</span>
+                </header>
+                {% for child in group.children %}
+                <div class="sub2api-row local-child-row" data-child-id="{{ child.id }}" data-email="{{ child.email }}">
+                    <span class="sub2api-name" title="{{ child.email }}">{{ child.email }}</span>
+                    <span class="local-child-meta">
+                        <span class="sub2api-chip tone-{% if child.status == 'active' %}ok{% elif child.status in ['invited', 'standby'] %}warn{% elif child.last_error %}danger{% else %}muted{% endif %}">{{ child.status_label or child.status }}</span>
+                        {% if child.needs_account_id_fix %}<span class="sub2api-chip tone-warn">需修复</span>{% endif %}
+                        <span class="local-child-actions">
+                            {% if child.needs_account_id_fix %}
                             <button class="btn btn-sm btn-secondary" type="button" onclick='fixAccountId({{ child.id }}, {{ child.email|tojson }}, {{ child.current_team_id or child.last_team_id or "null" }})'>修 account_id</button>
                             {% endif %}
                             {% if child.can_reregister or child.status == 'invited' %}
                             <button class="btn btn-sm btn-primary" type="button" onclick='reregisterChild({{ child.id }}, {{ child.email|tojson }}, {{ child.current_team_id or child.last_team_id or "null" }})'>重新注册</button>
                             {% endif %}
                             {% if child.status in ['unused', 'standby', 'disabled'] %}
-                            <button class="btn btn-sm btn-danger" onclick="deleteChild({{ child.id }}, '{{ child.email }}')">删除</button>
+                            <button class="btn btn-sm btn-danger" type="button" onclick='deleteChild({{ child.id }}, {{ child.email|tojson }})'>删除</button>
                             {% elif child.status == 'invited' %}
                             <span class="text-muted">先撤回再删</span>
                             {% else %}
                             <span class="text-muted">先踢再删</span>
                             {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+                        </span>
+                    </span>
+                </div>
+                {% endfor %}
+            </article>
+            {% endfor %}
         </div>
     </div>
     {% endif %}
@@ -343,6 +338,32 @@ async function postJSON(url, payload) {
 let onboardPollTimer = null;
 let currentOnboardJobId = sessionStorage.getItem('onboardJobId') || '';
 
+function saveOnboardSnapshot(job) {
+    try {
+        if (job && job.id && job.status === 'running') sessionStorage.setItem('onboardJobId', job.id);
+        else sessionStorage.removeItem('onboardJobId');
+        sessionStorage.setItem('onboardJobSnapshot', JSON.stringify(job || null));
+    } catch (error) {}
+}
+
+function clearOnboardJobId() {
+    currentOnboardJobId = '';
+    try { sessionStorage.removeItem('onboardJobId'); } catch (error) {}
+}
+
+function restoreOnboardSnapshot() {
+    try {
+        const snap = JSON.parse(sessionStorage.getItem('onboardJobSnapshot') || 'null');
+        if (snap && snap.id && snap.id === currentOnboardJobId) renderOnboardJob(snap);
+    } catch (error) {}
+}
+
+function isIgnorablePollError(error) {
+    const name = error && error.name;
+    const message = String((error && error.message) || '');
+    return name === 'AbortError' || /aborted|Failed to fetch|NetworkError|Load failed/i.test(message);
+}
+
 function renderOnboardJob(job) {
     const box = document.getElementById('onboardProgress');
     const title = document.getElementById('onboardProgressTitle');
@@ -352,7 +373,7 @@ function renderOnboardJob(job) {
     const cancelBtn = document.getElementById('onboardCancel');
     if (!box || !job) return;
     box.hidden = false;
-    title.textContent = (job.action === 'reregister' ? '重新注册' : '拉人进度') + ' · ' + (job.email || '');
+    title.textContent = (job.action === 'reregister' ? '重新注册' : (job.action === 'free_register' ? '免费号进度' : '拉人进度')) + ' · ' + (job.email || '');
     stage.textContent = (job.status || '') + ' / ' + (job.stage || '');
     message.textContent = job.message || job.error || '进行中';
     box.classList.toggle('is-failed', job.status === 'failed');
@@ -361,6 +382,7 @@ function renderOnboardJob(job) {
     log.textContent = lines.join('\n');
     log.scrollTop = log.scrollHeight;
     if (cancelBtn) cancelBtn.hidden = job.status !== 'running';
+    saveOnboardSnapshot(job);
 }
 
 async function pollOnboardJob(jobId, options) {
@@ -370,29 +392,36 @@ async function pollOnboardJob(jobId, options) {
     sessionStorage.setItem('onboardJobId', jobId);
     if (onboardPollTimer) clearInterval(onboardPollTimer);
     let finished = false;
+    let missCount = 0;
     const tick = async () => {
         try {
             const response = await fetch('/admin/seats/jobs/' + encodeURIComponent(jobId));
             const data = await response.json();
             if (!response.ok || !data.job) {
+                missCount += 1;
+                if (missCount < 5) return;
                 throw new Error(data.error || '读不到任务');
             }
+            missCount = 0;
             renderOnboardJob(data.job);
             if (data.job.status && data.job.status !== 'running') {
                 finished = true;
                 clearInterval(onboardPollTimer);
                 onboardPollTimer = null;
-                if (quiet) return;
+                clearOnboardJobId();
                 if (data.job.status === 'success') {
-                    showToast(data.job.message || '拉人成功', 'success');
-                    if (reloadOnDone) setTimeout(() => location.reload(), 800);
+                    if (!quiet) showToast(data.job.message || '拉人成功', 'success');
+                    if (reloadOnDone && !(options && options.alreadyDone)) setTimeout(() => location.reload(), 800);
                 } else if (data.job.status === 'cancelled') {
-                    showToast(data.job.message || '已停止', 'info');
-                } else {
+                    if (!quiet) showToast(data.job.message || '已停止', 'info');
+                } else if (!quiet) {
                     showToast(data.job.error || data.job.message || '拉人失败', 'error');
                 }
             }
         } catch (error) {
+            if (isIgnorablePollError(error)) return;
+            missCount += 1;
+            if (missCount < 5) return;
             finished = true;
             clearInterval(onboardPollTimer);
             onboardPollTimer = null;
@@ -569,7 +598,8 @@ async function kickChild(teamId, email, userId = '') {
         if (userId) payload.user_id = userId;
         const result = await postJSON('/admin/seats/kick', payload);
         showToast(result.message || '已踢出', 'success');
-        setTimeout(() => location.reload(), 800);
+        if (currentOnboardJobId) hydrateSeatLive();
+        else setTimeout(() => location.reload(), 800);
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -591,7 +621,8 @@ async function revokeLiveInvite(teamId, email) {
     try {
         const result = await postJSON('/admin/seats/kick', { team_id: teamId, email });
         showToast(result.message || '已撤回', 'success');
-        setTimeout(() => location.reload(), 800);
+        if (currentOnboardJobId) hydrateSeatLive();
+        else setTimeout(() => location.reload(), 800);
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -602,7 +633,12 @@ async function deleteChild(childId, email) {
     try {
         const result = await postJSON(`/admin/seats/${childId}/delete`, {});
         showToast(result.message || '已删除', 'success');
-        setTimeout(() => location.reload(), 800);
+        const row = document.querySelector('[data-child-id="' + childId + '"]');
+        if (row) {
+            const box = row.closest('.sub2api-box');
+            row.remove();
+            if (box && !box.querySelector('[data-child-id]')) box.remove();
+        } else if (!currentOnboardJobId) setTimeout(() => location.reload(), 800);
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -890,8 +926,15 @@ window.oauthReauthOnDone = function () {
 <script>
 loadSub2apiStatus(false);
 hydrateSeatLive();
+restoreOnboardSnapshot();
 if (currentOnboardJobId) {
-    pollOnboardJob(currentOnboardJobId, { reloadOnDone: false, quiet: true });
+    let alreadyDone = false;
+    try {
+        const snap = JSON.parse(sessionStorage.getItem('onboardJobSnapshot') || 'null');
+        alreadyDone = Boolean(snap && snap.id === currentOnboardJobId && snap.status && snap.status !== 'running');
+    } catch (error) {}
+    if (alreadyDone) clearOnboardJobId();
+    else pollOnboardJob(currentOnboardJobId, { reloadOnDone: true, quiet: true });
 }
 </script>
 {% endblock %}

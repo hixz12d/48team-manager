@@ -43,4 +43,4 @@ COPY init_db.py /app/init_db.py
 
 EXPOSE 8008
 
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1280x900x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 & export DISPLAY=${DISPLAY:-:99}; exec uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8008}"]
+CMD ["sh", "-c", "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; mkdir -p /tmp/.X11-unix; Xvfb :99 -screen 0 1280x900x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 & export DISPLAY=${DISPLAY:-:99}; exec uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8008}"]

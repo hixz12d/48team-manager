@@ -32,6 +32,52 @@ router = APIRouter(prefix="/admin", tags=["seats"])
 LIVE_FETCH_CONCURRENCY = 4
 
 
+def group_local_children(
+    cards: List[Dict[str, Any]],
+    children: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    by_team: Dict[int, List[Dict[str, Any]]] = {}
+    leftover: List[Dict[str, Any]] = []
+    for child in children:
+        raw = child.get("current_team_id") or child.get("last_team_id")
+        try:
+            team_id = int(raw) if raw not in (None, "") else None
+        except (TypeError, ValueError):
+            team_id = None
+        if team_id:
+            by_team.setdefault(team_id, []).append(child)
+        else:
+            leftover.append(child)
+    groups: List[Dict[str, Any]] = []
+    seen = set()
+    for card in cards:
+        team_id = int(card["id"])
+        items = by_team.get(team_id) or []
+        if not items:
+            continue
+        seen.add(team_id)
+        groups.append({
+            "team_id": team_id,
+            "title": card.get("team_name") or card.get("email") or f"Team {team_id}",
+            "children": items,
+        })
+    for team_id, items in by_team.items():
+        if team_id in seen:
+            continue
+        groups.append({
+            "team_id": team_id,
+            "title": f"Team {team_id}",
+            "children": items,
+        })
+    if leftover:
+        groups.append({
+            "team_id": None,
+            "title": "未分配",
+            "children": leftover,
+        })
+    return groups
+
+
 async def _fetch_team_live(team_id: int) -> Dict[str, Any]:
     async with AsyncSessionLocal() as session:
         try:
@@ -310,9 +356,11 @@ async def seats_page(
 
     context = await build_admin_base_context(request, db, current_user, "seats")
     cards, sub2api_status = await load_sub2api_dashboard(db, allow_network=False)
+    children = [child_account_service.serialize(item) for item in await child_account_service.list_accounts(db)]
     context.update({
         "cards": cards,
-        "children": [child_account_service.serialize(item) for item in await child_account_service.list_accounts(db)],
+        "children": children,
+        "child_groups": group_local_children(cards, children),
         "stats": await child_account_service.stats(db),
         "sub2api_status": sub2api_status,
         "free_account_proxy": await settings_service.get_setting(db, "free_account_proxy", ""),

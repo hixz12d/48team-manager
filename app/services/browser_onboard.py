@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import socket
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -45,7 +49,56 @@ def looks_like_cloudflare(title: str, body: str = "") -> bool:
     return any(marker in blob for marker in _CF_MARKERS)
 
 
+def ensure_virtual_display() -> None:
+    """有头 Chromium 需要 X 显示器。docker restart 会留下 stale Xvfb lock，这里自动拉起来。"""
+    if settings.browser_headless or os.name == "nt" or not shutil.which("Xvfb"):
+        return
+    display = os.environ.get("DISPLAY") or ":99"
+    os.environ["DISPLAY"] = display
+    num = display.lstrip(":").split(".", 1)[0]
+    sock_path = f"/tmp/.X11-unix/X{num}"
+    lock_path = f"/tmp/.X{num}-lock"
+
+    def alive() -> bool:
+        if not os.path.exists(sock_path):
+            return False
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            conn.settimeout(0.4)
+            conn.connect(sock_path)
+            return True
+        except OSError:
+            return False
+        finally:
+            conn.close()
+
+    if alive():
+        return
+    for path in (sock_path, lock_path):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except IsADirectoryError:
+            pass
+    Path("/tmp/.X11-unix").mkdir(parents=True, exist_ok=True)
+    log = open("/tmp/xvfb.log", "ab", buffering=0)
+    subprocess.Popen(
+        ["Xvfb", display, "-screen", "0", "1280x900x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    for _ in range(40):
+        if alive():
+            logger.info("Xvfb ready on %s", display)
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"Xvfb 没起来，DISPLAY={display}")
+
+
 def chromium_context_kwargs(profile_dir: Path | str, proxy_config: dict[str, str]) -> dict[str, Any]:
+    ensure_virtual_display()
     kwargs: dict[str, Any] = {
         "user_data_dir": str(profile_dir),
         "headless": bool(settings.browser_headless),

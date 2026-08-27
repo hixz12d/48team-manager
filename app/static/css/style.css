@@ -6774,6 +6774,36 @@ body.style-classic .btn {
     border-color: color-mix(in srgb, var(--warning) 50%, var(--border-base) 50%);
 }
 
+.local-child-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+}
+
+.local-child-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.28rem;
+}
+
+.local-child-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    justify-content: flex-end;
+}
+
+.local-child-actions .btn {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.42rem;
+    line-height: 1.3;
+}
+
+.local-child-actions .text-muted {
+    font-size: 0.68rem;
+}
+
 .sub2api-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;

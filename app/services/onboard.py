@@ -1,4 +1,4 @@
-"""子号拉人引擎：邀请 -> 注册/复用登录 -> 接码 -> 对账 -> Codex 授权换 RT -> 推 Sub2API。"""
+"""子号拉人引擎：邀请确认 -> 默认登录/授权链接注册 -> 接码 -> 对账 -> Codex 授权换 RT -> 推 Sub2API。"""
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +24,7 @@ from app.services.child_accounts import (
     is_workspace_account_id,
     normalize_email,
 )
-from app.services.mail_otp import parse_mail_line, wait_for_mailbox_item
+from app.services.mail_otp import parse_mail_line
 from app.services import oauth_sessions, onboard_jobs
 from app.services.sms import parse_phone_line, require_proxy
 from app.services.sub2api import sub2api_service
@@ -48,7 +48,7 @@ def _random_password() -> str:
 
 
 def should_wait_for_invite_mail(already_invited: bool) -> bool:
-    return not already_invited
+    return False
 
 
 def classify_onboard_error(error: str, *, stage: str = "") -> str:
@@ -669,28 +669,6 @@ class OnboardService:
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
         invite_url = ""
-        if not should_wait_for_invite_mail(already_invited):
-            await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message="邀请已存在，不再等邀请邮件，直接打开登录页")
-        else:
-            try:
-                await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message="等待邀请邮件")
-                invite_url = await asyncio.to_thread(
-                    wait_for_mailbox_item,
-                    email=email,
-                    pickup_url=pickup_url,
-                    proxy=self._child_proxy(child, team),
-                    kind="invite",
-                    timeout_sec=90,
-                    cf_base_url=cf_config["base_url"] if use_cloudflare else "",
-                    cf_address=cf_config["address"] if use_cloudflare else "",
-                    cf_admin_password=cf_config["admin_password"] if use_cloudflare else "",
-                ) or ""
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("等待邀请邮件失败: %s", exc)
-                await self._progress(db_session, child, job_id=job_id, stage="waiting_mail", message=f"邀请邮件未拿到，继续尝试直接打开登录页：{exc}")
-
-        if self._cancelled(job_id):
-            return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
         browser_mode = "register" if should_register else "relogin"
         await self._progress(
@@ -943,7 +921,7 @@ class OnboardService:
         if self._cancelled(job_id):
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
-        await self._progress(db_session, child, job_id=job_id, stage="oauth", message="正在走 Codex 授权，换可用 refresh token")
+        await self._progress(db_session, child, job_id=job_id, stage="oauth", message="正在打开 Codex 授权链接注册或登录，换可用 refresh token")
         auth = chatgpt_service.create_oauth_authorize_url(
             client_id=oauth_sessions.CLIENT_ID,
             redirect_uri=oauth_sessions.REDIRECT_URI,
@@ -967,6 +945,7 @@ class OnboardService:
                 cf_base_url=cf_config["base_url"],
                 cf_address=cf_config["address"],
                 cf_admin_password=cf_config["admin_password"],
+                allow_signup=team is None,
                 on_stage=on_stage,
             )
         except Exception as exc:  # noqa: BLE001
@@ -1173,7 +1152,7 @@ class OnboardService:
         if not password:
             password = _random_password()
             child.password_encrypted = child_account_service.encrypt_secret(password)
-        await self._progress(db_session, child, job_id=job_id, stage="checking", message="正在注册免费号")
+        await self._progress(db_session, child, job_id=job_id, stage="checking", message="正在走 Codex 授权链接注册免费号")
 
         pickup_url = parsed.get("pickup_url") or ""
         if not pickup_url and child.mail_raw:
@@ -1188,70 +1167,6 @@ class OnboardService:
         if self._cancelled(job_id):
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
-        def on_stage(stage: str, message: str) -> None:
-            onboard_jobs.note(job_id, stage, message)
-
-        await self._progress(db_session, child, job_id=job_id, stage="browser", message="正在打开浏览器注册免费 ChatGPT")
-        try:
-            browser_result = await asyncio.to_thread(
-                self._run_browser,
-                email=email,
-                password=password,
-                pickup_url=pickup_url,
-                phone=phone,
-                sms_url=sms_url,
-                proxy=self._child_proxy(child),
-                start_url="",
-                mode="register",
-                team_name="",
-                use_cloudflare=use_cloudflare,
-                cf_base_url=cf_config["base_url"],
-                cf_address=cf_config["address"],
-                cf_admin_password=cf_config["admin_password"],
-                on_stage=on_stage,
-            )
-        except Exception as exc:  # noqa: BLE001
-            error = str(exc)
-            code = classify_onboard_error(error, stage="browser")
-            await child_account_service.record_event(
-                db_session,
-                email=email,
-                action="register",
-                child_id=child.id,
-                success=False,
-                detail=error,
-                error_code=code,
-            )
-            await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code=code)
-            return {"success": False, "error": error, "error_code": code, "status": "browser_failed"}
-
-        if not isinstance(browser_result, dict) or not browser_result.get("ok"):
-            error = (browser_result or {}).get("error") if isinstance(browser_result, dict) else f"浏览器流程返回了无效结果: {type(browser_result).__name__}"
-            error = error or "浏览器流程失败"
-            code = (browser_result or {}).get("error_code") if isinstance(browser_result, dict) else "browser_await_bug"
-            code = code or classify_onboard_error(error, stage="browser")
-            await child_account_service.record_event(
-                db_session,
-                email=email,
-                action="register",
-                child_id=child.id,
-                success=False,
-                detail=error,
-                error_code=code,
-            )
-            await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code=code)
-            return {"success": False, "error": error, "error_code": code, "status": "browser_failed"}
-
-        await child_account_service.save_tokens(db_session, child, {
-            "access_token": browser_result.get("access_token") or "",
-            "refresh_token": browser_result.get("refresh_token") or "",
-            "session_token": browser_result.get("session_token") or "",
-            "id_token": browser_result.get("id_token") or "",
-            "account_id": browser_result.get("account_id") or "",
-            "client_id": browser_result.get("client_id") or "",
-        })
-        if browser_result.get("password"):
-            child.password_encrypted = child_account_service.encrypt_secret(browser_result["password"])
         await child_account_service.mark_free(db_session, child)
         await child_account_service.record_event(
             db_session,
@@ -1259,7 +1174,7 @@ class OnboardService:
             action="register",
             child_id=child.id,
             success=True,
-            detail="free-register",
+            detail="free-oauth-register",
         )
         return await self._finish_callable_child(db_session, child, None, email=email, job_id=job_id)
 

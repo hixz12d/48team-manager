@@ -1564,9 +1564,48 @@ class Sub2ApiService:
                     )
                     if response.status_code < 400:
                         data = self._unwrap(response.json())
+                        account_pk = self._extract_account_id(data) or existing_id or (existing or {}).get("id")
+                        try:
+                            account_pk = int(account_pk) if account_pk else None
+                        except (TypeError, ValueError):
+                            account_pk = None
+                        if refresh_token and account_pk:
+                            apply_payload = {
+                                "type": "oauth",
+                                "credentials": self.build_oauth_credentials(
+                                    email=email,
+                                    access_token=access_token,
+                                    refresh_token=refresh_token,
+                                    id_token=id_token,
+                                    account_id=account_id,
+                                    client_id=client_id,
+                                ),
+                                "extra": {"email": email} if email else {},
+                            }
+                            try:
+                                apply_response = await client.post(
+                                    f"/api/v1/admin/accounts/{account_pk}/apply-oauth-credentials",
+                                    headers=headers,
+                                    json=apply_payload,
+                                )
+                                if apply_response.status_code < 400:
+                                    data = self._unwrap(apply_response.json())
+                                    return await finish({
+                                        "strategy": "import_codex_session+apply_oauth_credentials",
+                                        "account_id": self._extract_account_id(data) or account_pk,
+                                        "data": data,
+                                        "name": account_name,
+                                        "proxy_id": session_payload.get("proxy_id"),
+                                        "template": template_fields.get("name") or None,
+                                    })
+                                errors.append(
+                                    f"apply_oauth_credentials_after_import: {apply_response.status_code} {apply_response.text[:240]}"
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                errors.append(f"apply_oauth_credentials_after_import: {exc}")
                         return await finish({
                             "strategy": "import_codex_session",
-                            "account_id": self._extract_account_id(data) or existing_id or (existing or {}).get("id"),
+                            "account_id": account_pk or existing_id or (existing or {}).get("id"),
                             "data": data,
                             "name": account_name,
                             "proxy_id": session_payload.get("proxy_id"),

@@ -7,6 +7,8 @@ from typing import Any, Callable, Dict, Optional
 
 from app.config import settings
 from app.services.browser_onboard import (
+    _accept_terms,
+    _click_exact,
     _click_first,
     _fill_about_you,
     _fill_first,
@@ -32,6 +34,19 @@ logger = logging.getLogger(__name__)
 StageCallback = Optional[Callable[[str, str], None]]
 
 
+def _visible_password_inputs(page) -> list:
+    boxes = page.locator('input[type="password"]')
+    visible = []
+    for index in range(boxes.count()):
+        try:
+            box = boxes.nth(index)
+            if box.is_visible():
+                visible.append(box)
+        except Exception:  # noqa: BLE001
+            continue
+    return visible
+
+
 def run_browser_oauth_reauth(
     *,
     email: str,
@@ -45,6 +60,7 @@ def run_browser_oauth_reauth(
     cf_base_url: str = "",
     cf_address: str = "",
     cf_admin_password: str = "",
+    allow_signup: bool = False,
     on_stage: StageCallback = None,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
@@ -107,7 +123,7 @@ def run_browser_oauth_reauth(
             browser.on("page", attach)
             for existing in list(browser.pages):
                 attach(existing)
-            report("browser_open", "正在打开 ChatGPT 授权页")
+            report("browser_open", "正在打开 Codex 授权链接")
             page.goto(authorize_url, wait_until="load")
             wait_cloudflare(page)
             page.wait_for_timeout(1500)
@@ -125,6 +141,8 @@ def run_browser_oauth_reauth(
             )
             otp_submits = 0
             otp_resends = 0
+            password_tried = False
+            signup_clicked = False
 
             for _ in range(36):
                 remember(page.url or "")
@@ -179,6 +197,37 @@ def run_browser_oauth_reauth(
                         page.wait_for_timeout(1500)
                     continue
 
+                password_boxes = _visible_password_inputs(page)
+
+                if allow_signup and password_boxes and not signup_clicked and (
+                    _click_exact(page, ["Sign up", "Create account", "Create an account"])
+                    or _click_first(page, ['a:has-text("Sign up")', 'button:has-text("Sign up")'])
+                ):
+                    signup_clicked = True
+                    report("create_account", "密码页改走注册")
+                    page.wait_for_timeout(1500)
+                    continue
+
+                if allow_signup and not password_tried and (
+                    _click_exact(page, ["Continue with password", "Try again"])
+                    or _click_first(page, ['button:has-text("Continue with password")', 'button:has-text("Try again")'])
+                ):
+                    report("create_password", "授权注册需要密码，不走无密码验证码")
+                    page.wait_for_timeout(1500)
+                    password_boxes = _visible_password_inputs(page)
+
+                if allow_signup and password_boxes and not password_tried:
+                    report("password", "正在设置注册密码")
+                    for box in password_boxes:
+                        try:
+                            box.fill(password)
+                        except Exception:  # noqa: BLE001
+                            continue
+                    _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Create account")'])
+                    password_tried = True
+                    page.wait_for_timeout(2500)
+                    continue
+
                 otp_el = _find_otp(page)
                 if otp_el:
                     if otp_submits >= 2:
@@ -214,10 +263,37 @@ def run_browser_oauth_reauth(
                     page.wait_for_timeout(4000)
                     continue
 
-                if page.locator('input[type="password"]').count() > 0:
+                on_verify = "email-verification" in url or "check your inbox" in _page_text(page).lower()
+                if on_verify and not password_boxes:
+                    report("email_otp", "验证码页还没出现输入框，继续等")
+                    page.wait_for_timeout(1500)
+                    continue
+
+                if password_boxes:
+                    if allow_signup and password_tried:
+                        page.wait_for_timeout(1500)
+                        continue
+                    body = _page_text(page).lower()
+                    bad_password = password_tried or any(token in body for token in ("incorrect", "wrong password", "did not match"))
+                    if bad_password and (
+                        _click_exact(page, ["Log in with a one-time code", "Email me a code", "Send a code", "Use a one-time code"])
+                        or _click_first(page, ['button:has-text("one-time code")', 'button:has-text("Email me a code")'])
+                    ):
+                        report("email_otp", "密码不对，改走一次性验证码")
+                        page.wait_for_timeout(2500)
+                        continue
+                    if bad_password:
+                        result["error"] = "密码不对，也没有邮箱验证码入口"
+                        result["error_code"] = "password_rejected"
+                        break
                     report("password", "正在填写密码")
-                    _fill_first(page, ['input[type="password"]', 'input[name="password"]'], password)
-                    _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")'])
+                    for box in password_boxes:
+                        try:
+                            box.fill(password)
+                        except Exception:  # noqa: BLE001
+                            continue
+                    _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Create account")'])
+                    password_tried = True
                     page.wait_for_timeout(2500)
                     continue
 
@@ -230,6 +306,11 @@ def run_browser_oauth_reauth(
                     )
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Next")'])
                     page.wait_for_timeout(2500)
+                    continue
+
+                if _accept_terms(page):
+                    report("terms", "已勾选服务条款")
+                    page.wait_for_timeout(1500)
                     continue
 
                 if _click_first(
