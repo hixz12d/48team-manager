@@ -15,6 +15,9 @@ from app.services.browser_onboard import (
     looks_like_email_gate,
     looks_like_session_ended,
     looks_like_invalid_phone,
+    looks_like_phone_risk,
+    looks_like_recently_used_phone,
+    classify_phone_outcome,
     phone_rejection_message,
     split_phone,
     looks_like_otp_input,
@@ -90,6 +93,17 @@ class OnboardHelperTests(unittest.TestCase):
             "这个接码号已经绑满 OpenAI 账号，换一个没用过的 +1 号",
         )
         self.assertFalse(looks_like_invalid_phone("Enter your phone number"))
+        self.assertTrue(looks_like_recently_used_phone("This number was recently used. Try a different number."))
+        self.assertTrue(looks_like_phone_risk("We couldn't send a text. Continue with WhatsApp."))
+        self.assertEqual(
+            classify_phone_outcome(text="This phone number is already linked to the maximum number of accounts."),
+            "invalid",
+        )
+        self.assertEqual(
+            classify_phone_outcome(text="This number was recently used. Please use a different number."),
+            "recently_used",
+        )
+        self.assertEqual(classify_onboard_error("号码池可用号全在冷却中，请稍后再试或导入新号"), "phone_pool_empty")
         self.assertEqual(split_phone("+13434986375"), ("United States", "3434986375"))
 
     def test_age_page_is_not_otp(self):

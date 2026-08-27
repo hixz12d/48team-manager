@@ -3469,6 +3469,7 @@ class TeamService:
                     "current_members": team.current_members,
                     "max_members": team.max_members,
                     "status": team.status,
+                    "account_role": getattr(team, "account_role", None) or "",
                     "device_code_auth_enabled": getattr(team, 'device_code_auth_enabled', False),
                     "warranty_seat_enabled": getattr(team, "warranty_seat_enabled", False),
                     "last_sync": team.last_sync.isoformat() if team.last_sync else None,

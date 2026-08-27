@@ -143,7 +143,7 @@
                     </thead>
                     <tbody>
                         {% for record in records %}
-                        <tr>
+                        <tr data-record-id="{{ record.id }}">
                             <td data-label="ID"><span class="text-muted">{{ record.id }}</span></td>
                             <td data-label="用户邮箱"><strong>{{ record.email }}</strong></td>
                             <td data-label="兑换码"><code>{{ record.code }}</code></td>
@@ -305,8 +305,8 @@
 
             if (result.success) {
                 showToast(result.message || '撤回成功', 'success');
-                // 刷新页面或移除该行
-                setTimeout(() => location.reload(), 1000);
+                const row = btn?.closest('tr') || document.querySelector(`tr[data-record-id="${recordId}"]`);
+                if (row) row.remove();
             } else {
                 showToast(result.error || '撤回失败', 'error');
                 if (btn) {

@@ -17,6 +17,78 @@ function escapeHtml(value) {
         .replace(/'/g, '&#039;');
 }
 
+async function postJSON(url, payload) {
+    const response = await fetch(url, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || (data && data.success === false)) {
+        const rawError = data?.error ?? data?.detail ?? data?.message ?? data?.reason ?? '请求失败';
+        throw new Error(extractErrorText(rawError) || '请求失败');
+    }
+    return data;
+}
+
+function withButtonState(button, task, options = {}) {
+    if (!button) return Promise.resolve().then(task);
+    const originalHtml = button.innerHTML;
+    const originalDisabled = button.disabled;
+    const busyText = options.busyText;
+    button.disabled = true;
+    button.classList.add('is-busy');
+    button.classList.remove('is-success', 'is-error');
+    button.dataset.busy = '1';
+    if (busyText) button.textContent = busyText;
+    return Promise.resolve()
+        .then(task)
+        .then((result) => {
+            button.classList.remove('is-busy');
+            button.classList.add('is-success');
+            window.setTimeout(() => button.classList.remove('is-success'), 900);
+            return result;
+        })
+        .catch((error) => {
+            button.classList.remove('is-busy');
+            button.classList.add('is-error');
+            window.setTimeout(() => button.classList.remove('is-error'), 1200);
+            throw error;
+        })
+        .finally(() => {
+            button.disabled = originalDisabled;
+            button.classList.remove('is-busy');
+            delete button.dataset.busy;
+            if (busyText) button.innerHTML = originalHtml;
+        });
+}
+
+async function refreshAdminViewIfPossible() {
+    if (typeof window.refreshCurrentAdminView !== 'function') return false;
+    try {
+        await window.refreshCurrentAdminView();
+        return true;
+    } catch (error) {
+        console.warn(error);
+        return false;
+    }
+}
+
+function markFormSaved(form, message) {
+    if (!form) return;
+    let hint = form.querySelector('.form-saved-hint');
+    if (!hint) {
+        hint = document.createElement('p');
+        hint.className = 'form-saved-hint';
+        const submit = form.querySelector('button[type="submit"]');
+        if (submit && submit.parentElement) submit.insertAdjacentElement('afterend', hint);
+        else form.appendChild(hint);
+    }
+    hint.hidden = false;
+    hint.textContent = message || '已保存';
+}
+
 function extractErrorText(payload) {
     if (payload === null || payload === undefined) return '';
     if (typeof payload === 'string') return payload;
@@ -1285,7 +1357,8 @@ async function handleSingleImport(event) {
         if (result.success) {
             showToast('Team 导入成功！', 'success');
             form.reset();
-            setTimeout(() => location.reload(), 1500);
+            if (typeof hideModal === 'function') hideModal('importTeamModal');
+            await refreshAdminViewIfPossible();
         } else {
             showToast(getFriendlyAdminErrorMessage(result.error || '导入失败', 0, 'import'), 'error');
         }
@@ -1412,7 +1485,7 @@ async function handleBatchImport(event) {
                     }
 
                     if (data.success_count > 0) {
-                        setTimeout(() => location.reload(), 3000);
+                        refreshAdminViewIfPossible();
                     }
                 } else if (data.type === 'error') {
                     showToast(getFriendlyAdminErrorMessage(data.error || '导入失败', 0, 'import'), 'error');
@@ -1575,7 +1648,7 @@ async function handleJsonFileImport() {
                     }
 
                     if (data.success_count > 0) {
-                        setTimeout(() => location.reload(), 3000);
+                        refreshAdminViewIfPossible();
                     }
                 } else if (data.type === 'error') {
                     showToast(getFriendlyAdminErrorMessage(data.error || '导入失败', 0, 'import'), 'error');
@@ -1731,10 +1804,7 @@ async function generateSingle(event) {
         if (generatedCodeEl && singleResultEl) {
             showToast('兑换码生成成功', 'success');
         }
-        // 如果在列表中，延迟刷新
-        if (window.location.pathname === '/admin/codes') {
-            setTimeout(() => location.reload(), 2000);
-        }
+        await refreshAdminViewIfPossible();
     } else {
         showToast(getFriendlyAdminErrorMessage(result.error || '生成失败', 0, 'common'), 'error');
     }
@@ -1785,9 +1855,7 @@ async function generateBatch(event) {
         if (batchTotalEl && batchCodesEl && batchResultEl) {
             showToast(`成功生成 ${result.data.total} 个兑换码`, 'success');
         }
-        if (window.location.pathname === '/admin/codes') {
-            setTimeout(() => location.reload(), 3000);
-        }
+        await refreshAdminViewIfPossible();
     } else {
         showToast(getFriendlyAdminErrorMessage(result.error || '生成失败', 0, 'common'), 'error');
     }
@@ -1992,7 +2060,7 @@ async function revokeInvite(teamId, email, inModal = false) {
             if (inModal) {
                 await loadModalMemberList(teamId);
             } else {
-                setTimeout(() => location.reload(), 1000);
+                await refreshAdminViewIfPossible();
             }
         } else {
             showToast(getFriendlyAdminErrorMessage(result.error || '撤回失败', 0, 'member'), 'error');
@@ -2057,13 +2125,11 @@ async function handleAddMember(event) {
             showToast(getFriendlyAdminErrorMessage(message || '添加失败', 0, 'member'), 'error');
         }
 
-        if (invitedCount > 0 && document.getElementById('manageMembersModal').classList.contains('show')) {
-            await loadModalMemberList(teamId);
-            if (failedCount === 0) {
-                setTimeout(() => {
-                    window.location.reload();
-                }, 800);
+        if (invitedCount > 0) {
+            if (document.getElementById('manageMembersModal')?.classList.contains('show')) {
+                await loadModalMemberList(teamId);
             }
+            await refreshAdminViewIfPossible();
         }
     } catch (error) {
         showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'member'), 'error');
@@ -2096,7 +2162,7 @@ async function deleteMember(teamId, userId, email, inModal = false) {
         if (inModal) {
             await loadModalMemberList(teamId);
         } else {
-            setTimeout(() => location.reload(), 800);
+            await refreshAdminViewIfPossible();
         }
     }
 }

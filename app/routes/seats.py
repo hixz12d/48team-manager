@@ -943,7 +943,7 @@ async def seats_reregister(
             return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的任务", "job": active}
         request = FreeOnboardRequest(
             email=payload.email or child.mail_raw or child.email,
-            phone=payload.phone or ((child.phone or "") + ("----" + child.sms_url if child.sms_url else "")),
+            phone=payload.phone or "",
             proxy=payload.proxy or child.proxy or "",
         )
         job = onboard_jobs.create_job(team_id=0, email=child.email, action="free_register")
@@ -955,7 +955,7 @@ async def seats_reregister(
     request = OnboardRequest(
         team_id=int(team_id),
         email=payload.email or child.mail_raw or child.email,
-        phone=payload.phone or ((child.phone or "") + ("----" + child.sms_url if child.sms_url else "")),
+        phone=payload.phone or "",
         proxy=payload.proxy or child.proxy or "",
         reuse_existing=True,
         skip_invite=child.status == "invited",

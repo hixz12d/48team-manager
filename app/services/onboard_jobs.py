@@ -21,6 +21,7 @@ def create_job(*, team_id: int, email: str, action: str = "onboard") -> Dict[str
         "id": job_id,
         "team_id": team_id,
         "email": email,
+        "phone": "",
         "action": action,
         "status": "running",
         "stage": "queued",
@@ -71,6 +72,16 @@ def update_email(job_id: Optional[str], email: str) -> None:
         job["email"] = email
         job["updated_at"] = get_now().isoformat()
 
+
+def update_phone(job_id: Optional[str], phone: str) -> None:
+    if not job_id:
+        return
+    with _LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return
+        job["phone"] = phone
+        job["updated_at"] = get_now().isoformat()
 
 def note(job_id: Optional[str], stage: str, message: str, *, error: str = "", error_code: str = "") -> None:
     if not job_id:

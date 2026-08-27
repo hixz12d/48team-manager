@@ -38,6 +38,7 @@
             <a href="#settings-sub2api" class="settings-nav-pill settings-nav-link" data-target="settings-sub2api">Sub2API 推送</a>
             <a href="#settings-cfmail" class="settings-nav-pill settings-nav-link" data-target="settings-cfmail">Cloudflare 邮箱</a>
             <a href="#settings-hme" class="settings-nav-pill settings-nav-link" data-target="settings-hme">iCloud HME</a>
+            <a href="#settings-phone-pool" class="settings-nav-pill settings-nav-link" data-target="settings-phone-pool">号码池</a>
         </div>
         <div class="settings-nav-group">
             <div class="settings-nav-group-title">账户与外观</div>
@@ -481,6 +482,62 @@
         <p class="form-help" id="hmeProbeResult">探测会列出未占用别名数量。领号走 HME，读码仍走 Cloudflare。</p>
     </form>
 </div>
+
+<div class="content-section settings-panel" id="settings-phone-pool">
+    <div class="section-header">
+        <h3>本地号码池</h3>
+    </div>
+    <p class="form-help" id="phonePoolStats">加载中…</p>
+    <form id="smsPoolSettingsForm" class="settings-form">
+        <div class="form-group">
+            <label for="smsMaxUses">每号最多使用次数</label>
+            <input type="number" id="smsMaxUses" class="form-control" min="1" max="20" value="{{ sms_max_uses_per_phone or 3 }}">
+        </div>
+        <div class="form-group">
+            <label for="smsCooldownSec">成功后冷却（秒）</label>
+            <input type="number" id="smsCooldownSec" class="form-control" min="60" max="86400" value="{{ sms_cooldown_sec or 3600 }}">
+        </div>
+        <div class="form-group">
+            <label for="smsReserveSec">领取租约（秒）</label>
+            <input type="number" id="smsReserveSec" class="form-control" min="60" max="7200" value="{{ sms_reserve_sec or 900 }}">
+        </div>
+        <div class="form-group">
+            <label for="smsMaxRetries">单次注册最多换号</label>
+            <input type="number" id="smsMaxRetries" class="form-control" min="1" max="10" value="{{ sms_max_phone_retries or 3 }}">
+        </div>
+        <button type="submit" class="btn btn-primary">保存号码池设置</button>
+    </form>
+    <form id="phonePoolImportForm" class="settings-form">
+        <div class="form-group">
+            <label for="phonePoolImportText">批量导入</label>
+            <textarea id="phonePoolImportText" class="form-control" rows="6" placeholder="+15551234567----https://api668.com/sms/by_key?key=..."></textarea>
+            <p class="form-help">一行一个，格式与拉人表单相同。非法行会跳过并报告。</p>
+        </div>
+        <button type="submit" class="btn btn-primary">导入</button>
+        <button type="button" class="btn btn-secondary" id="phonePoolClearMaxedBtn">清 maxed</button>
+        <button type="button" class="btn btn-secondary" id="phonePoolClearDisabledBtn">清 disabled</button>
+    </form>
+    <div class="form-group">
+        <input type="text" id="phonePoolSearch" class="form-control" placeholder="搜索号码">
+    </div>
+    <div class="table-responsive">
+        <table class="data-table" id="phonePoolTable">
+            <thead>
+                <tr>
+                    <th>号码</th>
+                    <th>状态</th>
+                    <th>次数</th>
+                    <th>上次使用</th>
+                    <th>最后错误</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="phonePoolTableBody">
+                <tr><td colspan="6" class="text-muted">加载中…</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_css %}
@@ -569,6 +626,7 @@
 
             if (response.ok && data.success) {
                 showToast('代理配置已保存', 'success');
+                markFormSaved(e.target, '代理配置已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -668,6 +726,7 @@
 
             if (response.ok && data.success) {
                 showToast('日志级别已保存', 'success');
+                markFormSaved(e.target, '日志级别已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -708,6 +767,7 @@
 
             if (response.ok && data.success) {
                 showToast(data.message || 'Token 刷新配置已保存', 'success');
+                markFormSaved(e.target, data.message || 'Token 刷新配置已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -747,6 +807,7 @@
 
             if (response.ok && data.success) {
                 showToast(data.message || 'Team 自动刷新配置已保存', 'success');
+                markFormSaved(e.target, data.message || 'Team 自动刷新配置已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -805,6 +866,7 @@
 
             if (response.ok && data.success) {
                 showToast(data.message || '自动踢人配置已保存', 'success');
+                markFormSaved(e.target, data.message || '自动踢人配置已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -837,6 +899,7 @@
 
             if (response.ok && data.success) {
                 showToast(data.message || 'Team 导入配置已保存', 'success');
+                markFormSaved(e.target, data.message || 'Team 导入配置已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -869,9 +932,7 @@
                 if (typeof applyUiStyle === 'function') {
                     applyUiStyle(data.style || style);
                 }
-                setTimeout(() => {
-                    window.location.reload();
-                }, 300);
+                markFormSaved(e.target, data.message || '界面风格已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -899,9 +960,10 @@
 
             if (response.ok && data.success) {
                 showToast(data.message || '系统配色已保存', 'success');
-                setTimeout(() => {
-                    window.location.reload();
-                }, 300);
+                try { localStorage.setItem('ui_theme', data.theme || theme); } catch (err) {}
+                if (typeof applySystemTheme === 'function') applySystemTheme(data.theme || theme);
+                if (typeof updateThemeToggleButton === 'function') updateThemeToggleButton(data.theme || theme);
+                markFormSaved(e.target, data.message || '系统配色已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -936,6 +998,7 @@
 
             if (response.ok && data.success) {
                 showToast('Webhook 配置已保存', 'success');
+                markFormSaved(e.target, 'Webhook 配置已保存');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }
@@ -1059,6 +1122,137 @@
                 showToast('网络错误', 'error');
             }
         });
+    }
+    function escapePhonePool(text) {
+        return String(text || '').replace(/[&<>"']/g, (ch) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]);
+    }
+    function renderPhonePool(data) {
+        const stats = data.stats || {};
+        const hint = document.getElementById('phonePoolStats');
+        if (hint) {
+            hint.textContent = '剩余可用次数 ' + (stats.remaining_uses || 0) + ' · active ' + (stats.active || 0) + ' · 冷却 ' + (stats.cooling || 0) + ' · maxed ' + (stats.maxed || 0) + ' · risk ' + (stats.risk || 0) + ' · disabled ' + (stats.disabled || 0);
+        }
+        const body = document.getElementById('phonePoolTableBody');
+        if (!body) return;
+        const items = data.items || [];
+        if (!items.length) {
+            body.innerHTML = '<tr><td colspan="6" class="text-muted">还没有号码</td></tr>';
+            return;
+        }
+        body.innerHTML = items.map((item) => {
+            const enabled = item.status !== 'disabled';
+            return '<tr><td>' + escapePhonePool(item.number) + '</td><td>' + escapePhonePool(item.status) + '</td><td>' + (item.used_count || 0) + '/' + (item.max_uses || 0) + '</td><td>' + escapePhonePool(item.last_used_at) + '</td><td>' + escapePhonePool(item.last_error_type || item.last_error) + '</td><td><button type="button" class="btn btn-secondary phone-pool-toggle" data-id="' + item.id + '" data-enabled="' + (enabled ? '1' : '0') + '">' + (enabled ? '停用' : '启用') + '</button></td></tr>';
+        }).join('');
+    }
+    async function loadPhonePool(q) {
+        const query = new URLSearchParams();
+        if (q) query.set('q', q);
+        const response = await fetch('/admin/phone-pool' + (query.toString() ? '?' + query.toString() : ''));
+        const data = await response.json();
+        if (response.ok && data.success) renderPhonePool(data);
+        else showToast(data.error || '加载号码池失败', 'error');
+    }
+    const smsPoolSettingsForm = document.getElementById('smsPoolSettingsForm');
+    if (smsPoolSettingsForm) {
+        smsPoolSettingsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const response = await fetch('/admin/settings/sms-pool', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sms_max_uses_per_phone: Number(document.getElementById('smsMaxUses').value),
+                        sms_cooldown_sec: Number(document.getElementById('smsCooldownSec').value),
+                        sms_reserve_sec: Number(document.getElementById('smsReserveSec').value),
+                        sms_max_phone_retries: Number(document.getElementById('smsMaxRetries').value)
+                    })
+                });
+                const data = await response.json();
+                if (response.ok && data.success) showToast(data.message || '号码池设置已保存', 'success');
+                else showToast(data.error || '保存失败', 'error');
+            } catch (error) {
+                showToast('网络错误', 'error');
+            }
+        });
+    }
+    const phonePoolImportForm = document.getElementById('phonePoolImportForm');
+    if (phonePoolImportForm) {
+        phonePoolImportForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const response = await fetch('/admin/phone-pool/import', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: document.getElementById('phonePoolImportText').value })
+                });
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    showToast(data.message || '导入完成', 'success');
+                    document.getElementById('phonePoolImportText').value = '';
+                    renderPhonePool(data);
+                } else {
+                    showToast(data.error || '导入失败', 'error');
+                }
+            } catch (error) {
+                showToast('网络错误', 'error');
+            }
+        });
+    }
+    async function clearPhonePool(status) {
+        if (!confirm(status === 'maxed' ? '确定删除所有 maxed 号码？' : '确定删除所有 disabled 号码？')) return;
+        try {
+            const response = await fetch('/admin/phone-pool/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status })
+            });
+            const data = await response.json();
+            if (response.ok && data.success) {
+                showToast(data.message || '已清理', 'success');
+                renderPhonePool(data);
+            } else {
+                showToast(data.error || '清理失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    }
+    const clearMaxedBtn = document.getElementById('phonePoolClearMaxedBtn');
+    if (clearMaxedBtn) clearMaxedBtn.addEventListener('click', () => clearPhonePool('maxed'));
+    const clearDisabledBtn = document.getElementById('phonePoolClearDisabledBtn');
+    if (clearDisabledBtn) clearDisabledBtn.addEventListener('click', () => clearPhonePool('disabled'));
+    const phonePoolTableBody = document.getElementById('phonePoolTableBody');
+    if (phonePoolTableBody) {
+        phonePoolTableBody.addEventListener('click', async (e) => {
+            const btn = e.target.closest('.phone-pool-toggle');
+            if (!btn) return;
+            const enabled = btn.getAttribute('data-enabled') === '1';
+            try {
+                const response = await fetch('/admin/phone-pool/' + btn.getAttribute('data-id') + '/status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: !enabled })
+                });
+                const data = await response.json();
+                if (response.ok && data.success) renderPhonePool(data);
+                else showToast(data.error || '更新失败', 'error');
+            } catch (error) {
+                showToast('网络错误', 'error');
+            }
+        });
+    }
+    let phonePoolSearchTimer = null;
+    const phonePoolSearch = document.getElementById('phonePoolSearch');
+    if (phonePoolSearch) {
+        phonePoolSearch.addEventListener('input', () => {
+            clearTimeout(phonePoolSearchTimer);
+            phonePoolSearchTimer = setTimeout(() => loadPhonePool(phonePoolSearch.value.trim()), 250);
+        });
+    }
+    if (document.getElementById('phonePoolTableBody')) {
+        loadPhonePool();
     }
 </script>
 {% endblock %}

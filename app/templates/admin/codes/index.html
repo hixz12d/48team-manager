@@ -40,28 +40,28 @@
         <div class="stat-card">
             <div class="stat-icon"><i data-lucide="ticket"></i></div>
             <div class="stat-content">
-                <div class="stat-value">{{ stats.total }}</div>
+                <div class="stat-value" data-stat-value="total">{{ stats.total }}</div>
                 <div class="stat-label">兑换码总数</div>
             </div>
         </div>
         <div class="stat-card stat-success">
             <div class="stat-icon"><i data-lucide="check-circle"></i></div>
             <div class="stat-content">
-                <div class="stat-value">{{ stats.unused }}</div>
+                <div class="stat-value" data-stat-value="unused">{{ stats.unused }}</div>
                 <div class="stat-label">未使用</div>
             </div>
         </div>
         <div class="stat-card stat-info">
             <div class="stat-icon"><i data-lucide="clipboard-list"></i></div>
             <div class="stat-content">
-                <div class="stat-value">{{ stats.used }}</div>
+                <div class="stat-value" data-stat-value="used">{{ stats.used }}</div>
                 <div class="stat-label">已使用</div>
             </div>
         </div>
         <div class="stat-card stat-danger">
             <div class="stat-icon"><i data-lucide="clock-3"></i></div>
             <div class="stat-content">
-                <div class="stat-value">{{ stats.expired }}</div>
+                <div class="stat-value" data-stat-value="expired">{{ stats.expired }}</div>
                 <div class="stat-label">已过期</div>
             </div>
         </div>
@@ -174,7 +174,7 @@
                     </thead>
                     <tbody id="codesTableBody">
                         {% for code in codes %}
-                        <tr data-status="{{ code.status }}">
+                        <tr data-status="{{ code.status }}" data-code="{{ code.code }}">
                             <td class="table-select-cell" data-label="选择">
                                 <input type="checkbox" class="code-checkbox" value="{{ code.code }}" onchange="updateSelectionCount()" style="width: auto; margin: 0;">
                             </td>
@@ -636,6 +636,69 @@
 <script>
     let scannedInvalidCodes = [];
 
+    function codeStatusBadge(status) {
+        const map = {
+            unused: ['status-active', '未使用'],
+            used: ['status-full', '已使用'],
+            warranty_active: ['status-info', '质保中'],
+            expired: ['status-error', '已过期'],
+        };
+        const item = map[status] || ['', status || '-'];
+        return `<span class="status-badge ${item[0]}">${escapeHtml(item[1])}</span>`;
+    }
+
+    function formatCodeTime(value) {
+        if (!value) return '-';
+        return typeof formatDateTime === 'function' ? formatDateTime(value) : String(value).replace('T', ' ').slice(0, 16);
+    }
+
+    function codeRowHtml(code) {
+        const warranty = code.has_warranty
+            ? '<span class="status-badge status-info">是</span>'
+            : '<span class="status-badge" style="background: #f3f4f6; color: #6b7280;">否</span>';
+        const days = code.has_warranty ? `<span style="font-size: 0.875rem;">${escapeHtml(code.warranty_days || 30)} 天</span>` : '-';
+        const raw = JSON.stringify(code.code || '');
+        return `<tr data-status="${escapeHtml(code.status || '')}" data-code="${escapeHtml(code.code || '')}">
+            <td class="table-select-cell" data-label="选择"><input type="checkbox" class="code-checkbox" value="${escapeHtml(code.code || '')}" onchange="updateSelectionCount()" style="width: auto; margin: 0;"></td>
+            <td data-label="兑换码"><div style="display: flex; align-items: center; gap: 0.5rem;"><i data-lucide="ticket" style="width: 14px; height: 14px; color: var(--text-muted);"></i><code>${escapeHtml(code.code || '')}</code></div></td>
+            <td data-label="状态">${codeStatusBadge(code.status)}</td>
+            <td data-label="创建时间">${escapeHtml(formatCodeTime(code.created_at))}</td>
+            <td data-label="过期时间">${escapeHtml(code.expires_at ? formatCodeTime(code.expires_at) : '永久有效')}</td>
+            <td data-label="使用者邮箱">${escapeHtml(code.used_by_email || '-')}</td>
+            <td data-label="使用时间">${escapeHtml(code.used_at ? formatCodeTime(code.used_at) : '-')}</td>
+            <td data-label="质保">${warranty}</td>
+            <td data-label="质保时长">${days}</td>
+            <td class="table-actions-cell" data-label="操作" style="text-align: right;"><div class="action-buttons" style="justify-content: flex-end;">
+                <button onclick='copyCode(${raw})' class="btn btn-sm btn-icon btn-minimal btn-secondary" title="复制"><i data-lucide="copy" style="width: 14px; height: 14px;"></i></button>
+                <button onclick='editCode(${raw}, ${code.has_warranty ? 'true' : 'false'}, ${Number(code.warranty_days || 30)})' class="btn btn-sm btn-icon btn-minimal btn-info" title="编辑"><i data-lucide="edit-3" style="width: 14px; height: 14px;"></i></button>
+                <button onclick='deleteCode(${raw})' class="btn btn-sm btn-icon btn-minimal btn-danger" title="删除"><i data-lucide="trash-2" style="width: 14px; height: 14px;"></i></button>
+            </div></td></tr>`;
+    }
+
+    async function refreshCodesDashboard() {
+        const pageUrl = new URL(window.location.href);
+        const url = new URL('/admin/codes/list', window.location.origin);
+        ['page', 'per_page', 'search', 'status_filter'].forEach((key) => {
+            const value = pageUrl.searchParams.get(key);
+            if (value) url.searchParams.set(key, value);
+        });
+        const response = await fetch(url.toString(), { credentials: 'same-origin' });
+        const data = await response.json();
+        if (!response.ok || data.success === false) throw new Error(data.error || '刷新兑换码失败');
+        const stats = data.stats || {};
+        document.querySelectorAll('[data-stat-value]').forEach((el) => {
+            const key = el.getAttribute('data-stat-value');
+            if (key && stats[key] != null) el.textContent = stats[key];
+        });
+        const tbody = document.getElementById('codesTableBody');
+        if (tbody) {
+            tbody.innerHTML = (data.codes || []).map(codeRowHtml).join('');
+            if (window.lucide) lucide.createIcons();
+        }
+        if (typeof updateSelectionCount === 'function') updateSelectionCount();
+    }
+    window.refreshCurrentAdminView = refreshCodesDashboard;
+
     function prepareFloatingDropdowns() {
         document.querySelectorAll('.dropdown-menu-floating').forEach((menu) => {
             const wrapper = menu.closest('.dropdown-wrapper');
@@ -679,8 +742,18 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         prepareFloatingDropdowns();
-        // Init Column Toggler
         initColumnToggler('.data-table', 'codes_list_columns');
+        document.querySelector('.codes-search-form')?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const input = event.target.querySelector('input[name="search"]');
+            const url = new URL(window.location.href);
+            const value = String(input?.value || '').trim();
+            if (value) url.searchParams.set('search', value);
+            else url.searchParams.delete('search');
+            url.searchParams.set('page', '1');
+            history.replaceState({}, '', url.toString());
+            refreshCodesDashboard().catch((error) => showToast(error.message || '搜索失败', 'error'));
+        });
     });
 
     // Column Toggler Logic & Pagination
@@ -865,7 +938,7 @@
             if (response.ok && result.success) {
                 showToast('批量更新成功', 'success');
                 hideModal('bulkEditCodeModal');
-                setTimeout(() => window.location.reload(), 1000);
+                await refreshCodesDashboard();
             } else {
                 showToast(result.error || '批量更新失败', 'error');
             }
@@ -903,9 +976,7 @@
 
             if (response.ok && result.success) {
                 showToast(result.message || '批量删除完成', 'success');
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1000);
+                await refreshCodesDashboard();
                 return;
             }
 
@@ -925,7 +996,11 @@
             url.searchParams.delete('status_filter');
         }
         url.searchParams.set('page', 1);
-        window.location.href = url.toString();
+        history.replaceState({}, '', url.toString());
+        document.querySelectorAll('.filter-tab').forEach((tab) => tab.classList.remove('active'));
+        const current = document.getElementById(status ? ('filter-' + status) : 'filter-all');
+        if (current) current.classList.add('active');
+        refreshCodesDashboard().catch((error) => showToast(error.message || '筛选失败', 'error'));
     }
 
     // 删除兑换码
@@ -959,10 +1034,7 @@
             if (response.ok && result.success) {
                 hideModal('deleteCodeModal');
                 showToast('删除成功', 'success');
-                // 刷新页面
-                setTimeout(() => {
-                    window.location.reload();
-                }, 1000);
+                await refreshCodesDashboard();
             } else {
                 showToast(result.error || '删除失败', 'error');
             }
@@ -1069,7 +1141,7 @@
             if (response.ok && result.success) {
                 hideModal('invalidCodesModal');
                 showToast(result.message || '清理成功', 'success');
-                setTimeout(() => window.location.reload(), 1000);
+                await refreshCodesDashboard();
             } else {
                 showToast(result.error || '清理失败', 'error');
             }
@@ -1147,7 +1219,7 @@
             if (response.ok && result.success) {
                 showToast('更新成功', 'success');
                 hideModal('editCodeModal');
-                setTimeout(() => window.location.reload(), 1000);
+                await refreshCodesDashboard();
             } else {
                 showToast(result.error || '更新失败', 'error');
             }

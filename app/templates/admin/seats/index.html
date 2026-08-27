@@ -206,7 +206,7 @@
                 </div>
                 <div class="form-group">
                     <label>接码</label>
-                    <input id="rotatePhone" class="form-control" placeholder="+1xxxx----https://...">
+                    <input id="rotatePhone" class="form-control" placeholder="留空则自动从号码池领取">
                 </div>
                 <div class="form-group">
                     <label>子号 ISP</label>
@@ -232,7 +232,7 @@
                 </div>
                 <div class="form-group">
                     <label>接码</label>
-                    <input id="onboardPhone" class="form-control" placeholder="+1xxxx----https://...">
+                    <input id="onboardPhone" class="form-control" placeholder="留空则自动从号码池领取">
                 </div>
                 <div class="form-group">
                     <label>子号 ISP</label>
@@ -250,7 +250,7 @@
                 </div>
                 <div class="form-group">
                     <label>接码</label>
-                    <input id="freeOnboardPhone" class="form-control" placeholder="+1xxxx----https://...">
+                    <input id="freeOnboardPhone" class="form-control" placeholder="留空则自动从号码池领取">
                 </div>
                 <div class="form-group">
                     <label>子号 ISP</label>
@@ -262,6 +262,10 @@
                 <div class="onboard-progress-head">
                     <strong id="onboardProgressTitle">拉人进度</strong>
                     <span id="onboardProgressStage" class="text-muted"></span>
+                </div>
+                <div class="onboard-progress-claim">
+                    <div>邮箱：<span id="onboardClaimedEmail">领取中</span></div>
+                    <div>接码：<span id="onboardClaimedPhone">领取中</span></div>
                 </div>
                 <p id="onboardProgressMessage" class="onboard-progress-message">等待开始</p>
                 <p class="form-help">任务在服务器上跑。刷新页面或删别的子号不会停它。</p>
@@ -366,6 +370,35 @@ function isIgnorablePollError(error) {
     return name === 'AbortError' || /aborted|Failed to fetch|NetworkError|Load failed/i.test(message);
 }
 
+function claimedValue(value, running) {
+    const text = String(value || '').trim();
+    if (text) return text;
+    return running ? '领取中' : '未领取';
+}
+
+function openSeatTools() {
+    const tools = document.querySelector('details.seat-tools');
+    if (tools) tools.open = true;
+}
+
+function syncOnboardSubmitLabels() {
+    const onboardBtn = document.getElementById('onboardSubmit');
+    const freeBtn = document.getElementById('freeOnboardSubmit');
+    const rotateBtn = document.querySelector('#rotateForm button[type="submit"]');
+    if (onboardBtn && !onboardBtn.dataset.busy) {
+        const empty = !String(document.getElementById('onboardEmail')?.value || '').trim() && !String(document.getElementById('onboardPhone')?.value || '').trim();
+        onboardBtn.textContent = empty ? '自动领邮箱和接码并邀请' : '邀请并授权';
+    }
+    if (freeBtn && !freeBtn.dataset.busy) {
+        const empty = !String(document.getElementById('freeOnboardEmail')?.value || '').trim() && !String(document.getElementById('freeOnboardPhone')?.value || '').trim();
+        freeBtn.textContent = empty ? '自动领邮箱和接码并注册' : '注册并授权';
+    }
+    if (rotateBtn && !rotateBtn.dataset.busy) {
+        const empty = !String(document.getElementById('rotateEmail')?.value || '').trim() && !String(document.getElementById('rotatePhone')?.value || '').trim();
+        rotateBtn.textContent = empty ? '自动领邮箱和接码并轮转' : '先踢到期号，再拉/复用';
+    }
+}
+
 function renderOnboardJob(job) {
     const box = document.getElementById('onboardProgress');
     const title = document.getElementById('onboardProgressTitle');
@@ -373,11 +406,16 @@ function renderOnboardJob(job) {
     const message = document.getElementById('onboardProgressMessage');
     const log = document.getElementById('onboardProgressLog');
     const cancelBtn = document.getElementById('onboardCancel');
+    const emailEl = document.getElementById('onboardClaimedEmail');
+    const phoneEl = document.getElementById('onboardClaimedPhone');
     if (!box || !job) return;
     box.hidden = false;
-    title.textContent = (job.action === 'reregister' ? '重新注册' : (job.action === 'free_register' ? '免费号进度' : '拉人进度')) + ' · ' + (job.email || '');
+    const running = job.status === 'running';
+    title.textContent = (job.action === 'reregister' ? '重新注册' : (job.action === 'free_register' ? '免费号进度' : '拉人进度'));
     stage.textContent = (job.status || '') + ' / ' + (job.stage || '');
     message.textContent = job.message || job.error || '进行中';
+    if (emailEl) emailEl.textContent = claimedValue(job.email, running);
+    if (phoneEl) phoneEl.textContent = claimedValue(job.phone, running);
     box.classList.toggle('is-failed', job.status === 'failed');
     box.classList.toggle('is-success', job.status === 'success');
     const lines = (job.log || []).map((item) => `[${item.ts || ''}] ${item.message || item.stage || ''}`);
@@ -416,8 +454,9 @@ async function pollOnboardJob(jobId, options) {
                     if (reloadOnDone && !(options && options.alreadyDone)) refreshSeatDashboard({ forceSub2api: true });
                 } else if (data.job.status === 'cancelled') {
                     if (!quiet) showToast(data.job.message || '已停止', 'info');
-                } else if (!quiet) {
-                    showToast(data.job.error || data.job.message || '拉人失败', 'error');
+                } else {
+                    if (!quiet) showToast(data.job.error || data.job.message || '拉人失败', 'error');
+                    refreshLocalPool();
                 }
             }
         } catch (error) {
@@ -456,7 +495,9 @@ loadHmeStatus();
 
 async function handleOnboard(event) {
     event.preventDefault();
-    try {
+    openSeatTools();
+    const btn = document.getElementById('onboardSubmit');
+    const run = async () => {
         const result = await postJSON('/admin/seats/onboard', {
             team_id: parseInt(document.getElementById('onboardTeamId').value, 10),
             email: document.getElementById('onboardEmail').value,
@@ -466,15 +507,22 @@ async function handleOnboard(event) {
         showToast(result.message || '已开始拉人', 'info');
         if (result.job) renderOnboardJob(result.job);
         if (result.job_id) await pollOnboardJob(result.job_id);
+    };
+    try {
+        if (typeof withButtonState === 'function') await withButtonState(btn, run, { busyText: '进行中...' });
+        else await run();
     } catch (error) {
         showToast(error.message, 'error');
     }
+    syncOnboardSubmitLabels();
     return false;
 }
 
 async function handleFreeOnboard(event) {
     event.preventDefault();
-    try {
+    openSeatTools();
+    const btn = document.getElementById('freeOnboardSubmit');
+    const run = async () => {
         const result = await postJSON('/admin/seats/onboard-free', {
             email: document.getElementById('freeOnboardEmail').value,
             phone: document.getElementById('freeOnboardPhone').value,
@@ -483,9 +531,14 @@ async function handleFreeOnboard(event) {
         showToast(result.message || '已开始注册免费号', 'info');
         if (result.job) renderOnboardJob(result.job);
         if (result.job_id) await pollOnboardJob(result.job_id);
+    };
+    try {
+        if (typeof withButtonState === 'function') await withButtonState(btn, run, { busyText: '进行中...' });
+        else await run();
     } catch (error) {
         showToast(error.message, 'error');
     }
+    syncOnboardSubmitLabels();
     return false;
 }
 
@@ -593,7 +646,9 @@ async function fixAccountId(childId, email, teamId) {
 
 async function handleRotate(event) {
     event.preventDefault();
-    try {
+    openSeatTools();
+    const btn = event.target.querySelector('button[type="submit"]');
+    const run = async () => {
         showToast('正在执行今天的 1 踢 1 拉...', 'info');
         const result = await postJSON('/admin/seats/rotate', {
             team_id: parseInt(document.getElementById('rotateTeamId').value, 10),
@@ -603,10 +658,26 @@ async function handleRotate(event) {
             force_refill: document.getElementById('rotateForceRefill').checked
         });
         showToast(result.message || '轮转成功', 'success');
+        const child = (result.invite && result.invite.child) || result.child || {};
+        renderOnboardJob({
+            action: 'onboard',
+            status: 'success',
+            stage: 'done',
+            message: result.message || '轮转成功',
+            email: child.email || '',
+            phone: child.phone || '',
+            log: [{ ts: '', message: result.message || '轮转成功' }],
+        });
         refreshSeatDashboard({ forceSub2api: true });
+    };
+    try {
+        if (typeof withButtonState === 'function') await withButtonState(btn, run, { busyText: '进行中...' });
+        else await run();
     } catch (error) {
         showToast(error.message, 'error');
+        refreshLocalPool();
     }
+    syncOnboardSubmitLabels();
     return false;
 }
 
@@ -1103,6 +1174,10 @@ window.oauthReauthOnDone = function () {
 loadSub2apiStatus(false);
 hydrateSeatLive();
 restoreOnboardSnapshot();
+syncOnboardSubmitLabels();
+['onboardEmail', 'onboardPhone', 'freeOnboardEmail', 'freeOnboardPhone', 'rotateEmail', 'rotatePhone'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('input', syncOnboardSubmitLabels);
+});
 if (currentOnboardJobId) {
     let alreadyDone = false;
     try {
@@ -1112,5 +1187,21 @@ if (currentOnboardJobId) {
     if (alreadyDone) clearOnboardJobId();
     else pollOnboardJob(currentOnboardJobId, { reloadOnDone: true, quiet: true });
 }
+window.addEventListener('pagehide', () => {
+    if (onboardPollTimer) {
+        clearInterval(onboardPollTimer);
+        onboardPollTimer = null;
+    }
+});
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        if (onboardPollTimer) {
+            clearInterval(onboardPollTimer);
+            onboardPollTimer = null;
+        }
+        return;
+    }
+    if (currentOnboardJobId) pollOnboardJob(currentOnboardJobId, { quiet: true });
+});
 </script>
 {% endblock %}

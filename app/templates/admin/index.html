@@ -701,11 +701,11 @@
                 </span>
                 <span class="page-meta-pill">
                     <i data-lucide="users-round"></i>
-                    <span>{{ stats.total_teams }} 个 Team</span>
+                    <span data-stat-label="total_teams">{{ stats.total_teams }} 个 Team</span>
                 </span>
                 <span class="page-meta-pill">
                     <i data-lucide="shield-check"></i>
-                    <span>{{ stats.available_teams }} 个可用</span>
+                    <span data-stat-label="available_teams">{{ stats.available_teams }} 个可用</span>
                 </span>
             </div>
         </div>
@@ -728,14 +728,14 @@
         <div class="stat-card">
             <div class="stat-icon"><i data-lucide="users"></i></div>
             <div class="stat-info-group">
-                <div class="stat-value">{{ stats.total_teams }}</div>
+                <div class="stat-value" data-stat-value="total_teams">{{ stats.total_teams }}</div>
                 <div class="stat-label">Team 总数</div>
             </div>
         </div>
         <div class="stat-card stat-success">
             <div class="stat-icon"><i data-lucide="check-circle"></i></div>
             <div class="stat-info-group">
-                <div class="stat-value">{{ stats.available_teams }}</div>
+                <div class="stat-value" data-stat-value="available_teams">{{ stats.available_teams }}</div>
                 <div class="stat-label">可用 Team</div>
             </div>
         </div>
@@ -743,7 +743,7 @@
         <div class="stat-card stat-info">
             <div class="stat-icon"><i data-lucide="car-front"></i></div>
             <div class="stat-info-group">
-                <div class="stat-value">{{ stats.remaining_spots }}</div>
+                <div class="stat-value" data-stat-value="remaining_spots">{{ stats.remaining_spots }}</div>
                 <div class="stat-label">福利剩余车位</div>
             </div>
         </div>
@@ -772,14 +772,14 @@
         <div class="stat-card stat-info">
             <div class="stat-icon"><i data-lucide="alert-triangle"></i></div>
             <div class="stat-info-group">
-                <div class="stat-value">{{ stats.banned_teams }}</div>
+                <div class="stat-value" data-stat-value="banned_teams">{{ stats.banned_teams }}</div>
                 <div class="stat-label">已封禁 Team</div>
             </div>
         </div>
         <div class="stat-card stat-warning">
             <div class="stat-icon"><i data-lucide="activity"></i></div>
             <div class="stat-info-group">
-                <div class="stat-value">{{ stats.live_teams }}</div>
+                <div class="stat-value" data-stat-value="live_teams">{{ stats.live_teams }}</div>
                 <div class="stat-label">存活 Team</div>
             </div>
         </div>
@@ -893,8 +893,7 @@
             </div>
         </div>
 
-{% if teams %}
-        <div class="content-section workbench-table-card team-table-card">
+        <div id="teamTableCard" class="content-section workbench-table-card team-table-card" {% if not teams %}hidden{% endif %}>
             <div class="table-section-head">
                 <div class="table-section-copy">
                     <h3>{% if active_page == "welfare" %}福利席位明细{% else %}Team 运行明细{% endif %}</h3>
@@ -913,7 +912,7 @@
                     {% if pagination %}
                     <span class="table-meta-pill">
                         <i data-lucide="list-filter"></i>
-                        <span>共 {{ pagination.total }} 条</span>
+                        <span id="teamTableTotalMeta">共 {{ pagination.total }} 条</span>
                     </span>
                     {% endif %}
                 </div>
@@ -935,9 +934,9 @@
                 <th>操作</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="teamTableBody">
             {% for team in teams %}
-            <tr>
+            <tr data-team-id="{{ team.id }}">
                 <td class="team-select-cell" data-label="选择"><input type="checkbox" class="team-checkbox" value="{{ team.id }}" onchange="updateSelectedCount()">
                 </td>
                 <td data-label="{% if active_page == 'welfare' %}编号{% else %}ID{% endif %}"><span class="text-muted">{% if active_page == "welfare" %}{{ ((pagination.current_page - 1) * pagination.per_page) + loop.index }}{% else %}{{ team.id }}{% endif %}</span></td>
@@ -1112,17 +1111,14 @@
     <span class="pagination-summary">共 {{ pagination.total }} 条记录</span>
     {% endif %}
 </div>
-{% endif %}
         </div>
-{% else %}
-        <div class="content-section team-empty-state">
+        <div id="teamEmptyState" class="content-section team-empty-state" {% if teams %}hidden{% endif %}>
             <div class="empty-state">
                 <span class="empty-icon"><i data-lucide="server-off"></i></span>
                 <p>还没有 Team 数据，先导入一批账号开始运营吧。</p>
                 <button onclick="showModal('importTeamModal')" class="btn btn-primary">立即导入</button>
             </div>
         </div>
-{% endif %}
     </div>
 </div>
 
@@ -1288,62 +1284,20 @@
             columnToggleBtn.addEventListener('click', () => toggleDropdown('columnToggleDropdown', columnToggleBtn));
         }
 
-        // 绑定查看成员按钮
-        document.querySelectorAll('.btn-view-members').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                const email = btn.getAttribute('data-email');
-                viewMembers(id, email);
-            });
-        });
-
-        // 绑定刷新按钮
-        document.querySelectorAll('.btn-refresh-team').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                refreshTeam(id);
-            });
-        });
-
-        // 绑定编辑按钮
-        document.querySelectorAll('.btn-edit-team').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                editTeam(id);
-            });
-        });
-
-        document.querySelectorAll('.btn-reauth-team').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                const email = btn.getAttribute('data-email');
-                startSeatOauth(Number(id), email);
-            });
-        });
-
-
-        document.querySelectorAll('.btn-push-sub2api').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                const email = btn.getAttribute('data-email');
-                pushTeamToSub2api(id, email);
-            });
-        });
-
-        document.querySelectorAll('.btn-export-team-json').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.getAttribute('data-id');
-                const email = btn.getAttribute('data-email');
-                exportTeamJson(id, email);
-            });
-        });
-
-        // 绑定复选框事件（避免仅依赖内联 onchange）
+        bindTeamRowEvents();
         document.getElementById('selectAll')?.addEventListener('change', (e) => {
             toggleSelectAll(Boolean(e.target && e.target.checked));
         });
-        document.querySelectorAll('.team-checkbox').forEach(cb => {
-            cb.addEventListener('change', updateSelectedCount);
+        document.querySelector('.search-form')?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const input = event.target.querySelector('input[name="search"]');
+            const url = new URL(window.location.href);
+            const value = String(input?.value || '').trim();
+            if (value) url.searchParams.set('search', value);
+            else url.searchParams.delete('search');
+            url.searchParams.set('page', '1');
+            history.replaceState({}, '', url.toString());
+            refreshTeamDashboard().catch((error) => showToast(error.message || '搜索失败', 'error'));
         });
 
         // 绑定批量操作按钮（避免依赖内联 onclick，兼容更严格的 CSP）
@@ -1471,11 +1425,11 @@
 
             if (response.ok && data.success) {
                 showToast('刷新成功', 'success');
-                setTimeout(() => location.reload(), 1000);
+                await refreshTeamDashboard();
             } else {
                 showToast(data.error || '刷新失败（状态可能已更新）', 'error');
                 // 即使接口返回失败，也可能已经在后端更新了 Team 状态（例如标记为 banned）
-                setTimeout(() => location.reload(), 1200);
+                await refreshTeamDashboard();
             }
         } catch (error) {
             showToast('网络错误', 'error');
@@ -1521,7 +1475,7 @@
             } else {
                 showToast(data.error || '刷新失败（状态可能已更新）', 'error');
                 // 刷新失败时也刷新页面，避免列表/筛选中的状态显示停留在旧值
-                setTimeout(() => location.reload(), 1200);
+                await refreshTeamDashboard();
             }
         } catch (error) {
             showToast('网络错误', 'error');
@@ -1543,7 +1497,7 @@
 
             if (response.ok && data.success) {
                 showToast('删除成功', 'success');
-                setTimeout(() => location.reload(), 1000);
+                await refreshTeamDashboard();
             } else {
                 showToast(data.error || '删除失败', 'error');
             }
@@ -1627,7 +1581,7 @@
             if (response.ok && result.success) {
                 showToast('更新成功', 'success');
                 hideModal('editTeamModal');
-                setTimeout(() => location.reload(), 1000);
+                await refreshTeamDashboard();
             } else {
                 showToast(result.error || '更新失败', 'error');
             }
@@ -1748,7 +1702,150 @@
     const dashboardBasePath = "{{ '/admin/welfare' if active_page == 'welfare' else '/admin' }}";
     const currentPoolType = "{{ 'welfare' if active_page == 'welfare' else 'normal' }}";
     const currentPoolLabel = currentPoolType === 'welfare' ? '福利池' : '常规池';
-    const totalTeamsInCurrentPool = Number("{{ stats.total_teams or 0 }}") || 0;
+    let totalTeamsInCurrentPool = Number("{{ stats.total_teams or 0 }}") || 0;
+    const TEAM_STATUS_LABELS = { active: '可用', full: '已满', expired: '已过期', banned: '已封禁', error: '异常' };
+
+    function currentListQuery() {
+        const pageUrl = new URL(window.location.href);
+        return {
+            page: pageUrl.searchParams.get('page') || '1',
+            per_page: pageUrl.searchParams.get('per_page') || '20',
+            search: pageUrl.searchParams.get('search') || '',
+            status_filter: pageUrl.searchParams.get('status_filter') || pageUrl.searchParams.get('status') || '',
+        };
+    }
+
+    function applyHiddenTeamColumns() {
+        const table = document.querySelector('.team-list-table-container .data-table') || document.querySelector('.data-table');
+        if (!table) return;
+        const saved = JSON.parse(localStorage.getItem('team_list_columns') || '[]');
+        saved.forEach((index) => {
+            const th = table.querySelectorAll('thead th')[index];
+            if (th) th.style.display = 'none';
+            table.querySelectorAll(`tbody tr td:nth-child(${Number(index) + 1})`).forEach((td) => { td.style.display = 'none'; });
+        });
+    }
+
+    function bindTeamRowEvents(root) {
+        const scope = root || document;
+        const bindOnce = (selector, handler) => {
+            scope.querySelectorAll(selector).forEach((btn) => {
+                if (btn.dataset.bound === '1') return;
+                btn.dataset.bound = '1';
+                btn.addEventListener('click', () => handler(btn));
+            });
+        };
+        bindOnce('.btn-view-members', (btn) => viewMembers(btn.getAttribute('data-id'), btn.getAttribute('data-email')));
+        bindOnce('.btn-refresh-team', (btn) => refreshTeam(btn.getAttribute('data-id')));
+        bindOnce('.btn-edit-team', (btn) => editTeam(btn.getAttribute('data-id')));
+        bindOnce('.btn-reauth-team', (btn) => startSeatOauth(Number(btn.getAttribute('data-id')), btn.getAttribute('data-email')));
+        bindOnce('.btn-push-sub2api', (btn) => pushTeamToSub2api(btn.getAttribute('data-id'), btn.getAttribute('data-email')));
+        bindOnce('.btn-export-team-json', (btn) => exportTeamJson(btn.getAttribute('data-id'), btn.getAttribute('data-email')));
+        scope.querySelectorAll('.team-checkbox').forEach((cb) => {
+            if (cb.dataset.bound === '1') return;
+            cb.dataset.bound = '1';
+            cb.addEventListener('change', updateSelectedCount);
+        });
+    }
+
+    function teamStatusBadge(status) {
+        const key = status || '';
+        return `<span class="status-badge status-${escapeHtml(key)}">${escapeHtml(TEAM_STATUS_LABELS[key] || '未知')}</span>`;
+    }
+
+    function teamRowHtml(team, index) {
+        const query = currentListQuery();
+        const page = parseInt(query.page, 10) || 1;
+        const perPage = parseInt(query.per_page, 10) || 20;
+        const isWelfare = currentPoolType === 'welfare';
+        const idLabel = isWelfare ? ((page - 1) * perPage + index + 1) : team.id;
+        const occupancy = (team.occupancy && team.occupancy.occupancy_text) || `${team.current_members || 0}/${team.max_members || 0}`;
+        const expires = team.expires_at ? (typeof formatDateTime === 'function' ? formatDateTime(team.expires_at) : team.expires_at) : '-';
+        const roleHint = (team.account_role && team.account_role !== 'account-owner')
+            ? ` <span class="role-hint" title="账号角色: ${escapeHtml(team.account_role)}">已降级</span>`
+            : '';
+        const risk = (team.risk_label && team.risk_level && team.risk_level !== 'normal')
+            ? ` <span class="risk-chip tone-${escapeHtml(team.risk_level)}">${escapeHtml(team.risk_label)}</span>`
+            : '';
+        const refreshClass = (team.status === 'expired' || team.status === 'error') ? 'btn-warning' : 'btn-secondary';
+        const email = team.email || '';
+        return `<tr data-team-id="${escapeHtml(team.id)}">
+            <td class="team-select-cell" data-label="选择"><input type="checkbox" class="team-checkbox" value="${escapeHtml(team.id)}"></td>
+            <td data-label="${isWelfare ? '编号' : 'ID'}"><span class="text-muted">${escapeHtml(idLabel)}</span></td>
+            <td data-label="邮箱">${escapeHtml(email)}${roleHint}</td>
+            <td data-label="Account ID"><span class="text-muted small">${escapeHtml(team.account_id || '-')}</span></td>
+            <td data-label="Team 名称">${escapeHtml(team.team_name || '-')}</td>
+            <td data-label="占用/上限"><span class="member-count">${escapeHtml(occupancy)}</span></td>
+            <td data-label="订阅计划">${escapeHtml(team.subscription_plan || '-')}</td>
+            <td data-label="到期时间">${escapeHtml(expires)}</td>
+            <td data-label="状态">${teamStatusBadge(team.status)}${risk}</td>
+            <td class="team-actions-cell" data-label="操作">
+                <div class="action-buttons">
+                    <button class="btn btn-sm btn-icon btn-minimal btn-info btn-view-members" data-id="${escapeHtml(team.id)}" data-email="${escapeHtml(email)}" title="查看成员" aria-label="查看成员"><i data-lucide="users" style="width: 16px; height: 16px;"></i><span class="btn-icon-fallback" aria-hidden="true">员</span></button>
+                    <button class="btn btn-sm btn-icon btn-minimal btn-primary btn-edit-team" data-id="${escapeHtml(team.id)}" title="编辑" aria-label="编辑"><i data-lucide="edit-3" style="width: 16px; height: 16px;"></i><span class="btn-icon-fallback" aria-hidden="true">编</span></button>
+                    <button class="btn btn-sm btn-icon btn-minimal ${refreshClass} btn-reauth-team" data-id="${escapeHtml(team.id)}" data-email="${escapeHtml(email)}" title="重新授权 Team" aria-label="重新授权 Team"><i data-lucide="key-round" style="width: 16px; height: 16px;"></i><span class="btn-icon-fallback" aria-hidden="true">授</span></button>
+                    <button class="btn btn-sm btn-icon btn-minimal btn-secondary btn-refresh-team" data-id="${escapeHtml(team.id)}" title="刷新" aria-label="刷新"><i data-lucide="refresh-cw" style="width: 16px; height: 16px;"></i><span class="btn-icon-fallback" aria-hidden="true">刷</span></button>
+                    <button class="btn btn-sm btn-icon btn-minimal btn-primary btn-push-sub2api" data-id="${escapeHtml(team.id)}" data-email="${escapeHtml(email)}" title="推送到 Sub2API" aria-label="推送到 Sub2API"><i data-lucide="send" style="width: 16px; height: 16px;"></i><span class="btn-icon-fallback" aria-hidden="true">推</span></button>
+                    <button class="btn btn-sm btn-icon btn-minimal btn-secondary btn-export-team-json" data-id="${escapeHtml(team.id)}" data-email="${escapeHtml(email)}" title="导出 JSON" aria-label="导出 JSON"><i data-lucide="download" style="width: 16px; height: 16px;"></i><span class="btn-icon-fallback" aria-hidden="true">导</span></button>
+                    <button type="button" class="btn btn-sm btn-icon btn-minimal btn-danger btn-delete-team" data-id="${escapeHtml(team.id)}" data-email="${escapeHtml(email)}" title="删除" aria-label="删除" onclick='deleteTeam(${Number(team.id)}, ${JSON.stringify(email)})'><i data-lucide="trash-2" style="width: 16px; height: 16px;"></i><span class="btn-icon-fallback" aria-hidden="true">删</span></button>
+                </div>
+            </td>
+        </tr>`;
+    }
+
+    function applyTeamDashboard(data) {
+        if (!data || !data.success) return;
+        const stats = data.stats || {};
+        totalTeamsInCurrentPool = Number(stats.total_teams || 0) || 0;
+        document.querySelectorAll('[data-stat-value]').forEach((el) => {
+            const key = el.getAttribute('data-stat-value');
+            if (key && stats[key] != null) el.textContent = stats[key];
+        });
+        const totalLabel = document.querySelector('[data-stat-label="total_teams"]');
+        if (totalLabel) totalLabel.textContent = `${stats.total_teams || 0} 个 Team`;
+        const availableLabel = document.querySelector('[data-stat-label="available_teams"]');
+        if (availableLabel) availableLabel.textContent = `${stats.available_teams || 0} 个可用`;
+        const totalMeta = document.getElementById('teamTableTotalMeta');
+        if (totalMeta && data.pagination) totalMeta.textContent = `共 ${data.pagination.total || 0} 条`;
+        const liveBtn = document.getElementById('btnCheckPoolTeamsLive');
+        if (liveBtn) liveBtn.disabled = !totalTeamsInCurrentPool;
+        const teams = data.teams || [];
+        const tableCard = document.getElementById('teamTableCard');
+        const emptyState = document.getElementById('teamEmptyState');
+        const tbody = document.getElementById('teamTableBody');
+        if (teams.length) {
+            if (tableCard) tableCard.hidden = false;
+            if (emptyState) emptyState.hidden = true;
+            if (tbody) {
+                tbody.innerHTML = teams.map((team, index) => teamRowHtml(team, index)).join('');
+                bindTeamRowEvents(tbody);
+            }
+            applyHiddenTeamColumns();
+            if (window.lucide) lucide.createIcons();
+        } else {
+            if (tableCard) tableCard.hidden = true;
+            if (emptyState) emptyState.hidden = false;
+        }
+        updateSelectedCount();
+    }
+
+    async function refreshTeamDashboard() {
+        const query = currentListQuery();
+        const url = new URL('/admin/teams/list', window.location.origin);
+        url.searchParams.set('pool_type', currentPoolType);
+        url.searchParams.set('page', query.page);
+        url.searchParams.set('per_page', query.per_page);
+        if (query.search) url.searchParams.set('search', query.search);
+        if (query.status_filter) url.searchParams.set('status_filter', query.status_filter);
+        const response = await fetch(url.toString(), { credentials: 'same-origin' });
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            throw new Error(data.error || '刷新列表失败');
+        }
+        applyTeamDashboard(data);
+    }
+
+    window.refreshCurrentAdminView = refreshTeamDashboard;
 
     function filterByStatus(status) {
         const url = new URL(window.location.href);
@@ -1759,7 +1856,8 @@
             url.searchParams.delete('status_filter');
         }
         url.searchParams.set('page', 1);
-        window.location.href = url.toString();
+        history.replaceState({}, '', url.toString());
+        refreshTeamDashboard().catch((error) => showToast(error.message || '筛选失败', 'error'));
     }
 
     function toggleSelectAll(checked) {
@@ -1918,7 +2016,7 @@
                         duration: toastConfig.duration || options.successDuration
                     }
                 );
-                setTimeout(() => location.reload(), 1500);
+                await refreshTeamDashboard();
             } else {
                 showToast(result.error || `${actionName}失败`, 'error');
             }
@@ -2077,7 +2175,7 @@
                 finalResult.message || `${successVerb}：成功 ${successCount}，失败 ${failedCount}`,
                 failedCount > 0 ? 'warning' : 'success'
             );
-            setTimeout(() => location.reload(), 1500);
+            await refreshTeamDashboard();
         } catch (error) {
             console.error(error);
             showToast(error.message || failedMessage, 'error');
@@ -2101,7 +2199,7 @@
             successVerb: '批量刷新完成',
             failedMessage: '批量刷新失败',
             interruptedMessage: '批量刷新连接已中断，未收到完成信号，请检查网络或稍后重试',
-            completionMessageBuilder: (data) => `批量刷新完成：成功 <strong>${data.success_count || 0}</strong>，失败 <strong>${data.failed_count || 0}</strong>。页面即将自动刷新。`,
+            completionMessageBuilder: (data) => `批量刷新完成：成功 <strong>${data.success_count || 0}</strong>，失败 <strong>${data.failed_count || 0}</strong>。`,
         });
     }
 
@@ -2118,7 +2216,7 @@
             successVerb: '检测完成',
             failedMessage: '检测 Team 存活失败',
             interruptedMessage: '检测 Team 存活连接已中断，未收到完成信号，请检查网络或稍后重试',
-            completionMessageBuilder: (data) => `检测完成：成功 <strong>${data.success_count || 0}</strong>，失败 <strong>${data.failed_count || 0}</strong>。页面即将自动刷新。`,
+            completionMessageBuilder: (data) => `检测完成：成功 <strong>${data.success_count || 0}</strong>，失败 <strong>${data.failed_count || 0}</strong>。`,
         });
     }
 
@@ -2230,7 +2328,7 @@
 <script src="/static/js/oauth_reauth.js?v=20260828-phone"></script>
 <script>
     window.oauthReauthOnDone = function () {
-        setTimeout(() => location.reload(), 800);
+        refreshTeamDashboard();
     };
 </script>
 {% endblock %}

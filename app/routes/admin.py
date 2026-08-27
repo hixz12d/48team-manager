@@ -223,6 +223,67 @@ class BulkTransferPoolRequest(BaseModel):
     target_pool_type: Literal["normal", "welfare"] = Field(..., description="目标池类型")
 
 
+async def _team_list_payload(
+    db: AsyncSession,
+    *,
+    page: int = 1,
+    per_page: int = 20,
+    search: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    pool_type: str = "normal",
+) -> Dict[str, Any]:
+    teams_result = await team_service.get_all_teams(
+        db,
+        page=page,
+        per_page=per_page,
+        search=search,
+        status=status_filter,
+        pool_type=pool_type,
+    )
+    if not teams_result.get("success"):
+        return {
+            "success": False,
+            "error": teams_result.get("error") or "获取 Team 列表失败",
+            "teams": [],
+            "stats": {},
+            "pagination": {"current_page": page, "total_pages": 1, "total": 0, "per_page": per_page},
+        }
+    team_stats = await team_service.get_stats(db, pool_type=pool_type)
+    stats: Dict[str, Any] = {
+        "total_teams": team_stats["total"],
+        "available_teams": team_stats["available"],
+        "live_teams": team_stats["live"],
+        "banned_teams": team_stats["banned"],
+        "expired_teams": team_stats["expired"],
+    }
+    if pool_type == "welfare":
+        remaining_spots = await team_service.get_total_available_seats(db, pool_type="welfare")
+        welfare_usage = await redemption_service.get_virtual_welfare_code_usage(db)
+        stats.update({
+            "remaining_spots": remaining_spots,
+            "welfare_code": str(welfare_usage.get("welfare_code") or ""),
+            "welfare_code_limit": max(int(welfare_usage.get("configured_limit") or 0), 0),
+            "welfare_code_used": int(welfare_usage.get("used_count") or 0),
+            "welfare_code_remaining": max(int(welfare_usage.get("remaining_count") or 0), 0),
+            "welfare_code_team_id": welfare_usage.get("team_id"),
+            "welfare_code_team_name": welfare_usage.get("team_name"),
+            "welfare_code_team_email": welfare_usage.get("team_email"),
+        })
+    return {
+        "success": True,
+        "teams": teams_result.get("teams", []),
+        "stats": stats,
+        "search": search or "",
+        "status_filter": status_filter or "",
+        "pool_type": pool_type,
+        "pagination": {
+            "current_page": teams_result.get("current_page", page),
+            "total_pages": teams_result.get("total_pages", 1),
+            "total": teams_result.get("total", 0),
+            "per_page": per_page,
+        },
+    }
+
 @router.get("/", response_class=HTMLResponse)
 async def admin_dashboard(
     request: Request,
@@ -353,6 +414,32 @@ async def welfare_dashboard(
     except Exception as e:
         logger.exception("加载福利车位页面失败")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="加载福利车位页面失败，请稍后重试")
+
+
+@router.get("/teams/list")
+async def teams_list(
+    page: int = 1,
+    per_page: int = 20,
+    search: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    legacy_status: Optional[str] = Query(None, alias="status"),
+    pool_type: str = "normal",
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    if status_filter is None and legacy_status is not None:
+        status_filter = legacy_status
+    normalized_pool = "welfare" if pool_type == "welfare" else "normal"
+    payload = await _team_list_payload(
+        db,
+        page=page,
+        per_page=per_page,
+        search=search,
+        status_filter=status_filter,
+        pool_type=normalized_pool,
+    )
+    status_code = status.HTTP_200_OK if payload.get("success") else status.HTTP_400_BAD_REQUEST
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 @router.post("/welfare/code/generate")
@@ -1671,6 +1758,39 @@ async def codes_list_page(
         )
 
 
+@router.get("/codes/list")
+async def codes_list(
+    page: int = 1,
+    per_page: int = 50,
+    search: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    codes_result = await redemption_service.get_all_codes(
+        db, page=page, per_page=per_page, search=search, status=status_filter, pool_type="normal"
+    )
+    if not codes_result.get("success"):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"success": False, "error": codes_result.get("error") or "获取兑换码失败", "codes": []},
+        )
+    stats = await redemption_service.get_stats(db, pool_type="normal")
+    return {
+        "success": True,
+        "codes": codes_result.get("codes", []),
+        "stats": stats,
+        "search": search or "",
+        "status_filter": status_filter or "",
+        "pagination": {
+            "current_page": codes_result.get("current_page", page),
+            "total_pages": codes_result.get("total_pages", 1),
+            "total": codes_result.get("total", 0),
+            "per_page": per_page,
+        },
+    }
+
+
 
 
 @router.post("/codes/generate")
@@ -2305,6 +2425,10 @@ async def settings_page(
             "hme_service_token": await settings_service.get_setting(db, "hme_service_token", ""),
             "hme_account_id": await settings_service.get_setting(db, "hme_account_id", ""),
             "hme_team_tag_map": await settings_service.get_setting(db, "hme_team_tag_map", ""),
+            "sms_max_uses_per_phone": await settings_service.get_setting(db, "sms_max_uses_per_phone", "3"),
+            "sms_cooldown_sec": await settings_service.get_setting(db, "sms_cooldown_sec", "3600"),
+            "sms_reserve_sec": await settings_service.get_setting(db, "sms_reserve_sec", "900"),
+            "sms_max_phone_retries": await settings_service.get_setting(db, "sms_max_phone_retries", "3"),
             "warranty_expiration_mode": await settings_service.get_warranty_expiration_mode(db),
             "ui_theme": settings_service.normalize_ui_theme(await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)),
             "ui_style": settings_service.normalize_ui_style(await settings_service.get_setting(db, "ui_style", DEFAULT_UI_STYLE)),
@@ -3502,5 +3626,153 @@ async def probe_hme_settings(
         "alias_total": len(aliases),
         "unused": len(unused),
         "message": f"连通，未占用 {len(unused)} / 共 {len(aliases)}",
+    })
+
+
+class SmsPoolSettingsRequest(BaseModel):
+    sms_max_uses_per_phone: int = Field(3, ge=1, le=20)
+    sms_cooldown_sec: int = Field(3600, ge=60, le=86400)
+    sms_reserve_sec: int = Field(900, ge=60, le=7200)
+    sms_max_phone_retries: int = Field(3, ge=1, le=10)
+
+
+class PhonePoolImportRequest(BaseModel):
+    text: str = Field("", description="批量 号码----sms_url")
+
+
+class PhonePoolStatusRequest(BaseModel):
+    enabled: bool = True
+
+
+class PhonePoolClearRequest(BaseModel):
+    status: str = Field(..., description="maxed 或 disabled")
+
+
+def _phone_pool_payload(stats, items, cfg=None):
+    from app.services.phone_pool import phone_pool_service
+
+    return {
+        "success": True,
+        "stats": stats,
+        "items": items,
+        "config": (cfg or stats.get("config") or {}),
+    }
+
+
+@router.get("/phone-pool")
+async def phone_pool_list(
+    status: str = "",
+    q: str = "",
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.phone_pool import phone_pool_service
+
+    cfg = await phone_pool_service.get_config(db)
+    stats = await phone_pool_service.stats(db)
+    rows = await phone_pool_service.list_phones(db, status=status, q=q)
+    await db.commit()
+    return _phone_pool_payload(stats, [phone_pool_service.serialize(row, cfg) for row in rows], stats.get("config"))
+
+
+@router.post("/phone-pool/import")
+async def phone_pool_import(
+    payload: PhonePoolImportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.phone_pool import phone_pool_service
+
+    result = await phone_pool_service.import_lines(db, payload.text)
+    cfg = await phone_pool_service.get_config(db)
+    stats = await phone_pool_service.stats(db)
+    rows = await phone_pool_service.list_phones(db)
+    await db.commit()
+    return {
+        "success": True,
+        "imported": result["imported"],
+        "skipped": result["skipped"],
+        "errors": result["errors"],
+        "message": f"导入 {result['imported']} 条，跳过 {result['skipped']} 条",
+        "stats": stats,
+        "items": [phone_pool_service.serialize(row, cfg) for row in rows],
+        "config": stats.get("config") or {},
+    }
+
+
+@router.post("/phone-pool/{phone_id}/status")
+async def phone_pool_set_status(
+    phone_id: int,
+    payload: PhonePoolStatusRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.phone_pool import phone_pool_service
+
+    try:
+        await phone_pool_service.set_enabled(db, phone_id, payload.enabled)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
+    cfg = await phone_pool_service.get_config(db)
+    stats = await phone_pool_service.stats(db)
+    rows = await phone_pool_service.list_phones(db)
+    await db.commit()
+    return _phone_pool_payload(stats, [phone_pool_service.serialize(row, cfg) for row in rows], stats.get("config"))
+
+
+@router.post("/phone-pool/clear")
+async def phone_pool_clear(
+    payload: PhonePoolClearRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.phone_pool import phone_pool_service
+
+    try:
+        deleted = await phone_pool_service.clear_status(db, payload.status)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    cfg = await phone_pool_service.get_config(db)
+    stats = await phone_pool_service.stats(db)
+    rows = await phone_pool_service.list_phones(db)
+    await db.commit()
+    return {
+        "success": True,
+        "deleted": deleted,
+        "message": f"已删除 {deleted} 条",
+        "stats": stats,
+        "items": [phone_pool_service.serialize(row, cfg) for row in rows],
+        "config": stats.get("config") or {},
+    }
+
+
+@router.post("/settings/sms-pool")
+async def update_sms_pool_settings(
+    payload: SmsPoolSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin),
+):
+    from app.services.phone_pool import (
+        SETTING_COOLDOWN_SEC,
+        SETTING_MAX_RETRIES,
+        SETTING_MAX_USES,
+        SETTING_RESERVE_SEC,
+    )
+
+    success = await settings_service.update_settings(db, {
+        SETTING_MAX_USES: str(payload.sms_max_uses_per_phone),
+        SETTING_COOLDOWN_SEC: str(payload.sms_cooldown_sec),
+        SETTING_RESERVE_SEC: str(payload.sms_reserve_sec),
+        SETTING_MAX_RETRIES: str(payload.sms_max_phone_retries),
+    })
+    if not success:
+        return JSONResponse(status_code=500, content={"success": False, "error": "保存失败"})
+    return JSONResponse(content={
+        "success": True,
+        "message": "号码池设置已保存",
+        "sms_max_uses_per_phone": payload.sms_max_uses_per_phone,
+        "sms_cooldown_sec": payload.sms_cooldown_sec,
+        "sms_reserve_sec": payload.sms_reserve_sec,
+        "sms_max_phone_retries": payload.sms_max_phone_retries,
     })
 

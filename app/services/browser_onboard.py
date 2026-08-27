@@ -279,6 +279,113 @@ def phone_rejection_message(text: str) -> str:
     return ""
 
 
+def looks_like_recently_used_phone(text: str) -> bool:
+    blob = (text or "").lower()
+    return any(token in blob for token in (
+        "recently used",
+        "used recently",
+        "try a different number",
+        "use a different number",
+        "use a different phone",
+        "please use a different",
+        "请使用其他",
+        "换一个号码",
+    ))
+
+
+def looks_like_phone_risk(text: str) -> bool:
+    blob = (text or "").lower()
+    return any(token in blob for token in (
+        "whatsapp",
+        "couldn't send a text",
+        "could not send a text",
+        "can't send a text",
+        "cannot send a text",
+        "unable to send",
+        "we couldn't send",
+        "无法向该号发短信",
+        "无法发送短信",
+    ))
+
+
+def classify_phone_outcome(*, text: str = "", error: str = "", error_code: str = "") -> str:
+    blob = f"{text}\n{error}\n{error_code}".lower()
+    code = (error_code or "").lower()
+    if code == "cancelled" or "已取消" in (error or ""):
+        return "cancelled"
+    if code in {"cloudflare_challenge", "proxy_failed", "email_gate_stuck"} or "cloudflare" in blob:
+        return "unrelated"
+    if looks_like_recently_used_phone(blob) or "请使用其他号码" in (error or ""):
+        return "recently_used"
+    if looks_like_phone_risk(blob):
+        return "risk"
+    if code == "sms_rejected" or looks_like_invalid_phone(text or error):
+        return "invalid"
+    if "sms otp timeout" in blob or "接码超时" in (error or "") or "timeout after" in blob:
+        return "no_sms"
+    if code == "sms_failed" and (
+        "timeout" in blob or "空号" in (error or "") or "没能发出短信" in (error or "")
+    ):
+        return "no_sms"
+    return "unrelated"
+
+
+def phone_outcome_message(outcome: str, text: str = "") -> str:
+    if outcome == "recently_used":
+        return "这个号码刚被用过，OpenAI 要求换号"
+    if outcome == "risk":
+        return "无法向该号发短信 / 被切到 WhatsApp"
+    if outcome == "invalid":
+        return phone_rejection_message(text) or "手机号不被 OpenAI 接受"
+    if outcome == "no_sms":
+        return "接码超时或空号"
+    return phone_rejection_message(text)
+
+
+def phone_page_outcome(page) -> tuple[str, str]:
+    blob = _page_text(page)
+    outcome = classify_phone_outcome(text=blob, error=phone_rejection_message(blob))
+    if outcome not in {"", "unrelated"}:
+        return outcome, phone_outcome_message(outcome, blob)
+    rejected = page_phone_rejection(page)
+    if rejected:
+        classified = classify_phone_outcome(text=rejected, error=rejected, error_code="sms_rejected")
+        return classified, rejected
+    return "", ""
+
+
+def take_pool_phone(phone_source, report) -> tuple[str, str, str, str]:
+    if not phone_source:
+        return "", "", "需要接码，但未提供手机号", "sms_missing"
+    try:
+        got = phone_source("acquire") or {}
+    except Exception as exc:  # noqa: BLE001
+        return "", "", str(exc), "phone_pool_empty"
+    if got.get("ok") and got.get("number") and str(got.get("sms_url") or "").startswith("http"):
+        number = str(got["number"])
+        report("add_phone", f"领取 {number}")
+        return number, str(got["sms_url"]), "", ""
+    return "", "", str(got.get("error") or "号码池暂时没有可领的号"), str(got.get("error_code") or "phone_pool_empty")
+
+
+def record_pool_phone(phone_source, result: str, message: str = "") -> None:
+    if not phone_source:
+        return
+    try:
+        phone_source("record", result=result, message=message)
+    except Exception:  # noqa: BLE001
+        logger.debug("phone_source record failed", exc_info=True)
+
+
+def release_pool_phone(phone_source) -> None:
+    if not phone_source:
+        return
+    try:
+        phone_source("release")
+    except Exception:  # noqa: BLE001
+        logger.debug("phone_source release failed", exc_info=True)
+
+
 def page_phone_rejection(page) -> str:
     blob = _page_text(page)
     msg = phone_rejection_message(blob)
@@ -827,6 +934,7 @@ def run_browser_onboard(
     cf_address: str = "",
     cf_admin_password: str = "",
     on_stage: StageCallback = None,
+    phone_source=None,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
     from playwright.sync_api import sync_playwright
@@ -841,7 +949,7 @@ def run_browser_onboard(
     profile_dir = Path(settings.database_url.split("///")[-1]).resolve().parent.parent / "data" / "chrome-profiles" / email.replace("@", "_at_")
     profile_dir.mkdir(parents=True, exist_ok=True)
 
-    result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode}
+    result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode, "phone": phone, "sms_url": sms_url}
     with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
         browser = playwright.chromium.launch_persistent_context(
             **chromium_context_kwargs(profile_dir, proxy_config)
@@ -1024,33 +1132,85 @@ def run_browser_onboard(
                     continue
 
                 if _visible(page, 'input[type="tel"]') or "add-phone" in url:
-                    if phone and sms_url:
-                        report("add_phone", "页面要求添加手机号")
-                    elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
-                        report("add_phone", "注册页出现手机号，已跳过")
-                        page.wait_for_timeout(1500)
-                        continue
-                    else:
-                        result["error"] = "注册页要手机号。正常邀请注册通常不需要，Codex 授权时才接码"
-                        result["error_code"] = "sms_missing"
+                    report("add_phone", "页面要求添加手机号")
+                    outcome, msg = phone_page_outcome(page)
+                    if outcome in {"invalid", "recently_used", "risk"}:
+                        if phone_source:
+                            record_pool_phone(phone_source, outcome, msg)
+                            report("add_phone", f"换号原因：{msg}")
+                            number, url, error, code = take_pool_phone(phone_source, report)
+                            if error:
+                                result["error"] = error
+                                result["error_code"] = code
+                                break
+                            phone, sms_url = number, url
+                            continue
+                        result["error"] = msg or "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+                        result["error_code"] = "sms_rejected"
                         break
                     if not phone or not sms_url:
-                        break
-                    if "is not valid" in _page_text(page).lower():
-                        result["error"] = "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
-                        result["error_code"] = "sms_rejected"
+                        if phone_source:
+                            number, url, error, code = take_pool_phone(phone_source, report)
+                            if error:
+                                result["error"] = error
+                                result["error_code"] = code
+                                break
+                            phone, sms_url = number, url
+                        elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
+                            report("add_phone", "注册页出现手机号，已跳过")
+                            page.wait_for_timeout(1500)
+                            continue
+                        else:
+                            result["error"] = "注册页要手机号。正常邀请注册通常不需要，Codex 授权时才接码"
+                            result["error_code"] = "sms_missing"
+                            break
+                    if not phone or not sms_url:
                         break
                     _fill_phone_number(page, phone)
                     _click_exact(page, ["Text", "SMS", "Send", "Continue"])
                     _click_first(page, ['button[type="submit"]', 'label:has-text("Text")'])
                     page.wait_for_timeout(2500)
+                    outcome, msg = phone_page_outcome(page)
+                    if outcome in {"invalid", "recently_used", "risk"}:
+                        if phone_source:
+                            record_pool_phone(phone_source, outcome, msg)
+                            report("add_phone", f"换号原因：{msg}")
+                            number, url, error, code = take_pool_phone(phone_source, report)
+                            if error:
+                                result["error"] = error
+                                result["error_code"] = code
+                                break
+                            phone, sms_url = number, url
+                            continue
+                        result["error"] = msg or "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+                        result["error_code"] = "sms_rejected"
+                        break
                     report("sms_otp", "等待短信验证码")
-                    sms_code = sms_client.wait_for_code(sms_url, proxy=proxy, timeout_sec=90)
+                    try:
+                        sms_code = sms_client.wait_for_code(sms_url, proxy=proxy, timeout_sec=90)
+                    except TimeoutError as exc:
+                        msg = str(exc) or "接码超时或空号"
+                        if phone_source:
+                            record_pool_phone(phone_source, "no_sms", msg)
+                            report("add_phone", f"换号原因：{msg}")
+                            number, url, error, code = take_pool_phone(phone_source, report)
+                            if error:
+                                result["error"] = error
+                                result["error_code"] = code or "sms_failed"
+                                break
+                            phone, sms_url = number, url
+                            continue
+                        result["error"] = msg
+                        result["error_code"] = "sms_failed"
+                        break
                     otp_el = _find_otp(page)
                     if otp_el:
                         otp_el.fill(sms_code)
                     _click_exact(page, ["Continue", "Verify"]) or _click_first(page, ['button[type="submit"]'])
                     page.wait_for_timeout(2500)
+                    record_pool_phone(phone_source, "success")
+                    result["phone"] = phone
+                    result["sms_url"] = sms_url
                     continue
 
                 if _visible(page, 'input[name="name"], input[name="fullName"], input[name="firstName"]'):
@@ -1139,6 +1299,9 @@ def run_browser_onboard(
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            result["phone"] = phone
+            result["sms_url"] = sms_url
+            release_pool_phone(phone_source)
             try:
                 browser.close()
             except Exception:  # noqa: BLE001

@@ -106,7 +106,7 @@
                     </thead>
                     <tbody>
                         {% for item in renewal_requests %}
-                        <tr>
+                        <tr data-request-id="{{ item.id }}">
                             <td data-label="ID"><span class="text-muted">{{ item.id }}</span></td>
                             <td data-label="用户邮箱"><strong>{{ item.email }}</strong></td>
                             <td data-label="兑换码"><code>{{ item.code }}</code></td>
@@ -205,7 +205,13 @@
             const result = await response.json();
             if (result.success) {
                 showToast(result.message || '续期成功', 'success');
-                setTimeout(() => location.reload(), 800);
+                const row = btn?.closest('tr') || document.querySelector(`tr[data-request-id="${requestId}"]`);
+                if (row) {
+                    const statusCell = row.querySelector('[data-label="状态"]');
+                    if (statusCell) statusCell.innerHTML = '<span class="status-badge status-active">已续期</span>';
+                    const actionCell = row.querySelector('.table-actions-cell');
+                    if (actionCell) actionCell.innerHTML = '<span class="text-muted">已处理</span>';
+                }
                 return;
             }
             showToast(result.error || '续期失败', 'error');
@@ -244,7 +250,13 @@
             const result = await response.json();
             if (result.success) {
                 showToast(result.message || '已忽略', 'success');
-                setTimeout(() => location.reload(), 800);
+                const row = btn?.closest('tr') || document.querySelector(`tr[data-request-id="${requestId}"]`);
+                if (row) {
+                    const statusCell = row.querySelector('[data-label="状态"]');
+                    if (statusCell) statusCell.innerHTML = '<span class="status-badge status-expired">已忽略</span>';
+                    const actionCell = row.querySelector('.table-actions-cell');
+                    if (actionCell) actionCell.innerHTML = '<span class="text-muted">已处理</span>';
+                }
                 return;
             }
             showToast(result.error || '忽略失败', 'error');

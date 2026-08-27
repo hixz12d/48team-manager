@@ -189,6 +189,42 @@ class OnboardService:
 
         return run_browser_oauth_reauth(**kwargs)
 
+    def _bind_phone(self, phone_line: str, job_id: Optional[str]):
+        manual = str(phone_line or "").strip()
+        if manual:
+            number, sms_url = parse_phone_line(manual)
+            if job_id and number:
+                onboard_jobs.update_phone(job_id, number)
+            return number, sms_url, None
+        if not job_id:
+            return "", "", None
+        from app.services.phone_pool import phone_pool_service
+
+        def on_log(stage: str, message: str) -> None:
+            onboard_jobs.note(job_id, stage, message)
+            text = str(message or "")
+            if stage == "add_phone" and text.startswith("领取 "):
+                onboard_jobs.update_phone(job_id, text[3:].strip())
+
+        return "", "", phone_pool_service.make_sync_source(
+            job_id,
+            on_log=on_log,
+        )
+
+    @staticmethod
+    def _apply_browser_phone(
+        child: ChildAccount,
+        browser_result: Dict[str, Any],
+        fallback_phone: str = "",
+        fallback_sms: str = "",
+    ) -> None:
+        number = str(browser_result.get("phone") or fallback_phone or "").strip()
+        sms_url = str(browser_result.get("sms_url") or fallback_sms or "").strip()
+        if number:
+            child.phone = number
+        if sms_url:
+            child.sms_url = sms_url
+
     def _cancelled(self, job_id: Optional[str]) -> bool:
         return onboard_jobs.is_cancelled(job_id)
 
@@ -658,10 +694,11 @@ class OnboardService:
         if self._cancelled(job_id):
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
-        phone, sms_url = parse_phone_line(phone_line)
+        phone, sms_url, phone_source = self._bind_phone(phone_line, job_id)
         if existing:
-            phone = phone or existing.phone or ""
-            sms_url = sms_url or existing.sms_url or ""
+            if str(phone_line or "").strip():
+                phone = phone or existing.phone or ""
+                sms_url = sms_url or existing.sms_url or ""
             child_proxy = child_proxy or existing.proxy or ""
             password = password or child_account_service.decrypt_secret(existing.password_encrypted)
         child_proxy = child_proxy or team.proxy or ""
@@ -695,7 +732,7 @@ class OnboardService:
             await db_session.commit()
             if child_account_service.decrypt_secret(child.refresh_token_encrypted):
                 return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(child)}
-            return await self._finish_callable_child(db_session, child, team, email=email, job_id=job_id)
+            return await self._finish_callable_child(db_session, child, team, email=email, job_id=job_id, phone_line=phone_line)
 
         if not password:
             password = _random_password()
@@ -806,6 +843,7 @@ class OnboardService:
                 cf_address=cf_config["address"],
                 cf_admin_password=cf_config["admin_password"],
                 on_stage=on_stage,
+                phone_source=phone_source,
             )
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
@@ -828,6 +866,7 @@ class OnboardService:
             await self._progress(db_session, child, job_id=job_id, stage="browser_failed", message=error, error=error, error_code="browser_await_bug")
             return {"success": False, "error": error, "error_code": "browser_await_bug", "status": "browser_failed"}
 
+        self._apply_browser_phone(child, browser_result, phone, sms_url)
         if not browser_result.get("ok"):
             error = browser_result.get("error") or "浏览器流程失败"
             code = browser_result.get("error_code") or classify_onboard_error(error, stage="browser")
@@ -887,7 +926,7 @@ class OnboardService:
 
         mapping = await self._mapping(db_session, team.id, email)
         await child_account_service.mark_active(db_session, child, team, mapping=mapping)
-        return await self._finish_callable_child(db_session, child, team, email=email, job_id=job_id)
+        return await self._finish_callable_child(db_session, child, team, email=email, job_id=job_id, phone_line=phone_line)
 
     async def _oauth_failed(
         self,
@@ -995,8 +1034,15 @@ class OnboardService:
         *,
         email: str,
         job_id: Optional[str],
+        phone_line: str = "",
     ) -> Dict[str, Any]:
         from app.utils.jwt_parser import JWTParser
+
+        oauth_phone = child.phone or ""
+        oauth_sms = child.sms_url or ""
+        phone_source = None
+        if not str(phone_line or "").strip():
+            oauth_phone, oauth_sms, phone_source = self._bind_phone("", job_id)
 
         password = child_account_service.decrypt_secret(child.password_encrypted)
         if not password:
@@ -1043,14 +1089,15 @@ class OnboardService:
                 authorize_url=auth["authorize_url"],
                 proxy=self._child_proxy(child, team),
                 pickup_url=pickup_url,
-                phone=child.phone or "",
-                sms_url=child.sms_url or "",
+                phone=oauth_phone,
+                sms_url=oauth_sms,
                 use_cloudflare=use_cloudflare,
                 cf_base_url=cf_config["base_url"],
                 cf_address=cf_config["address"],
                 cf_admin_password=cf_config["admin_password"],
                 allow_signup=team is None,
                 on_stage=on_stage,
+                phone_source=phone_source,
             )
         except Exception as exc:  # noqa: BLE001
             error = str(exc)
@@ -1058,6 +1105,7 @@ class OnboardService:
             return await self._oauth_failed(
                 db_session, child, team, email=email, job_id=job_id, error=error, error_code=code
             )
+        self._apply_browser_phone(child, browser, oauth_phone, oauth_sms)
         if not browser.get("ok"):
             error = str(browser.get("error") or "自动授权失败")
             code = str(browser.get("error_code") or classify_onboard_error(error, stage="oauth"))
@@ -1169,10 +1217,11 @@ class OnboardService:
         *,
         email: str,
         job_id: Optional[str],
+        phone_line: str = "",
     ) -> Dict[str, Any]:
         oauth_ran = False
         if not child_account_service.decrypt_secret(child.refresh_token_encrypted):
-            oauth_result = await self._oauth_child(db_session, child, team, email=email, job_id=job_id)
+            oauth_result = await self._oauth_child(db_session, child, team, email=email, job_id=job_id, phone_line=phone_line)
             if not oauth_result.get("success"):
                 return oauth_result
             oauth_ran = True
@@ -1221,12 +1270,12 @@ class OnboardService:
                 "child": child_account_service.serialize(existing),
             }
         if existing and existing.status == CHILD_STATUS_FREE and child_account_service.decrypt_secret(existing.refresh_token_encrypted):
-            return await self._finish_callable_child(db_session, existing, None, email=email, job_id=job_id)
+            return await self._finish_callable_child(db_session, existing, None, email=email, job_id=job_id, phone_line=phone_line)
 
         if self._cancelled(job_id):
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
-        phone, sms_url = parse_phone_line(phone_line)
+        phone, sms_url, _phone_source = self._bind_phone(phone_line, job_id)
         saved_proxy = (await settings_service.get_setting(db_session, "free_account_proxy", "")).strip()
         child_proxy = proxy or (existing.proxy if existing else "") or saved_proxy
         if child_proxy:
@@ -1239,8 +1288,9 @@ class OnboardService:
                 "status": "blocked",
             }
         if existing:
-            phone = phone or existing.phone or ""
-            sms_url = sms_url or existing.sms_url or ""
+            if str(phone_line or "").strip():
+                phone = phone or existing.phone or ""
+                sms_url = sms_url or existing.sms_url or ""
             password = password or child_account_service.decrypt_secret(existing.password_encrypted)
 
         child = await child_account_service.upsert_from_input(
@@ -1280,7 +1330,7 @@ class OnboardService:
             success=True,
             detail="free-oauth-register",
         )
-        return await self._finish_callable_child(db_session, child, None, email=email, job_id=job_id)
+        return await self._finish_callable_child(db_session, child, None, email=email, job_id=job_id, phone_line=phone_line)
 
     async def kick_to_standby(
         self,
@@ -1524,7 +1574,7 @@ class OnboardService:
             db_session,
             team_id=team.id,
             email_line=invite_line,
-            phone_line=phone_line or ((replacement.phone or "") + ("----" + replacement.sms_url if replacement and replacement.sms_url else "")),
+            phone_line=phone_line,
             proxy=proxy or (replacement.proxy if replacement else ""),
             reuse_existing=True,
             force=force_refill,
