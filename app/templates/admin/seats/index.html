@@ -13,9 +13,9 @@
             </div>
             <h2>{{ cards|length }} 个 Team</h2>
             <div class="page-header-meta">
-                <span class="page-meta-pill">在席 {{ stats.active }}</span>
-                <span class="page-meta-pill">standby {{ stats.standby }}</span>
-                <span class="page-meta-pill">到期 {{ stats.due }}</span>
+                <span class="page-meta-pill" data-stat="active">在席 {{ stats.active }}</span>
+                <span class="page-meta-pill" data-stat="standby">standby {{ stats.standby }}</span>
+                <span class="page-meta-pill" data-stat="due">到期 {{ stats.due }}</span>
             </div>
         </div>
     </div>
@@ -104,6 +104,7 @@
             {% if card.occupancy and card.occupancy.upstream_occupied is not none %}
             <p class="occupancy-meta">上游占用 {{ card.occupancy.upstream_occupied }}（已加入 {{ card.occupancy.upstream_joined }} / 邀请中 {{ card.occupancy.upstream_invited }}）</p>
             {% endif %}
+            <div data-vacancy-host>
             {% set vacancy = card.vacancy %}
             {% if vacancy %}
             <div class="vacancy-strip">
@@ -117,6 +118,7 @@
                 <span class="vacancy-metrics">释放 {{ vacancy.expires_at_text }}</span>
             </div>
             {% endif %}
+            </div>
             <details class="vacancy-history">
                 <summary>踢人回执历史（{{ (card.vacancy_history or [])|length }}）</summary>
                 {% if card.vacancy_history %}
@@ -132,13 +134,11 @@
                 <p class="text-muted vacancy-history-empty">踢人成功后会记录 policy_notice / billing_notice。只有 ordinal 明确小于 threshold、且没有账单回执时才允许自动补位。</p>
                 {% endif %}
             </details>
-            {% if card.due_children %}
-            <p>
+            <p data-due-children {% if not card.due_children %}hidden{% endif %}>
                 {% for child in card.due_children %}
-                <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, '{{ child.email }}')">踢出 {{ child.email }}</button>
+                <button class="btn btn-sm btn-danger" onclick="kickChild({{ card.id }}, {{ child.email|tojson }})">踢出 {{ child.email }}</button>
                 {% endfor %}
             </p>
-            {% endif %}
             <p class="text-muted" data-live-error {% if not card.live_error %}hidden{% endif %}>{% if card.live_error %}{{ card.live_error }} <button class="btn btn-sm btn-warning" type="button" onclick="startSeatOauth({{ card.id }}, {{ card.email|tojson }})">重新授权母号</button>{% endif %}</p>
             <div class="table-container">
                 <table class="data-table seat-table">
@@ -276,8 +276,7 @@
         </div>
     </details>
 
-    {% if child_groups %}
-    <div class="content-section">
+    <div class="content-section" id="localChildSection" {% if not child_groups %}hidden{% endif %}>
         <div class="section-header"><h3>本地子号库</h3></div>
         <div class="sub2api-status local-child-status">
             {% for group in child_groups %}
@@ -290,11 +289,14 @@
                 <div class="sub2api-row local-child-row" data-child-id="{{ child.id }}" data-email="{{ child.email }}">
                     <span class="sub2api-name" title="{{ child.email }}">{{ child.email }}</span>
                     <span class="local-child-meta">
-                        <span class="sub2api-chip tone-{% if child.status == 'active' %}ok{% elif child.status in ['invited', 'standby'] %}warn{% elif child.last_error %}danger{% else %}muted{% endif %}">{{ child.status_label or child.status }}</span>
+                        <span class="sub2api-chip tone-{% if child.last_error %}warn{% elif child.status == 'active' %}ok{% elif child.status in ['invited', 'standby'] %}warn{% else %}muted{% endif %}">{{ child.status_label or child.status }}</span>
                         {% if child.needs_account_id_fix %}<span class="sub2api-chip tone-warn">需修复</span>{% endif %}
                         <span class="local-child-actions">
                             {% if child.needs_account_id_fix %}
                             <button class="btn btn-sm btn-secondary" type="button" onclick='fixAccountId({{ child.id }}, {{ child.email|tojson }}, {{ child.current_team_id or child.last_team_id or "null" }})'>修 account_id</button>
+                            {% endif %}
+                            {% if child.can_continue_auth %}
+                            <button class="btn btn-sm btn-primary" type="button" onclick='startSeatOauth({{ child.current_team_id or child.last_team_id }}, {{ child.email|tojson }}, false, "", true)'>继续授权</button>
                             {% endif %}
                             {% if child.can_reregister or child.status == 'invited' %}
                             <button class="btn btn-sm btn-primary" type="button" onclick='reregisterChild({{ child.id }}, {{ child.email|tojson }}, {{ child.current_team_id or child.last_team_id or "null" }})'>重新注册</button>
@@ -314,7 +316,6 @@
             {% endfor %}
         </div>
     </div>
-    {% endif %}
 </div>
 
 {% include "admin/_oauth_reauth_modal.html" %}
@@ -411,7 +412,7 @@ async function pollOnboardJob(jobId, options) {
                 clearOnboardJobId();
                 if (data.job.status === 'success') {
                     if (!quiet) showToast(data.job.message || '拉人成功', 'success');
-                    if (reloadOnDone && !(options && options.alreadyDone)) setTimeout(() => location.reload(), 800);
+                    if (reloadOnDone && !(options && options.alreadyDone)) refreshSeatDashboard({ forceSub2api: true });
                 } else if (data.job.status === 'cancelled') {
                     if (!quiet) showToast(data.job.message || '已停止', 'info');
                 } else if (!quiet) {
@@ -550,7 +551,7 @@ async function applyReconcile() {
         const result = await postJSON('/admin/seats/reconcile', { team_id: lastReconcileTeamId });
         renderReconcile(result, lastReconcileTeamId);
         showToast(result.message || '对账已应用', 'success');
-        setTimeout(() => location.reload(), 800);
+        refreshSeatDashboard({ forceSub2api: true });
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -565,7 +566,7 @@ async function fixAccountId(childId, email, teamId) {
             push: true
         });
         showToast(result.message || 'account_id 已修复', 'success');
-        setTimeout(() => location.reload(), 800);
+        refreshSeatDashboard({ forceSub2api: true });
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -583,7 +584,7 @@ async function handleRotate(event) {
             force_refill: document.getElementById('rotateForceRefill').checked
         });
         showToast(result.message || '轮转成功', 'success');
-        setTimeout(() => location.reload(), 800);
+        refreshSeatDashboard({ forceSub2api: true });
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -598,8 +599,7 @@ async function kickChild(teamId, email, userId = '') {
         if (userId) payload.user_id = userId;
         const result = await postJSON('/admin/seats/kick', payload);
         showToast(result.message || '已踢出', 'success');
-        if (currentOnboardJobId) hydrateSeatLive();
-        else setTimeout(() => location.reload(), 800);
+        refreshSeatDashboard();
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -610,7 +610,7 @@ async function clearVacancyHistory(teamId) {
     try {
         const result = await postJSON('/admin/seats/vacancy/clear', { team_id: teamId });
         showToast(result.message || '已清空', 'success');
-        setTimeout(() => location.reload(), 500);
+        refreshSeatDashboard();
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -621,8 +621,7 @@ async function revokeLiveInvite(teamId, email) {
     try {
         const result = await postJSON('/admin/seats/kick', { team_id: teamId, email });
         showToast(result.message || '已撤回', 'success');
-        if (currentOnboardJobId) hydrateSeatLive();
-        else setTimeout(() => location.reload(), 800);
+        refreshSeatDashboard();
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -633,12 +632,7 @@ async function deleteChild(childId, email) {
     try {
         const result = await postJSON(`/admin/seats/${childId}/delete`, {});
         showToast(result.message || '已删除', 'success');
-        const row = document.querySelector('[data-child-id="' + childId + '"]');
-        if (row) {
-            const box = row.closest('.sub2api-box');
-            row.remove();
-            if (box && !box.querySelector('[data-child-id]')) box.remove();
-        } else if (!currentOnboardJobId) setTimeout(() => location.reload(), 800);
+        refreshSeatDashboard();
     } catch (error) {
         showToast(error.message, 'error');
     }
@@ -696,6 +690,169 @@ function escapeSeatHtml(value) {
         '"': '&quot;',
         "'": '&#39;'
     }[ch]));
+}
+
+function vacancyCompareExtra(item) {
+    if (item && item.is_free === true) return ' · vacancy_ordinal &lt; free_vacancy_threshold';
+    if (item && item.is_free === false) return ' · vacancy_ordinal ≥ free_vacancy_threshold';
+    return '';
+}
+
+function vacancyStripHtml(vacancy) {
+    if (!vacancy) return '';
+    return '<div class="vacancy-strip">' +
+        '<span class="sub2api-chip tone-' + escapeSeatHtml(vacancy.tone || 'muted') + '">' + escapeSeatHtml(vacancy.status_label || '') + '</span>' +
+        '<span class="vacancy-metrics">' + escapeSeatHtml(vacancy.refill_label || '') + '</span>' +
+        '<span class="vacancy-metrics">vacancy_ordinal ' + escapeSeatHtml(vacancy.vacancy_ordinal_text || '') + '</span>' +
+        '<span class="vacancy-metrics">free_vacancy_threshold ' + escapeSeatHtml(vacancy.free_vacancy_threshold_text || '') + '</span>' +
+        '<span class="vacancy-metrics">' + escapeSeatHtml(vacancy.comparison_text || '') + vacancyCompareExtra(vacancy) + '</span>' +
+        '<span class="vacancy-metrics">账单回执 ' + escapeSeatHtml(vacancy.billing_notice_text || '') + '</span>' +
+        '<span class="vacancy-metrics">开始 ' + escapeSeatHtml(vacancy.billing_starts_at_text || '') + '</span>' +
+        '<span class="vacancy-metrics">释放 ' + escapeSeatHtml(vacancy.expires_at_text || '') + '</span>' +
+        '</div>';
+}
+
+function vacancyHistoryHtml(card) {
+    const history = card.vacancy_history || [];
+    const summary = '踢人回执历史（' + history.length + '）';
+    let body;
+    if (!history.length) {
+        body = '<p class="text-muted vacancy-history-empty">踢人成功后会记录 policy_notice / billing_notice。只有 ordinal 明确小于 threshold、且没有账单回执时才允许自动补位。</p>';
+    } else {
+        body = history.map((item) => (
+            '<div class="vacancy-history-row">' +
+                '<div>' + escapeSeatHtml(item.email || '邮箱待匹配') + ' · ' + escapeSeatHtml(item.captured_at_text || '') + ' · ' + escapeSeatHtml(item.refill_label || '') + '</div>' +
+                '<div>vacancy_ordinal ' + escapeSeatHtml(item.vacancy_ordinal_text || '') + ' / free_vacancy_threshold ' + escapeSeatHtml(item.free_vacancy_threshold_text || '') + ' · ' + escapeSeatHtml(item.comparison_text || '') + vacancyCompareExtra(item) + ' · 账单回执 ' + escapeSeatHtml(item.billing_notice_text || '') + '</div>' +
+                '<div>开始 ' + escapeSeatHtml(item.billing_starts_at_text || '') + ' · 结束 ' + escapeSeatHtml(item.expires_at_text || '') + '</div>' +
+            '</div>'
+        )).join('') + '<button class="btn btn-sm btn-secondary" type="button" onclick="clearVacancyHistory(' + card.id + ')">清空本 Team 历史</button>';
+    }
+    return { summary, body };
+}
+
+function childStatusTone(child) {
+    if (child.last_error) return 'warn';
+    if (child.status === 'active') return 'ok';
+    if (child.status === 'invited' || child.status === 'standby') return 'warn';
+    return 'muted';
+}
+
+function localChildActionsHtml(child) {
+    const id = Number(child.id);
+    const emailJs = escapeSeatHtml(JSON.stringify(child.email || ''));
+    const teamJs = escapeSeatHtml(JSON.stringify(child.current_team_id || child.last_team_id || null));
+    let html = '';
+    if (child.needs_account_id_fix) {
+        html += '<button class="btn btn-sm btn-secondary" type="button" onclick="fixAccountId(' + id + ', ' + emailJs + ', ' + teamJs + ')">修 account_id</button>';
+    }
+    if (child.can_continue_auth) {
+        const teamId = Number(child.current_team_id || child.last_team_id || 0);
+        html += '<button class="btn btn-sm btn-primary" type="button" onclick="startSeatOauth(' + teamId + ', ' + emailJs + ', false, \'\', true)">继续授权</button>';
+    }
+    if (child.can_reregister || child.status === 'invited') {
+        html += '<button class="btn btn-sm btn-primary" type="button" onclick="reregisterChild(' + id + ', ' + emailJs + ', ' + teamJs + ')">重新注册</button>';
+    }
+    if (['unused', 'standby', 'disabled'].indexOf(child.status) >= 0) {
+        html += '<button class="btn btn-sm btn-danger" type="button" onclick="deleteChild(' + id + ', ' + emailJs + ')">删除</button>';
+    } else if (child.status === 'invited') {
+        html += '<span class="text-muted">先撤回再删</span>';
+    } else {
+        html += '<span class="text-muted">先踢再删</span>';
+    }
+    return html;
+}
+
+function renderLocalChildGroups(groups) {
+    const section = document.getElementById('localChildSection');
+    const root = section ? section.querySelector('.local-child-status') : document.querySelector('.local-child-status');
+    if (!root) return;
+    if (section) section.hidden = !groups || !groups.length;
+    if (!groups || !groups.length) {
+        root.innerHTML = '';
+        return;
+    }
+    root.innerHTML = groups.map((group) => {
+        const rows = (group.children || []).map((child) => {
+            const email = String(child.email || '');
+            let chips = '<span class="sub2api-chip tone-' + childStatusTone(child) + '">' + escapeSeatHtml(child.status_label || child.status || '') + '</span>';
+            if (child.needs_account_id_fix) chips += '<span class="sub2api-chip tone-warn">需修复</span>';
+            return '<div class="sub2api-row local-child-row" data-child-id="' + escapeSeatHtml(child.id) + '" data-email="' + escapeSeatHtml(email) + '">' +
+                '<span class="sub2api-name" title="' + escapeSeatHtml(email) + '">' + escapeSeatHtml(email) + '</span>' +
+                '<span class="local-child-meta">' + chips + '<span class="local-child-actions">' + localChildActionsHtml(child) + '</span></span></div>';
+        }).join('');
+        return '<article class="sub2api-box"><header><span>' + escapeSeatHtml(group.title || '') + '</span><span class="text-muted">' + (group.children || []).length + '</span></header>' + rows + '</article>';
+    }).join('');
+}
+
+function updateHeaderStats(stats) {
+    if (!stats) return;
+    const active = document.querySelector('[data-stat="active"]');
+    const standby = document.querySelector('[data-stat="standby"]');
+    const due = document.querySelector('[data-stat="due"]');
+    if (active) active.textContent = '在席 ' + (stats.active || 0);
+    if (standby) standby.textContent = 'standby ' + (stats.standby || 0);
+    if (due) due.textContent = '到期 ' + (stats.due || 0);
+}
+
+function updateTeamSelects(cards) {
+    (cards || []).forEach((card) => {
+        const name = card.team_name ? (card.team_name + ' / ' + (card.email || '')) : (card.email || ('Team ' + card.id));
+        const occ = (card.occupancy && card.occupancy.occupancy_text) || ((card.current_members || 0) + '/' + (card.max_members || 0));
+        const rotate = document.querySelector('#rotateTeamId option[value="' + card.id + '"]');
+        const onboard = document.querySelector('#onboardTeamId option[value="' + card.id + '"]');
+        if (rotate) rotate.textContent = name + '（' + occ + '）';
+        if (onboard) onboard.textContent = name + '（空位 ' + (card.available_seats || 0) + '）';
+    });
+}
+
+function updateSeatCardExtras(card) {
+    const root = document.querySelector('.seat-card[data-team-id="' + card.id + '"]');
+    if (!root) return;
+    const host = root.querySelector('[data-vacancy-host]');
+    if (host && Object.prototype.hasOwnProperty.call(card, 'vacancy')) host.innerHTML = vacancyStripHtml(card.vacancy);
+    const history = root.querySelector('.vacancy-history');
+    if (history && Object.prototype.hasOwnProperty.call(card, 'vacancy_history')) {
+        const rendered = vacancyHistoryHtml(card);
+        const summary = history.querySelector('summary');
+        if (summary) summary.textContent = rendered.summary;
+        [...history.childNodes].filter((node) => node.nodeName !== 'SUMMARY').forEach((node) => node.remove());
+        history.insertAdjacentHTML('beforeend', rendered.body);
+    }
+    const dueBox = root.querySelector('[data-due-children]');
+    if (dueBox && Object.prototype.hasOwnProperty.call(card, 'due_children')) {
+        const due = card.due_children || [];
+        dueBox.hidden = !due.length;
+        dueBox.innerHTML = due.map((child) => (
+            '<button class="btn btn-sm btn-danger" onclick="kickChild(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(child.email || '')) + ')">踢出 ' + escapeSeatHtml(child.email || '') + '</button>'
+        )).join('');
+    }
+}
+
+function applyLocalDashboard(data) {
+    if (!data) return;
+    updateHeaderStats(data.stats);
+    renderLocalChildGroups(data.child_groups || []);
+    (data.cards || []).forEach(updateSeatCardExtras);
+    updateTeamSelects(data.cards || []);
+}
+
+async function refreshLocalPool() {
+    try {
+        const response = await fetch('/admin/seats/list');
+        const data = await response.json();
+        if (!response.ok || data.success === false) return;
+        applyLocalDashboard(data);
+    } catch (error) {
+        console.warn(error);
+    }
+}
+
+async function refreshSeatDashboard(options) {
+    await Promise.all([
+        hydrateSeatLive(),
+        refreshLocalPool(),
+        loadSub2apiStatus(Boolean(options && options.forceSub2api), { silent: true }),
+    ]);
 }
 
 let lastSub2apiIndex = {};
@@ -831,10 +988,10 @@ function renderSub2apiStatus(data) {
     patchSeatQuotaFromIndex();
 }
 
-async function loadSub2apiStatus(force) {
+async function loadSub2apiStatus(force, options) {
     const box = document.getElementById('sub2apiStatus');
     if (!box) return;
-    if (force || !box.querySelector('.sub2api-box')) box.textContent = '加载中…';
+    if (!(options && options.silent) && (force || !box.querySelector('.sub2api-box'))) box.textContent = '加载中…';
     try {
         const response = await fetch('/admin/seats/sub2api-status' + (force ? '?force=1' : ''));
         const data = await response.json();
@@ -889,6 +1046,7 @@ function updateSeatCard(card) {
             ? (escapeSeatHtml(card.live_error) + ' <button class="btn btn-sm btn-warning" type="button" onclick="startSeatOauth(' + card.id + ', ' + escapeSeatHtml(JSON.stringify(card.email || '')) + ')">重新授权母号</button>')
             : '';
     }
+    updateSeatCardExtras(card);
     const tbody = root.querySelector('.seat-table tbody');
     if (!tbody) return;
     const rows = card.live_members && card.live_members.length ? card.live_members : (card.active_children || []);
@@ -918,11 +1076,10 @@ async function hydrateSeatLive() {
 }
 
 window.oauthReauthOnDone = function () {
-    hydrateSeatLive();
-    loadSub2apiStatus(true);
+    refreshSeatDashboard({ forceSub2api: true });
 };
 </script>
-<script src="/static/js/oauth_reauth.js?v=20260826-bom"></script>
+<script src="/static/js/oauth_reauth.js?v=20260828-phone"></script>
 <script>
 loadSub2apiStatus(false);
 hydrateSeatLive();

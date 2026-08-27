@@ -16,6 +16,7 @@ from app.database import AsyncSessionLocal, get_db
 from app.models import ChildAccount, SeatEvent, Team
 from app.dependencies.auth import require_admin
 from app.services.child_accounts import child_account_service, normalize_email
+from app.services.sms import parse_phone_line
 from app.services.onboard import onboard_service
 from app.services import onboard_jobs
 from app.services.sub2api import sub2api_service
@@ -304,6 +305,7 @@ class SeatOAuthStartRequest(BaseModel):
     email: str
     origin: str = ""
     force_manual: bool = False
+    phone: str = Field("", description="+1xxxx----https://api668.com/sms/by_key?key=...")
 
 
 class SeatOAuthCompleteRequest(BaseModel):
@@ -377,10 +379,12 @@ async def seats_list(
     current_user: dict = Depends(require_admin),
 ):
     children = await child_account_service.list_accounts(db, status=status, team_id=team_id, search=search)
+    serialized = [child_account_service.serialize(item) for item in children]
     cards, sub2api_status = await load_sub2api_dashboard(db, allow_network=False)
     return {
         "success": True,
-        "children": [child_account_service.serialize(item) for item in children],
+        "children": serialized,
+        "child_groups": group_local_children(cards, serialized),
         "stats": await child_account_service.stats(db),
         "cards": cards,
         "sub2api_status": sub2api_status,
@@ -710,6 +714,15 @@ async def seats_oauth_start(
                 return refreshed
             return JSONResponse(status_code=400, content=refreshed)
     child = None if role == "owner" else await child_account_service.get_by_email(db, email)
+    if child is not None and str(payload.phone or "").strip():
+        number, sms_url = parse_phone_line(payload.phone)
+        if number:
+            child.phone = number
+        if sms_url:
+            child.sms_url = sms_url
+        child.updated_at = get_now()
+        await db.commit()
+        await db.refresh(child)
     password = child_account_service.decrypt_secret(child.password_encrypted) if child else ""
     pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""
     cf_config = await onboard_service._cf_config(db)
@@ -747,18 +760,26 @@ async def seats_oauth_start(
     if plan["auto"]:
         active = onboard_jobs.active_job_for_email(email)
         if active:
-            return {
-                "success": True,
-                "mode": "auto",
-                "job_id": active["id"],
-                "session": session,
-                "complete_url": complete_url,
-                "launcher_url": launcher_url,
-                "protocol_url": proto_url,
-                "install_url": install_url,
-                "message": "该邮箱已有进行中的任务",
-                "job": active,
-            }
+            if str(payload.phone or "").strip():
+                onboard_jobs.finish(active["id"], {
+                    "success": False,
+                    "error": "已换号重试",
+                    "error_code": "cancelled",
+                    "status": "cancelled",
+                })
+            else:
+                return {
+                    "success": True,
+                    "mode": "auto",
+                    "job_id": active["id"],
+                    "session": session,
+                    "complete_url": complete_url,
+                    "launcher_url": launcher_url,
+                    "protocol_url": proto_url,
+                    "install_url": install_url,
+                    "message": "该邮箱已有进行中的任务",
+                    "job": active,
+                }
         job = onboard_jobs.create_job(team_id=team.id, email=email, action="reauth")
         oauth_sessions.mark_session(session["ticket"], job_id=job["id"], status="running", message=plan["reason"])
         live = oauth_sessions.get_session(session["ticket"]) or {}

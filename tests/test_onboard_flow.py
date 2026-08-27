@@ -14,6 +14,7 @@ from app.services.browser_onboard import (
     looks_like_cloudflare,
     looks_like_email_gate,
     looks_like_session_ended,
+    looks_like_invalid_phone,
     split_phone,
     looks_like_otp_input,
     session_access_token,
@@ -78,6 +79,9 @@ class OnboardHelperTests(unittest.TestCase):
         self.assertTrue(looks_like_session_ended(title="Your session has ended - OpenAI", body="Continue by logging in"))
         self.assertFalse(looks_like_session_ended(title="Get started | ChatGPT", body="Log in or sign up"))
         self.assertEqual(split_phone("+8613434986375"), ("China", "13434986375"))
+        self.assertEqual(split_phone("8613434986"), ("China", "13434986"))
+        self.assertTrue(looks_like_invalid_phone("Phone number is not valid."))
+        self.assertFalse(looks_like_invalid_phone("Enter your phone number"))
         self.assertEqual(split_phone("+13434986375"), ("United States", "3434986375"))
 
     def test_age_page_is_not_otp(self):
@@ -93,6 +97,12 @@ class OnboardHelperTests(unittest.TestCase):
         self.assertEqual(classify_onboard_error("授权成功但没有 refresh_token，未推送"), "oauth_no_refresh")
         self.assertEqual(classify_onboard_error("登录的是 a@b.com，不是 c@d.com"), "oauth_identity_mismatch")
         self.assertEqual(classify_onboard_error("无法自动授权", stage="oauth"), "oauth_failed")
+        self.assertEqual(
+            classify_onboard_error("手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"),
+            "sms_rejected",
+        )
+        self.assertEqual(classify_onboard_error("需要接码，但未提供手机号"), "sms_failed")
+        self.assertEqual(classify_onboard_error("卡在手机号页，没能发出短信"), "sms_failed")
 
     def test_run_oauth_browser_is_sync(self):
         self.assertFalse(inspect.iscoroutinefunction(OnboardService._run_oauth_browser))
@@ -236,6 +246,7 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         view = child_account_service.serialize(child)
         self.assertEqual(view["status_label"], "已入组，未完成")
         self.assertFalse(view["can_reregister"])
+        self.assertTrue(view["can_continue_auth"])
 
     async def test_serialize_free_unfinished_label(self):
         child = await child_account_service.upsert_from_input(self.session, email="free@icloud.com")

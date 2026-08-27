@@ -61,12 +61,14 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "openai_rate_limited"
     if "仍未通过" in error or "mail_otp_rejected" in text:
         return "mail_otp_rejected"
+    if "sms_rejected" in text or "不被 openai 接受" in text or "停在美国" in error:
+        return "sms_rejected"
+    if "sms_missing" in text or "sms_failed" in text or "接码" in error or "手机号页" in error or "sms" in text:
+        return "sms_failed"
     if "otp" in text or "mailbox" in text or "验证码" in error:
         return "mail_otp_timeout"
     if "邮箱页" in error or "email_gate" in text or "email_input_missing" in text:
         return "email_gate_stuck"
-    if "接码" in error or "sms" in text:
-        return "sms_failed"
     if "cloudflare" in text or "just a moment" in text or "turnstile" in text:
         return "cloudflare_challenge"
     if "代理" in error or "proxy" in text:

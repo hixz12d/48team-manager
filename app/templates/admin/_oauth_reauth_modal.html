@@ -20,6 +20,12 @@
             <div class="oauth-quick-btn-row">
                 <button id="seatOauthCancel" type="button" class="btn btn-secondary" hidden onclick="cancelSeatOauthJob()">停止自动授权</button>
             </div>
+            <div id="seatOauthPhoneRow" class="form-group" hidden>
+                <label>接码</label>
+                <input id="seatOauthPhone" class="form-control" placeholder="+1xxxx----https://...">
+                <p class="form-help">OpenAI 要手机号时换一个能过的 +1 接码，再点换号重试。不要用 +86。</p>
+                <button type="button" class="btn btn-primary" onclick="retrySeatOauth()">换号重试</button>
+            </div>
             <pre id="seatOauthLog" class="onboard-progress-log"></pre>
         </div>
     </div>

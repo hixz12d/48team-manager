@@ -18,6 +18,17 @@ function setSeatOauthInstallVisible(show) {
     if (install) install.hidden = !show;
 }
 
+function showSeatOauthPhone(show) {
+    const row = document.getElementById('seatOauthPhoneRow');
+    if (row) row.hidden = !show;
+}
+
+function seatOauthPhoneValue(explicit) {
+    if (explicit) return String(explicit || '').trim();
+    const box = document.getElementById('seatOauthPhone');
+    return box ? String(box.value || '').trim() : '';
+}
+
 function notifyOauthReauthDone(payload) {
     if (typeof window.oauthReauthOnDone === 'function') {
         window.oauthReauthOnDone(payload);
@@ -59,12 +70,15 @@ function applySeatOauthMode(data) {
     }
 }
 
-async function startSeatOauth(teamId, email, forceManual) {
+async function startSeatOauth(teamId, email, forceManual, phoneLine, showPhone) {
     const modal = document.getElementById('seatOauthModal');
     const title = document.getElementById('seatOauthTitle');
     const callback = document.getElementById('seatOauthCallback');
+    const phoneBox = document.getElementById('seatOauthPhone');
     if (title) title.textContent = '重新授权 ' + email;
     if (callback) callback.value = '';
+    if (phoneBox && phoneLine) phoneBox.value = phoneLine;
+    showSeatOauthPhone(Boolean(showPhone) || Boolean(seatOauthPhoneValue(phoneLine)));
     setSeatOauthManualVisible(false);
     setSeatOauthInstallVisible(false);
     const cancelBtn = document.getElementById('seatOauthCancel');
@@ -79,7 +93,8 @@ async function startSeatOauth(teamId, email, forceManual) {
                 team_id: teamId,
                 email: email,
                 origin: window.location.origin,
-                force_manual: Boolean(forceManual)
+                force_manual: Boolean(forceManual),
+                phone: seatOauthPhoneValue(phoneLine)
             })
         });
         const data = await response.json();
@@ -96,9 +111,35 @@ async function startSeatOauth(teamId, email, forceManual) {
     } catch (error) {
         setSeatOauthManualVisible(false);
         setSeatOauthInstallVisible(false);
+        showSeatOauthPhone(true);
         seatOauthLog(error.message);
         showToast(error.message, 'error');
     }
+}
+
+async function retrySeatOauth() {
+    if (!seatOauthState || !seatOauthState.session) {
+        showToast('请先点重新授权或继续授权', 'error');
+        showSeatOauthPhone(true);
+        return;
+    }
+    const phone = seatOauthPhoneValue();
+    if (!phone) {
+        showToast('先填接码，格式 +1xxxx----https://...', 'error');
+        showSeatOauthPhone(true);
+        return;
+    }
+    const jobId = seatOauthState.job_id;
+    if (jobId) {
+        try {
+            await fetch('/admin/seats/jobs/' + encodeURIComponent(jobId) + '/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+        } catch (error) {}
+    }
+    startSeatOauth(seatOauthState.session.team_id, seatOauthState.session.email, false, phone, true);
 }
 
 function startSeatOauthManual() {
@@ -106,7 +147,7 @@ function startSeatOauthManual() {
         showToast('请先点重新授权', 'error');
         return;
     }
-    startSeatOauth(seatOauthState.session.team_id, seatOauthState.session.email, true);
+    startSeatOauth(seatOauthState.session.team_id, seatOauthState.session.email, true, seatOauthPhoneValue(), true);
 }
 
 function bindSeatOauthLaunchHref() {
@@ -210,9 +251,10 @@ function pollSeatOauth() {
                 clearInterval(seatOauthTimer);
                 seatOauthTimer = null;
                 setSeatOauthManualVisible(true);
+                showSeatOauthPhone(true);
                 const cancelBtn = document.getElementById('seatOauthCancel');
                 if (cancelBtn) cancelBtn.hidden = true;
-                showToast(session.error || '自动授权失败，可改走手动', 'error');
+                showToast(session.error || '自动授权失败，可换号重试或改走手动', 'error');
             }
         } catch (error) {
             console.warn(error);
@@ -240,7 +282,8 @@ function pollSeatOauthJob(jobId) {
                     notifyOauthReauthDone(job);
                 } else if (job.status !== 'cancelled') {
                     setSeatOauthManualVisible(true);
-                    showToast(job.error || job.message || '自动授权失败，可改走手动', 'error');
+                    showSeatOauthPhone(true);
+                    showToast(job.error || job.message || '自动授权失败，可换号重试或改走手动', 'error');
                 }
             }
         } catch (error) {
@@ -264,6 +307,7 @@ async function cancelSeatOauthJob() {
         if (!response.ok || data.success === false) throw new Error(data.error || '停止失败');
         showToast('已请求停止', 'info');
         setSeatOauthManualVisible(true);
+        showSeatOauthPhone(true);
     } catch (error) {
         showToast(error.message, 'error');
     }

@@ -19,9 +19,12 @@ from app.services.browser_onboard import (
     _pick_workspace,
     _save_debug,
     _snapshot_mailbox_codes,
+    _visible,
     chromium_context_kwargs,
     looks_like_about_you,
     looks_like_session_ended,
+    page_phone_invalid,
+    split_phone,
     wait_cloudflare,
     wait_email_otp_with_resend,
 )
@@ -140,6 +143,7 @@ def run_browser_oauth_reauth(
                 )
             )
             otp_submits = 0
+            phone_tries = 0
             otp_resends = 0
             password_tried = False
             signup_clicked = False
@@ -169,22 +173,40 @@ def run_browser_oauth_reauth(
                     report("workspace", "已选择工作空间")
                     page.wait_for_timeout(1500)
                     continue
-                on_phone = any(bit in url for bit in ("add-phone", "phone-verification", "/phone")) or page.locator('input[type="tel"]').count() > 0
+                on_phone = any(bit in url for bit in ("add-phone", "phone-verification")) or _visible(page, 'input[type="tel"]')
                 if on_phone:
                     report("add_phone", "授权页要求手机号/短信验证码")
+                    if page_phone_invalid(page):
+                        result["error"] = "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+                        result["error_code"] = "sms_rejected"
+                        break
                     if not phone or not sms_url:
+                        if _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
+                            report("add_phone", "手机号页已跳过")
+                            page.wait_for_timeout(1500)
+                            continue
                         result["error"] = "需要接码，但未提供手机号"
                         result["error_code"] = "sms_missing"
                         break
-                    if page.locator('input[type="tel"]').count() > 0:
-                        if "is not valid" in _page_text(page).lower():
+                    phone_tries += 1
+                    if phone_tries >= 4:
+                        result["error"] = "卡在手机号页，没能发出短信"
+                        result["error_code"] = "sms_failed"
+                        break
+                    if _visible(page, 'input[type="tel"]'):
+                        country, _national = split_phone(phone)
+                        filled = _fill_phone_number(page, phone)
+                        if not filled and country == "China":
+                            result["error"] = "接码是 +86，但授权页停在美国 +1。Codex 不吃这个号，换能过的 +1 接码"
+                            result["error_code"] = "sms_rejected"
+                            break
+                        _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")', 'button:has-text("Text Message")'])
+                        _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
+                        page.wait_for_timeout(2500)
+                        if page_phone_invalid(page):
                             result["error"] = "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
                             result["error_code"] = "sms_rejected"
                             break
-                        _fill_phone_number(page, phone)
-                        _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")'])
-                        _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
-                        page.wait_for_timeout(2500)
                         continue
                     otp_el = _find_otp(page)
                     if otp_el:
@@ -342,7 +364,7 @@ def run_browser_oauth_reauth(
                 page.wait_for_timeout(1200)
 
             remember(page.url or "")
-            if not captured["url"]:
+            if not captured["url"] and not result.get("error"):
                 for _ in range(20):
                     page.wait_for_timeout(1000)
                     remember(page.url or "")

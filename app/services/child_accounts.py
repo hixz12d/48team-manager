@@ -106,6 +106,11 @@ class ChildAccountService:
             "status": child.status,
             "status_label": status_label,
             "can_reregister": child.status in (CHILD_STATUS_INVITED, CHILD_STATUS_FREE) or bool(child.last_error and child.status in REUSABLE_CHILD_STATUSES),
+            "can_continue_auth": bool(
+                child.last_error
+                and child.status == CHILD_STATUS_ACTIVE
+                and (child.current_team_id or child.last_team_id)
+            ),
             "current_team_id": child.current_team_id,
             "last_team_id": child.last_team_id,
             "joined_at": child.joined_at.isoformat() if child.joined_at else None,
