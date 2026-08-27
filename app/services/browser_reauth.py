@@ -21,8 +21,8 @@ from app.services.browser_onboard import (
     looks_like_about_you,
     looks_like_session_ended,
     wait_cloudflare,
+    wait_email_otp_with_resend,
 )
-from app.services.mail_otp import wait_for_mailbox_item
 from app.services.reauth import is_oauth_callback
 from app.services.sms import require_proxy, sms_client
 from app.services.socks_bridge import chrome_proxy_launch
@@ -124,8 +124,9 @@ def run_browser_oauth_reauth(
                 )
             )
             otp_submits = 0
+            otp_resends = 0
 
-            for _ in range(24):
+            for _ in range(36):
                 remember(page.url or "")
                 if captured["url"]:
                     break
@@ -184,28 +185,27 @@ def run_browser_oauth_reauth(
                         result["error"] = "邮箱验证码提交后仍未通过，没有继续连交"
                         result["error_code"] = "mail_otp_rejected"
                         break
-                    report("email_otp", "等待新的邮箱验证码" if otp_submits else "等待邮箱验证码")
-                    code = ""
-                    if pickup_url or use_cloudflare:
-                        try:
-                            code = wait_for_mailbox_item(
-                                email=email,
-                                pickup_url=pickup_url,
-                                proxy=proxy,
-                                kind="code",
-                                timeout_sec=90,
-                                cf_base_url=cf_base_url if use_cloudflare else "",
-                                cf_address=cf_address if use_cloudflare else "",
-                                cf_admin_password=cf_admin_password if use_cloudflare else "",
-                                ignore_values=known_codes,
-                            ) or ""
-                        except Exception as exc:  # noqa: BLE001
-                            result["error"] = f"email OTP failed: {exc}"
-                            result["error_code"] = "mail_otp_timeout"
-                    if not code:
-                        result["error"] = result.get("error") or "email OTP not found"
-                        result["error_code"] = result.get("error_code") or "mail_otp_timeout"
+                    report("email_otp", "等待新的邮箱验证码" if otp_submits or otp_resends else "等待邮箱验证码")
+                    code, otp_resends, otp_error = wait_email_otp_with_resend(
+                        page,
+                        email=email,
+                        pickup_url=pickup_url,
+                        proxy=proxy,
+                        use_cloudflare=use_cloudflare,
+                        cf_base_url=cf_base_url,
+                        cf_address=cf_address,
+                        cf_admin_password=cf_admin_password,
+                        ignore=known_codes,
+                        resends=otp_resends,
+                        report=report,
+                        check_past_otp=True,
+                    )
+                    if otp_error:
+                        result["error"] = otp_error
+                        result["error_code"] = "mail_otp_timeout"
                         break
+                    if not code:
+                        continue
                     otp_el.fill(code)
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
                     known_codes.add(code)

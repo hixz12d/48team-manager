@@ -479,6 +479,10 @@ def _snapshot_mailbox_codes(**kwargs: str) -> set[str]:
         return set()
 
 
+OTP_WAIT_SEC = 60
+OTP_RESEND_MAX = 2
+
+
 def _wait_mailbox_code(
     *,
     email: str,
@@ -489,6 +493,7 @@ def _wait_mailbox_code(
     cf_address: str,
     cf_admin_password: str,
     ignore: Optional[set[str]] = None,
+    timeout_sec: float = OTP_WAIT_SEC,
 ) -> str:
     if not (pickup_url or use_cloudflare):
         return ""
@@ -498,7 +503,7 @@ def _wait_mailbox_code(
             pickup_url=pickup_url,
             proxy=proxy,
             kind="code",
-            timeout_sec=90,
+            timeout_sec=timeout_sec,
             cf_base_url=cf_base_url if use_cloudflare else "",
             cf_address=cf_address if use_cloudflare else "",
             cf_admin_password=cf_admin_password if use_cloudflare else "",
@@ -506,6 +511,106 @@ def _wait_mailbox_code(
         )
         or ""
     )
+
+
+def _click_resend_email(page) -> bool:
+    return _click_exact(page, ["Resend email", "Resend code", "Resend"]) or _click_first(
+        page,
+        [
+            'button[value="resend"]',
+            'button[name="intent"][value="resend"]',
+            'button:has-text("Resend email")',
+            'button:has-text("Resend code")',
+        ],
+    )
+
+
+def _resend_email_otp(
+    page,
+    *,
+    resends: int,
+    report: StageCallback = None,
+    known_codes: Optional[set[str]] = None,
+    mail_kw: Optional[dict[str, str]] = None,
+) -> tuple[int, bool]:
+    if resends >= OTP_RESEND_MAX:
+        return resends, False
+    if known_codes is not None and mail_kw:
+        known_codes.update(_snapshot_mailbox_codes(**mail_kw))
+    if not _click_resend_email(page):
+        return resends, False
+    resends += 1
+    if report:
+        report("email_otp", f"{OTP_WAIT_SEC}s 未读到验证码，已重新发送（第 {resends}/{OTP_RESEND_MAX} 次）")
+    try:
+        page.wait_for_timeout(2000)
+    except Exception:  # noqa: BLE001
+        pass
+    return resends, True
+
+
+def wait_email_otp_with_resend(
+    page,
+    *,
+    email: str,
+    pickup_url: str,
+    proxy: str,
+    use_cloudflare: bool,
+    cf_base_url: str,
+    cf_address: str,
+    cf_admin_password: str,
+    ignore: Optional[set[str]] = None,
+    resends: int = 0,
+    report: StageCallback = None,
+    check_past_otp: bool = True,
+) -> tuple[str, int, str]:
+    known = ignore if ignore is not None else set()
+    mail_kw = _mail_kwargs(
+        email=email,
+        pickup_url=pickup_url,
+        proxy=proxy,
+        use_cloudflare=use_cloudflare,
+        cf_base_url=cf_base_url,
+        cf_address=cf_address,
+        cf_admin_password=cf_admin_password,
+    )
+    try:
+        code = _wait_mailbox_code(
+            email=email,
+            pickup_url=pickup_url,
+            proxy=proxy,
+            use_cloudflare=use_cloudflare,
+            cf_base_url=cf_base_url,
+            cf_address=cf_address,
+            cf_admin_password=cf_admin_password,
+            ignore=known,
+            timeout_sec=OTP_WAIT_SEC,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if check_past_otp and _page_past_otp(page):
+            if report:
+                report("email_otp", "没读到验证码，但页面已经过了验证")
+            return "", resends, ""
+        resends, resent = _resend_email_otp(
+            page, resends=resends, report=report, known_codes=known, mail_kw=mail_kw
+        )
+        if resent:
+            return "", resends, ""
+        return "", resends, f"email OTP failed: {exc}"
+    if code:
+        return code, resends, ""
+    if check_past_otp and _page_past_otp(page):
+        if report:
+            report("email_otp", "没读到验证码，但页面已经过了验证")
+        return "", resends, ""
+    if not (pickup_url or use_cloudflare):
+        return "", resends, "email OTP not found"
+    resends, resent = _resend_email_otp(
+        page, resends=resends, report=report, known_codes=known, mail_kw=mail_kw
+    )
+    if resent:
+        return "", resends, ""
+    return "", resends, "email OTP not found"
 
 
 def _set_input(page, selectors: list[str], value: str) -> bool:
@@ -657,11 +762,12 @@ def run_browser_onboard(
             password_tried = False
             otp_sent = False
             otp_submits = 0
+            otp_resends = 0
             email_submits = 0
             has_mail = bool(pickup_url or use_cloudflare)
             debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
-            for _ in range(30):
+            for _ in range(36):
                 wait_cloudflare(page, timeout_sec=15)
                 url = (page.url or "").lower()
                 if url != last_url:
@@ -716,32 +822,26 @@ def run_browser_onboard(
                         result["error"] = "邮箱验证码提交后仍未通过，没有继续连交"
                         result["error_code"] = "mail_otp_rejected"
                         break
-                    report("email_otp", "等待新的邮箱验证码" if otp_submits else "等待邮箱验证码")
-                    try:
-                        code = _wait_mailbox_code(
-                            email=email,
-                            pickup_url=pickup_url,
-                            proxy=proxy,
-                            use_cloudflare=use_cloudflare,
-                            cf_base_url=cf_base_url,
-                            cf_address=cf_address,
-                            cf_admin_password=cf_admin_password,
-                            ignore=known_codes,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        if _page_past_otp(page):
-                            report("email_otp", "没读到验证码，但页面已经过了验证")
-                            continue
-                        result["error"] = f"email OTP failed: {exc}"
+                    report("email_otp", "等待新的邮箱验证码" if otp_submits or otp_resends else "等待邮箱验证码")
+                    code, otp_resends, otp_error = wait_email_otp_with_resend(
+                        page,
+                        email=email,
+                        pickup_url=pickup_url,
+                        proxy=proxy,
+                        use_cloudflare=use_cloudflare,
+                        cf_base_url=cf_base_url,
+                        cf_address=cf_address,
+                        cf_admin_password=cf_admin_password,
+                        ignore=known_codes,
+                        resends=otp_resends,
+                        report=report,
+                    )
+                    if otp_error:
+                        result["error"] = otp_error
                         result["error_code"] = "mail_otp_timeout"
                         break
                     if not code:
-                        if _page_past_otp(page):
-                            report("email_otp", "没读到验证码，但页面已经过了验证")
-                            continue
-                        result["error"] = result.get("error") or "email OTP not found"
-                        result["error_code"] = result.get("error_code") or "mail_otp_timeout"
-                        break
+                        continue
                     if not _fill_otp(page, code):
                         if _page_past_otp(page):
                             report("email_otp", "验证码输入框已消失，页面已过验证")
