@@ -2426,8 +2426,8 @@ async def settings_page(
             "hme_account_id": await settings_service.get_setting(db, "hme_account_id", ""),
             "hme_team_tag_map": await settings_service.get_setting(db, "hme_team_tag_map", ""),
             "sms_max_uses_per_phone": await settings_service.get_setting(db, "sms_max_uses_per_phone", "3"),
-            "sms_cooldown_sec": await settings_service.get_setting(db, "sms_cooldown_sec", "3600"),
-            "sms_reserve_sec": await settings_service.get_setting(db, "sms_reserve_sec", "900"),
+            "sms_cooldown_sec": await settings_service.get_setting(db, "sms_cooldown_sec", "1200"),
+            "sms_reserve_sec": await settings_service.get_setting(db, "sms_reserve_sec", "180"),
             "sms_max_phone_retries": await settings_service.get_setting(db, "sms_max_phone_retries", "3"),
             "warranty_expiration_mode": await settings_service.get_warranty_expiration_mode(db),
             "ui_theme": settings_service.normalize_ui_theme(await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)),
@@ -3631,8 +3631,8 @@ async def probe_hme_settings(
 
 class SmsPoolSettingsRequest(BaseModel):
     sms_max_uses_per_phone: int = Field(3, ge=1, le=20)
-    sms_cooldown_sec: int = Field(3600, ge=60, le=86400)
-    sms_reserve_sec: int = Field(900, ge=60, le=7200)
+    sms_cooldown_sec: int = Field(1200, ge=60, le=86400)
+    sms_reserve_sec: int = Field(180, ge=60, le=7200)
     sms_max_phone_retries: int = Field(3, ge=1, le=10)
 
 

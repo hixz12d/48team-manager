@@ -495,11 +495,11 @@
         </div>
         <div class="form-group">
             <label for="smsCooldownSec">成功后冷却（秒）</label>
-            <input type="number" id="smsCooldownSec" class="form-control" min="60" max="86400" value="{{ sms_cooldown_sec or 3600 }}">
+            <input type="number" id="smsCooldownSec" class="form-control" min="60" max="86400" value="{{ sms_cooldown_sec or 1200 }}">
         </div>
         <div class="form-group">
             <label for="smsReserveSec">领取租约（秒）</label>
-            <input type="number" id="smsReserveSec" class="form-control" min="60" max="7200" value="{{ sms_reserve_sec or 900 }}">
+            <input type="number" id="smsReserveSec" class="form-control" min="60" max="7200" value="{{ sms_reserve_sec or 180 }}">
         </div>
         <div class="form-group">
             <label for="smsMaxRetries">单次注册最多换号</label>
