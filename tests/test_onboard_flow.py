@@ -15,6 +15,7 @@ from app.services.browser_onboard import (
     looks_like_email_gate,
     looks_like_session_ended,
     looks_like_invalid_phone,
+    phone_rejection_message,
     split_phone,
     looks_like_otp_input,
     session_access_token,
@@ -81,6 +82,13 @@ class OnboardHelperTests(unittest.TestCase):
         self.assertEqual(split_phone("+8613434986375"), ("China", "13434986375"))
         self.assertEqual(split_phone("8613434986"), ("China", "13434986"))
         self.assertTrue(looks_like_invalid_phone("Phone number is not valid."))
+        self.assertTrue(looks_like_invalid_phone("This phone number is already linked to the maximum number of accounts."))
+        self.assertEqual(
+            phone_rejection_message(
+                "This phone number is already linked to the maximum number of accounts."
+            ),
+            "这个接码号已经绑满 OpenAI 账号，换一个没用过的 +1 号",
+        )
         self.assertFalse(looks_like_invalid_phone("Enter your phone number"))
         self.assertEqual(split_phone("+13434986375"), ("United States", "3434986375"))
 

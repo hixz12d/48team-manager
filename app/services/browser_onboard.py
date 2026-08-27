@@ -264,23 +264,38 @@ def looks_like_invalid_phone(text: str) -> bool:
         "is not valid",
         "not a valid phone",
         "invalid phone number",
+        "already linked",
+        "maximum number of accounts",
+        "too many accounts",
     ))
 
 
-def page_phone_invalid(page) -> bool:
-    if looks_like_invalid_phone(_page_text(page)):
-        return True
-    try:
-        loc = page.get_by_text("Phone number is not valid", exact=False)
-        if loc.count() > 0 and loc.first.is_visible():
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        loc = page.locator("text=/not valid/i")
-        return loc.count() > 0
-    except Exception:  # noqa: BLE001
-        return False
+def phone_rejection_message(text: str) -> str:
+    blob = (text or "").lower()
+    if "already linked" in blob or "maximum number of accounts" in blob:
+        return "这个接码号已经绑满 OpenAI 账号，换一个没用过的 +1 号"
+    if looks_like_invalid_phone(text):
+        return "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+    return ""
+
+
+def page_phone_rejection(page) -> str:
+    blob = _page_text(page)
+    msg = phone_rejection_message(blob)
+    if msg:
+        return msg
+    for needle, sample in (
+        ("already linked", "already linked to the maximum number of accounts"),
+        ("maximum number of accounts", "already linked to the maximum number of accounts"),
+        ("Phone number is not valid", "phone number is not valid"),
+    ):
+        try:
+            loc = page.get_by_text(needle, exact=False)
+            if loc.count() > 0 and loc.first.is_visible():
+                return phone_rejection_message(sample)
+        except Exception:  # noqa: BLE001
+            continue
+    return ""
 
 
 def _phone_country_label(page) -> str:

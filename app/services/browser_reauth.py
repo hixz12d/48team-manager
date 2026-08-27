@@ -23,7 +23,7 @@ from app.services.browser_onboard import (
     chromium_context_kwargs,
     looks_like_about_you,
     looks_like_session_ended,
-    page_phone_invalid,
+    page_phone_rejection,
     split_phone,
     wait_cloudflare,
     wait_email_otp_with_resend,
@@ -176,8 +176,9 @@ def run_browser_oauth_reauth(
                 on_phone = any(bit in url for bit in ("add-phone", "phone-verification")) or _visible(page, 'input[type="tel"]')
                 if on_phone:
                     report("add_phone", "授权页要求手机号/短信验证码")
-                    if page_phone_invalid(page):
-                        result["error"] = "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+                    rejected = page_phone_rejection(page)
+                    if rejected:
+                        result["error"] = rejected
                         result["error_code"] = "sms_rejected"
                         break
                     if not phone or not sms_url:
@@ -203,8 +204,9 @@ def run_browser_oauth_reauth(
                         _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")', 'button:has-text("Text Message")'])
                         _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
                         page.wait_for_timeout(2500)
-                        if page_phone_invalid(page):
-                            result["error"] = "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
+                        rejected = page_phone_rejection(page)
+                        if rejected:
+                            result["error"] = rejected
                             result["error_code"] = "sms_rejected"
                             break
                         continue

@@ -61,7 +61,7 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "openai_rate_limited"
     if "仍未通过" in error or "mail_otp_rejected" in text:
         return "mail_otp_rejected"
-    if "sms_rejected" in text or "不被 openai 接受" in text or "停在美国" in error:
+    if "sms_rejected" in text or "不被 openai 接受" in text or "停在美国" in error or "绑满" in error:
         return "sms_rejected"
     if "sms_missing" in text or "sms_failed" in text or "接码" in error or "手机号页" in error or "sms" in text:
         return "sms_failed"
