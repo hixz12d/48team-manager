@@ -95,6 +95,9 @@ class OnboardHelperTests(unittest.TestCase):
         self.assertFalse(looks_like_invalid_phone("Enter your phone number"))
         self.assertTrue(looks_like_recently_used_phone("This number was recently used. Try a different number."))
         self.assertTrue(looks_like_phone_risk("We couldn't send a text. Continue with WhatsApp."))
+        self.assertFalse(looks_like_phone_risk("Text\nWhatsApp\nEnter your phone number"))
+        self.assertEqual(classify_phone_outcome(text="Text\nWhatsApp\nEnter your phone number"), "unrelated")
+        self.assertEqual(classify_phone_outcome(text="We couldn't send a text. Continue with WhatsApp."), "risk")
         self.assertEqual(
             classify_phone_outcome(text="This phone number is already linked to the maximum number of accounts."),
             "invalid",

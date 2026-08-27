@@ -13,6 +13,7 @@ from app.services.browser_onboard import (
     _fill_about_you,
     _fill_first,
     _fill_phone_number,
+    _submit_phone_sms,
     _find_otp,
     _mail_kwargs,
     _page_text,
@@ -181,7 +182,7 @@ def run_browser_oauth_reauth(
                 on_phone = any(bit in url for bit in ("add-phone", "phone-verification")) or _visible(page, 'input[type="tel"]')
                 if on_phone:
                     report("add_phone", "授权页要求手机号/短信验证码")
-                    outcome, msg = phone_page_outcome(page)
+                    outcome, msg = phone_page_outcome(page, allow_risk=False)
                     if outcome in {"invalid", "recently_used", "risk"}:
                         if phone_source:
                             record_pool_phone(phone_source, outcome, msg)
@@ -235,8 +236,7 @@ def run_browser_oauth_reauth(
                             result["error"] = msg
                             result["error_code"] = "sms_rejected"
                             break
-                        _click_first(page, ['button:has-text("Text")', 'button:has-text("SMS")', 'label:has-text("Text")', 'button:has-text("Text Message")'])
-                        _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Send")'])
+                        _submit_phone_sms(page)
                         page.wait_for_timeout(2500)
                         outcome, msg = phone_page_outcome(page)
                         if outcome in {"invalid", "recently_used", "risk"}:

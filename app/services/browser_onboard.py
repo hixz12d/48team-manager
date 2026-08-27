@@ -296,13 +296,17 @@ def looks_like_recently_used_phone(text: str) -> bool:
 def looks_like_phone_risk(text: str) -> bool:
     blob = (text or "").lower()
     return any(token in blob for token in (
-        "whatsapp",
         "couldn't send a text",
         "could not send a text",
         "can't send a text",
         "cannot send a text",
         "unable to send",
         "we couldn't send",
+        "continue with whatsapp",
+        "try whatsapp",
+        "sent a code to whatsapp",
+        "check whatsapp",
+        "verify with whatsapp",
         "无法向该号发短信",
         "无法发送短信",
     ))
@@ -342,15 +346,20 @@ def phone_outcome_message(outcome: str, text: str = "") -> str:
     return phone_rejection_message(text)
 
 
-def phone_page_outcome(page) -> tuple[str, str]:
+def phone_page_outcome(page, *, allow_risk: bool = True) -> tuple[str, str]:
     blob = _page_text(page)
     outcome = classify_phone_outcome(text=blob, error=phone_rejection_message(blob))
+    if outcome == "risk" and not allow_risk:
+        outcome = "unrelated"
     if outcome not in {"", "unrelated"}:
         return outcome, phone_outcome_message(outcome, blob)
     rejected = page_phone_rejection(page)
     if rejected:
         classified = classify_phone_outcome(text=rejected, error=rejected, error_code="sms_rejected")
-        return classified, rejected
+        if classified == "risk" and not allow_risk:
+            classified = "unrelated"
+        if classified not in {"", "unrelated"}:
+            return classified, rejected
     return "", ""
 
 
@@ -467,10 +476,35 @@ def _fill_phone_number(page, phone: str) -> bool:
     country, national = split_phone(phone)
     if not national:
         return False
-    if country and country != "United States":
+    if country == "China":
         if not _select_phone_country(page, country):
             return False
+    elif country:
+        _select_phone_country(page, country)
     return _fill_first(page, ['input[type="tel"]', 'input[name="phone"]'], national)
+
+
+def _choose_sms_channel(page) -> bool:
+    if _click_first(page, [
+        'button:has-text("Text")',
+        'button:has-text("SMS")',
+        'button:has-text("Text Message")',
+        'label:has-text("Text")',
+        'label:has-text("SMS")',
+        'label:has-text("Text Message")',
+    ]):
+        return True
+    return _click_exact(page, ["Text", "SMS", "Text Message"])
+
+
+def _submit_phone_sms(page) -> None:
+    _choose_sms_channel(page)
+    page.wait_for_timeout(400)
+    _click_first(page, [
+        'button[type="submit"]',
+        'button:has-text("Send")',
+        'button:has-text("Continue")',
+    ])
 
 
 def _page_past_otp(page) -> bool:
@@ -1133,7 +1167,7 @@ def run_browser_onboard(
 
                 if _visible(page, 'input[type="tel"]') or "add-phone" in url:
                     report("add_phone", "页面要求添加手机号")
-                    outcome, msg = phone_page_outcome(page)
+                    outcome, msg = phone_page_outcome(page, allow_risk=False)
                     if outcome in {"invalid", "recently_used", "risk"}:
                         if phone_source:
                             record_pool_phone(phone_source, outcome, msg)
@@ -1167,8 +1201,7 @@ def run_browser_onboard(
                     if not phone or not sms_url:
                         break
                     _fill_phone_number(page, phone)
-                    _click_exact(page, ["Text", "SMS", "Send", "Continue"])
-                    _click_first(page, ['button[type="submit"]', 'label:has-text("Text")'])
+                    _submit_phone_sms(page)
                     page.wait_for_timeout(2500)
                     outcome, msg = phone_page_outcome(page)
                     if outcome in {"invalid", "recently_used", "risk"}:

@@ -15,7 +15,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import HmeAliasLease, Team
+from app.models import ChildAccount, HmeAliasLease, Team
 from app.services.child_accounts import normalize_email
 from app.utils.time_utils import get_now
 
@@ -289,6 +289,11 @@ async def active_leased_emails(session: AsyncSession, *, now: Optional[datetime]
     return {normalize_email(row[0]) for row in result.all() if row[0]}
 
 
+async def child_occupied_emails(session: AsyncSession) -> Set[str]:
+    rows = (await session.execute(select(ChildAccount.email))).scalars().all()
+    return {normalize_email(item) for item in rows if item}
+
+
 async def purge_expired_leases(session: AsyncSession, *, now: Optional[datetime] = None) -> None:
     current = now or get_now()
     await session.execute(delete(HmeAliasLease).where(HmeAliasLease.expires_at <= current))
@@ -345,6 +350,7 @@ async def claim_next_alias(
     account_id = str(account.get("id") or "")
     aliases = await asyncio.to_thread(hme_client.list_aliases, cfg, account_id)
     leased = await active_leased_emails(session)
+    leased |= await child_occupied_emails(session)
     now = get_now()
     for _ in range(8):
         picked = pick_next_unoccupied(aliases, leased)
@@ -389,11 +395,22 @@ async def finalize_claim(
 ) -> None:
     if not claimed:
         return
-    if result.get("success") and str(label or "").strip():
+    tag = str(label or "").strip()
+    occupy = bool(result.get("success") and tag)
+    if not occupy and not result.get("success"):
+        child = (
+            await session.execute(
+                select(ChildAccount).where(ChildAccount.email == normalize_email(claimed.email))
+            )
+        ).scalar_one_or_none()
+        if child:
+            occupy = True
+            tag = tag or FREE_ACCOUNT_LABEL
+    if occupy:
         try:
-            await apply_local_label(session, claimed, str(label).strip())
+            await apply_local_label(session, claimed, tag)
         except Exception:
-            logger.exception("HME 打标失败 email=%s label=%s，保留租约", claimed.email, label)
+            logger.exception("HME 打标失败 email=%s label=%s，保留租约", claimed.email, tag)
             return
         await release_lease(session, claimed)
         return
@@ -410,6 +427,7 @@ async def probe_status(session: AsyncSession) -> Dict[str, Any]:
         aliases = await asyncio.to_thread(hme_client.list_aliases, cfg, str(account.get("id") or ""))
         await purge_expired_leases(session)
         leased = await active_leased_emails(session)
+        leased |= await child_occupied_emails(session)
         unused = pick_all_unoccupied(aliases, leased)
         return {
             "ok": True,
