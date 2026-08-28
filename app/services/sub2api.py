@@ -1166,6 +1166,201 @@ class Sub2ApiService:
         row.update(self.cost_fields(stats.get("cost"), stats.get("user_cost")))
         return row
 
+    def _usage_payload_map(self, data: Any) -> Dict[int, Dict[str, Any]]:
+        payload_by_id: Dict[int, Dict[str, Any]] = {}
+        if not isinstance(data, dict):
+            return payload_by_id
+        usage_map = data.get("usage") if isinstance(data.get("usage"), dict) else data
+        if not isinstance(usage_map, dict):
+            return payload_by_id
+        for key, payload in usage_map.items():
+            try:
+                payload_by_id[int(key)] = payload if isinstance(payload, dict) else {}
+            except (TypeError, ValueError):
+                continue
+        return payload_by_id
+
+    def has_local_rate_limit_lock(self, account: Dict[str, Any]) -> bool:
+        """Sub 本地「限流中 / 429」锁：reset 还在未来，或仍记着 rate_limited_at。"""
+        if self._is_future(account.get("rate_limit_reset_at")):
+            return True
+        return account.get("rate_limited_at") not in (None, "")
+
+    def merge_usage_into_account(
+        self,
+        account: Dict[str, Any],
+        usage: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """把 usage 探测写回 extra，再重算调度标签。
+
+        兼容 usage/batch 的 extra 字段，以及官方查询的 seven_day / five_hour。
+        """
+        merged = dict(account or {})
+        extra = dict(self._account_extra(merged))
+        payload = usage if isinstance(usage, dict) else {}
+        nested_extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+        mapped: Dict[str, Any] = {}
+        seven = payload.get("seven_day") if isinstance(payload.get("seven_day"), dict) else {}
+        five = payload.get("five_hour") if isinstance(payload.get("five_hour"), dict) else {}
+        if seven.get("utilization") not in (None, ""):
+            mapped["codex_7d_used_percent"] = seven["utilization"]
+        if seven.get("resets_at") not in (None, ""):
+            mapped["codex_7d_reset_at"] = seven["resets_at"]
+        if five.get("utilization") not in (None, ""):
+            mapped["codex_5h_used_percent"] = five["utilization"]
+        if five.get("resets_at") not in (None, ""):
+            mapped["codex_5h_reset_at"] = five["resets_at"]
+        for source in (payload, nested_extra, mapped):
+            if not isinstance(source, dict):
+                continue
+            for key in (
+                "codex_7d_used_percent",
+                "codex_7d_reset_at",
+                "codex_secondary_reset_at",
+                "codex_5h_used_percent",
+                "codex_primary_used_percent",
+                "codex_5h_reset_at",
+                "codex_primary_reset_at",
+            ):
+                if source.get(key) not in (None, ""):
+                    extra[key] = source[key]
+            if source.get("error_message") not in (None, ""):
+                merged["error_message"] = source["error_message"]
+            if source.get("status") not in (None, ""):
+                merged["status"] = source["status"]
+            if "schedulable" in source:
+                merged["schedulable"] = source["schedulable"]
+            for key in ("rate_limit_reset_at", "rate_limited_at"):
+                if key in source:
+                    merged[key] = source[key]
+        if extra:
+            merged["extra"] = extra
+        return merged
+
+    async def fetch_usage_batch(
+        self,
+        db_session: AsyncSession,
+        account_ids: List[int],
+        *,
+        force: bool = False,
+    ) -> Dict[int, Dict[str, Any]]:
+        ids: List[int] = []
+        seen: set[int] = set()
+        for raw in account_ids:
+            try:
+                account_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if account_id in seen:
+                continue
+            seen.add(account_id)
+            ids.append(account_id)
+        if not ids:
+            return {}
+        cfg = await self._config(db_session)
+        if not cfg["base_url"]:
+            raise RuntimeError("尚未配置 Sub2API 地址")
+        payload_by_id: Dict[int, Dict[str, Any]] = {}
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=30.0) as client:
+            headers = await self._login_headers(client, cfg)
+            response = await client.post(
+                "/api/v1/admin/accounts/usage/batch",
+                headers=headers,
+                json={"account_ids": ids, "force": bool(force)},
+            )
+            response.raise_for_status()
+            payload_by_id = self._usage_payload_map(self._unwrap(response.json()))
+        return payload_by_id
+
+    async def fetch_account_usage(
+        self,
+        db_session: AsyncSession,
+        account_id: int,
+        *,
+        source: str = "active",
+        force: bool = True,
+    ) -> Dict[str, Any]:
+        """官方「查询」：GET /admin/accounts/{id}/usage?source=active&force=true。"""
+        if not account_id:
+            return {}
+        cfg = await self._config(db_session)
+        if not cfg["base_url"]:
+            raise RuntimeError("尚未配置 Sub2API 地址")
+        params: Dict[str, str] = {}
+        if source:
+            params["source"] = str(source)
+        if force:
+            params["force"] = "true"
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=60.0) as client:
+            headers = await self._login_headers(client, cfg)
+            response = await client.get(
+                f"/api/v1/admin/accounts/{int(account_id)}/usage",
+                headers=headers,
+                params=params or None,
+            )
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+        return data if isinstance(data, dict) else {}
+
+    async def clear_account_rate_limit(
+        self,
+        db_session: AsyncSession,
+        account_id: int,
+    ) -> Dict[str, Any]:
+        """清掉 Sub 本地限流锁，对应后台 clear-rate-limit。"""
+        if not account_id:
+            return {}
+        cfg = await self._config(db_session)
+        if not cfg["base_url"]:
+            raise RuntimeError("尚未配置 Sub2API 地址")
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=30.0) as client:
+            headers = await self._login_headers(client, cfg)
+            response = await client.post(
+                f"/api/v1/admin/accounts/{int(account_id)}/clear-rate-limit",
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+        return data if isinstance(data, dict) else {}
+
+    async def get_account(
+        self,
+        db_session: AsyncSession,
+        account_id: int,
+    ) -> Dict[str, Any]:
+        cfg = await self._config(db_session)
+        if not cfg["base_url"]:
+            raise RuntimeError("尚未配置 Sub2API 地址")
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=20.0) as client:
+            headers = await self._login_headers(client, cfg)
+            response = await client.get(f"/api/v1/admin/accounts/{account_id}", headers=headers)
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+        return data if isinstance(data, dict) else {}
+
+    async def patch_account_fields(
+        self,
+        db_session: AsyncSession,
+        account_id: int,
+        patch: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not account_id or not patch:
+            return {"account": {}, "patched": False, "patch": patch or {}}
+        cfg = await self._config(db_session)
+        if not cfg["base_url"]:
+            raise RuntimeError("尚未配置 Sub2API 地址")
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=20.0) as client:
+            headers = await self._login_headers(client, cfg)
+            response = await client.put(
+                f"/api/v1/admin/accounts/{account_id}",
+                headers=headers,
+                json=patch,
+            )
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+        account = data if isinstance(data, dict) else {}
+        return {"account": account, "patched": True, "patch": patch}
+
     async def attach_usage_costs(
         self,
         db_session: AsyncSession,

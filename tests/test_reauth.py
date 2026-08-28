@@ -1,11 +1,18 @@
 import unittest
 
 from app.services.oauth_sessions import chrome_proxy_parts, create_session, get_session, launcher_script
-from app.services.reauth import auto_reauth_plan, is_icloud_email, is_oauth_callback, owner_refresh_allows_oauth
+from app.services.reauth import auto_reauth_plan, is_icloud_email, is_oauth_callback, looks_like_deactivated, owner_refresh_allows_oauth
 
 
 class ReauthPlanTests(unittest.TestCase):
     def test_owner_is_manual(self):
+        plan = auto_reauth_plan(email="mom@gmail.com", role="owner", password="x", proxy="socks5h://u:p@1.2.3.4:1080")
+        self.assertFalse(plan["auto"])
+
+    def test_deactivated_copy_stops_reauth(self):
+        self.assertTrue(looks_like_deactivated(body="This account has been deactivated."))
+        self.assertTrue(looks_like_deactivated(error="account_deactivated"))
+        self.assertFalse(looks_like_deactivated(body="Enter your password"))
         plan = auto_reauth_plan(email="mom@gmail.com", role="owner", password="x", proxy="socks5h://u:p@1.2.3.4:1080")
         self.assertFalse(plan["auto"])
 
@@ -25,6 +32,17 @@ class ReauthPlanTests(unittest.TestCase):
             proxy="socks5h://u:p@1.2.3.4:1080",
         )
         self.assertTrue(plan["auto"])
+
+    def test_icloud_without_local_password_still_auto_if_mail_ready(self):
+        plan = auto_reauth_plan(
+            email="sepals.mud_9z@icloud.com",
+            role="child",
+            password="",
+            cf_ready=True,
+            proxy="socks5h://u:p@1.2.3.4:1080",
+        )
+        self.assertTrue(plan["auto"])
+        self.assertIn("验证码", plan["reason"])
 
     def test_icloud_without_proxy_falls_back(self):
         plan = auto_reauth_plan(email="kid@icloud.com", role="child", password="secret", cf_ready=True, proxy="")

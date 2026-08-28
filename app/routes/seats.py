@@ -641,13 +641,18 @@ async def _run_auto_reauth_job(job_id: str, ticket: str) -> None:
             team = await db.get(Team, int(session["team_id"]))
             email = str(session.get("email") or "")
             child = await child_account_service.get_by_email(db, email)
-            password = child_account_service.decrypt_secret(child.password_encrypted) if child else ""
+            password = (
+                child_account_service.decrypt_secret(child.password_encrypted)
+                if child
+                else ""
+            ) or str(session.get("login_password") or "")
             pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""
             cf_config = await onboard_service._cf_config(db)
             use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
             phone = (child.phone if child else "") or ""
             sms_url = (child.sms_url if child else "") or ""
-            proxy = ((child.proxy if child else "") or (team.proxy if team else "") or "")
+            proxy = ((child.proxy if child else "") or (team.proxy if team else "") or session.get("proxy") or "")
+            _phone, _sms, phone_source = onboard_service._bind_phone("", job_id)
 
             def on_stage(stage: str, message: str) -> None:
                 onboard_jobs.note(job_id, stage, message)
@@ -668,6 +673,7 @@ async def _run_auto_reauth_job(job_id: str, ticket: str) -> None:
                 cf_address=cf_config["address"],
                 cf_admin_password=cf_config["admin_password"],
                 on_stage=on_stage,
+                phone_source=phone_source,
             )
             if not browser.get("ok"):
                 error = str(browser.get("error") or "自动授权失败")
@@ -677,16 +683,117 @@ async def _run_auto_reauth_job(job_id: str, ticket: str) -> None:
                     "error": error,
                     "error_code": browser.get("error_code") or "browser_failed",
                 })
+                from app.services.auto_rotate import auto_rotate_service
+                await auto_rotate_service.mark_reauth_outcome(
+                    db,
+                    email=email,
+                    error_code=str(browser.get("error_code") or "browser_failed"),
+                    success=False,
+                )
                 return
             result = await _complete_seat_oauth(db, ticket, str(browser.get("callback_url") or ""))
             onboard_jobs.finish(job_id, result)
+            from app.services.auto_rotate import auto_rotate_service
+            await auto_rotate_service.mark_reauth_outcome(
+                db,
+                email=email,
+                error_code=str(result.get("error_code") or ""),
+                success=bool(result.get("success")),
+            )
         except Exception as exc:
             logger.exception("自动重新授权失败")
             oauth_sessions.mark_session(ticket, status="error", error=str(exc), message=str(exc))
             onboard_jobs.finish(job_id, {"success": False, "error": str(exc), "error_code": "browser_failed"})
+            from app.services.auto_rotate import auto_rotate_service
+            await auto_rotate_service.mark_reauth_outcome(
+                db,
+                email=str(session.get("email") if session else email),
+                error_code="browser_failed",
+                success=False,
+            )
         finally:
             await db.close()
 
+
+async def start_child_auto_reauth(
+    db: AsyncSession,
+    *,
+    team: Team,
+    email: str,
+    child: Optional[ChildAccount] = None,
+) -> Dict[str, Any]:
+    """给 iCloud 子号排队自动重授权。全场同时只跑一条浏览器任务。"""
+    from app.services import oauth_sessions, onboard_jobs as jobs
+    from app.services.chatgpt import chatgpt_service
+    from app.services.mail_otp import parse_mail_line
+    from app.services.reauth import auto_reauth_plan
+
+    target = normalize_email(email)
+    if not team or not target:
+        return {"success": False, "error": "缺少 Team 或邮箱", "error_code": "reauth_missing"}
+    if normalize_email(team.email) == target:
+        return {"success": False, "skipped": True, "error_code": "owner_manual", "error": "母号请用弹出窗口自己走 Gmail 登录"}
+    if child is None:
+        child = await child_account_service.get_by_email(db, target)
+    password = child_account_service.decrypt_secret(child.password_encrypted) if child else ""
+    pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""
+    cf_config = await onboard_service._cf_config(db)
+    use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
+    proxy = ((child.proxy if child else "") or team.proxy or "").strip()
+    plan = auto_reauth_plan(
+        email=target,
+        role="child",
+        password=password,
+        pickup_url=pickup_url or "",
+        cf_ready=use_cloudflare,
+        proxy=proxy,
+    )
+    if not plan.get("auto"):
+        return {"success": False, "skipped": True, "error_code": "reauth_manual", "error": plan.get("reason") or "改走手动授权"}
+    active = jobs.active_job_for_email(target)
+    if active:
+        return {
+            "success": True,
+            "skipped": True,
+            "job_id": active.get("id"),
+            "error_code": "already_running",
+            "error": "该邮箱已有进行中的任务",
+        }
+    busy = jobs.any_running(jobs.BROWSER_ACTIONS)
+    if busy:
+        return {
+            "success": False,
+            "skipped": True,
+            "job_id": busy.get("id"),
+            "error_code": "browser_busy",
+            "error": f"已有浏览器任务 {busy.get('email') or busy.get('id')}",
+        }
+    auth = chatgpt_service.create_oauth_authorize_url(
+        client_id=oauth_sessions.CLIENT_ID,
+        redirect_uri=oauth_sessions.REDIRECT_URI,
+        login_hint=target,
+    )
+    auth["client_id"] = oauth_sessions.CLIENT_ID
+    session = oauth_sessions.create_session(
+        team_id=team.id,
+        email=target,
+        authorize=auth,
+        role="child",
+        mode="auto",
+        proxy=proxy,
+        password=password,
+        team_name=team.team_name or "",
+    )
+    job = jobs.create_job(team_id=team.id, email=target, action="reauth")
+    oauth_sessions.mark_session(session["ticket"], job_id=job["id"], status="running", message=plan["reason"])
+    asyncio.create_task(_run_auto_reauth_job(job["id"], session["ticket"]))
+    return {
+        "success": True,
+        "job_id": job["id"],
+        "ticket": session["ticket"],
+        "message": plan["reason"],
+        "job": job,
+    }
 
 @router.post("/seats/oauth/start")
 async def seats_oauth_start(

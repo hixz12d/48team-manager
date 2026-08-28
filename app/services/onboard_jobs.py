@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from app.utils.time_utils import get_now
 
@@ -60,6 +60,27 @@ def active_job_for_email(email: str) -> Optional[Dict[str, Any]]:
     if job and job.get("status") == "running":
         return job
     return None
+
+
+BROWSER_ACTIONS = ("reauth", "onboard", "rotate", "free")
+
+
+def iter_running(actions: Optional[Sequence[str]] = None) -> list:
+    wanted = {str(item) for item in actions} if actions is not None else None
+    with _LOCK:
+        jobs = []
+        for job in _JOBS.values():
+            if job.get("status") != "running":
+                continue
+            if wanted is not None and str(job.get("action") or "") not in wanted:
+                continue
+            jobs.append(dict(job))
+        return jobs
+
+
+def any_running(actions: Optional[Sequence[str]] = None) -> Optional[Dict[str, Any]]:
+    jobs = iter_running(actions)
+    return jobs[0] if jobs else None
 
 
 def update_email(job_id: Optional[str], email: str) -> None:

@@ -271,8 +271,12 @@ class RotateGateTests(unittest.IsolatedAsyncioTestCase):
         due = MagicMock(email="old@example.com")
         from app.services import onboard as onboard_mod
 
-        original = onboard_mod.child_account_service.list_due_accounts
+        originals = {
+            "list_due": onboard_mod.child_account_service.list_due_accounts,
+            "record_event": onboard_mod.child_account_service.record_event,
+        }
         onboard_mod.child_account_service.list_due_accounts = AsyncMock(return_value=[due])
+        onboard_mod.child_account_service.record_event = AsyncMock()
         service.kick_to_standby = AsyncMock(return_value={
             "success": True,
             "vacancy": parse_policy_notice({
@@ -280,10 +284,13 @@ class RotateGateTests(unittest.IsolatedAsyncioTestCase):
             }),
         })
         service.invite_and_onboard = AsyncMock()
+        db = MagicMock()
+        db.commit = AsyncMock()
         try:
-            result = await service.rotate_one(MagicMock(), team_id=1)
+            result = await service.rotate_one(db, team_id=1)
         finally:
-            onboard_mod.child_account_service.list_due_accounts = original
+            onboard_mod.child_account_service.list_due_accounts = originals["list_due"]
+            onboard_mod.child_account_service.record_event = originals["record_event"]
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "vacancy_not_safe_to_refill")
         self.assertTrue(result["needs_confirm"])

@@ -56,6 +56,14 @@ DEFAULT_WARRANTY_AUTO_KICK_ENABLED = False
 DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS = 12
 MIN_WARRANTY_AUTO_KICK_INTERVAL_HOURS = 1
 MAX_WARRANTY_AUTO_KICK_INTERVAL_HOURS = 24 * 7
+MIN_USAGE_PROBE_SCAN_MINUTES = 1
+MAX_USAGE_PROBE_SCAN_MINUTES = 10
+MIN_AUTO_REAUTH_INTERVAL_MINUTES = 5
+MAX_AUTO_REAUTH_INTERVAL_MINUTES = 24 * 60
+DEFAULT_AUTO_REAUTH_SCAN_MINUTES = 30
+MIN_AUTO_ROTATE_SCAN_MINUTES = 5
+MAX_AUTO_ROTATE_SCAN_MINUTES = 60
+DEFAULT_AUTO_ROTATE_SCAN_MINUTES = 10
 
 
 def _safe_int(value, default):
@@ -85,6 +93,18 @@ def normalize_periodic_team_sync_days(refresh_interval_days: int) -> int:
 
 def normalize_warranty_auto_kick_interval_hours(interval_hours: int) -> int:
     return max(MIN_WARRANTY_AUTO_KICK_INTERVAL_HOURS, min(MAX_WARRANTY_AUTO_KICK_INTERVAL_HOURS, interval_hours))
+
+
+def normalize_usage_probe_scan_minutes(scan_minutes: int) -> int:
+    return max(MIN_USAGE_PROBE_SCAN_MINUTES, min(MAX_USAGE_PROBE_SCAN_MINUTES, scan_minutes))
+
+
+def normalize_auto_reauth_interval_minutes(interval_minutes: int) -> int:
+    return max(MIN_AUTO_REAUTH_INTERVAL_MINUTES, min(MAX_AUTO_REAUTH_INTERVAL_MINUTES, interval_minutes))
+
+
+def normalize_auto_rotate_scan_minutes(scan_minutes: int) -> int:
+    return max(MIN_AUTO_ROTATE_SCAN_MINUTES, min(MAX_AUTO_ROTATE_SCAN_MINUTES, scan_minutes))
 
 
 def configure_periodic_team_sync_job(enabled: bool, interval_hours: int) -> int:
@@ -241,6 +261,117 @@ async def configure_warranty_auto_kick_job_from_settings() -> tuple[bool, int]:
     return enabled, applied_interval
 
 
+def configure_usage_probe_job(enabled: bool, scan_minutes: int) -> int:
+    """配置（或重配置）Sub2API 额度错峰探测任务。与质保自动踢人无关。"""
+    normalized_interval = normalize_usage_probe_scan_minutes(scan_minutes)
+    existing_job = scheduler.get_job("usage_probe_scan")
+
+    if not enabled:
+        if existing_job:
+            scheduler.remove_job("usage_probe_scan")
+        return normalized_interval
+
+    trigger = IntervalTrigger(minutes=normalized_interval)
+    if existing_job:
+        scheduler.reschedule_job("usage_probe_scan", trigger=trigger)
+    else:
+        scheduler.add_job(
+            scheduled_usage_probe,
+            trigger=trigger,
+            id="usage_probe_scan",
+            replace_existing=True,
+            max_instances=1,
+            next_run_time=get_now(),
+        )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    return normalized_interval
+
+
+async def configure_usage_probe_job_from_settings() -> tuple[bool, int]:
+    """从系统设置读取额度探测配置并应用到定时任务。"""
+    from app.services.auto_rotate import auto_rotate_service
+
+    async with AsyncSessionLocal() as session:
+        cfg = await auto_rotate_service.load_usage_probe_settings(session)
+
+    enabled = bool(cfg["enabled"])
+    scan_minutes = normalize_usage_probe_scan_minutes(cfg["scan_minutes"])
+    applied_interval = configure_usage_probe_job(enabled, scan_minutes)
+    return enabled, applied_interval
+
+
+def configure_auto_reauth_job(enabled: bool, interval_minutes: int) -> int:
+    """配置第 2 层 401 自动重授权扫描。默认关。"""
+    normalized_interval = normalize_auto_reauth_interval_minutes(interval_minutes)
+    existing_job = scheduler.get_job("auto_reauth_scan")
+    if not enabled:
+        if existing_job:
+            scheduler.remove_job("auto_reauth_scan")
+        return normalized_interval
+    trigger = IntervalTrigger(minutes=normalized_interval)
+    if existing_job:
+        scheduler.reschedule_job("auto_reauth_scan", trigger=trigger)
+    else:
+        scheduler.add_job(
+            scheduled_auto_reauth,
+            trigger=trigger,
+            id="auto_reauth_scan",
+            replace_existing=True,
+            max_instances=1,
+            next_run_time=get_now(),
+        )
+    if not scheduler.running:
+        scheduler.start()
+    return normalized_interval
+
+
+async def configure_auto_reauth_job_from_settings() -> tuple[bool, int]:
+    from app.services.auto_rotate import auto_rotate_service
+
+    async with AsyncSessionLocal() as session:
+        cfg = await auto_rotate_service.load_layer_settings(session)
+    enabled = bool(cfg.get("auto_reauth_enabled"))
+    interval = normalize_auto_reauth_interval_minutes(cfg.get("auto_reauth_interval_minutes") or DEFAULT_AUTO_REAUTH_SCAN_MINUTES)
+    return enabled, configure_auto_reauth_job(enabled, interval)
+
+
+def configure_auto_rotate_job(enabled: bool, scan_minutes: int) -> int:
+    """配置第 3 层封禁/周限满踢拉扫描。默认关。"""
+    normalized_interval = normalize_auto_rotate_scan_minutes(scan_minutes)
+    existing_job = scheduler.get_job("auto_rotate_scan")
+    if not enabled:
+        if existing_job:
+            scheduler.remove_job("auto_rotate_scan")
+        return normalized_interval
+    trigger = IntervalTrigger(minutes=normalized_interval)
+    if existing_job:
+        scheduler.reschedule_job("auto_rotate_scan", trigger=trigger)
+    else:
+        scheduler.add_job(
+            scheduled_auto_rotate,
+            trigger=trigger,
+            id="auto_rotate_scan",
+            replace_existing=True,
+            max_instances=1,
+            next_run_time=get_now(),
+        )
+    if not scheduler.running:
+        scheduler.start()
+    return normalized_interval
+
+
+async def configure_auto_rotate_job_from_settings() -> tuple[bool, int]:
+    from app.services.auto_rotate import auto_rotate_service
+
+    async with AsyncSessionLocal() as session:
+        cfg = await auto_rotate_service.load_layer_settings(session)
+    enabled = bool(cfg.get("auto_rotate_enabled"))
+    return enabled, configure_auto_rotate_job(enabled, DEFAULT_AUTO_ROTATE_SCAN_MINUTES)
+
+
 async def scheduled_proactive_refresh():
     """定时执行 Team Token 预刷新（间隔可配置）。"""
     from app.services.settings import settings_service
@@ -373,6 +504,72 @@ async def scheduled_warranty_auto_kick():
         logger.error(f"后台邀请过期踢人任务执行失败: {e}")
 
 
+async def scheduled_usage_probe():
+    """定时错峰探测 Sub2API usage，额度恢复后清限流锁并打开 schedulable。"""
+    from app.services.auto_rotate import auto_rotate_service
+
+    try:
+        async with AsyncSessionLocal() as session:
+            stats = await auto_rotate_service.run_usage_probe_once(session)
+            logger.info(
+                "额度错峰探测完成: scanned=%s due=%s probed=%s opened=%s paused=%s cleared=%s failed=%s ids=%s",
+                stats.get("scanned", 0),
+                stats.get("due", 0),
+                stats.get("probed", 0),
+                stats.get("opened", 0),
+                stats.get("paused", 0),
+                stats.get("cleared", 0),
+                stats.get("failed", 0),
+                stats.get("account_ids") or [],
+            )
+    except Exception as e:
+        logger.error(f"额度错峰探测任务执行失败: {e}")
+
+
+async def scheduled_auto_reauth():
+    """定时扫描 401 子号并排队自动重授权。默认关。"""
+    from app.services.auto_rotate import auto_rotate_service
+
+    try:
+        async with AsyncSessionLocal() as session:
+            stats = await auto_rotate_service.run_auto_reauth_once(session)
+            logger.info(
+                "第 2 层自动重授权扫描: enabled=%s scanned=%s queued=%s skipped=%s failed=%s deactivated=%s email=%s",
+                stats.get("enabled"),
+                stats.get("scanned", 0),
+                stats.get("queued", 0),
+                stats.get("skipped", 0),
+                stats.get("failed", 0),
+                stats.get("deactivated", 0),
+                stats.get("email") or "",
+            )
+    except Exception as e:
+        logger.error(f"第 2 层自动重授权任务执行失败: {e}")
+
+
+async def scheduled_auto_rotate():
+    """定时扫描封禁/周限满子号并踢拉。默认关。每个 Team 每天最多 2 次。"""
+    from app.services.auto_rotate import auto_rotate_service
+
+    try:
+        async with AsyncSessionLocal() as session:
+            stats = await auto_rotate_service.run_auto_rotate_once(session)
+            logger.info(
+                "第 3 层自动踢拉扫描: enabled=%s scanned=%s rotated=%s kicked_only=%s capped=%s skipped=%s failed=%s email=%s reason=%s",
+                stats.get("enabled"),
+                stats.get("scanned", 0),
+                stats.get("rotated", 0),
+                stats.get("kicked_only", 0),
+                stats.get("capped", 0),
+                stats.get("skipped", 0),
+                stats.get("failed", 0),
+                stats.get("email") or "",
+                stats.get("reason") or "",
+            )
+    except Exception as e:
+        logger.error(f"第 3 层自动踢拉任务执行失败: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -436,6 +633,29 @@ async def lifespan(app: FastAPI):
             )
         else:
             logger.info("质保过期自动踢人任务已禁用")
+
+
+        usage_probe_enabled, usage_probe_scan = await configure_usage_probe_job_from_settings()
+        if usage_probe_enabled:
+            logger.info(
+                "定时任务已启动: 每 %s 分钟错峰探测 Sub2API 额度",
+                usage_probe_scan,
+            )
+        else:
+            logger.info("Sub2API 额度错峰探测任务已禁用")
+
+
+        auto_reauth_enabled, auto_reauth_interval = await configure_auto_reauth_job_from_settings()
+        if auto_reauth_enabled:
+            logger.info("定时任务已启动: 每 %s 分钟扫描 401 自动重授权", auto_reauth_interval)
+        else:
+            logger.info("第 2 层 401 自动重授权任务已禁用")
+
+        auto_rotate_enabled, auto_rotate_scan = await configure_auto_rotate_job_from_settings()
+        if auto_rotate_enabled:
+            logger.info("定时任务已启动: 每 %s 分钟扫描封禁/周限满踢拉", auto_rotate_scan)
+        else:
+            logger.info("第 3 层封禁/周限满踢拉任务已禁用")
 
         logger.info("数据库初始化完成")
     except Exception as e:

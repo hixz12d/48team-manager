@@ -2432,6 +2432,14 @@ async def settings_page(
             "warranty_expiration_mode": await settings_service.get_warranty_expiration_mode(db),
             "ui_theme": settings_service.normalize_ui_theme(await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)),
             "ui_style": settings_service.normalize_ui_style(await settings_service.get_setting(db, "ui_style", DEFAULT_UI_STYLE)),
+            "usage_probe_enabled": await settings_service.get_setting(db, "usage_probe_enabled", "true"),
+            "usage_probe_interval_minutes": await settings_service.get_setting(db, "usage_probe_interval_minutes", "60"),
+            "usage_probe_stagger_minutes": await settings_service.get_setting(db, "usage_probe_stagger_minutes", "60"),
+            "usage_probe_batch_size": await settings_service.get_setting(db, "usage_probe_batch_size", "1"),
+            "usage_probe_force": await settings_service.get_setting(db, "usage_probe_force", "true"),
+            "usage_probe_scan_minutes": await settings_service.get_setting(db, "usage_probe_scan_minutes", "2"),
+            "auto_reauth_enabled": await settings_service.get_setting(db, "auto_reauth_enabled", "false"),
+            "auto_rotate_enabled": await settings_service.get_setting(db, "auto_rotate_enabled", "false"),
         })
         return templates.TemplateResponse(
             request,
@@ -2545,6 +2553,18 @@ class WarrantyAutoKickSettingsRequest(BaseModel):
         le=3650,
         description="后台邀请成员的使用期限（天）；超过该期限未补发邀请则踢除",
     )
+
+
+class UsageProbeSettingsRequest(BaseModel):
+    """Sub2API 额度错峰探测设置。第 2/3 层默认关，保存后才注册任务。强制补位始终关。"""
+    enabled: bool = Field(True, description="是否启用额度错峰探测")
+    interval_minutes: int = Field(60, ge=5, le=1440, description="每号探测间隔（分钟）")
+    stagger_minutes: int = Field(60, ge=5, le=1440, description="把本轮账号摊进这么多分钟")
+    batch_size: int = Field(1, ge=1, le=3, description="每轮 force 的账号数")
+    force: bool = Field(True, description="usage/batch 是否 force 刷新缓存")
+    scan_minutes: int = Field(2, ge=1, le=10, description="扫描器检查间隔（分钟）")
+    auto_reauth_enabled: bool = Field(False, description="第 2 层：401 自动重授权，必须默认关")
+    auto_rotate_enabled: bool = Field(False, description="第 3 层：封禁/周限满踢拉，必须默认关")
 
 
 class WarrantyExpirationSettingsRequest(BaseModel):
@@ -3374,6 +3394,98 @@ async def update_warranty_auto_kick_settings(
             content={"success": False, "error": "更新失败，请稍后重试"}
         )
 
+
+@router.post("/settings/usage-probe")
+async def update_usage_probe_settings(
+    probe_data: UsageProbeSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """更新额度错峰探测和第 2/3 层开关。强制补位始终关。"""
+    try:
+        from app.main import (
+            configure_auto_reauth_job,
+            configure_auto_rotate_job,
+            configure_usage_probe_job,
+            DEFAULT_AUTO_REAUTH_SCAN_MINUTES,
+            DEFAULT_AUTO_ROTATE_SCAN_MINUTES,
+        )
+        from app.services.auto_rotate import (
+            clamp_auto_reauth_interval_minutes,
+            clamp_usage_probe_batch_size,
+            clamp_usage_probe_interval_minutes,
+            clamp_usage_probe_scan_minutes,
+            clamp_usage_probe_stagger_minutes,
+        )
+
+        interval_minutes = clamp_usage_probe_interval_minutes(probe_data.interval_minutes)
+        stagger_minutes = clamp_usage_probe_stagger_minutes(probe_data.stagger_minutes)
+        batch_size = clamp_usage_probe_batch_size(probe_data.batch_size)
+        scan_minutes = clamp_usage_probe_scan_minutes(probe_data.scan_minutes)
+        logger.info(
+            "管理员更新额度探测配置: enabled=%s interval=%s stagger=%s batch=%s force=%s scan=%s reauth=%s rotate=%s",
+            probe_data.enabled,
+            interval_minutes,
+            stagger_minutes,
+            batch_size,
+            probe_data.force,
+            scan_minutes,
+            probe_data.auto_reauth_enabled,
+            probe_data.auto_rotate_enabled,
+        )
+        settings_payload = {
+            "usage_probe_enabled": str(probe_data.enabled).lower(),
+            "usage_probe_interval_minutes": str(interval_minutes),
+            "usage_probe_stagger_minutes": str(stagger_minutes),
+            "usage_probe_batch_size": str(batch_size),
+            "usage_probe_force": str(probe_data.force).lower(),
+            "usage_probe_scan_minutes": str(scan_minutes),
+            "auto_reauth_enabled": str(bool(probe_data.auto_reauth_enabled)).lower(),
+            "auto_rotate_enabled": str(bool(probe_data.auto_rotate_enabled)).lower(),
+            "auto_rotate_force_refill": "false",
+        }
+
+        success = await settings_service.update_settings(db, settings_payload)
+        if not success:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"success": False, "error": "保存失败"},
+            )
+
+        applied_scan = configure_usage_probe_job(probe_data.enabled, scan_minutes)
+        reauth_interval = clamp_auto_reauth_interval_minutes(DEFAULT_AUTO_REAUTH_SCAN_MINUTES)
+        configure_auto_reauth_job(bool(probe_data.auto_reauth_enabled), reauth_interval)
+        configure_auto_rotate_job(bool(probe_data.auto_rotate_enabled), DEFAULT_AUTO_ROTATE_SCAN_MINUTES)
+        parts = []
+        if probe_data.enabled:
+            parts.append(
+                f"额度错峰探测已保存（每 {applied_scan} 分钟扫一轮，每号约 {interval_minutes} 分钟，窗口 {stagger_minutes} 分钟，每次 force {batch_size} 个）"
+            )
+        else:
+            parts.append("额度错峰探测已关闭")
+        parts.append("第 2 层 401 自动重授权已打开" if probe_data.auto_reauth_enabled else "第 2 层保持关闭")
+        parts.append("第 3 层封禁/周限满踢拉已打开（每 Team 每天最多 2 次）" if probe_data.auto_rotate_enabled else "第 3 层保持关闭")
+        message = "；".join(parts)
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": message,
+                "enabled": probe_data.enabled,
+                "interval_minutes": interval_minutes,
+                "stagger_minutes": stagger_minutes,
+                "batch_size": batch_size,
+                "force": probe_data.force,
+                "scan_minutes": applied_scan,
+                "auto_reauth_enabled": bool(probe_data.auto_reauth_enabled),
+                "auto_rotate_enabled": bool(probe_data.auto_rotate_enabled),
+            }
+        )
+    except Exception:
+        logger.exception("更新额度错峰探测设置失败")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "更新失败，请稍后重试"},
+        )
 
 @router.post("/settings/team-import")
 async def update_team_import_settings(

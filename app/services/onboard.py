@@ -55,6 +55,14 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
     text = (error or "").lower()
     if "cancelled" in text or "已取消" in error:
         return "cancelled"
+    if (
+        "account_deactivated" in text
+        or "has been deactivated" in text
+        or "is deactivated" in text
+        or "deactivated_workspace" in text
+        or "已被 deactivate" in error
+    ):
+        return "account_deactivated"
     if "coroutine" in text:
         return "browser_await_bug"
     if "too many" in text or "限流" in error or "max_check" in text:
@@ -1515,37 +1523,51 @@ class OnboardService:
             "vacancy": vacancy,
         }
 
-    async def rotate_one(
+    async def kick_and_refill(
         self,
         db_session: AsyncSession,
         *,
         team_id: int,
+        email: str,
         email_line: str = "",
         phone_line: str = "",
         proxy: str = "",
         child_id: Optional[int] = None,
         force_refill: bool = False,
+        job_id: Optional[str] = None,
+        reason: str = "",
     ) -> Dict[str, Any]:
+        """踢指定子号进 standby，过 vacancy 闸后再拉人。不是到期轮转。"""
         team = await self._load_team(db_session, team_id)
-        due = await child_account_service.list_due_accounts(db_session, team_id=team.id)
-        if not due:
-            return {"success": False, "error": "该 Team 没有到期需要踢出的子号"}
-
-        kick_target = due[0]
-        kick_result = await self.kick_to_standby(db_session, team_id=team.id, email=kick_target.email)
+        kick_target_email = normalize_email(email)
+        if not kick_target_email:
+            return {"success": False, "error": "缺少要踢的子号邮箱", "error_code": "rotate_email_missing"}
+        kick_result = await self.kick_to_standby(db_session, team_id=team.id, email=kick_target_email)
         if not kick_result.get("success"):
             return kick_result
+
+        await child_account_service.record_event(
+            db_session,
+            email=kick_target_email,
+            action="rotate",
+            team_id=team.id,
+            child_id=(kick_result.get("child") or {}).get("id") if isinstance(kick_result.get("child"), dict) else None,
+            success=True,
+            detail=f"{reason + ': ' if reason else ''}kicked {kick_target_email}",
+        )
+        await db_session.commit()
 
         vacancy = kick_result.get("vacancy")
         if not force_refill and not is_safe_to_refill(vacancy):
             summary = summarize_for_message(vacancy) or "踢人回执不能证明席位已释放"
             return {
                 "success": False,
-                "error": f"已踢出 {kick_target.email}，但{summary}。已停止自动补位，核对 Billing 后可勾选强制补位。",
+                "error": f"已踢出 {kick_target_email}，但{summary}。已停止自动补位，核对 Billing 后可勾选强制补位。",
                 "error_code": "vacancy_not_safe_to_refill",
                 "needs_confirm": True,
                 "kick": kick_result,
                 "vacancy": vacancy,
+                "rotated": True,
             }
 
         replacement = None
@@ -1558,7 +1580,7 @@ class OnboardService:
         if replacement is None and not email_line:
             standby = await child_account_service.list_accounts(db_session, status="standby")
             for item in standby:
-                if item.email != kick_target.email:
+                if item.email != kick_target_email:
                     if item.kicked_at and (get_now() - item.kicked_at).total_seconds() < KICK_COOLDOWN_SECONDS:
                         continue
                     replacement = item
@@ -1578,6 +1600,7 @@ class OnboardService:
             proxy=proxy or (replacement.proxy if replacement else ""),
             reuse_existing=True,
             force=force_refill,
+            job_id=job_id,
         )
         if not invite_result.get("success"):
             return {
@@ -1586,18 +1609,9 @@ class OnboardService:
                 "kick": kick_result,
                 "invite": invite_result,
             }
-        await child_account_service.record_event(
-            db_session,
-            email=invite_result.get("child", {}).get("email") or "",
-            action="rotate",
-            team_id=team.id,
-            child_id=(invite_result.get("child") or {}).get("id"),
-            success=True,
-            detail=f"kicked {kick_target.email}",
-        )
         await db_session.commit()
         vacancy = kick_result.get("vacancy")
-        message = f"已踢出 {kick_target.email} 并补入 {(invite_result.get('child') or {}).get('email')}"
+        message = f"已踢出 {kick_target_email} 并补入 {(invite_result.get('child') or {}).get('email')}"
         summary = summarize_for_message(vacancy)
         if summary:
             message = f"{message}。{summary}"
@@ -1607,7 +1621,35 @@ class OnboardService:
             "kick": kick_result,
             "invite": invite_result,
             "vacancy": vacancy,
+            "rotated": True,
         }
+
+    async def rotate_one(
+        self,
+        db_session: AsyncSession,
+        *,
+        team_id: int,
+        email_line: str = "",
+        phone_line: str = "",
+        proxy: str = "",
+        child_id: Optional[int] = None,
+        force_refill: bool = False,
+    ) -> Dict[str, Any]:
+        team = await self._load_team(db_session, team_id)
+        due = await child_account_service.list_due_accounts(db_session, team_id=team.id)
+        if not due:
+            return {"success": False, "error": "该 Team 没有到期需要踢出的子号"}
+        return await self.kick_and_refill(
+            db_session,
+            team_id=team.id,
+            email=due[0].email,
+            email_line=email_line,
+            phone_line=phone_line,
+            proxy=proxy,
+            child_id=child_id,
+            force_refill=force_refill,
+            reason="cycle_due",
+        )
 
 
 onboard_service = OnboardService()

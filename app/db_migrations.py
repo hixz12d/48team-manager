@@ -467,6 +467,58 @@ def run_auto_migration():
             "CREATE INDEX IF NOT EXISTS idx_sub2api_ledger_email ON sub2api_usage_ledgers (email)"
         )
 
+        if not table_exists(cursor, "sub2api_usage_probes"):
+            logger.info("创建 sub2api_usage_probes 表")
+            cursor.execute("""
+                CREATE TABLE sub2api_usage_probes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sub2api_account_id INTEGER NOT NULL UNIQUE,
+                    email VARCHAR(255),
+                    next_probe_at DATETIME NOT NULL,
+                    fail_count INTEGER NOT NULL DEFAULT 0,
+                    last_kind VARCHAR(20),
+                    last_label VARCHAR(40),
+                    last_error TEXT,
+                    last_probed_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            """)
+            migrations_applied.append("sub2api_usage_probes")
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_probe_next ON sub2api_usage_probes (next_probe_at)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_probe_email ON sub2api_usage_probes (email)"
+        )
+
+        if table_exists(cursor, "sub2api_usage_probes"):
+            if not column_exists(cursor, "sub2api_usage_probes", "next_reauth_at"):
+                logger.info("添加 sub2api_usage_probes.next_reauth_at 字段")
+                cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN next_reauth_at DATETIME")
+                migrations_applied.append("sub2api_usage_probes.next_reauth_at")
+            if not column_exists(cursor, "sub2api_usage_probes", "reauth_fail_count"):
+                logger.info("添加 sub2api_usage_probes.reauth_fail_count 字段")
+                cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN reauth_fail_count INTEGER NOT NULL DEFAULT 0")
+                migrations_applied.append("sub2api_usage_probes.reauth_fail_count")
+            if not column_exists(cursor, "sub2api_usage_probes", "last_reauth_code"):
+                logger.info("添加 sub2api_usage_probes.last_reauth_code 字段")
+                cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN last_reauth_code VARCHAR(40)")
+                migrations_applied.append("sub2api_usage_probes.last_reauth_code")
+            if not column_exists(cursor, "sub2api_usage_probes", "next_rotate_at"):
+                logger.info("添加 sub2api_usage_probes.next_rotate_at 字段")
+                cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN next_rotate_at DATETIME")
+                migrations_applied.append("sub2api_usage_probes.next_rotate_at")
+            if not column_exists(cursor, "sub2api_usage_probes", "rotate_fail_count"):
+                logger.info("添加 sub2api_usage_probes.rotate_fail_count 字段")
+                cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN rotate_fail_count INTEGER NOT NULL DEFAULT 0")
+                migrations_applied.append("sub2api_usage_probes.rotate_fail_count")
+            if not column_exists(cursor, "sub2api_usage_probes", "last_rotate_code"):
+                logger.info("添加 sub2api_usage_probes.last_rotate_code 字段")
+                cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN last_rotate_code VARCHAR(40)")
+                migrations_applied.append("sub2api_usage_probes.last_rotate_code")
+
         if not table_exists(cursor, "hme_alias_leases"):
             logger.info("创建 hme_alias_leases 表")
             cursor.execute("""

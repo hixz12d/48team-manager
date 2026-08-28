@@ -128,6 +128,10 @@ class OnboardHelperTests(unittest.TestCase):
         )
         self.assertEqual(classify_onboard_error("需要接码，但未提供手机号"), "sms_failed")
         self.assertEqual(classify_onboard_error("卡在手机号页，没能发出短信"), "sms_failed")
+        self.assertEqual(
+            classify_onboard_error("账号已被 deactivate，停止重授权"),
+            "account_deactivated",
+        )
 
     def test_run_oauth_browser_is_sync(self):
         self.assertFalse(inspect.iscoroutinefunction(OnboardService._run_oauth_browser))

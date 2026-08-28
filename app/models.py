@@ -322,6 +322,34 @@ class Sub2ApiUsageLedger(Base):
     )
 
 
+class Sub2ApiUsageProbe(Base):
+    """Sub2API 错峰 usage 探测进度。母号和子号都记这里，不把母号塞进 child 表。"""
+    __tablename__ = "sub2api_usage_probes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sub2api_account_id = Column(Integer, unique=True, nullable=False, comment="Sub2API 账号 ID")
+    email = Column(String(255), comment="账号邮箱")
+    next_probe_at = Column(DateTime, nullable=False, comment="下次探测时间")
+    fail_count = Column(Integer, default=0, nullable=False, comment="连续失败次数")
+    last_kind = Column(String(20), comment="最近一次健康标签")
+    last_label = Column(String(40), comment="最近一次展示标签")
+    last_error = Column(Text, comment="最近一次失败说明")
+    last_probed_at = Column(DateTime, comment="最近一次探测时间")
+    next_reauth_at = Column(DateTime, comment="下次自动重授权时间")
+    reauth_fail_count = Column(Integer, default=0, nullable=False, comment="连续重授权失败次数")
+    last_reauth_code = Column(String(40), comment="最近一次重授权错误码")
+    next_rotate_at = Column(DateTime, comment="下次封禁/周限踢拉时间")
+    rotate_fail_count = Column(Integer, default=0, nullable=False, comment="连续踢拉失败次数")
+    last_rotate_code = Column(String(40), comment="最近一次踢拉错误码")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
+
+    __table_args__ = (
+        Index("idx_usage_probe_next", "next_probe_at"),
+        Index("idx_usage_probe_email", "email"),
+    )
+
+
 class HmeAliasLease(Base):
     """HME 别名领取租约。未过期视为占用，不用标签当锁。"""
     __tablename__ = "hme_alias_leases"

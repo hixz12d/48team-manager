@@ -33,7 +33,7 @@ from app.services.browser_onboard import (
     wait_cloudflare,
     wait_email_otp_with_resend,
 )
-from app.services.reauth import is_oauth_callback
+from app.services.reauth import is_oauth_callback, looks_like_deactivated
 from app.services.sms import require_proxy, sms_client
 from app.services.socks_bridge import chrome_proxy_launch
 
@@ -160,7 +160,13 @@ def run_browser_oauth_reauth(
                     break
 
                 url = (page.url or "").lower()
-                if looks_like_about_you(title=page.title() or "", body=_page_text(page), url=url):
+                page_body = _page_text(page)
+                if looks_like_deactivated(title=page.title() or "", body=page_body, url=page.url or ""):
+                    result["error"] = "账号已被 deactivate，停止重授权"
+                    result["error_code"] = "account_deactivated"
+                    report("deactivated", result["error"])
+                    break
+                if looks_like_about_you(title=page.title() or "", body=page_body, url=url):
                     report("about_you", "验证码已过，正在填写年龄")
                     _fill_about_you(page)
                     page.wait_for_timeout(2500)
@@ -361,14 +367,21 @@ def run_browser_oauth_reauth(
                         page.wait_for_timeout(1500)
                         continue
                     body = _page_text(page).lower()
-                    bad_password = password_tried or any(token in body for token in ("incorrect", "wrong password", "did not match"))
-                    if bad_password and (
+                    missing_password = not str(password or "").strip()
+                    bad_password = password_tried or missing_password or any(
+                        token in body for token in ("incorrect", "wrong password", "did not match")
+                    )
+                    if (missing_password or bad_password) and (
                         _click_exact(page, ["Log in with a one-time code", "Email me a code", "Send a code", "Use a one-time code"])
                         or _click_first(page, ['button:has-text("one-time code")', 'button:has-text("Email me a code")'])
                     ):
-                        report("email_otp", "密码不对，改走一次性验证码")
+                        report("email_otp", "没有本地密码，改走一次性验证码" if missing_password else "密码不对，改走一次性验证码")
                         page.wait_for_timeout(2500)
                         continue
+                    if missing_password:
+                        result["error"] = "没有本地密码，也没有邮箱验证码入口"
+                        result["error_code"] = "password_missing"
+                        break
                     if bad_password:
                         result["error"] = "密码不对，也没有邮箱验证码入口"
                         result["error_code"] = "password_rejected"
