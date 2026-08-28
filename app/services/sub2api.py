@@ -413,6 +413,10 @@ class Sub2ApiService:
             return {"kind": "none", "label": "无token", "tone": "muted"}
         return {"kind": "200", "label": "200", "tone": "ok"}
 
+    def should_open_schedulable_after_oauth_probe(self, probe: Optional[Dict[str, Any]]) -> bool:
+        """OAuth 写回后，/me 探测 200 就默认打开调度；401/未接码不打。"""
+        return str((probe or {}).get("kind") or "") == "200"
+
     def extra_from_template_values(self, values: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         extra: Dict[str, Any] = {}
         if not isinstance(values, dict):
@@ -1338,6 +1342,34 @@ class Sub2ApiService:
             data = self._unwrap(response.json())
         return data if isinstance(data, dict) else {}
 
+    async def set_account_schedulable(
+        self,
+        db_session: AsyncSession,
+        account_id: int,
+        schedulable: bool,
+    ) -> Dict[str, Any]:
+        if not account_id:
+            return {"account": {}, "patched": False, "patch": {}}
+        cfg = await self._config(db_session)
+        if not cfg["base_url"]:
+            raise RuntimeError("尚未配置 Sub2API 地址")
+        wanted = bool(schedulable)
+        patch = {"schedulable": wanted}
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=20.0) as client:
+            headers = await self._login_headers(client, cfg)
+            response = await client.post(
+                f"/api/v1/admin/accounts/{account_id}/schedulable",
+                headers=headers,
+                json={"schedulable": wanted},
+            )
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+        account = data if isinstance(data, dict) else {}
+        if "schedulable" not in account:
+            account["schedulable"] = wanted
+        invalidate_status_cache()
+        return {"account": account, "patched": True, "patch": patch}
+
     async def patch_account_fields(
         self,
         db_session: AsyncSession,
@@ -1346,6 +1378,8 @@ class Sub2ApiService:
     ) -> Dict[str, Any]:
         if not account_id or not patch:
             return {"account": {}, "patched": False, "patch": patch or {}}
+        if list(patch.keys()) == ["schedulable"]:
+            return await self.set_account_schedulable(db_session, account_id, bool(patch["schedulable"]))
         cfg = await self._config(db_session)
         if not cfg["base_url"]:
             raise RuntimeError("尚未配置 Sub2API 地址")
@@ -1360,6 +1394,56 @@ class Sub2ApiService:
             data = self._unwrap(response.json())
         account = data if isinstance(data, dict) else {}
         return {"account": account, "patched": True, "patch": patch}
+
+    async def delete_accounts(
+        self,
+        db_session: AsyncSession,
+        account_ids: List[int],
+    ) -> Dict[str, Any]:
+        ids: List[int] = []
+        seen: set[int] = set()
+        for raw in account_ids:
+            try:
+                account_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if account_id <= 0 or account_id in seen:
+                continue
+            seen.add(account_id)
+            ids.append(account_id)
+        if not ids:
+            return {"deleted": [], "failed": []}
+        cfg = await self._config(db_session)
+        if not cfg["base_url"]:
+            raise RuntimeError("尚未配置 Sub2API 地址")
+        deleted: List[int] = []
+        failed: List[Dict[str, Any]] = []
+        async with httpx.AsyncClient(base_url=cfg["base_url"], timeout=30.0) as client:
+            headers = await self._login_headers(client, cfg)
+            if len(ids) == 1:
+                account_id = ids[0]
+                response = await client.delete(f"/api/v1/admin/accounts/{account_id}", headers=headers)
+                if response.status_code < 400:
+                    deleted.append(account_id)
+                else:
+                    failed.append({"id": account_id, "status": response.status_code, "body": response.text[:240]})
+            else:
+                response = await client.post(
+                    "/api/v1/admin/accounts/batch-delete",
+                    headers=headers,
+                    json={"account_ids": ids},
+                )
+                if response.status_code < 400:
+                    deleted = list(ids)
+                else:
+                    for account_id in ids:
+                        one = await client.delete(f"/api/v1/admin/accounts/{account_id}", headers=headers)
+                        if one.status_code < 400:
+                            deleted.append(account_id)
+                        else:
+                            failed.append({"id": account_id, "status": one.status_code, "body": one.text[:240]})
+        invalidate_status_cache()
+        return {"deleted": deleted, "failed": failed}
 
     async def attach_usage_costs(
         self,
@@ -1496,6 +1580,7 @@ class Sub2ApiService:
         *,
         proxy_id: Optional[int] = None,
         group_ids: Optional[List[int]] = None,
+        schedulable: Optional[bool] = None,
     ) -> Dict[str, Any]:
         if not account_id:
             return {}
@@ -1515,23 +1600,50 @@ class Sub2ApiService:
         if wanted_groups and not self._account_group_ids(account):
             patch["group_ids"] = wanted_groups
             patch["confirm_mixed_channel_risk"] = True
+        open_schedulable = schedulable is True and account.get("schedulable") is not True
+        if patch:
+            try:
+                response = await client.put(
+                    f"/api/v1/admin/accounts/{account_id}",
+                    headers=headers,
+                    json=patch,
+                )
+                if response.status_code < 400:
+                    data = self._unwrap(response.json())
+                    if isinstance(data, dict):
+                        account = data
+                else:
+                    logger.warning("回填 Sub2API 账号 %s 失败: %s %s", account_id, response.status_code, response.text[:240])
+                    patch = {}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("回填 Sub2API 账号 %s 失败: %s", account_id, exc)
+                patch = {}
+        if open_schedulable:
+            try:
+                response = await client.post(
+                    f"/api/v1/admin/accounts/{account_id}/schedulable",
+                    headers=headers,
+                    json={"schedulable": True},
+                )
+                if response.status_code < 400:
+                    data = self._unwrap(response.json())
+                    if isinstance(data, dict):
+                        account = data
+                    account["schedulable"] = True
+                    patch = dict(patch)
+                    patch["schedulable"] = True
+                else:
+                    logger.warning(
+                        "打开 Sub2API 调度失败: account_id=%s status=%s body=%s",
+                        account_id,
+                        response.status_code,
+                        response.text[:240],
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("打开 Sub2API 调度失败: account_id=%s error=%s", account_id, exc)
         if not patch:
             return {"account": account, "patched": False}
-        try:
-            response = await client.put(
-                f"/api/v1/admin/accounts/{account_id}",
-                headers=headers,
-                json=patch,
-            )
-            if response.status_code < 400:
-                data = self._unwrap(response.json())
-                if isinstance(data, dict):
-                    account = data
-                return {"account": account, "patched": True, "patch": patch}
-            logger.warning("回填 Sub2API 账号 %s 失败: %s %s", account_id, response.status_code, response.text[:240])
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("回填 Sub2API 账号 %s 失败: %s", account_id, exc)
-        return {"account": account, "patched": False, "patch": patch}
+        return {"account": account, "patched": True, "patch": patch}
 
     async def probe_access_token(
         self,
@@ -1607,21 +1719,23 @@ class Sub2ApiService:
                     return self._unwrap(response.json())
 
                 async def finish(result: Dict[str, Any]) -> Dict[str, Any]:
-                    ensured = await self.ensure_account_runtime(
-                        client,
-                        headers,
-                        result.get("account_id"),
-                        proxy_id=session_payload.get("proxy_id"),
-                        group_ids=session_payload.get("group_ids") or [],
-                    )
-                    if ensured.get("patched") and ensured.get("account"):
-                        result["runtime"] = {"patched": True, "patch": ensured.get("patch")}
                     result["probe"] = await self.probe_access_token(
                         db_session,
                         access_token,
                         email=email,
                         proxy_url=proxy_url,
                     )
+                    open_schedulable = self.should_open_schedulable_after_oauth_probe(result.get("probe"))
+                    ensured = await self.ensure_account_runtime(
+                        client,
+                        headers,
+                        result.get("account_id"),
+                        proxy_id=session_payload.get("proxy_id"),
+                        group_ids=session_payload.get("group_ids") or [],
+                        schedulable=True if open_schedulable else None,
+                    )
+                    if ensured.get("patched") and ensured.get("account"):
+                        result["runtime"] = {"patched": True, "patch": ensured.get("patch")}
                     invalidate_status_cache()
                     return result
 
@@ -1881,7 +1995,10 @@ class Sub2ApiService:
         message = f"已推送到 Sub2API：{email}"
         if probe_label:
             message += f"，探测 {probe_label}"
-        if result.get("runtime", {}).get("patched"):
+        patch = ((result.get("runtime") or {}).get("patch") or {})
+        if patch.get("schedulable") is True:
+            message += "，已打开调度"
+        elif result.get("runtime", {}).get("patched"):
             message += "，已回填缺失的代理/分组"
         warning = None
         if probe.get("kind") == "phone":

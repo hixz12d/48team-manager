@@ -535,6 +535,9 @@ async def _complete_seat_oauth(db: AsyncSession, ticket: str, callback_text: str
     message = f"{email} 已重新授权并推送到 Sub2API"
     if probe.get("label"):
         message += f"，探测 {probe.get('label')}"
+    patch = ((push_result.get("runtime") or {}).get("patch") or {})
+    if patch.get("schedulable") is True:
+        message += "，已打开调度"
     result = {
         "success": True,
         "message": message,

@@ -225,6 +225,12 @@ class Sub2ApiImportTests(unittest.TestCase):
         )
         self.assertEqual(picked["id"], "free")
 
+    def test_oauth_probe_200_opens_schedulable(self):
+        self.assertTrue(self.service.should_open_schedulable_after_oauth_probe({"kind": "200", "label": "200"}))
+        self.assertFalse(self.service.should_open_schedulable_after_oauth_probe({"kind": "401", "label": "401"}))
+        self.assertFalse(self.service.should_open_schedulable_after_oauth_probe({"kind": "phone"}))
+        self.assertFalse(self.service.should_open_schedulable_after_oauth_probe({}))
+
 
 
 if __name__ == "__main__":
