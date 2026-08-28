@@ -148,6 +148,23 @@ def classify_rotate_reason(
     return None
 
 
+def official_weekly_limit_full(usage: Optional[Dict[str, Any]]) -> Optional[bool]:
+    """官方查询后 7 日是否仍满。None 表示没读到额度，不能当满额踢。"""
+    payload = usage if isinstance(usage, dict) else {}
+    seven = payload.get("seven_day") if isinstance(payload.get("seven_day"), dict) else {}
+    util = seven.get("utilization")
+    if util in (None, ""):
+        extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+        util = extra.get("codex_7d_used_percent")
+    if util in (None, ""):
+        return None
+    try:
+        percent = max(0, min(100, int(round(float(util)))))
+    except (TypeError, ValueError):
+        return None
+    return percent >= 100
+
+
 def daily_auto_rotate_limit_reached(count: int, limit: int = DEFAULT_AUTO_ROTATE_DAILY_LIMIT) -> bool:
     return int(count or 0) >= max(0, int(limit))
 
@@ -866,6 +883,67 @@ class AutoRotateService:
             stats["email"] = email
             logger.info("第 3 层达到每日上限: team_id=%s count=%s limit=%s", team_id, today_count, daily_limit)
             return stats
+        if not row:
+            row = await self._ensure_probe_row(db_session, account, stamp, 3600, None)
+        if reason == "weekly_limit":
+            try:
+                account_id = int(account.get("id"))
+            except (TypeError, ValueError):
+                account_id = 0
+            if not account_id:
+                stats["skipped"] = 1
+                stats["email"] = email
+                stats["reason"] = reason
+                logger.info("第 3 层跳过 %s: 周限满缺少 Sub 账号 ID", email)
+                await db_session.commit()
+                return stats
+            try:
+                usage = await sub2api_service.fetch_account_usage(
+                    db_session,
+                    account_id,
+                    source="active",
+                    force=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                row.rotate_fail_count = int(row.rotate_fail_count or 0) + 1
+                row.last_rotate_code = "usage_confirm_failed"
+                row.next_rotate_at = rotate_backoff_at(stamp, row.rotate_fail_count)
+                row.updated_at = stamp
+                stats["failed"] = 1
+                stats["email"] = email
+                stats["reason"] = reason
+                logger.warning(
+                    "第 3 层踢前官方查询失败: email=%s account_id=%s error=%s",
+                    email,
+                    account_id,
+                    exc,
+                )
+                await db_session.commit()
+                return stats
+            still_full = official_weekly_limit_full(usage)
+            if still_full is not True:
+                merged = sub2api_service.merge_usage_into_account(account, usage)
+                schedule = self._schedule_kind(merged)
+                await self._write_child_probe(db_session, merged, schedule)
+                seven = usage.get("seven_day") if isinstance(usage, dict) else None
+                util = seven.get("utilization") if isinstance(seven, dict) else None
+                row.last_kind = schedule.get("kind")
+                row.last_label = schedule.get("label")
+                row.last_rotate_code = "weekly_limit_not_confirmed"
+                row.rotate_fail_count = 0
+                row.next_rotate_at = stamp + timedelta(hours=1)
+                row.updated_at = stamp
+                stats["skipped"] = 1
+                stats["email"] = email
+                stats["reason"] = reason
+                logger.info(
+                    "第 3 层跳过 %s: 看板 429 但官方 7 日未满 util=%s kind=%s",
+                    email,
+                    util,
+                    schedule.get("kind"),
+                )
+                await db_session.commit()
+                return stats
         job = onboard_jobs.create_job(team_id=team_id, email=email, action="rotate")
         result = await onboard_service.kick_and_refill(
             db_session,
@@ -875,8 +953,6 @@ class AutoRotateService:
             job_id=job["id"],
             reason=reason,
         )
-        if not row:
-            row = await self._ensure_probe_row(db_session, account, stamp, 3600, None)
         code = str(result.get("error_code") or "")
         if result.get("success") or result.get("rotated") or code == "vacancy_not_safe_to_refill":
             onboard_jobs.finish(job["id"], {"success": bool(result.get("success")), **result})

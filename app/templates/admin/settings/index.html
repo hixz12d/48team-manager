@@ -258,7 +258,7 @@
                 <input type="checkbox" id="autoRotateEnabled" name="auto_rotate_enabled" {% if (auto_rotate_enabled or 'false')|lower in ['1','true','yes','on'] %}checked{% endif %}>
                 <span>第 3 层：封禁/周限满自动踢拉（默认关）</span>
             </label>
-            <p class="form-help">与质保自动踢人不是同一套任务。掉票 401 先走第 2 层；deactivate 或确认 7 日满才踢拉。每个 Team 每天最多自动轮换 2 次，成功踢出即计数。vacancy 不安全则只踢不拉。强制补位始终关。</p>
+            <p class="form-help">与质保自动踢人不是同一套任务。掉票 401 先走第 2 层；deactivate 才踢。看板 429 必须再打一次官方 usage，7 日仍 100% 才踢。5h 不满踢。每个 Team 每天最多自动轮换 2 次，成功踢出即计数。vacancy 不安全则只踢不拉。强制补位始终关。</p>
         </div>
 
         <button type="submit" class="btn btn-primary">保存额度探测配置</button>

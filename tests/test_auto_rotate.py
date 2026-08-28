@@ -2,6 +2,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
+from sqlalchemy import select
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database import Base
@@ -13,6 +15,7 @@ from app.services.auto_rotate import (
     DEFAULT_AUTO_ROTATE_ENABLED,
     DEFAULT_AUTO_ROTATE_FORCE_REFILL,
     classify_rotate_reason,
+    official_weekly_limit_full,
     daily_auto_rotate_limit_reached,
     desired_schedulable,
     due_account_ids,
@@ -150,6 +153,14 @@ class UsageProbeDecisionTests(unittest.TestCase):
         )
         self.assertEqual(classify_rotate_reason(kind="429"), "weekly_limit")
         self.assertIsNone(classify_rotate_reason(kind="429", on_weekly_limit=False))
+
+    def test_official_weekly_limit_requires_full_seven_day(self):
+        self.assertTrue(official_weekly_limit_full({"seven_day": {"utilization": 100}}))
+        self.assertTrue(official_weekly_limit_full({"seven_day": {"utilization": 100.4}}))
+        self.assertFalse(official_weekly_limit_full({"seven_day": {"utilization": 0}}))
+        self.assertFalse(official_weekly_limit_full({"seven_day": {"utilization": 96}}))
+        self.assertIsNone(official_weekly_limit_full({}))
+        self.assertIsNone(official_weekly_limit_full(None))
 
 
 class UsageProbeRunTests(unittest.IsolatedAsyncioTestCase):
@@ -345,6 +356,100 @@ class UsageProbeRunTests(unittest.IsolatedAsyncioTestCase):
         await self.session.commit()
         self.assertEqual(await self.rotate.count_today_auto_rotates(self.session, team.id, now), 2)
         self.assertTrue(daily_auto_rotate_limit_reached(2, DEFAULT_AUTO_ROTATE_DAILY_LIMIT))
+
+    async def _seed_weekly_limit_child(self, now):
+        from app.models import Team
+
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        child = ChildAccount(
+            email="full@icloud.com",
+            status="active",
+            current_team_id=team.id,
+            sub2api_account_id=88,
+        )
+        self.session.add(child)
+        self.session.add(
+            Sub2ApiUsageProbe(
+                sub2api_account_id=88,
+                email="full@icloud.com",
+                next_probe_at=now,
+                fail_count=0,
+            )
+        )
+        await self.session.commit()
+        account = {
+            "id": 88,
+            "name": "Team .2026.12 子号 1",
+            "status": "active",
+            "schedulable": False,
+            "credentials": {"email": "full@icloud.com"},
+            "extra": {"codex_7d_used_percent": 100, "codex_5h_used_percent": 0},
+        }
+        settings = {
+            "auto_rotate_enabled": True,
+            "auto_rotate_on_deactivated": True,
+            "auto_rotate_on_weekly_limit": True,
+            "auto_rotate_force_refill": False,
+            "auto_rotate_daily_limit": 2,
+        }
+        return account, settings
+
+    async def test_weekly_limit_skips_kick_when_official_usage_is_zero(self):
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        account, settings = await self._seed_weekly_limit_child(now)
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.auto_rotate.sub2api_service.fetch_account_usage", AsyncMock(return_value={
+                 "seven_day": {"utilization": 0, "resets_at": "2026-09-04T12:37:02+08:00"},
+                 "five_hour": {"utilization": 0},
+             })) as fetched, \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.iter_running", return_value=[]), \
+             patch("app.services.onboard.onboard_service.kick_and_refill", AsyncMock()) as kicked:
+            stats = await self.rotate.run_auto_rotate_once(self.session, now=now, settings=settings)
+        self.assertEqual(stats["skipped"], 1)
+        self.assertEqual(stats["rotated"], 0)
+        self.assertEqual(stats["email"], "full@icloud.com")
+        fetched.assert_awaited_once()
+        self.assertTrue(fetched.await_args.kwargs.get("force"))
+        kicked.assert_not_awaited()
+        row = (await self.session.execute(
+            select(Sub2ApiUsageProbe).where(Sub2ApiUsageProbe.sub2api_account_id == 88)
+        )).scalar_one()
+        self.assertEqual(row.last_rotate_code, "weekly_limit_not_confirmed")
+
+    async def test_weekly_limit_kicks_after_official_usage_still_full(self):
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        account, settings = await self._seed_weekly_limit_child(now)
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.auto_rotate.sub2api_service.fetch_account_usage", AsyncMock(return_value={
+                 "seven_day": {"utilization": 100},
+                 "five_hour": {"utilization": 0},
+             })) as fetched, \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.iter_running", return_value=[]), \
+             patch("app.services.onboard_jobs.create_job", return_value={"id": "job1"}), \
+             patch("app.services.onboard_jobs.finish"), \
+             patch("app.services.onboard.onboard_service.kick_and_refill", AsyncMock(return_value={
+                 "success": True,
+                 "rotated": True,
+             })) as kicked:
+            stats = await self.rotate.run_auto_rotate_once(self.session, now=now, settings=settings)
+        self.assertEqual(stats["rotated"], 1)
+        self.assertEqual(stats["skipped"], 0)
+        fetched.assert_awaited_once()
+        kicked.assert_awaited_once()
+        self.assertEqual(kicked.await_args.kwargs["email"], "full@icloud.com")
+        self.assertEqual(kicked.await_args.kwargs["reason"], "weekly_limit")
 
 
 if __name__ == "__main__":
