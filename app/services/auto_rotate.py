@@ -396,6 +396,23 @@ class AutoRotateService:
         snapshot.pop("schedulable", None)
         return sub2api_service._schedule_state(snapshot)
 
+    async def _resolve_active_child(
+        self,
+        db_session: AsyncSession,
+        account: Dict[str, Any],
+        email: str = "",
+    ) -> Optional[Any]:
+        """只认在籍子号。Sub 没邮箱时用账号 ID 找回本地记录。"""
+        child = await child_account_service.get_by_email(db_session, email) if email else None
+        if child is None:
+            child = await child_account_service.get_by_sub2api_account_id(
+                db_session,
+                account.get("id"),
+            )
+        if child is None or child.status not in ACTIVE_CHILD_STATUSES or not child.current_team_id:
+            return None
+        return child
+
     async def _write_child_probe(
         self,
         db_session: AsyncSession,
@@ -403,9 +420,9 @@ class AutoRotateService:
         schedule: Dict[str, str],
     ) -> None:
         email = sub2api_service._account_email(account)
-        if not email:
-            return
-        child = await child_account_service.get_by_email(db_session, email)
+        child = await child_account_service.get_by_email(db_session, email) if email else None
+        if child is None:
+            child = await child_account_service.get_by_sub2api_account_id(db_session, account.get("id"))
         if child is None:
             return
         account_id = account.get("id")
@@ -698,9 +715,6 @@ class AutoRotateService:
         for account in accounts:
             if is_owner_account(account):
                 continue
-            email = sub2api_service._account_email(account)
-            if not email:
-                continue
             try:
                 account_id = int(account.get("id"))
             except (TypeError, ValueError):
@@ -713,34 +727,30 @@ class AutoRotateService:
                 continue
             if row and row.next_reauth_at and row.next_reauth_at > stamp:
                 continue
-            child = await child_account_service.get_by_email(db_session, email)
-            team = None
-            if child and child.current_team_id:
-                team = await db_session.get(Team, int(child.current_team_id))
-            if team is None:
-                family = str(sub2api_service.summarize_account(account).get("family") or "")
-                teams = (await db_session.execute(select(Team))).scalars().all()
-                for item in teams:
-                    if sub2api_service.families_match(
-                        family,
-                        sub2api_service.family_key(item.email or "", item.team_name or ""),
-                    ):
-                        team = item
-                        break
+            email = sub2api_service._account_email(account)
+            child = await self._resolve_active_child(db_session, account, email)
+            if child is None:
+                continue
+            email = (email or child.email or "").strip()
+            if not email:
+                stats["skipped"] += 1
+                logger.info("第 2 层跳过 account_id=%s: 对不上邮箱", account_id)
+                continue
+            team = await db_session.get(Team, int(child.current_team_id))
             if team is None:
                 stats["skipped"] += 1
                 logger.info("第 2 层跳过 %s: 对不上 Team", email)
                 continue
-            pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""
+            pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child.mail_raw else ""
             from app.services.onboard import onboard_service
             cf_config = await onboard_service._cf_config(db_session)
             plan = auto_reauth_plan(
                 email=email,
                 role="child",
-                password=child_account_service.decrypt_secret(child.password_encrypted) if child else "",
+                password=child_account_service.decrypt_secret(child.password_encrypted),
                 pickup_url=pickup_url or "",
                 cf_ready=(not pickup_url) and bool(cf_config["admin_password"]),
-                proxy=((child.proxy if child else "") or team.proxy or ""),
+                proxy=(child.proxy or team.proxy or ""),
             )
             if not plan.get("auto"):
                 stats["skipped"] += 1
@@ -756,7 +766,7 @@ class AutoRotateService:
             return stats
         candidates.sort(key=lambda item: (item[0], int(item[1].get("id") or 0)))
         account, row, child, team = candidates[0][1], candidates[0][2], candidates[0][3], candidates[0][4]
-        email = sub2api_service._account_email(account)
+        email = (sub2api_service._account_email(account) or child.email or "").strip()
         result = await start_child_auto_reauth(db_session, team=team, email=email, child=child)
         if result.get("skipped") and result.get("error_code") in {"already_running", "browser_busy"}:
             stats["skipped"] += 1

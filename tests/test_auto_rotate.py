@@ -451,6 +451,97 @@ class UsageProbeRunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kicked.await_args.kwargs["email"], "full@icloud.com")
         self.assertEqual(kicked.await_args.kwargs["reason"], "weekly_limit")
 
+    async def _seed_reauth_team(self):
+        from app.models import Team
+
+        team = Team(
+            email="xiaozhudf.2026.12@gmail.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+            team_name="Team .2026.12",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        return team
+
+    async def test_auto_reauth_skips_standby_401(self):
+        now = datetime(2026, 8, 28, 20, 0, 0)
+        team = await self._seed_reauth_team()
+        child = ChildAccount(
+            email="basket.hurler_3a@icloud.com",
+            status="standby",
+            current_team_id=None,
+            last_team_id=team.id,
+            sub2api_account_id=2882,
+            password_encrypted="pw",
+            proxy="socks5h://127.0.0.1:1080",
+        )
+        self.session.add(child)
+        await self.session.commit()
+        account = {
+            "id": 2882,
+            "name": "Team .2026.2 子号 5",
+            "status": "error",
+            "schedulable": False,
+            "error_message": "Token revoked (401)",
+            "credentials": {"email": "basket.hurler_3a@icloud.com"},
+        }
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.active_job_for_email", return_value=None), \
+             patch("app.routes.seats.start_child_auto_reauth", AsyncMock()) as started:
+            stats = await self.rotate.run_auto_reauth_once(
+                self.session,
+                now=now,
+                settings={"auto_reauth_enabled": True, "auto_reauth_interval_minutes": 30},
+            )
+        self.assertEqual(stats["queued"], 0)
+        self.assertEqual(stats["scanned"], 0)
+        started.assert_not_awaited()
+
+    async def test_auto_reauth_queues_blank_sub_email_via_account_id(self):
+        now = datetime(2026, 8, 28, 20, 0, 0)
+        team = await self._seed_reauth_team()
+        child = ChildAccount(
+            email="rollers-chocks3v@icloud.com",
+            status="active",
+            current_team_id=team.id,
+            sub2api_account_id=2912,
+            password_encrypted="pw",
+            proxy="socks5h://127.0.0.1:1080",
+        )
+        self.session.add(child)
+        await self.session.commit()
+        account = {
+            "id": 2912,
+            "name": "Team .2026.12 子号 7",
+            "status": "error",
+            "schedulable": False,
+            "error_message": "Token revoked (401)",
+            "credentials": {},
+        }
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.active_job_for_email", return_value=None), \
+             patch("app.services.reauth.auto_reauth_plan", return_value={"auto": True, "reason": "ok"}), \
+             patch("app.routes.seats.start_child_auto_reauth", AsyncMock(return_value={
+                 "success": True,
+                 "job_id": "job-blank",
+             })) as started:
+            stats = await self.rotate.run_auto_reauth_once(
+                self.session,
+                now=now,
+                settings={"auto_reauth_enabled": True, "auto_reauth_interval_minutes": 30},
+            )
+        self.assertEqual(stats["queued"], 1)
+        self.assertEqual(stats["email"], "rollers-chocks3v@icloud.com")
+        started.assert_awaited_once()
+        self.assertEqual(started.await_args.kwargs["email"], "rollers-chocks3v@icloud.com")
+
 
 if __name__ == "__main__":
     unittest.main()

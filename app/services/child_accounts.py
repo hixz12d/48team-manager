@@ -154,6 +154,22 @@ class ChildAccountService:
     async def get_by_id(self, db_session: AsyncSession, child_id: int) -> Optional[ChildAccount]:
         return await db_session.get(ChildAccount, child_id)
 
+    async def get_by_sub2api_account_id(
+        self,
+        db_session: AsyncSession,
+        account_id: Optional[int],
+    ) -> Optional[ChildAccount]:
+        try:
+            target = int(account_id)
+        except (TypeError, ValueError):
+            return None
+        if not target:
+            return None
+        result = await db_session.execute(
+            select(ChildAccount).where(ChildAccount.sub2api_account_id == target)
+        )
+        return result.scalar_one_or_none()
+
     async def list_accounts(
         self,
         db_session: AsyncSession,
