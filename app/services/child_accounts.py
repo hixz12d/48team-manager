@@ -115,6 +115,7 @@ class ChildAccountService:
             "last_team_id": child.last_team_id,
             "joined_at": child.joined_at.isoformat() if child.joined_at else None,
             "kicked_at": child.kicked_at.isoformat() if child.kicked_at else None,
+            "next_eligible_at": child.next_eligible_at.isoformat() if getattr(child, "next_eligible_at", None) else None,
             "due_at": due_at.isoformat() if due_at else None,
             "remaining_days": remaining_days,
             "cycle_days": cycle_days,
@@ -317,6 +318,7 @@ class ChildAccountService:
         elif not already_active:
             child.joined_at = now
         child.kicked_at = None
+        child.next_eligible_at = None
         child.cycle_days = int(getattr(team, "seat_cycle_days", None) or child.cycle_days or 7)
         child.last_error = None
         child.updated_at = now
@@ -347,6 +349,8 @@ class ChildAccountService:
         *,
         mapping: Optional[TeamEmailMapping] = None,
         error: Optional[str] = None,
+        next_eligible_at: Optional[datetime] = None,
+        unbind_sub2api: bool = False,
     ) -> None:
         now = get_now()
         if child.current_team_id:
@@ -354,6 +358,10 @@ class ChildAccountService:
         child.status = CHILD_STATUS_STANDBY
         child.current_team_id = None
         child.kicked_at = now
+        if next_eligible_at is not None:
+            child.next_eligible_at = next_eligible_at
+        if unbind_sub2api:
+            child.sub2api_account_id = None
         child.last_error = error
         child.last_stage = "kicked"
         child.updated_at = now

@@ -9,6 +9,9 @@ import hashlib
 import logging
 import random
 from datetime import datetime, time, timedelta
+import pytz
+
+from app.config import settings
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from sqlalchemy import func, select
@@ -163,6 +166,21 @@ def official_weekly_limit_full(usage: Optional[Dict[str, Any]]) -> Optional[bool
     except (TypeError, ValueError):
         return None
     return percent >= 100
+
+
+def official_weekly_reset_at(usage: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    """官方 7 日窗口结束时间。返回 naive 本地时间，方便存进 SQLite。"""
+    payload = usage if isinstance(usage, dict) else {}
+    seven = payload.get("seven_day") if isinstance(payload.get("seven_day"), dict) else {}
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    raw = seven.get("resets_at") or extra.get("codex_7d_reset_at") or extra.get("codex_secondary_reset_at")
+    when = sub2api_service._parse_when(raw)
+    if when is None:
+        return None
+    if when.tzinfo is not None:
+        tz = pytz.timezone(settings.timezone)
+        return when.astimezone(tz).replace(tzinfo=None)
+    return when
 
 
 def daily_auto_rotate_limit_reached(count: int, limit: int = DEFAULT_AUTO_ROTATE_DAILY_LIMIT) -> bool:
@@ -895,6 +913,7 @@ class AutoRotateService:
             return stats
         if not row:
             row = await self._ensure_probe_row(db_session, account, stamp, 3600, None)
+        usage = None
         if reason == "weekly_limit":
             try:
                 account_id = int(account.get("id"))
@@ -955,6 +974,7 @@ class AutoRotateService:
                 await db_session.commit()
                 return stats
         job = onboard_jobs.create_job(team_id=team_id, email=email, action="rotate")
+        next_eligible_at = official_weekly_reset_at(usage) if reason == "weekly_limit" else None
         result = await onboard_service.kick_and_refill(
             db_session,
             team_id=team_id,
@@ -962,6 +982,7 @@ class AutoRotateService:
             force_refill=bool(cfg.get("auto_rotate_force_refill")),
             job_id=job["id"],
             reason=reason,
+            next_eligible_at=next_eligible_at,
         )
         code = str(result.get("error_code") or "")
         if result.get("success") or result.get("rotated") or code == "vacancy_not_safe_to_refill":

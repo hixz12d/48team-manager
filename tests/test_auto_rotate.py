@@ -16,6 +16,7 @@ from app.services.auto_rotate import (
     DEFAULT_AUTO_ROTATE_FORCE_REFILL,
     classify_rotate_reason,
     official_weekly_limit_full,
+    official_weekly_reset_at,
     daily_auto_rotate_limit_reached,
     desired_schedulable,
     due_account_ids,
@@ -450,6 +451,13 @@ class UsageProbeRunTests(unittest.IsolatedAsyncioTestCase):
         kicked.assert_awaited_once()
         self.assertEqual(kicked.await_args.kwargs["email"], "full@icloud.com")
         self.assertEqual(kicked.await_args.kwargs["reason"], "weekly_limit")
+        self.assertIn("next_eligible_at", kicked.await_args.kwargs)
+
+    def test_official_weekly_reset_at_parses_naive_local(self):
+        when = official_weekly_reset_at({
+            "seven_day": {"utilization": 100, "resets_at": "2026-09-04T12:37:02+08:00"},
+        })
+        self.assertEqual(when, datetime(2026, 9, 4, 12, 37, 2))
 
     async def _seed_reauth_team(self):
         from app.models import Team

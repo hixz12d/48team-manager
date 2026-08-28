@@ -1347,9 +1347,18 @@ class OnboardService:
         team_id: int,
         email: str,
         user_id: Optional[str] = None,
+        reason: str = "",
+        next_eligible_at: Optional[Any] = None,
+        unbind_sub2api: bool = False,
     ) -> Dict[str, Any]:
         return await self._kick_to_standby_impl(
-            db_session, team_id=team_id, email=email, user_id=user_id
+            db_session,
+            team_id=team_id,
+            email=email,
+            user_id=user_id,
+            reason=reason,
+            next_eligible_at=next_eligible_at,
+            unbind_sub2api=unbind_sub2api,
         )
 
     async def _kick_joined_and_verify(
@@ -1406,6 +1415,9 @@ class OnboardService:
         team_id: int,
         email: str,
         user_id: Optional[str] = None,
+        reason: str = "",
+        next_eligible_at: Optional[Any] = None,
+        unbind_sub2api: bool = False,
     ) -> Dict[str, Any]:
         team = await self._load_team(db_session, team_id)
         self._team_proxy(team)
@@ -1498,8 +1510,18 @@ class OnboardService:
             return {"success": False, "error": result.get("error") or "踢人失败", "error_code": result.get("error_code") or "kick_failed"}
 
         mapping = await self._mapping(db_session, team.id, target)
+        unbind = bool(unbind_sub2api or reason in {"weekly_limit", "deactivated"})
+        deleted_sub = None
+        if child and unbind and child.sub2api_account_id:
+            deleted_sub = await sub2api_service.delete_accounts(db_session, [int(child.sub2api_account_id)])
         if child:
-            await child_account_service.mark_standby(db_session, child, mapping=mapping)
+            await child_account_service.mark_standby(
+                db_session,
+                child,
+                mapping=mapping,
+                next_eligible_at=next_eligible_at,
+                unbind_sub2api=unbind,
+            )
         await child_account_service.record_event(
             db_session,
             email=target,
@@ -1507,11 +1529,13 @@ class OnboardService:
             team_id=team.id,
             child_id=child.id if child else None,
             success=True,
-            detail="已踢出并保留子号",
+            detail="已踢出并保留子号" + ("，已从 Sub 下架" if unbind else ""),
         )
         await db_session.commit()
         vacancy = result.get("vacancy")
         message = f"{target} 已踢出，子号进入 standby"
+        if unbind:
+            message = f"{message}，已从 Sub 下架"
         summary = summarize_for_message(vacancy)
         if summary:
             message = f"{message}。{summary}"
@@ -1521,6 +1545,8 @@ class OnboardService:
             "message": message,
             "child": child_account_service.serialize(child) if child else None,
             "vacancy": vacancy,
+            "unbound_sub2api": unbind,
+            "deleted_sub2api": deleted_sub,
         }
 
     async def kick_and_refill(
@@ -1536,13 +1562,21 @@ class OnboardService:
         force_refill: bool = False,
         job_id: Optional[str] = None,
         reason: str = "",
+        next_eligible_at: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """踢指定子号进 standby，过 vacancy 闸后再拉人。不是到期轮转。"""
         team = await self._load_team(db_session, team_id)
         kick_target_email = normalize_email(email)
         if not kick_target_email:
             return {"success": False, "error": "缺少要踢的子号邮箱", "error_code": "rotate_email_missing"}
-        kick_result = await self.kick_to_standby(db_session, team_id=team.id, email=kick_target_email)
+        kick_result = await self.kick_to_standby(
+            db_session,
+            team_id=team.id,
+            email=kick_target_email,
+            reason=reason,
+            next_eligible_at=next_eligible_at,
+            unbind_sub2api=(reason in {"weekly_limit", "deactivated"}),
+        )
         if not kick_result.get("success"):
             return kick_result
 
@@ -1578,13 +1612,18 @@ class OnboardService:
             replacement = await child_account_service.get_by_email(db_session, replacement_email)
 
         if replacement is None and not email_line:
+            now = get_now()
             standby = await child_account_service.list_accounts(db_session, status="standby")
             for item in standby:
-                if item.email != kick_target_email:
-                    if item.kicked_at and (get_now() - item.kicked_at).total_seconds() < KICK_COOLDOWN_SECONDS:
-                        continue
-                    replacement = item
-                    break
+                if item.email == kick_target_email:
+                    continue
+                if item.kicked_at and (now - item.kicked_at).total_seconds() < KICK_COOLDOWN_SECONDS:
+                    continue
+                eligible_at = getattr(item, "next_eligible_at", None)
+                if eligible_at and eligible_at > now:
+                    continue
+                replacement = item
+                break
 
         if replacement is None and not str(email_line or "").strip():
             invite_line = ""

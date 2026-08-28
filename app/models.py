@@ -225,6 +225,7 @@ class ChildAccount(Base):
     last_team_id = Column(Integer, comment="上一轮 Team")
     joined_at = Column(DateTime, comment="当前轮入组时间")
     kicked_at = Column(DateTime, comment="最近踢出时间")
+    next_eligible_at = Column(DateTime, comment="周限满下架后，官方7日额度允许再拉回的时间")
     cycle_days = Column(Integer, default=7, comment="当前轮转天数")
     access_token_encrypted = Column(Text, comment="加密存储的 AT")
     refresh_token_encrypted = Column(Text, comment="加密存储的 RT")

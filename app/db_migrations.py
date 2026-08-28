@@ -391,6 +391,11 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE child_accounts ADD COLUMN probed_at DATETIME")
             migrations_applied.append("child_accounts.probed_at")
 
+        if table_exists(cursor, "child_accounts") and not column_exists(cursor, "child_accounts", "next_eligible_at"):
+            logger.info("添加 child_accounts.next_eligible_at 字段")
+            cursor.execute("ALTER TABLE child_accounts ADD COLUMN next_eligible_at DATETIME")
+            migrations_applied.append("child_accounts.next_eligible_at")
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_status ON child_accounts (status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_team ON child_accounts (current_team_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_email ON seat_events (email)")

@@ -211,6 +211,47 @@ class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "standby")
         self.assertEqual(child.status, "standby")
 
+    async def test_weekly_limit_kick_unbinds_sub_and_sets_eligible_at(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(self.session, email="kid@example.com")
+        await child_account_service.mark_active(self.session, child, team)
+        child.sub2api_account_id = 2912
+        await self.session.flush()
+        eligible = get_now() + timedelta(days=4)
+        service = OnboardService()
+        service._load_team = AsyncMock(return_value=team)
+        service._team_proxy = MagicMock(return_value="socks5h://127.0.0.1:1080")
+        joined = {"email": "kid@example.com", "status": "joined", "user_id": "user-1", "account_user_id": "user-1"}
+        service._lookup_live_member = AsyncMock(side_effect=[
+            ({"success": True, "members": [joined]}, joined),
+            ({"success": True, "members": []}, None),
+        ])
+        from app.services import team as team_mod
+        from app.services import sub2api as sub2api_mod
+        original = team_mod.team_service.delete_team_member
+        original_delete = sub2api_mod.sub2api_service.delete_accounts
+        team_mod.team_service.delete_team_member = AsyncMock(return_value={"success": True, "message": "ok"})
+        delete_accounts = AsyncMock(return_value={"deleted": [2912], "failed": []})
+        sub2api_mod.sub2api_service.delete_accounts = delete_accounts
+        try:
+            result = await service.kick_to_standby(
+                self.session,
+                team_id=team.id,
+                email="kid@example.com",
+                reason="weekly_limit",
+                next_eligible_at=eligible,
+                unbind_sub2api=True,
+            )
+        finally:
+            team_mod.team_service.delete_team_member = original
+            sub2api_mod.sub2api_service.delete_accounts = original_delete
+        self.assertTrue(result["success"])
+        self.assertTrue(result["unbound_sub2api"])
+        self.assertEqual(child.status, "standby")
+        self.assertIsNone(child.sub2api_account_id)
+        self.assertEqual(child.next_eligible_at, eligible)
+        delete_accounts.assert_awaited_once()
+
     async def test_kick_fails_when_member_still_live(self):
         team = await self._team()
         child = await child_account_service.upsert_from_input(self.session, email="kid@example.com")
