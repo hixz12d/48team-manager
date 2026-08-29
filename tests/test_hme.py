@@ -18,6 +18,7 @@ from app.services.hme import (
     claim_next_alias,
     finalize_claim,
     active_leased_emails,
+    should_occupy_failed_claim,
 )
 from app.services.onboard import OnboardService
 from app.utils.time_utils import get_now
@@ -37,6 +38,10 @@ class SerialLabelTests(unittest.TestCase):
         self.assertTrue(is_unoccupied_label(""))
         self.assertTrue(is_unoccupied_label("别名 7"))
         self.assertFalse(is_unoccupied_label("GPT已使用"))
+        self.assertFalse(should_occupy_failed_claim({"success": False, "error_code": "browser_failed"}))
+        self.assertFalse(should_occupy_failed_claim({"success": False, "error_code": "proxy_missing"}))
+        self.assertTrue(should_occupy_failed_claim({"success": False, "error_code": "about_you_stuck"}))
+        self.assertTrue(should_occupy_failed_claim({"success": False, "error_code": "oauth_callback_missing"}))
 
     def test_pick_next_uses_created_at_not_serial(self):
         aliases = [
@@ -144,7 +149,7 @@ class HmeClaimTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(first.lease_id, second.lease_id)
 
     async def test_claim_skips_existing_child_email(self):
-        self.session.add(ChildAccount(email="one@icloud.com"))
+        self.session.add(ChildAccount(email="one@icloud.com", status="free"))
         await self.session.commit()
         with patch("app.services.hme.load_config", AsyncMock(return_value=self.cfg)), patch(
             "app.services.hme.hme_client.list_accounts", MagicMock(return_value=[{"id": "acc_1", "status": "active"}])
@@ -153,6 +158,17 @@ class HmeClaimTests(unittest.IsolatedAsyncioTestCase):
         ):
             claimed = await claim_next_alias(self.session, job_id="job-child")
         self.assertEqual(claimed.email, "two@icloud.com")
+
+    async def test_claim_reuses_unused_child_without_token(self):
+        self.session.add(ChildAccount(email="one@icloud.com", status="unused"))
+        await self.session.commit()
+        with patch("app.services.hme.load_config", AsyncMock(return_value=self.cfg)), patch(
+            "app.services.hme.hme_client.list_accounts", MagicMock(return_value=[{"id": "acc_1", "status": "active"}])
+        ), patch(
+            "app.services.hme.hme_client.list_aliases", MagicMock(return_value=self.aliases)
+        ):
+            claimed = await claim_next_alias(self.session, job_id="job-unused")
+        self.assertEqual(claimed.email, "one@icloud.com")
 
     async def test_finalize_success_tags_then_releases(self):
         claimed = ClaimedAlias(email="one@icloud.com", anonymous_id="id-one", account_id="acc_1", lease_id=0)
@@ -193,7 +209,26 @@ class HmeClaimTests(unittest.IsolatedAsyncioTestCase):
         leased = await active_leased_emails(self.session)
         self.assertNotIn("one@icloud.com", leased)
 
-    async def test_finalize_failure_tags_when_child_exists(self):
+    async def test_finalize_failure_does_not_tag_browser_handshake(self):
+        claimed = ClaimedAlias(email="one@icloud.com", anonymous_id="id-one", account_id="acc_1", lease_id=0)
+        lease = HmeAliasLease(
+            email=claimed.email,
+            anonymous_id=claimed.anonymous_id,
+            account_id=claimed.account_id,
+            expires_at=get_now() + timedelta(minutes=25),
+            created_at=get_now(),
+        )
+        self.session.add(lease)
+        self.session.add(ChildAccount(email="one@icloud.com"))
+        await self.session.commit()
+        claimed.lease_id = lease.id
+        with patch("app.services.hme.hme_client.set_local_label", MagicMock()) as tagged:
+            await finalize_claim(self.session, claimed, {"success": False, "error_code": "browser_failed"}, "")
+            tagged.assert_not_called()
+        leased = await active_leased_emails(self.session)
+        self.assertNotIn("one@icloud.com", leased)
+
+    async def test_finalize_failure_tags_after_signup_started(self):
         claimed = ClaimedAlias(email="one@icloud.com", anonymous_id="id-one", account_id="acc_1", lease_id=0)
         lease = HmeAliasLease(
             email=claimed.email,
@@ -209,7 +244,7 @@ class HmeClaimTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.services.hme.load_config", AsyncMock(return_value=self.cfg)), patch(
             "app.services.hme.hme_client.set_local_label", MagicMock()
         ) as tagged:
-            await finalize_claim(self.session, claimed, {"success": False}, "")
+            await finalize_claim(self.session, claimed, {"success": False, "error_code": "about_you_stuck"}, "")
             tagged.assert_called_once()
             self.assertEqual(tagged.call_args.args[3], FREE_ACCOUNT_LABEL)
         leased = await active_leased_emails(self.session)

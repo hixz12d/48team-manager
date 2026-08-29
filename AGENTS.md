@@ -12,3 +12,7 @@
 - 禁止 `docker compose down`、`--remove-orphans`，禁止在 `/opt/sub2api` 里执行任何 compose
 
 本项目只活在 `/opt/team48`，Compose 项目名 `team48`，容器名 `team48-manager`，端口只绑 `127.0.0.1:8018`。
+
+## HME 联动
+
+空邮箱拉人会向 VPS 上的 `icloud-hme` 领未占用别名，成功后只打 `accounts.json` 本地标签，不写 iCloud。占用规则、回填记录和干跑测试见 [docs/hme-linkage.md](/C:/Projects/Github_Other_Projects/48team-manager/docs/hme-linkage.md)。不要把本机 `data/accounts.json` 当占用库，不要为打标去动 Apple。

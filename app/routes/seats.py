@@ -1026,6 +1026,18 @@ async def seats_onboard_free(
         active = onboard_jobs.active_job_for_email(email)
         if active:
             return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的任务", "job": active}
+    busy = onboard_jobs.any_running(onboard_jobs.BROWSER_ACTIONS)
+    if busy:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "success": False,
+                "error": f"已有浏览器任务 {busy.get('email') or busy.get('id')}",
+                "error_code": "browser_busy",
+                "job_id": busy.get("id"),
+                "job": busy,
+            },
+        )
     job = onboard_jobs.create_job(team_id=0, email=email or payload.email, action="free_register")
     asyncio.create_task(_run_free_onboard_job(job["id"], payload))
     return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始注册免费号，进度会留在本页", "job": job}
@@ -1051,6 +1063,18 @@ async def seats_reregister(
         active = onboard_jobs.active_job_for_email(child.email)
         if active:
             return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的任务", "job": active}
+        busy = onboard_jobs.any_running(onboard_jobs.BROWSER_ACTIONS)
+        if busy:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "error": f"已有浏览器任务 {busy.get('email') or busy.get('id')}",
+                    "error_code": "browser_busy",
+                    "job_id": busy.get("id"),
+                    "job": busy,
+                },
+            )
         request = FreeOnboardRequest(
             email=payload.email or child.mail_raw or child.email,
             phone=payload.phone or "",

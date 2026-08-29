@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 from app.config import settings
 from app.services.browser_onboard import (
+    ABOUT_YOU_STUCK_LIMIT,
     _accept_terms,
     _click_exact,
     _click_first,
@@ -22,6 +23,7 @@ from app.services.browser_onboard import (
     _snapshot_mailbox_codes,
     _visible,
     chromium_context_kwargs,
+    goto_with_retries,
     looks_like_about_you,
     looks_like_session_ended,
     page_phone_rejection,
@@ -133,7 +135,7 @@ def run_browser_oauth_reauth(
             for existing in list(browser.pages):
                 attach(existing)
             report("browser_open", "正在打开 Codex 授权链接")
-            page.goto(authorize_url, wait_until="load")
+            goto_with_retries(page, authorize_url, report=report)
             wait_cloudflare(page)
             page.wait_for_timeout(1500)
             remember(page.url or "")
@@ -153,6 +155,7 @@ def run_browser_oauth_reauth(
             otp_resends = 0
             password_tried = False
             signup_clicked = False
+            about_you_tries = 0
 
             for _ in range(36):
                 remember(page.url or "")
@@ -167,9 +170,14 @@ def run_browser_oauth_reauth(
                     report("deactivated", result["error"])
                     break
                 if looks_like_about_you(title=page.title() or "", body=page_body, url=url):
-                    report("about_you", "验证码已过，正在填写年龄")
-                    _fill_about_you(page)
-                    page.wait_for_timeout(2500)
+                    about_you_tries += 1
+                    if about_you_tries > ABOUT_YOU_STUCK_LIMIT:
+                        result["error"] = "卡在年龄/生日页，没有进入下一步"
+                        result["error_code"] = "about_you_stuck"
+                        break
+                    report("about_you", f"验证码已过，正在填写年龄（第 {about_you_tries} 次）")
+                    if not _fill_about_you(page):
+                        page.wait_for_timeout(1500)
                     continue
                 if looks_like_session_ended(title=page.title() or "", body=_page_text(page)):
                     report("session_ended", "授权页会话结束，点 Log in")

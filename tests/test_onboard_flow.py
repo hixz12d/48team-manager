@@ -10,6 +10,9 @@ from app.models import Team
 from app.services.child_accounts import child_account_service
 from app.services.browser_onboard import (
     can_peek_session,
+    about_you_birth_year,
+    pick_select_option,
+    should_retry_goto,
     looks_like_about_you,
     looks_like_cloudflare,
     looks_like_email_gate,
@@ -24,6 +27,7 @@ from app.services.browser_onboard import (
     session_access_token,
 )
 from app.services.onboard import OnboardService, classify_onboard_error, should_wait_for_invite_mail
+from app.services import onboard_jobs
 from app.utils.time_utils import get_now
 
 
@@ -111,6 +115,13 @@ class OnboardHelperTests(unittest.TestCase):
 
     def test_age_page_is_not_otp(self):
         self.assertTrue(looks_like_about_you(title="How old are you? - OpenAI", body="How old are you?", url="https://auth.openai.com/about-you"))
+        self.assertTrue(looks_like_about_you(title="About you", body="When were you born?", url="https://auth.openai.com/about-you"))
+        self.assertEqual(pick_select_option(["Month", "January", "February"], "January"), "January")
+        self.assertEqual(pick_select_option(["Year", "1998", "1997"], "1998"), "1998")
+        self.assertTrue(about_you_birth_year(type("Now", (), {"year": 2026})()).isdigit())
+        self.assertTrue(should_retry_goto("Page.goto: net::ERR_CONNECTION_CLOSED"))
+        self.assertFalse(should_retry_goto("missing selector"))
+        self.assertEqual(classify_onboard_error("卡在年龄/生日页，没有进入下一步"), "about_you_stuck")
         self.assertFalse(looks_like_otp_input(name="age", placeholder="Age", input_type="text"))
         self.assertTrue(looks_like_otp_input(name="code", placeholder="Code", autocomplete="one-time-code"))
 
@@ -135,6 +146,14 @@ class OnboardHelperTests(unittest.TestCase):
 
     def test_run_oauth_browser_is_sync(self):
         self.assertFalse(inspect.iscoroutinefunction(OnboardService._run_oauth_browser))
+
+    def test_browser_actions_include_free_register(self):
+        self.assertIn("free_register", onboard_jobs.BROWSER_ACTIONS)
+        job = onboard_jobs.create_job(team_id=0, email="free@example.com", action="free_register")
+        busy = onboard_jobs.any_running(onboard_jobs.BROWSER_ACTIONS)
+        self.assertIsNotNone(busy)
+        self.assertEqual(busy["id"], job["id"])
+        onboard_jobs.finish(job["id"], {"success": True})
 
 
 class OnboardKickTests(unittest.IsolatedAsyncioTestCase):
@@ -502,6 +521,8 @@ class OnboardOauthTests(unittest.IsolatedAsyncioTestCase):
         )
         await child_account_service.mark_active(self.session, child, team)
         await child_account_service.save_tokens(self.session, child, {"refresh_token": "rt-existing"})
+        child.sub2api_account_id = 88
+        await self.session.flush()
         service = self._service(team)
         onboard_mod, originals, mocks = self._patch_services()
         try:
@@ -513,6 +534,26 @@ class OnboardOauthTests(unittest.IsolatedAsyncioTestCase):
         service._run_browser.assert_not_called()
         service._run_oauth_browser.assert_not_called()
         mocks["import_session"].assert_not_called()
+
+    async def test_active_with_access_token_pushes_missing_sub(self):
+        team = await self._team()
+        child = await child_account_service.upsert_from_input(
+            self.session, email="kid@example.com", password="Passw0rd!"
+        )
+        await child_account_service.mark_active(self.session, child, team)
+        await child_account_service.save_tokens(self.session, child, {"access_token": "at-existing"})
+        service = self._service(team)
+        onboard_mod, originals, mocks = self._patch_services()
+        try:
+            result = await service.invite_and_onboard(self.session, team_id=team.id, email_line="kid@example.com")
+        finally:
+            self._restore(onboard_mod, originals)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "active")
+        service._run_browser.assert_not_called()
+        service._run_oauth_browser.assert_not_called()
+        mocks["import_session"].assert_awaited_once()
+        self.assertEqual(child.sub2api_account_id, 99)
 
     async def test_already_joined_without_refresh_goes_oauth(self):
         team = await self._team()
@@ -705,6 +746,29 @@ class OnboardFreeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "proxy_missing")
         service._run_browser.assert_not_called()
+
+    async def test_uses_saved_default_proxy(self):
+        service = self._service()
+        onboard_mod, settings_service, originals = self._patch()
+
+        async def fake_setting(_db, key, default=""):
+            if key == "free_account_proxy":
+                return "socks5h://user:pass@127.0.0.1:1080"
+            return default
+
+        settings_service.get_setting = fake_setting
+        try:
+            result = await service.register_free_account(
+                self.session,
+                email_line="free-default@icloud.com",
+                phone_line="+15551234567----https://sms.example/key",
+            )
+        finally:
+            self._restore(onboard_mod, settings_service, originals)
+        self.assertTrue(result["success"])
+        child = await child_account_service.get_by_email(self.session, "free-default@icloud.com")
+        self.assertIn("127.0.0.1:1080", child.proxy or "")
+        service._run_oauth_browser.assert_called_once()
 
     async def test_refuses_team_seat(self):
         team = Team(

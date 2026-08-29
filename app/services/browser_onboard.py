@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 import os
 import shutil
 import socket
@@ -203,9 +204,64 @@ def looks_like_about_you(*, title: str = "", body: str = "", url: str = "") -> b
     blob = f"{title}\n{body}\n{url}".lower()
     return any(
         token in blob
-        for token in ("how old are you", "about-you", "finish creating account", "about you")
+        for token in (
+            "how old are you",
+            "about-you",
+            "finish creating account",
+            "about you",
+            "when were you born",
+            "date of birth",
+            "birthday",
+        )
     )
 
+
+ABOUT_YOU_STUCK_LIMIT = 4
+GOTO_RETRY_LIMIT = 3
+GOTO_RETRY_MARKERS = (
+    "err_connection",
+    "err_tunnel",
+    "err_socks",
+    "err_proxy",
+    "err_timed_out",
+    "err_empty_response",
+    "err_connection_reset",
+    "err_connection_refused",
+    "err_connection_closed",
+    "net::err_",
+    "timeout",
+    "connection closed",
+)
+
+
+def should_retry_goto(error: str) -> bool:
+    text = str(error or "").lower()
+    return any(token in text for token in GOTO_RETRY_MARKERS)
+
+
+def goto_with_retries(page, url: str, *, report: StageCallback = None, attempts: int = GOTO_RETRY_LIMIT):
+    last_error = ""
+    for index in range(max(1, int(attempts))):
+        try:
+            page.goto(url, wait_until="load")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            if index + 1 >= attempts or not should_retry_goto(last_error):
+                raise
+            if report:
+                report("browser_open", f"打开页面失败，重试第 {index + 1} 次")
+            page.wait_for_timeout(2500)
+    if last_error:
+        raise RuntimeError(last_error)
+    return False
+
+
+def about_you_birth_year(now=None) -> str:
+    year = getattr(now, "year", None)
+    if year is None:
+        year = datetime.now().year
+    return str(int(year) - 28)
 
 EMAIL_INPUT_SELECTOR = (
     'input#email, input[name="email"], input[type="email"], '
@@ -900,7 +956,121 @@ def _set_input(page, selectors: list[str], value: str) -> bool:
     return False
 
 
+def _option_labels(locator) -> list[str]:
+    labels: list[str] = []
+    try:
+        count = locator.count()
+    except Exception:  # noqa: BLE001
+        return labels
+    for index in range(count):
+        try:
+            text = str(locator.nth(index).inner_text(timeout=800) or "").strip()
+        except Exception:  # noqa: BLE001
+            text = ""
+        if text:
+            labels.append(text)
+    return labels
+
+
+def pick_select_option(labels: list[str], wanted: str) -> str:
+    target = str(wanted or "").strip().lower()
+    cleaned = [str(item or "").strip() for item in labels if str(item or "").strip()]
+    if not target or not cleaned:
+        return ""
+    for item in cleaned:
+        if item.lower() == target:
+            return item
+    for item in cleaned:
+        if target in item.lower() or item.lower() in target:
+            return item
+    return ""
+
+
+def _select_named_option(page, names: list[str], wanted: str) -> bool:
+    label = pick_select_option(_collect_select_labels(page, names), wanted)
+    if not label:
+        return False
+    return _choose_select_label(page, names, label)
+
+
+def _collect_select_labels(page, names: list[str]) -> list[str]:
+    for name in names:
+        loc = _first_visible_select(page, name)
+        if loc is None:
+            continue
+        labels = _option_labels(loc.locator("option"))
+        if labels:
+            return labels
+    return []
+
+
+def _first_visible_select(page, name: str):
+    selectors = [
+        f'select[name="{name}"]',
+        f'select[id="{name}"]',
+        f'select[autocomplete="{name}"]',
+        f'select[aria-label*="{name}" i]',
+    ]
+    if name == "bday-month":
+        selectors.extend(['select[name="month"]', 'select[autocomplete="bday-month"]', 'select[aria-label*="Month" i]'])
+    elif name == "bday-day":
+        selectors.extend(['select[name="day"]', 'select[autocomplete="bday-day"]', 'select[aria-label*="Day" i]'])
+    elif name == "bday-year":
+        selectors.extend(['select[name="year"]', 'select[autocomplete="bday-year"]', 'select[aria-label*="Year" i]'])
+    for selector in selectors:
+        try:
+            loc = page.locator(selector)
+            if loc.count() == 0 or not loc.first.is_visible():
+                continue
+            return loc.first
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _choose_select_label(page, names: list[str], label: str) -> bool:
+    for name in names:
+        loc = _first_visible_select(page, name)
+        if loc is None:
+            continue
+        try:
+            loc.select_option(label=label, timeout=2500)
+            return True
+        except Exception:  # noqa: BLE001
+            try:
+                loc.select_option(value=label, timeout=2500)
+                return True
+            except Exception:  # noqa: BLE001
+                continue
+    return False
+
+
+def _fill_birthday_selects(page) -> bool:
+    year = about_you_birth_year()
+    month_ok = (
+        _select_named_option(page, ["bday-month", "month"], "January")
+        or _select_named_option(page, ["bday-month", "month"], "Jan")
+        or _select_named_option(page, ["bday-month", "month"], "1")
+    )
+    day_ok = _select_named_option(page, ["bday-day", "day"], "15")
+    year_ok = _select_named_option(page, ["bday-year", "year"], year)
+    return bool(year_ok and month_ok and day_ok)
+
+
+def _wait_about_you_leave(page, started_url: str) -> bool:
+    start = (started_url or "").split("#", 1)[0]
+    for _ in range(16):
+        page.wait_for_timeout(500)
+        current = (page.url or "").split("#", 1)[0]
+        if current and current != start:
+            return True
+        if not looks_like_about_you(title=page.title() or "", body=_page_text(page), url=current):
+            return True
+    return False
+
+
 def _fill_about_you(page) -> bool:
+    started_url = page.url or ""
     name_ok = _set_input(
         page,
         [
@@ -919,14 +1089,24 @@ def _fill_about_you(page) -> bool:
             'input[type="number"]',
             'input[placeholder="Age"]',
             'input[placeholder*="Age" i]',
+            'input[autocomplete="bday"]',
+            'input[name="birthdate"]',
+            'input[name="birthday"]',
         ],
         "28",
     )
+    birthday_ok = _fill_birthday_selects(page)
+    filled = bool(name_ok or age_ok or birthday_ok)
+    if not filled:
+        return False
     clicked = (
         _click_exact(page, ["Finish creating account", "Continue"])
         or _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")'])
     )
-    return bool((name_ok or age_ok) and clicked)
+    if not clicked:
+        return False
+    _wait_about_you_leave(page, started_url)
+    return True
 
 
 def _pick_workspace(page, team_name: str = "") -> bool:
@@ -997,7 +1177,7 @@ def run_browser_onboard(
         try:
             target = start_url or (REGISTER_START_URL if mode == "register" else LOGIN_START_URL)
             report("browser_open", f"正在打开注册/登录页 {target}")
-            page.goto(target, wait_until="load")
+            goto_with_retries(page, target, report=report)
             if not wait_cloudflare(page):
                 result["error"] = _session_failure(page, {"status": "cloudflare"})
                 result["error_code"] = "cloudflare_challenge"
@@ -1038,6 +1218,7 @@ def run_browser_onboard(
             otp_submits = 0
             otp_resends = 0
             email_submits = 0
+            about_you_tries = 0
             has_mail = bool(pickup_url or use_cloudflare)
             debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
@@ -1084,10 +1265,15 @@ def run_browser_onboard(
                     email_submits += 1
                     page.wait_for_timeout(3000)
                     continue
-                if looks_like_about_you(title=page.title() or "", body=page_text, url=url) or _visible(page, 'input[name="age"], input[placeholder*="Age" i]'):
-                    report("about_you", "验证码已过，正在填写年龄")
-                    _fill_about_you(page)
-                    page.wait_for_timeout(2500)
+                if looks_like_about_you(title=page.title() or "", body=page_text, url=url) or _visible(page, 'input[name="age"], input[placeholder*="Age" i], select[name="year"], select[autocomplete="bday-year"]'):
+                    about_you_tries += 1
+                    if about_you_tries > ABOUT_YOU_STUCK_LIMIT:
+                        result["error"] = "卡在年龄/生日页，没有进入下一步"
+                        result["error_code"] = "about_you_stuck"
+                        break
+                    report("about_you", f"验证码已过，正在填写年龄（第 {about_you_tries} 次）")
+                    if not _fill_about_you(page):
+                        page.wait_for_timeout(1500)
                     continue
                 on_verify = "email-verification" in url or "check your inbox" in _page_text(page).lower()
                 otp_ready = bool(_find_otp(page) or _otp_boxes(page))

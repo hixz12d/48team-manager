@@ -294,6 +294,11 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE teams ADD COLUMN rotation_manual_on VARCHAR(10)")
             migrations_applied.append("teams.rotation_manual_on")
 
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "sub2api_account_id"):
+            logger.info("添加 teams.sub2api_account_id 字段")
+            cursor.execute("ALTER TABLE teams ADD COLUMN sub2api_account_id INTEGER")
+            migrations_applied.append("teams.sub2api_account_id")
+
         if not table_exists(cursor, "child_accounts"):
             logger.info("创建 child_accounts 表")
             cursor.execute("""
@@ -580,6 +585,16 @@ def run_auto_migration():
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_phone_pool_reserved ON phone_pool (reserved_by)"
         )
+
+        if table_exists(cursor, "settings"):
+            cursor.execute("SELECT 1 FROM settings WHERE key = ?", ("free_account_proxy",))
+            if cursor.fetchone() is None:
+                logger.info("补充 settings.free_account_proxy")
+                cursor.execute(
+                    "INSERT INTO settings (key, value, description, created_at, updated_at) VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+                    ("free_account_proxy", "", "免费号默认静态 ISP"),
+                )
+                migrations_applied.append("settings.free_account_proxy")
 
         # 提交更改
         conn.commit()

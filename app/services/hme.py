@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChildAccount, HmeAliasLease, Team
-from app.services.child_accounts import normalize_email
+from app.services.child_accounts import CHILD_STATUS_UNUSED, normalize_email
 from app.utils.time_utils import get_now
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,23 @@ HME_SETTING_TEAM_TAG_MAP = "hme_team_tag_map"
 DEFAULT_HME_BASE_URL = "http://icloud-hme:8081"
 FREE_ACCOUNT_LABEL = "GPT已使用"
 LEASE_TTL = timedelta(minutes=25)
+PRE_SIGNUP_ERROR_CODES = {
+    "browser_failed",
+    "proxy_failed",
+    "proxy_missing",
+    "mail_missing",
+    "cancelled",
+    "hme_error",
+    "hme_unconfigured",
+    "hme_empty",
+    "hme_busy",
+    "hme_no_account",
+    "hme_account_ambiguous",
+    "already_on_team",
+    "oauth_url_missing",
+    "email_input_missing",
+    "email_gate_stuck",
+}
 SERVICE_TOKEN_HEADER = "X-HME-Service-Token"
 
 _SERIAL_DIGIT_RE = re.compile(r"^\d+$")
@@ -74,6 +91,23 @@ def is_serial_label(label: str) -> bool:
 def is_unoccupied_label(label: str) -> bool:
     tag = str(label or "").strip()
     return (not tag) or is_serial_label(tag)
+
+
+def should_occupy_failed_claim(result: Optional[Dict[str, Any]] = None) -> bool:
+    payload = result if isinstance(result, dict) else {}
+    if payload.get("success"):
+        return False
+    if payload.get("occupy_alias") is True:
+        return True
+    if payload.get("occupy_alias") is False:
+        return False
+    code = str(payload.get("error_code") or "").strip().lower()
+    if code in PRE_SIGNUP_ERROR_CODES:
+        return False
+    stage = str(payload.get("stage") or payload.get("status") or "").strip().lower()
+    if stage in {"queued", "checking", "hme", "browser_open", "mail_missing"}:
+        return False
+    return bool(code or stage)
 
 
 def normalize_hme_base_url(raw: str) -> str:
@@ -290,8 +324,19 @@ async def active_leased_emails(session: AsyncSession, *, now: Optional[datetime]
 
 
 async def child_occupied_emails(session: AsyncSession) -> Set[str]:
-    rows = (await session.execute(select(ChildAccount.email))).scalars().all()
-    return {normalize_email(item) for item in rows if item}
+    rows = (
+        await session.execute(
+            select(ChildAccount.email, ChildAccount.status, ChildAccount.refresh_token_encrypted)
+        )
+    ).all()
+    occupied: Set[str] = set()
+    for email, status, refresh in rows:
+        if not email:
+            continue
+        if str(status or "") == CHILD_STATUS_UNUSED and not refresh:
+            continue
+        occupied.add(normalize_email(email))
+    return occupied
 
 
 async def purge_expired_leases(session: AsyncSession, *, now: Optional[datetime] = None) -> None:
@@ -397,15 +442,9 @@ async def finalize_claim(
         return
     tag = str(label or "").strip()
     occupy = bool(result.get("success") and tag)
-    if not occupy and not result.get("success"):
-        child = (
-            await session.execute(
-                select(ChildAccount).where(ChildAccount.email == normalize_email(claimed.email))
-            )
-        ).scalar_one_or_none()
-        if child:
-            occupy = True
-            tag = tag or FREE_ACCOUNT_LABEL
+    if not occupy and not result.get("success") and should_occupy_failed_claim(result):
+        occupy = True
+        tag = tag or FREE_ACCOUNT_LABEL
     if occupy:
         try:
             await apply_local_label(session, claimed, tag)

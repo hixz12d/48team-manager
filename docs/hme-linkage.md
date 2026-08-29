@@ -65,8 +65,8 @@ maybe_claim_alias
 拉人 / 注册免费号（ChatGPT）
 finalize_claim
   成功 + 有标签 → set_local_label，再删租约
-  失败且已有子号 → 打标占用（免费号用 `GPT已使用`），再删租约
-  失败且没有子号 → 不打标，删租约（别名可再领）
+  失败且注册已真正开始（邮箱/短信/年龄页、OAuth 回调丢失等）→ 打标占用（免费号用 `GPT已使用`），再删租约
+  失败且还没开号（代理握手、缺配置、取消等）→ 不打标，删租约
   打标失败     → 保留租约，避免马上被别人领走
 ```
 
@@ -103,7 +103,7 @@ VPS 账号 `acc_25cb7f9d`。HME `http://icloud-hme:8081`，48team 用服务 toke
 2. 不要为了打标去调 iCloud generate/update。只走 `SetLocalLabel`。
 3. 不要在领号路径里读本机 `accounts.json`。
 4. 手填邮箱注册成功**不会**自动打标。新占用必须走空邮箱领取，或事后补 `local_labels`。
-5. 领号排除 `child_accounts` 已有邮箱。失败但已经建了子号的别名会打标，避免下一单再领同一封。
+5. 领号排除 `child_accounts` 里已占用的邮箱；`unused` 且没有 refresh token 的半成品记录不挡下一单。失败是否打标看 `should_occupy_failed_claim`：代理握手这类还没开号的不打标；已经过邮箱/短信/年龄页的仍然打标。
 6. 重建容器：`docker compose -p team48 up -d --build --no-deps team48`。禁止 `down`、`--remove-orphans`，禁止进 `/opt/sub2api`。
 
 ## 不创建账号的链路测试

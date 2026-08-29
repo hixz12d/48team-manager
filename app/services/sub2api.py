@@ -275,6 +275,18 @@ class Sub2ApiService:
             out.append(number)
         return out
 
+    def _coerce_account_pk(self, value: Any) -> Optional[int]:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    def _account_chatgpt_id(self, account: Dict[str, Any]) -> str:
+        extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+        cred = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+        return str(cred.get("chatgpt_account_id") or extra.get("chatgpt_account_id") or "").strip()
+
     def _account_group_ids(self, account: Optional[Dict[str, Any]]) -> List[int]:
         if not account:
             return []
@@ -622,17 +634,42 @@ class Sub2ApiService:
         *,
         email: str = "",
         existing_id: Optional[int] = None,
+        role: str = "",
+        team_email: str = "",
+        team_name: str = "",
+        chatgpt_account_id: str = "",
     ) -> Optional[Dict[str, Any]]:
-        if existing_id:
+        wanted_id = self._coerce_account_pk(existing_id)
+        if wanted_id:
             for account in accounts:
-                if account.get("id") == existing_id:
+                if self._coerce_account_pk(account.get("id")) == wanted_id:
                     return account
         target = (email or "").strip().lower()
-        if not target:
+        if target:
+            for account in accounts:
+                if self._account_email(account).strip().lower() == target:
+                    return account
+        chatgpt_id = (chatgpt_account_id or "").strip()
+        if chatgpt_id:
+            for account in accounts:
+                if self._account_chatgpt_id(account) == chatgpt_id:
+                    return account
+        family = self.family_accounts(accounts, team_email or email, team_name)
+        if (role or "") == "owner":
+            owners = [item for item in family if self.summarize_account(item).get("role") == "owner"]
+            if len(owners) == 1:
+                return owners[0]
+            unnamed = [item for item in owners if not self._account_email(item)]
+            if len(unnamed) == 1:
+                return unnamed[0]
             return None
-        for account in accounts:
-            if self._account_email(account).strip().lower() == target:
-                return account
+        if (role or "") == "child":
+            unnamed = [
+                item for item in family
+                if self.summarize_account(item).get("role") == "child" and not self._account_email(item)
+            ]
+            if len(unnamed) == 1:
+                return unnamed[0]
         return None
 
     def build_account_name(
@@ -1719,6 +1756,13 @@ class Sub2ApiService:
                     return self._unwrap(response.json())
 
                 async def finish(result: Dict[str, Any]) -> Dict[str, Any]:
+                    account_pk = self._coerce_account_pk(result.get("account_id"))
+                    if account_pk:
+                        result["account_id"] = account_pk
+                    if team is not None and role == "owner" and account_pk:
+                        current = self._coerce_account_pk(getattr(team, "sub2api_account_id", None))
+                        if current != account_pk:
+                            team.sub2api_account_id = account_pk
                     result["probe"] = await self.probe_access_token(
                         db_session,
                         access_token,
@@ -1795,7 +1839,26 @@ class Sub2ApiService:
                     "auto_pause_on_expired": None,
                     "extra": None,
                 }
-                existing = self.find_existing_account(accounts, email=email, existing_id=existing_id)
+                bound_id = self._coerce_account_pk(existing_id) or (
+                    self._coerce_account_pk(getattr(team, "sub2api_account_id", None)) if role == "owner" else None
+                )
+                if bound_id and bound_id not in seen:
+                    try:
+                        fetched = await admin_get(f"/api/v1/admin/accounts/{bound_id}")
+                        if isinstance(fetched, dict) and self._coerce_account_pk(fetched.get("id")):
+                            seen[int(fetched["id"])] = fetched
+                            accounts = list(seen.values())
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("读取已绑定 Sub2API 账号 %s 失败: %s", bound_id, exc)
+                existing = self.find_existing_account(
+                    accounts,
+                    email=email,
+                    existing_id=bound_id,
+                    role=role,
+                    team_email=team_email or email,
+                    team_name=team_name,
+                    chatgpt_account_id=account_id,
+                )
                 siblings = self.family_accounts(accounts, team_email or email, team_name)
                 family_label = self.derive_family_label(team_email or email, team_name)
                 proxy_id = self.match_proxy_id(proxies, proxy_url, siblings, family_label=family_label)
@@ -1827,11 +1890,7 @@ class Sub2ApiService:
                     session_payload.get("proxy_id"),
                     existing is None,
                 )
-                existing_pk = existing_id or (existing or {}).get("id")
-                try:
-                    existing_pk = int(existing_pk) if existing_pk else None
-                except (TypeError, ValueError):
-                    existing_pk = None
+                existing_pk = self._coerce_account_pk((existing or {}).get("id")) or self._coerce_account_pk(existing_id)
                 if existing_pk:
                     apply_payload = {
                         "type": "oauth",
@@ -1933,31 +1992,34 @@ class Sub2ApiService:
                     client_id=client_id,
                 )
 
-                create_payload = {
-                    "name": account_name,
-                    "platform": "openai",
-                    "type": "oauth",
-                    "credentials": credentials,
-                    "status": "active",
-                }
-                for key in ("group_ids", "proxy_id", "concurrency", "priority", "rate_multiplier", "load_factor", "extra", "confirm_mixed_channel_risk", "auto_pause_on_expired"):
-                    if key in session_payload:
-                        create_payload[key] = session_payload[key]
-                try:
-                    response = await client.post("/api/v1/admin/accounts", headers=headers, json=create_payload)
-                    if response.status_code < 400:
-                        data = self._unwrap(response.json())
-                        return await finish({
-                            "strategy": "create_account",
-                            "account_id": self._extract_account_id(data) or existing_id,
-                            "data": data,
-                            "name": account_name,
-                            "proxy_id": session_payload.get("proxy_id"),
-                            "template": template_fields.get("name") or None,
-                        })
-                    errors.append(f"create_account: {response.status_code} {response.text[:240]}")
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"create_account: {exc}")
+                if existing_pk:
+                    errors.append(f"refused_create_duplicate: existing_id={existing_pk}")
+                else:
+                    create_payload = {
+                        "name": account_name,
+                        "platform": "openai",
+                        "type": "oauth",
+                        "credentials": credentials,
+                        "status": "active",
+                    }
+                    for key in ("group_ids", "proxy_id", "concurrency", "priority", "rate_multiplier", "load_factor", "extra", "confirm_mixed_channel_risk", "auto_pause_on_expired"):
+                        if key in session_payload:
+                            create_payload[key] = session_payload[key]
+                    try:
+                        response = await client.post("/api/v1/admin/accounts", headers=headers, json=create_payload)
+                        if response.status_code < 400:
+                            data = self._unwrap(response.json())
+                            return await finish({
+                                "strategy": "create_account",
+                                "account_id": self._extract_account_id(data) or existing_id,
+                                "data": data,
+                                "name": account_name,
+                                "proxy_id": session_payload.get("proxy_id"),
+                                "template": template_fields.get("name") or None,
+                            })
+                        errors.append(f"create_account: {response.status_code} {response.text[:240]}")
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"create_account: {exc}")
 
             raise RuntimeError("Sub2API 推送失败: " + " | ".join(errors))
 
@@ -1985,6 +2047,7 @@ class Sub2ApiService:
             id_token=_decrypt(getattr(team, "id_token_encrypted", None)),
             account_id=str(getattr(team, "account_id", "") or ""),
             client_id=str(getattr(team, "client_id", "") or ""),
+            existing_id=getattr(team, "sub2api_account_id", None),
             team=team,
             proxy_url=str(getattr(team, "proxy", "") or ""),
             role="owner",

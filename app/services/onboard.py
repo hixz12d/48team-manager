@@ -79,6 +79,8 @@ def classify_onboard_error(error: str, *, stage: str = "") -> str:
         return "mail_otp_timeout"
     if "邮箱页" in error or "email_gate" in text or "email_input_missing" in text:
         return "email_gate_stuck"
+    if "about_you" in text or "年龄/生日" in error or "填写年龄" in error:
+        return "about_you_stuck"
     if "cloudflare" in text or "just a moment" in text or "turnstile" in text:
         return "cloudflare_challenge"
     if "代理" in error or "proxy" in text:
@@ -684,9 +686,16 @@ class OnboardService:
             existing
             and existing.status == CHILD_STATUS_ACTIVE
             and existing.current_team_id == team.id
-            and child_account_service.decrypt_secret(existing.refresh_token_encrypted)
+            and (
+                child_account_service.decrypt_secret(existing.refresh_token_encrypted)
+                or child_account_service.decrypt_secret(existing.access_token_encrypted)
+            )
         ):
-            return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(existing)}
+            if existing.sub2api_account_id and not child_account_service.decrypt_secret(existing.access_token_encrypted):
+                return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(existing)}
+            return await self._finish_callable_child(
+                db_session, existing, team, email=email, job_id=job_id, phone_line=phone_line, allow_existing_access_token=True,
+            )
 
         block = self._master_block_reason(team)
         if block:
@@ -738,9 +747,15 @@ class OnboardService:
         if already_joined:
             await child_account_service.mark_active(db_session, child, team, mapping=await self._mapping(db_session, team.id, email))
             await db_session.commit()
-            if child_account_service.decrypt_secret(child.refresh_token_encrypted):
+            if (
+                child.sub2api_account_id
+                and child_account_service.decrypt_secret(child.refresh_token_encrypted)
+                and not child_account_service.decrypt_secret(child.access_token_encrypted)
+            ):
                 return {"success": True, "status": "already_exists", "message": f"{email} 已在该 Team 中", "child": child_account_service.serialize(child)}
-            return await self._finish_callable_child(db_session, child, team, email=email, job_id=job_id, phone_line=phone_line)
+            return await self._finish_callable_child(
+                db_session, child, team, email=email, job_id=job_id, phone_line=phone_line, allow_existing_access_token=True,
+            )
 
         if not password:
             password = _random_password()
@@ -929,6 +944,19 @@ class OnboardService:
                 detail=detail,
                 error_code=code,
             )
+            if child_account_service.decrypt_secret(child.access_token_encrypted):
+                await self._progress(
+                    db_session,
+                    child,
+                    job_id=job_id,
+                    stage="not_joined",
+                    message=detail + "，本地已有票，仍推送 Sub2API",
+                    error=detail,
+                    error_code=code,
+                )
+                return await self._finish_callable_child(
+                    db_session, child, team, email=email, job_id=job_id, phone_line=phone_line, allow_existing_access_token=True,
+                )
             await self._progress(db_session, child, job_id=job_id, stage="not_joined", message=detail, error=detail, error_code=code)
             return {"success": False, "error": detail, "error_code": code, "status": "not_joined"}
 
@@ -985,11 +1013,32 @@ class OnboardService:
     ) -> Dict[str, Any]:
         verb = self._done_verb(team)
         await self._progress(db_session, child, job_id=job_id, stage="pushing", message=f"{verb}，正在推送可用会话到 Sub2API")
+        access_token = child_account_service.decrypt_secret(child.access_token_encrypted)
+        if not access_token:
+            error = f"{verb}，但本地没有 Access Token，无法推送 Sub2API"
+            await child_account_service.record_event(
+                db_session,
+                email=email,
+                action="push",
+                team_id=team.id if team else None,
+                child_id=child.id,
+                success=False,
+                detail=error,
+                error_code="push_missing_token",
+            )
+            await self._progress(db_session, child, job_id=job_id, stage="push_failed", message=error, error=error, error_code="push_missing_token")
+            return {
+                "success": False,
+                "error": error,
+                "error_code": "push_missing_token",
+                "status": "push_failed",
+                "child": child_account_service.serialize(child),
+            }
         try:
             push_result = await sub2api_service.import_session(
                 db_session,
                 email=email,
-                access_token=child_account_service.decrypt_secret(child.access_token_encrypted),
+                access_token=access_token,
                 refresh_token=child_account_service.decrypt_secret(child.refresh_token_encrypted),
                 id_token=child_account_service.decrypt_secret(child.id_token_encrypted),
                 account_id=child.account_id or "",
@@ -1226,15 +1275,21 @@ class OnboardService:
         email: str,
         job_id: Optional[str],
         phone_line: str = "",
+        allow_existing_access_token: bool = False,
     ) -> Dict[str, Any]:
         oauth_ran = False
         if not child_account_service.decrypt_secret(child.refresh_token_encrypted):
-            oauth_result = await self._oauth_child(db_session, child, team, email=email, job_id=job_id, phone_line=phone_line)
-            if not oauth_result.get("success"):
-                return oauth_result
-            oauth_ran = True
+            if allow_existing_access_token and child_account_service.decrypt_secret(child.access_token_encrypted):
+                await self._progress(db_session, child, job_id=job_id, stage="oauth", message="已有 access token，跳过 Codex 授权")
+            else:
+                oauth_result = await self._oauth_child(db_session, child, team, email=email, job_id=job_id, phone_line=phone_line)
+                if not oauth_result.get("success"):
+                    return oauth_result
+                oauth_ran = True
         else:
             await self._progress(db_session, child, job_id=job_id, stage="oauth", message="已有 refresh token，跳过 Codex 授权")
+        if team is None:
+            await child_account_service.mark_free(db_session, child)
         push_result = await self._push_child(db_session, child, team, email=email, job_id=job_id)
         if not push_result.get("success"):
             return push_result
@@ -1329,16 +1384,18 @@ class OnboardService:
         if self._cancelled(job_id):
             return {"success": False, "error": "已取消", "error_code": "cancelled", "status": "cancelled"}
 
-        await child_account_service.mark_free(db_session, child)
-        await child_account_service.record_event(
-            db_session,
-            email=email,
-            action="register",
-            child_id=child.id,
-            success=True,
-            detail="free-oauth-register",
-        )
-        return await self._finish_callable_child(db_session, child, None, email=email, job_id=job_id, phone_line=phone_line)
+        result = await self._finish_callable_child(db_session, child, None, email=email, job_id=job_id, phone_line=phone_line)
+        if result.get("success"):
+            await child_account_service.record_event(
+                db_session,
+                email=email,
+                action="register",
+                child_id=child.id,
+                success=True,
+                detail="free-oauth-register",
+            )
+            await db_session.commit()
+        return result
 
     async def kick_to_standby(
         self,

@@ -62,7 +62,7 @@ def active_job_for_email(email: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-BROWSER_ACTIONS = ("reauth", "onboard", "rotate", "free")
+BROWSER_ACTIONS = ("reauth", "onboard", "rotate", "free", "free_register")
 
 
 def iter_running(actions: Optional[Sequence[str]] = None) -> list:

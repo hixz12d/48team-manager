@@ -225,6 +225,57 @@ class Sub2ApiImportTests(unittest.TestCase):
         )
         self.assertEqual(picked["id"], "free")
 
+    def test_finds_owner_when_401_wipes_email(self):
+        unnamed_owner = {
+            "id": 2894,
+            "name": "Team new1 母号",
+            "credentials": {},
+            "error_message": "Token revoked (401)",
+        }
+        child = {
+            "id": 2914,
+            "name": "Team new1 子号 2",
+            "credentials": {"email": "wings_pubs_1i@icloud.com"},
+        }
+        self.assertEqual(
+            self.service.find_existing_account(
+                [unnamed_owner, child],
+                email="newxiaozhu1@gmail.com",
+                role="owner",
+                team_email="newxiaozhu1@gmail.com",
+            )["id"],
+            2894,
+        )
+        self.assertEqual(
+            self.service.find_existing_account(
+                [unnamed_owner, child],
+                email="wings_pubs_1i@icloud.com",
+                role="child",
+                team_email="newxiaozhu1@gmail.com",
+            )["id"],
+            2914,
+        )
+
+    def test_finds_unnamed_child_in_family(self):
+        unnamed_child = {
+            "id": 2924,
+            "name": "Team new2 子号 1",
+            "credentials": {},
+        }
+        owner = {
+            "id": 2887,
+            "name": "Team new2 母号",
+            "credentials": {"email": "newxiaozhu2@gmail.com"},
+        }
+        self.assertEqual(
+            self.service.find_existing_account(
+                [owner, unnamed_child],
+                email="13.each-curl@icloud.com",
+                role="child",
+                team_email="newxiaozhu2@gmail.com",
+            )["id"],
+            2924,
+        )
     def test_oauth_probe_200_opens_schedulable(self):
         self.assertTrue(self.service.should_open_schedulable_after_oauth_probe({"kind": "200", "label": "200"}))
         self.assertFalse(self.service.should_open_schedulable_after_oauth_probe({"kind": "401", "label": "401"}))
