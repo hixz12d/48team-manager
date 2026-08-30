@@ -149,6 +149,20 @@ class ChatGPTCloudflareHeaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ChatGPTService.is_already_removed_error(400, "User is not a member of this workspace"))
         self.assertFalse(ChatGPTService.is_already_removed_error(400, "account_deactivated", "account_deactivated"))
 
+    async def test_get_wham_usage_hits_official_path(self):
+        service = ChatGPTService()
+        session = FakeCurlSession()
+        service._sessions["owner@icloud.com"] = session
+        result = await service.get_wham_usage(
+            "tok",
+            object(),
+            account_id="acct-official",
+            identifier="owner@icloud.com",
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(session.calls[0][1], "https://chatgpt.com/backend-api/wham/usage")
+        self.assertEqual(session.calls[0][2]["chatgpt-account-id"], "acct-official")
+
 
 if __name__ == "__main__":
     unittest.main()

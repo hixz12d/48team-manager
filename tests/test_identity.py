@@ -79,6 +79,7 @@ class IdentityMigrationTests(unittest.TestCase):
             self.assertIn("workspaces", tables)
             self.assertIn("workspace_memberships", tables)
             self.assertIn("external_bindings", tables)
+            self.assertIn("quota_snapshots", tables)
             self.assertIn("uq_external_binding_remote", indexes)
 
 

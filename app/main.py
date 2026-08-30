@@ -64,6 +64,8 @@ DEFAULT_AUTO_REAUTH_SCAN_MINUTES = 30
 MIN_AUTO_ROTATE_SCAN_MINUTES = 5
 MAX_AUTO_ROTATE_SCAN_MINUTES = 60
 DEFAULT_AUTO_ROTATE_SCAN_MINUTES = 10
+MIN_OFFICIAL_QUOTA_PROBE_SCAN_MINUTES = 1
+MAX_OFFICIAL_QUOTA_PROBE_SCAN_MINUTES = 10
 
 
 def _safe_int(value, default):
@@ -105,6 +107,13 @@ def normalize_auto_reauth_interval_minutes(interval_minutes: int) -> int:
 
 def normalize_auto_rotate_scan_minutes(scan_minutes: int) -> int:
     return max(MIN_AUTO_ROTATE_SCAN_MINUTES, min(MAX_AUTO_ROTATE_SCAN_MINUTES, scan_minutes))
+
+
+def normalize_official_quota_probe_scan_minutes(scan_minutes: int) -> int:
+    return max(
+        MIN_OFFICIAL_QUOTA_PROBE_SCAN_MINUTES,
+        min(MAX_OFFICIAL_QUOTA_PROBE_SCAN_MINUTES, scan_minutes),
+    )
 
 
 def configure_periodic_team_sync_job(enabled: bool, interval_hours: int) -> int:
@@ -372,6 +381,46 @@ async def configure_auto_rotate_job_from_settings() -> tuple[bool, int]:
     return enabled, configure_auto_rotate_job(enabled, DEFAULT_AUTO_ROTATE_SCAN_MINUTES)
 
 
+def configure_official_quota_probe_job(enabled: bool, scan_minutes: int) -> int:
+    """配置官方额度错峰探测。默认关，不改 Sub2API / 踢拉。"""
+    normalized_interval = normalize_official_quota_probe_scan_minutes(scan_minutes)
+    existing_job = scheduler.get_job("official_quota_probe_scan")
+
+    if not enabled:
+        if existing_job:
+            scheduler.remove_job("official_quota_probe_scan")
+        return normalized_interval
+
+    trigger = IntervalTrigger(minutes=normalized_interval)
+    if existing_job:
+        scheduler.reschedule_job("official_quota_probe_scan", trigger=trigger)
+    else:
+        scheduler.add_job(
+            scheduled_official_quota_probe,
+            trigger=trigger,
+            id="official_quota_probe_scan",
+            replace_existing=True,
+            max_instances=1,
+            next_run_time=get_now(),
+        )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    return normalized_interval
+
+
+async def configure_official_quota_probe_job_from_settings() -> tuple[bool, int]:
+    from app.services.quota import quota_service
+
+    async with AsyncSessionLocal() as session:
+        cfg = await quota_service.load_settings(session)
+
+    enabled = bool(cfg["enabled"])
+    scan_minutes = normalize_official_quota_probe_scan_minutes(cfg["scan_minutes"])
+    return enabled, configure_official_quota_probe_job(enabled, scan_minutes)
+
+
 async def scheduled_proactive_refresh():
     """定时执行 Team Token 预刷新（间隔可配置）。"""
     from app.services.settings import settings_service
@@ -526,6 +575,26 @@ async def scheduled_usage_probe():
         logger.error(f"额度错峰探测任务执行失败: {e}")
 
 
+async def scheduled_official_quota_probe():
+    """定时错峰探测官方额度。失败只写快照，不改业务状态。"""
+    from app.services.quota import quota_service
+
+    try:
+        async with AsyncSessionLocal() as session:
+            stats = await quota_service.run_probe_once(session)
+            logger.info(
+                "官方额度探测完成: scanned=%s due=%s probed=%s failed=%s skipped=%s ids=%s",
+                stats.get("scanned", 0),
+                stats.get("due", 0),
+                stats.get("probed", 0),
+                stats.get("failed", 0),
+                stats.get("skipped", 0),
+                stats.get("account_ids") or [],
+            )
+    except Exception as e:
+        logger.error(f"官方额度探测任务执行失败: {e}")
+
+
 async def scheduled_auto_reauth():
     """定时扫描 401 子号并排队自动重授权。默认关。"""
     from app.services.auto_rotate import auto_rotate_service
@@ -656,6 +725,13 @@ async def lifespan(app: FastAPI):
             logger.info("定时任务已启动: 每 %s 分钟扫描封禁/周限满踢拉", auto_rotate_scan)
         else:
             logger.info("第 3 层封禁/周限满踢拉任务已禁用")
+
+
+        official_quota_enabled, official_quota_scan = await configure_official_quota_probe_job_from_settings()
+        if official_quota_enabled:
+            logger.info("定时任务已启动: 每 %s 分钟错峰探测官方额度", official_quota_scan)
+        else:
+            logger.info("官方额度错峰探测任务已禁用")
 
         logger.info("数据库初始化完成")
     except Exception as e:

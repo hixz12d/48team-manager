@@ -56,6 +56,9 @@ def ensure_identity_tables(cursor, migrations_applied):
                 id_token_encrypted TEXT,
                 client_id VARCHAR(100),
                 next_eligible_at DATETIME,
+                quota_slot_minute INTEGER,
+                next_quota_probe_at DATETIME,
+                quota_probe_fail_count INTEGER NOT NULL DEFAULT 0,
                 source_team_id INTEGER,
                 source_child_account_id INTEGER,
                 created_at DATETIME,
@@ -73,6 +76,10 @@ def ensure_identity_tables(cursor, migrations_applied):
     )
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_accounts_source_child ON accounts (source_child_account_id)"
+    )
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_accounts_next_quota_probe ON accounts (next_quota_probe_at)"
     )
 
     if not table_exists(cursor, "workspaces"):
@@ -168,6 +175,57 @@ def ensure_identity_tables(cursor, migrations_applied):
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_external_binding_state ON external_bindings (provider, binding_state)"
     )
+
+
+def ensure_quota_tables(cursor, migrations_applied):
+    """Phase 3：官方额度快照与 Account 探测调度字段。不改旧 usage_probe 语义。"""
+    if table_exists(cursor, "accounts"):
+        if not column_exists(cursor, "accounts", "quota_slot_minute"):
+            logger.info("添加 accounts.quota_slot_minute 字段")
+            cursor.execute("ALTER TABLE accounts ADD COLUMN quota_slot_minute INTEGER")
+            migrations_applied.append("accounts.quota_slot_minute")
+        if not column_exists(cursor, "accounts", "next_quota_probe_at"):
+            logger.info("添加 accounts.next_quota_probe_at 字段")
+            cursor.execute("ALTER TABLE accounts ADD COLUMN next_quota_probe_at DATETIME")
+            migrations_applied.append("accounts.next_quota_probe_at")
+        if not column_exists(cursor, "accounts", "quota_probe_fail_count"):
+            logger.info("添加 accounts.quota_probe_fail_count 字段")
+            cursor.execute(
+                "ALTER TABLE accounts ADD COLUMN quota_probe_fail_count INTEGER NOT NULL DEFAULT 0"
+            )
+            migrations_applied.append("accounts.quota_probe_fail_count")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_next_quota_probe ON accounts (next_quota_probe_at)"
+        )
+
+    if not table_exists(cursor, "quota_snapshots"):
+        logger.info("创建 quota_snapshots 表")
+        cursor.execute("""
+            CREATE TABLE quota_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                five_hour_used_percent INTEGER,
+                five_hour_reset_at DATETIME,
+                seven_day_used_percent INTEGER,
+                seven_day_reset_at DATETIME,
+                source VARCHAR(20) NOT NULL DEFAULT 'official',
+                queried_at DATETIME NOT NULL,
+                success BOOLEAN NOT NULL DEFAULT 0,
+                error_code VARCHAR(40),
+                error_message TEXT,
+                created_at DATETIME,
+                FOREIGN KEY(account_id) REFERENCES accounts(id)
+            )
+        """)
+        migrations_applied.append("quota_snapshots")
+
+    if table_exists(cursor, "quota_snapshots"):
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_queried ON quota_snapshots (account_id, queried_at)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_success ON quota_snapshots (account_id, success, queried_at)"
+        )
 
 
 def run_auto_migration(db_path=None):
@@ -734,6 +792,7 @@ def run_auto_migration(db_path=None):
 
 
         ensure_identity_tables(cursor, migrations_applied)
+        ensure_quota_tables(cursor, migrations_applied)
 
         if table_exists(cursor, "settings"):
             cursor.execute("SELECT 1 FROM settings WHERE key = ?", ("free_account_proxy",))

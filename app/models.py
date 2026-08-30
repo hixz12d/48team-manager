@@ -419,6 +419,9 @@ class Account(Base):
     id_token_encrypted = Column(Text, comment="加密存储的 ID Token")
     client_id = Column(String(100), comment="OAuth Client ID")
     next_eligible_at = Column(DateTime, comment="周限满后允许再拉回的时间")
+    quota_slot_minute = Column(Integer, comment="官方额度错峰分钟槽 0-59")
+    next_quota_probe_at = Column(DateTime, comment="下次官方额度探测时间")
+    quota_probe_fail_count = Column(Integer, default=0, nullable=False, comment="官方额度连续失败次数")
     source_team_id = Column(Integer, comment="回填来源 teams.id")
     source_child_account_id = Column(Integer, comment="回填来源 child_accounts.id")
     created_at = Column(DateTime, default=get_now, comment="创建时间")
@@ -428,11 +431,13 @@ class Account(Base):
     owned_workspaces = relationship("Workspace", back_populates="owner_account")
     memberships = relationship("WorkspaceMembership", back_populates="account")
     external_bindings = relationship("ExternalBinding", back_populates="account")
+    quota_snapshots = relationship("QuotaSnapshot", back_populates="account")
 
     __table_args__ = (
         Index("idx_accounts_purpose_state", "local_purpose", "operational_state"),
         Index("idx_accounts_source_team", "source_team_id"),
         Index("idx_accounts_source_child", "source_child_account_id"),
+        Index("idx_accounts_next_quota_probe", "next_quota_probe_at"),
     )
 
 
@@ -512,4 +517,29 @@ class ExternalBinding(Base):
         UniqueConstraint("provider", "remote_account_id", name="uq_external_binding_remote"),
         UniqueConstraint("provider", "local_account_id", name="uq_external_binding_local"),
         Index("idx_external_binding_state", "provider", "binding_state"),
+    )
+
+
+class QuotaSnapshot(Base):
+    """官方额度快照。只有 source=official 且 success 才允许驱动以后的踢拉。"""
+    __tablename__ = "quota_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    five_hour_used_percent = Column(Integer, comment="5 小时窗口已用百分比")
+    five_hour_reset_at = Column(DateTime, comment="5 小时窗口重置时间")
+    seven_day_used_percent = Column(Integer, comment="7 日窗口已用百分比")
+    seven_day_reset_at = Column(DateTime, comment="7 日窗口重置时间")
+    source = Column(String(20), default="official", nullable=False, comment="official/sub2api")
+    queried_at = Column(DateTime, nullable=False, comment="查询时间")
+    success = Column(Boolean, default=False, nullable=False, comment="本次官方查询是否成功")
+    error_code = Column(String(40), comment="失败码")
+    error_message = Column(Text, comment="失败说明")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+
+    account = relationship("Account", back_populates="quota_snapshots")
+
+    __table_args__ = (
+        Index("idx_quota_snapshots_account_queried", "account_id", "queried_at"),
+        Index("idx_quota_snapshots_success", "account_id", "success", "queried_at"),
     )

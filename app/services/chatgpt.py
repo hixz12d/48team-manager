@@ -61,11 +61,15 @@ class ChatGPTService:
         *,
         identifier: str = "default",
     ) -> Optional[str]:
-        """优先用母号自己的 ISP，没有再回落到全局代理。"""
+        """优先用本地 Account / 母号 ISP，没有再回落到全局代理。"""
         from sqlalchemy import select
-        from app.models import Team
+        from app.models import Account, Team
 
         if identifier and identifier != "default" and not str(identifier).startswith("acc_"):
+            result = await db_session.execute(select(Account).where(Account.email == identifier))
+            account = result.scalar_one_or_none()
+            if account and getattr(account, "proxy", None):
+                return account.proxy
             result = await db_session.execute(select(Team).where(Team.email == identifier))
             team = result.scalar_one_or_none()
             if team and getattr(team, "proxy", None):
@@ -73,6 +77,10 @@ class ChatGPTService:
 
         if identifier and str(identifier).startswith("acc_"):
             account_id = str(identifier)[4:]
+            result = await db_session.execute(select(Account).where(Account.official_account_id == account_id))
+            account = result.scalar_one_or_none()
+            if account and getattr(account, "proxy", None):
+                return account.proxy
             result = await db_session.execute(select(Team).where(Team.account_id == account_id))
             team = result.scalar_one_or_none()
             if team and getattr(team, "proxy", None):
@@ -497,6 +505,23 @@ class ChatGPTService:
             "Authorization": f"Bearer {access_token}",
             "chatgpt-account-id": account_id
         }
+        return await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
+
+    async def get_wham_usage(
+        self,
+        access_token: str,
+        db_session: DBAsyncSession,
+        account_id: Optional[str] = None,
+        identifier: str = "default",
+    ) -> Dict[str, Any]:
+        """直打 chatgpt.com/backend-api/wham/usage，不经过 Sub2API。"""
+        url = f"{self.BASE_URL}/wham/usage"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        if account_id:
+            headers["chatgpt-account-id"] = str(account_id)
         return await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
 
     async def refresh_access_token_with_session_token(
