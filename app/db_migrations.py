@@ -18,7 +18,9 @@ def get_db_path():
 
 
 def column_exists(cursor, table_name, column_name):
-    """检查表中是否存在指定列"""
+    """检查表中是否存在指定列。"""
+    if not table_exists(cursor, table_name):
+        return False
     cursor.execute(f"PRAGMA table_info({table_name})")
     columns = [row[1] for row in cursor.fetchall()]
     return column_name in columns
@@ -33,12 +35,147 @@ def table_exists(cursor, table_name):
     return cursor.fetchone() is not None
 
 
-def run_auto_migration():
+def ensure_identity_tables(cursor, migrations_applied):
+    """Phase 1：只新增 identity 表，不改旧表语义。"""
+    if not table_exists(cursor, "accounts"):
+        logger.info("创建 accounts 表")
+        cursor.execute("""
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                official_plan VARCHAR(20) NOT NULL DEFAULT 'unknown',
+                official_user_id VARCHAR(100),
+                official_account_id VARCHAR(100),
+                auth_state VARCHAR(30) NOT NULL DEFAULT 'unknown',
+                operational_state VARCHAR(20) NOT NULL DEFAULT 'available',
+                local_purpose VARCHAR(20) NOT NULL,
+                proxy VARCHAR(500),
+                access_token_encrypted TEXT,
+                refresh_token_encrypted TEXT,
+                session_token_encrypted TEXT,
+                id_token_encrypted TEXT,
+                client_id VARCHAR(100),
+                next_eligible_at DATETIME,
+                source_team_id INTEGER,
+                source_child_account_id INTEGER,
+                created_at DATETIME,
+                updated_at DATETIME,
+                version INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        migrations_applied.append("accounts")
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_accounts_purpose_state ON accounts (local_purpose, operational_state)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_accounts_source_team ON accounts (source_team_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_accounts_source_child ON accounts (source_child_account_id)"
+    )
+
+    if not table_exists(cursor, "workspaces"):
+        logger.info("创建 workspaces 表")
+        cursor.execute("""
+            CREATE TABLE workspaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                official_workspace_id VARCHAR(100),
+                name VARCHAR(255),
+                subscription_plan VARCHAR(100),
+                owner_account_id INTEGER,
+                status VARCHAR(20) NOT NULL DEFAULT 'active',
+                seat_limit INTEGER,
+                last_official_sync_at DATETIME,
+                source_team_id INTEGER UNIQUE,
+                created_at DATETIME,
+                updated_at DATETIME,
+                version INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(owner_account_id) REFERENCES accounts(id)
+            )
+        """)
+        migrations_applied.append("workspaces")
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workspaces_official_id ON workspaces (official_workspace_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workspaces_owner ON workspaces (owner_account_id)"
+    )
+
+    if not table_exists(cursor, "workspace_memberships"):
+        logger.info("创建 workspace_memberships 表")
+        cursor.execute("""
+            CREATE TABLE workspace_memberships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                official_user_id VARCHAR(100),
+                official_role VARCHAR(20) NOT NULL DEFAULT 'unknown',
+                membership_state VARCHAR(20) NOT NULL DEFAULT 'unknown',
+                local_purpose VARCHAR(20) NOT NULL,
+                joined_at DATETIME,
+                removed_at DATETIME,
+                source_mapping_id INTEGER,
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+                FOREIGN KEY(account_id) REFERENCES accounts(id),
+                UNIQUE(workspace_id, account_id)
+            )
+        """)
+        migrations_applied.append("workspace_memberships")
+
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_membership_account ON workspace_memberships (workspace_id, account_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_membership_workspace_state ON workspace_memberships (workspace_id, membership_state)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_membership_account ON workspace_memberships (account_id)"
+    )
+
+    if not table_exists(cursor, "external_bindings"):
+        logger.info("创建 external_bindings 表")
+        cursor.execute("""
+            CREATE TABLE external_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider VARCHAR(40) NOT NULL,
+                local_account_id INTEGER NOT NULL,
+                remote_account_id VARCHAR(100) NOT NULL,
+                binding_state VARCHAR(20) NOT NULL DEFAULT 'pending',
+                verified_email VARCHAR(255),
+                verified_official_account_id VARCHAR(100),
+                verified_workspace_id VARCHAR(100),
+                last_observed_at DATETIME,
+                last_error TEXT,
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(local_account_id) REFERENCES accounts(id),
+                UNIQUE(provider, remote_account_id),
+                UNIQUE(provider, local_account_id)
+            )
+        """)
+        migrations_applied.append("external_bindings")
+
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_external_binding_remote ON external_bindings (provider, remote_account_id)"
+    )
+    cursor.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_external_binding_local ON external_bindings (provider, local_account_id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_external_binding_state ON external_bindings (provider, binding_state)"
+    )
+
+
+def run_auto_migration(db_path=None):
     """
     自动运行数据库迁移
-    检测缺失的列并自动添加
+    检测缺失的列并自动添加。新 identity 表只新增，不改旧表语义。
     """
-    db_path = get_db_path()
+    db_path = Path(db_path) if db_path is not None else get_db_path()
     
     if not db_path.exists():
         logger.info("数据库文件不存在，跳过迁移")
@@ -53,7 +190,7 @@ def run_auto_migration():
         migrations_applied = []
         
         # 检查并添加质保相关字段
-        if not column_exists(cursor, "redemption_codes", "has_warranty"):
+        if table_exists(cursor, "redemption_codes") and not column_exists(cursor, "redemption_codes", "has_warranty"):
             logger.info("添加 redemption_codes.has_warranty 字段")
             cursor.execute("""
                 ALTER TABLE redemption_codes 
@@ -61,7 +198,7 @@ def run_auto_migration():
             """)
             migrations_applied.append("redemption_codes.has_warranty")
         
-        if not column_exists(cursor, "redemption_codes", "warranty_expires_at"):
+        if table_exists(cursor, "redemption_codes") and not column_exists(cursor, "redemption_codes", "warranty_expires_at"):
             logger.info("添加 redemption_codes.warranty_expires_at 字段")
             cursor.execute("""
                 ALTER TABLE redemption_codes 
@@ -69,7 +206,7 @@ def run_auto_migration():
             """)
             migrations_applied.append("redemption_codes.warranty_expires_at")
         
-        if not column_exists(cursor, "redemption_codes", "warranty_days"):
+        if table_exists(cursor, "redemption_codes") and not column_exists(cursor, "redemption_codes", "warranty_days"):
             logger.info("添加 redemption_codes.warranty_days 字段")
             cursor.execute("""
                 ALTER TABLE redemption_codes 
@@ -77,7 +214,7 @@ def run_auto_migration():
             """)
             migrations_applied.append("redemption_codes.warranty_days")
         
-        if not column_exists(cursor, "redemption_records", "is_warranty_redemption"):
+        if table_exists(cursor, "redemption_records") and not column_exists(cursor, "redemption_records", "is_warranty_redemption"):
             logger.info("添加 redemption_records.is_warranty_redemption 字段")
             cursor.execute("""
                 ALTER TABLE redemption_records 
@@ -86,63 +223,63 @@ def run_auto_migration():
             migrations_applied.append("redemption_records.is_warranty_redemption")
 
         # 检查并添加 Token 刷新相关字段
-        if not column_exists(cursor, "teams", "refresh_token_encrypted"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "refresh_token_encrypted"):
             logger.info("添加 teams.refresh_token_encrypted 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN refresh_token_encrypted TEXT")
             migrations_applied.append("teams.refresh_token_encrypted")
 
-        if not column_exists(cursor, "teams", "id_token_encrypted"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "id_token_encrypted"):
             logger.info("添加 teams.id_token_encrypted 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN id_token_encrypted TEXT")
             migrations_applied.append("teams.id_token_encrypted")
 
-        if not column_exists(cursor, "teams", "session_token_encrypted"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "session_token_encrypted"):
             logger.info("添加 teams.session_token_encrypted 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN session_token_encrypted TEXT")
             migrations_applied.append("teams.session_token_encrypted")
 
-        if not column_exists(cursor, "teams", "client_id"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "client_id"):
             logger.info("添加 teams.client_id 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN client_id VARCHAR(100)")
             migrations_applied.append("teams.client_id")
 
-        if not column_exists(cursor, "teams", "error_count"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "error_count"):
             logger.info("添加 teams.error_count 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN error_count INTEGER DEFAULT 0")
             migrations_applied.append("teams.error_count")
 
-        if not column_exists(cursor, "teams", "account_role"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "account_role"):
             logger.info("添加 teams.account_role 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN account_role VARCHAR(50)")
             migrations_applied.append("teams.account_role")
 
-        if not column_exists(cursor, "teams", "device_code_auth_enabled"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "device_code_auth_enabled"):
             logger.info("添加 teams.device_code_auth_enabled 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN device_code_auth_enabled BOOLEAN DEFAULT 0")
             migrations_applied.append("teams.device_code_auth_enabled")
         
 
-        if not column_exists(cursor, "teams", "pool_type"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "pool_type"):
             logger.info("添加 teams.pool_type 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN pool_type VARCHAR(20) DEFAULT 'normal'")
             migrations_applied.append("teams.pool_type")
 
-        if not column_exists(cursor, "teams", "warranty_seat_enabled"):
+        if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "warranty_seat_enabled"):
             logger.info("添加 teams.warranty_seat_enabled 字段")
             cursor.execute("ALTER TABLE teams ADD COLUMN warranty_seat_enabled BOOLEAN DEFAULT 0")
             migrations_applied.append("teams.warranty_seat_enabled")
 
-        if not column_exists(cursor, "redemption_codes", "pool_type"):
+        if table_exists(cursor, "redemption_codes") and not column_exists(cursor, "redemption_codes", "pool_type"):
             logger.info("添加 redemption_codes.pool_type 字段")
             cursor.execute("ALTER TABLE redemption_codes ADD COLUMN pool_type VARCHAR(20) DEFAULT 'normal'")
             migrations_applied.append("redemption_codes.pool_type")
 
-        if not column_exists(cursor, "redemption_codes", "reusable_by_seat"):
+        if table_exists(cursor, "redemption_codes") and not column_exists(cursor, "redemption_codes", "reusable_by_seat"):
             logger.info("添加 redemption_codes.reusable_by_seat 字段")
             cursor.execute("ALTER TABLE redemption_codes ADD COLUMN reusable_by_seat BOOLEAN DEFAULT 0")
             migrations_applied.append("redemption_codes.reusable_by_seat")
 
-        if not column_exists(cursor, "redemption_codes", "extension_days"):
+        if table_exists(cursor, "redemption_codes") and not column_exists(cursor, "redemption_codes", "extension_days"):
             logger.info("添加 redemption_codes.extension_days 字段")
             cursor.execute("ALTER TABLE redemption_codes ADD COLUMN extension_days INTEGER DEFAULT 0")
             migrations_applied.append("redemption_codes.extension_days")
@@ -182,18 +319,19 @@ def run_auto_migration():
             """)
             migrations_applied.append("team_email_mappings.is_admin_invited")
 
-        cursor.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_team_email_unique
-            ON team_email_mappings (team_id, email)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_team_email_email
-            ON team_email_mappings (email)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_team_email_status
-            ON team_email_mappings (team_id, status)
-        """)
+        if table_exists(cursor, "team_email_mappings"):
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_team_email_unique
+                ON team_email_mappings (team_id, email)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_team_email_email
+                ON team_email_mappings (email)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_team_email_status
+                ON team_email_mappings (team_id, status)
+            """)
 
         if not table_exists(cursor, "renewal_requests"):
             logger.info("创建 renewal_requests 表")
@@ -214,18 +352,19 @@ def run_auto_migration():
             """)
             migrations_applied.append("renewal_requests")
 
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_renewal_request_status
-            ON renewal_requests (status)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_renewal_request_email
-            ON renewal_requests (email)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_renewal_request_code
-            ON renewal_requests (code)
-        """)
+        if table_exists(cursor, "renewal_requests"):
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_renewal_request_status
+                ON renewal_requests (status)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_renewal_request_email
+                ON renewal_requests (email)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_renewal_request_code
+                ON renewal_requests (code)
+            """)
 
         # 把 renewal_requests.code 从 NOT NULL 改为允许 NULL：
         # 兑换码销毁后 extended/ignored 历史保留作为审计证据，需要 code 可空。
@@ -401,10 +540,12 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE child_accounts ADD COLUMN next_eligible_at DATETIME")
             migrations_applied.append("child_accounts.next_eligible_at")
 
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_status ON child_accounts (status)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_team ON child_accounts (current_team_id, status)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_email ON seat_events (email)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_team ON seat_events (team_id, created_at)")
+        if table_exists(cursor, "child_accounts"):
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_status ON child_accounts (status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_child_team ON child_accounts (current_team_id, status)")
+        if table_exists(cursor, "seat_events"):
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_email ON seat_events (email)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_seat_event_team ON seat_events (team_id, created_at)")
 
         if not table_exists(cursor, "seat_vacancy_events"):
             logger.info("创建 seat_vacancy_events 表")
@@ -450,9 +591,10 @@ def run_auto_migration():
                     )
                     migrations_applied.append(f"seat_vacancy_events.{column_name}")
 
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_vacancy_team_captured ON seat_vacancy_events (team_id, captured_at)"
-        )
+        if table_exists(cursor, "seat_vacancy_events"):
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_vacancy_team_captured ON seat_vacancy_events (team_id, captured_at)"
+            )
 
         if not table_exists(cursor, "sub2api_usage_ledgers"):
             logger.info("创建 sub2api_usage_ledgers 表")
@@ -473,9 +615,10 @@ def run_auto_migration():
             """)
             migrations_applied.append("sub2api_usage_ledgers")
 
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sub2api_ledger_email ON sub2api_usage_ledgers (email)"
-        )
+        if table_exists(cursor, "sub2api_usage_ledgers"):
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sub2api_ledger_email ON sub2api_usage_ledgers (email)"
+            )
 
         if not table_exists(cursor, "sub2api_usage_probes"):
             logger.info("创建 sub2api_usage_probes 表")
@@ -496,35 +639,36 @@ def run_auto_migration():
             """)
             migrations_applied.append("sub2api_usage_probes")
 
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_usage_probe_next ON sub2api_usage_probes (next_probe_at)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_usage_probe_email ON sub2api_usage_probes (email)"
-        )
+        if table_exists(cursor, "sub2api_usage_probes"):
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_usage_probe_next ON sub2api_usage_probes (next_probe_at)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_usage_probe_email ON sub2api_usage_probes (email)"
+            )
 
         if table_exists(cursor, "sub2api_usage_probes"):
-            if not column_exists(cursor, "sub2api_usage_probes", "next_reauth_at"):
+            if table_exists(cursor, "sub2api_usage_probes") and not column_exists(cursor, "sub2api_usage_probes", "next_reauth_at"):
                 logger.info("添加 sub2api_usage_probes.next_reauth_at 字段")
                 cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN next_reauth_at DATETIME")
                 migrations_applied.append("sub2api_usage_probes.next_reauth_at")
-            if not column_exists(cursor, "sub2api_usage_probes", "reauth_fail_count"):
+            if table_exists(cursor, "sub2api_usage_probes") and not column_exists(cursor, "sub2api_usage_probes", "reauth_fail_count"):
                 logger.info("添加 sub2api_usage_probes.reauth_fail_count 字段")
                 cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN reauth_fail_count INTEGER NOT NULL DEFAULT 0")
                 migrations_applied.append("sub2api_usage_probes.reauth_fail_count")
-            if not column_exists(cursor, "sub2api_usage_probes", "last_reauth_code"):
+            if table_exists(cursor, "sub2api_usage_probes") and not column_exists(cursor, "sub2api_usage_probes", "last_reauth_code"):
                 logger.info("添加 sub2api_usage_probes.last_reauth_code 字段")
                 cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN last_reauth_code VARCHAR(40)")
                 migrations_applied.append("sub2api_usage_probes.last_reauth_code")
-            if not column_exists(cursor, "sub2api_usage_probes", "next_rotate_at"):
+            if table_exists(cursor, "sub2api_usage_probes") and not column_exists(cursor, "sub2api_usage_probes", "next_rotate_at"):
                 logger.info("添加 sub2api_usage_probes.next_rotate_at 字段")
                 cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN next_rotate_at DATETIME")
                 migrations_applied.append("sub2api_usage_probes.next_rotate_at")
-            if not column_exists(cursor, "sub2api_usage_probes", "rotate_fail_count"):
+            if table_exists(cursor, "sub2api_usage_probes") and not column_exists(cursor, "sub2api_usage_probes", "rotate_fail_count"):
                 logger.info("添加 sub2api_usage_probes.rotate_fail_count 字段")
                 cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN rotate_fail_count INTEGER NOT NULL DEFAULT 0")
                 migrations_applied.append("sub2api_usage_probes.rotate_fail_count")
-            if not column_exists(cursor, "sub2api_usage_probes", "last_rotate_code"):
+            if table_exists(cursor, "sub2api_usage_probes") and not column_exists(cursor, "sub2api_usage_probes", "last_rotate_code"):
                 logger.info("添加 sub2api_usage_probes.last_rotate_code 字段")
                 cursor.execute("ALTER TABLE sub2api_usage_probes ADD COLUMN last_rotate_code VARCHAR(40)")
                 migrations_applied.append("sub2api_usage_probes.last_rotate_code")
@@ -546,12 +690,13 @@ def run_auto_migration():
             """)
             migrations_applied.append("hme_alias_leases")
 
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_hme_lease_expires ON hme_alias_leases (expires_at)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_hme_lease_job ON hme_alias_leases (job_id)"
-        )
+        if table_exists(cursor, "hme_alias_leases"):
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hme_lease_expires ON hme_alias_leases (expires_at)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_hme_lease_job ON hme_alias_leases (job_id)"
+            )
 
 
         if not table_exists(cursor, "phone_pool"):
@@ -579,12 +724,16 @@ def run_auto_migration():
             """)
             migrations_applied.append("phone_pool")
 
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_phone_pool_status ON phone_pool (status)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_phone_pool_reserved ON phone_pool (reserved_by)"
-        )
+        if table_exists(cursor, "phone_pool"):
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_phone_pool_status ON phone_pool (status)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_phone_pool_reserved ON phone_pool (reserved_by)"
+            )
+
+
+        ensure_identity_tables(cursor, migrations_applied)
 
         if table_exists(cursor, "settings"):
             cursor.execute("SELECT 1 FROM settings WHERE key = ?", ("free_account_proxy",))

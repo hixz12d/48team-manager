@@ -2,7 +2,7 @@
 数据库模型定义
 定义所有数据库表的 SQLAlchemy 模型
 """
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -397,4 +397,119 @@ class PhonePool(Base):
     __table_args__ = (
         Index("idx_phone_pool_status", "status"),
         Index("idx_phone_pool_reserved", "reserved_by"),
+    )
+
+
+class Account(Base):
+    """本地登录账号。官方计划 / 本地用途 / 工作区角色必须拆开，互不推断。"""
+    __tablename__ = "accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), unique=True, nullable=False, comment="登录邮箱(统一存小写)")
+    official_plan = Column(String(20), default="unknown", nullable=False, comment="free/plus/pro/team/business/unknown")
+    official_user_id = Column(String(100), comment="官方 user-xxx，不是 Workspace UUID")
+    official_account_id = Column(String(100), comment="官方个人 account id，不是 Workspace UUID")
+    auth_state = Column(String(30), default="unknown", nullable=False, comment="healthy/refresh_due/oauth_required/manual_required/unknown")
+    operational_state = Column(String(20), default="available", nullable=False, comment="available/active/standby/disabled/archived/unused/free")
+    local_purpose = Column(String(20), nullable=False, comment="mother/child/standby/free/disabled")
+    proxy = Column(String(500), comment="账号专属静态 ISP，Phase 5 再拆 proxy_profiles")
+    access_token_encrypted = Column(Text, comment="加密存储的 AT")
+    refresh_token_encrypted = Column(Text, comment="加密存储的 RT")
+    session_token_encrypted = Column(Text, comment="加密存储的 Session Token")
+    id_token_encrypted = Column(Text, comment="加密存储的 ID Token")
+    client_id = Column(String(100), comment="OAuth Client ID")
+    next_eligible_at = Column(DateTime, comment="周限满后允许再拉回的时间")
+    source_team_id = Column(Integer, comment="回填来源 teams.id")
+    source_child_account_id = Column(Integer, comment="回填来源 child_accounts.id")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
+    version = Column(Integer, default=1, nullable=False, comment="乐观锁版本")
+
+    owned_workspaces = relationship("Workspace", back_populates="owner_account")
+    memberships = relationship("WorkspaceMembership", back_populates="account")
+    external_bindings = relationship("ExternalBinding", back_populates="account")
+
+    __table_args__ = (
+        Index("idx_accounts_purpose_state", "local_purpose", "operational_state"),
+        Index("idx_accounts_source_team", "source_team_id"),
+        Index("idx_accounts_source_child", "source_child_account_id"),
+    )
+
+
+class Workspace(Base):
+    """真实 Team / Workspace。official_workspace_id 只能是 UUID，不能是 user-xxx。"""
+    __tablename__ = "workspaces"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    official_workspace_id = Column(String(100), comment="官方 Workspace UUID")
+    name = Column(String(255), comment="Workspace 名称")
+    subscription_plan = Column(String(100), comment="官方订阅缓存，不是本地用途")
+    owner_account_id = Column(Integer, ForeignKey("accounts.id"), comment="本地母号 Account")
+    status = Column(String(20), default="active", nullable=False, comment="active/expired/error/unknown")
+    seat_limit = Column(Integer, comment="本地操作上限缓存")
+    last_official_sync_at = Column(DateTime, comment="最近一次官方成员同步")
+    source_team_id = Column(Integer, unique=True, comment="回填来源 teams.id")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
+    version = Column(Integer, default=1, nullable=False, comment="乐观锁版本")
+
+    owner_account = relationship("Account", back_populates="owned_workspaces")
+    memberships = relationship("WorkspaceMembership", back_populates="workspace")
+
+    __table_args__ = (
+        Index("idx_workspaces_official_id", "official_workspace_id"),
+        Index("idx_workspaces_owner", "owner_account_id"),
+    )
+
+
+class WorkspaceMembership(Base):
+    """Account 与 Workspace 的关系。owner 行来自 Workspace.owner，不从 mapping 猜。"""
+    __tablename__ = "workspace_memberships"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    official_user_id = Column(String(100), comment="官方 user-xxx")
+    official_role = Column(String(20), default="unknown", nullable=False, comment="owner/admin/member/unknown")
+    membership_state = Column(String(20), default="unknown", nullable=False, comment="invited/joined/removed/unknown")
+    local_purpose = Column(String(20), nullable=False, comment="mother/child")
+    joined_at = Column(DateTime, comment="本轮入组时间")
+    removed_at = Column(DateTime, comment="本轮踢出时间")
+    source_mapping_id = Column(Integer, comment="回填来源 team_email_mappings.id")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
+
+    workspace = relationship("Workspace", back_populates="memberships")
+    account = relationship("Account", back_populates="memberships")
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "account_id", name="uq_workspace_membership_account"),
+        Index("idx_membership_workspace_state", "workspace_id", "membership_state"),
+        Index("idx_membership_account", "account_id"),
+    )
+
+
+class ExternalBinding(Base):
+    """本地账号与远端系统的显式绑定。一个 remote id 只能绑一个本地账号。"""
+    __tablename__ = "external_bindings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(40), nullable=False, comment="第一阶段仅 sub2api")
+    local_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    remote_account_id = Column(String(100), nullable=False, comment="远端账号 ID")
+    binding_state = Column(String(20), default="pending", nullable=False, comment="pending/verified/conflict/missing/orphaned")
+    verified_email = Column(String(255), comment="交叉验证通过的邮箱")
+    verified_official_account_id = Column(String(100), comment="交叉验证通过的官方 account id")
+    verified_workspace_id = Column(String(100), comment="交叉验证通过的 Workspace UUID")
+    last_observed_at = Column(DateTime, comment="最近一次观察到远端")
+    last_error = Column(Text, comment="最近一次绑定错误")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
+
+    account = relationship("Account", back_populates="external_bindings")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "remote_account_id", name="uq_external_binding_remote"),
+        UniqueConstraint("provider", "local_account_id", name="uq_external_binding_local"),
+        Index("idx_external_binding_state", "provider", "binding_state"),
     )
