@@ -15,7 +15,10 @@ from app.services.identity import (
     AUDIT_SUSPICIOUS,
     AUDIT_UNBOUND,
     AUDIT_VERIFIED,
+    BINDING_CONFLICT,
+    BINDING_MISSING,
     BINDING_PENDING,
+    BINDING_VERIFIED,
     identity_service,
     looks_like_gmail,
     workspace_official_id,
@@ -297,6 +300,266 @@ class IdentityBackfillTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finding["local_purpose"], "standby")
         self.assertEqual(finding["result"], AUDIT_UNBOUND)
         self.assertEqual(finding["official_plan"], "unknown")
+
+
+def _remote_account(
+    remote_id,
+    *,
+    email="",
+    name="",
+    official_account_id="",
+    workspace_id="",
+):
+    credentials = {}
+    extra = {}
+    if email:
+        credentials["email"] = email
+        extra["email"] = email
+    if official_account_id:
+        credentials["chatgpt_account_id"] = official_account_id
+    if workspace_id:
+        extra["workspace_id"] = workspace_id
+    return {
+        "id": remote_id,
+        "name": name,
+        "credentials": credentials,
+        "extra": extra,
+    }
+
+
+class IdentityBindingTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.session = self.session_maker()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        await self.engine.dispose()
+
+    async def _seed_mother(self, email="owner@icloud.com", remote_id=10, official_account_id=None):
+        team = Team(
+            email=email,
+            access_token_encrypted="tok",
+            account_id=WORKSPACE_UUID,
+            team_name="Team .2026.11",
+            sub2api_account_id=remote_id,
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.commit()
+        await identity_service.backfill(self.session)
+        account = (await self.session.execute(select(Account).where(Account.email == email))).scalar_one()
+        if official_account_id:
+            account.official_account_id = official_account_id
+            await self.session.commit()
+        return account
+
+    async def test_rename_does_not_change_binding(self):
+        account = await self._seed_mother()
+        first = await identity_service.verify_bindings(
+            self.session,
+            [_remote_account(10, email=account.email, name="Team .2026.11 母号")],
+        )
+        self.assertEqual(first["bindings"][0]["binding_state"], BINDING_VERIFIED)
+
+        second = await identity_service.verify_bindings(
+            self.session,
+            [_remote_account(10, email=account.email, name="乱名-renamed")],
+        )
+        binding = second["bindings"][0]
+        self.assertEqual(binding["binding_state"], BINDING_VERIFIED)
+        self.assertEqual(binding["remote_account_id"], "10")
+        self.assertEqual(binding["local_account_id"], account.id)
+        self.assertEqual(binding["verified_email"], account.email)
+
+        report = await identity_service.audit(self.session)
+        finding = report["findings"][0]
+        self.assertEqual(finding["result"], AUDIT_VERIFIED)
+        self.assertTrue(any("已交叉验证" in reason for reason in finding["reasons"]))
+
+    async def test_same_display_name_does_not_merge(self):
+        first = await self._seed_mother(email="owner-a@icloud.com", remote_id=21)
+        second = Account(
+            email="owner-b@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+        )
+        self.session.add(second)
+        await self.session.flush()
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=second.id,
+                remote_account_id="22",
+                binding_state=BINDING_PENDING,
+            )
+        )
+        await self.session.commit()
+
+        report = await identity_service.verify_bindings(
+            self.session,
+            [
+                _remote_account(21, email=first.email, name="Team same 母号"),
+                _remote_account(22, email=second.email, name="Team same 母号"),
+            ],
+        )
+        by_remote = {row["remote_account_id"]: row for row in report["bindings"]}
+        self.assertEqual(by_remote["21"]["local_account_id"], first.id)
+        self.assertEqual(by_remote["22"]["local_account_id"], second.id)
+        self.assertNotEqual(by_remote["21"]["local_account_id"], by_remote["22"]["local_account_id"])
+
+    async def test_one_remote_id_cannot_bind_two_local_accounts(self):
+        first = Account(
+            email="a@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+        )
+        second = Account(
+            email="b@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+        )
+        self.session.add_all([first, second])
+        await self.session.flush()
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=first.id,
+                remote_account_id="99",
+                binding_state=BINDING_PENDING,
+            )
+        )
+        await self.session.commit()
+
+        report = await identity_service.verify_bindings(
+            self.session,
+            [_remote_account(99, email=second.email)],
+        )
+        binding = report["bindings"][0]
+        self.assertEqual(binding["local_account_id"], first.id)
+        self.assertEqual(binding["binding_state"], BINDING_CONFLICT)
+        self.assertIn("email mismatch", binding["last_error"])
+
+    async def test_email_match_with_official_id_mismatch_is_conflict(self):
+        account = await self._seed_mother(official_account_id="acct-local")
+        report = await identity_service.verify_bindings(
+            self.session,
+            [_remote_account(10, email=account.email, official_account_id="acct-other")],
+        )
+        binding = report["bindings"][0]
+        self.assertEqual(binding["binding_state"], BINDING_CONFLICT)
+        self.assertIn("official account id mismatch", binding["last_error"])
+
+        audit = await identity_service.audit(self.session)
+        finding = audit["findings"][0]
+        self.assertEqual(finding["result"], AUDIT_CONFLICT)
+        self.assertEqual(finding["automation"], "blocked")
+
+    async def test_email_match_with_workspace_mismatch_is_conflict(self):
+        account = await self._seed_mother()
+        report = await identity_service.verify_bindings(
+            self.session,
+            [
+                _remote_account(
+                    10,
+                    email=account.email,
+                    workspace_id="22222222-2222-2222-2222-222222222222",
+                )
+            ],
+        )
+        binding = report["bindings"][0]
+        self.assertEqual(binding["binding_state"], BINDING_CONFLICT)
+        self.assertIn("workspace id mismatch", binding["last_error"])
+
+    async def test_name_only_remote_is_orphaned(self):
+        await self._seed_mother(remote_id=None)
+        report = await identity_service.verify_bindings(
+            self.session,
+            [_remote_account(88, name="Team .2026.11 母号")],
+        )
+        self.assertEqual(report["stats"]["orphaned"], 1)
+        self.assertEqual(report["bindings"], [])
+        self.assertEqual(report["orphans"][0]["remote_account_id"], "88")
+
+    async def test_gmail_is_not_bound_as_owner_by_name(self):
+        gmail = Account(
+            email="pro.user@gmail.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+        )
+        mother = Account(
+            email="owner@icloud.com",
+            official_plan="unknown",
+            local_purpose="mother",
+            operational_state="active",
+            auth_state="unknown",
+        )
+        self.session.add_all([gmail, mother])
+        await self.session.flush()
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=mother.id,
+                remote_account_id="70",
+                binding_state=BINDING_PENDING,
+            )
+        )
+        await self.session.commit()
+
+        report = await identity_service.verify_bindings(
+            self.session,
+            [_remote_account(70, email="pro.user@gmail.com", name="Team xxx 母号")],
+        )
+        binding = report["bindings"][0]
+        self.assertEqual(binding["local_account_id"], mother.id)
+        self.assertEqual(binding["binding_state"], BINDING_CONFLICT)
+        self.assertIn("email mismatch", binding["last_error"])
+
+        audit = await identity_service.audit(self.session)
+        by_email = {item["email"]: item for item in audit["findings"]}
+        self.assertEqual(by_email["pro.user@gmail.com"]["result"], AUDIT_CONFLICT)
+        self.assertNotEqual(by_email["pro.user@gmail.com"]["local_purpose"], "mother")
+
+    async def test_conflict_is_not_auto_promoted_back_to_verified(self):
+        account = await self._seed_mother()
+        binding = (await self.session.execute(select(ExternalBinding))).scalar_one()
+        binding.binding_state = BINDING_CONFLICT
+        binding.last_error = "manual hold"
+        await self.session.commit()
+
+        report = await identity_service.verify_bindings(
+            self.session,
+            [_remote_account(10, email=account.email)],
+        )
+        row = report["bindings"][0]
+        self.assertEqual(row["binding_state"], BINDING_CONFLICT)
+        self.assertEqual(row["last_error"], "manual hold")
+        self.assertIsNone(row["verified_email"])
+
+    async def test_missing_remote_marks_binding_missing(self):
+        await self._seed_mother()
+        report = await identity_service.verify_bindings(self.session, [])
+        row = report["bindings"][0]
+        self.assertEqual(row["binding_state"], BINDING_MISSING)
+        self.assertIn("missing from snapshot", row["last_error"])
+
+    async def test_pending_without_cross_check_does_not_downgrade_identity_audit(self):
+        await self._seed_mother()
+        report = await identity_service.audit(self.session)
+        finding = report["findings"][0]
+        self.assertEqual(finding["result"], AUDIT_VERIFIED)
+        self.assertTrue(any("pending" in reason for reason in finding["reasons"]))
 
 
 if __name__ == "__main__":

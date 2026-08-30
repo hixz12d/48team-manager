@@ -639,37 +639,23 @@ class Sub2ApiService:
         team_name: str = "",
         chatgpt_account_id: str = "",
     ) -> Optional[Dict[str, Any]]:
+        """绑定匹配：已有 remote id → official/chatgpt id → exact email。family / 名字不参与。"""
+        del role, team_email, team_name
         wanted_id = self._coerce_account_pk(existing_id)
         if wanted_id:
             for account in accounts:
                 if self._coerce_account_pk(account.get("id")) == wanted_id:
-                    return account
-        target = (email or "").strip().lower()
-        if target:
-            for account in accounts:
-                if self._account_email(account).strip().lower() == target:
                     return account
         chatgpt_id = (chatgpt_account_id or "").strip()
         if chatgpt_id:
             for account in accounts:
                 if self._account_chatgpt_id(account) == chatgpt_id:
                     return account
-        family = self.family_accounts(accounts, team_email or email, team_name)
-        if (role or "") == "owner":
-            owners = [item for item in family if self.summarize_account(item).get("role") == "owner"]
-            if len(owners) == 1:
-                return owners[0]
-            unnamed = [item for item in owners if not self._account_email(item)]
-            if len(unnamed) == 1:
-                return unnamed[0]
-            return None
-        if (role or "") == "child":
-            unnamed = [
-                item for item in family
-                if self.summarize_account(item).get("role") == "child" and not self._account_email(item)
-            ]
-            if len(unnamed) == 1:
-                return unnamed[0]
+        target = (email or "").strip().lower()
+        if target:
+            for account in accounts:
+                if self._account_email(account).strip().lower() == target:
+                    return account
         return None
 
     def build_account_name(

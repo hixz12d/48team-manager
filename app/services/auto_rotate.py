@@ -128,6 +128,7 @@ def rotate_backoff_at(now: datetime, fail_count: int) -> datetime:
 
 
 def is_owner_account(account: Dict[str, Any]) -> bool:
+    """旧踢拉/重授权启发式。新绑定不得走这里；Gmail / 名字 / family 不是身份真相。"""
     summary = sub2api_service.summarize_account(account)
     return str(summary.get("role") or "") == "owner"
 

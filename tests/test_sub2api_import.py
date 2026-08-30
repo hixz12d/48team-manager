@@ -237,10 +237,19 @@ class Sub2ApiImportTests(unittest.TestCase):
             "name": "Team new1 子号 2",
             "credentials": {"email": "wings_pubs_1i@icloud.com"},
         }
+        self.assertIsNone(
+            self.service.find_existing_account(
+                [unnamed_owner, child],
+                email="newxiaozhu1@gmail.com",
+                role="owner",
+                team_email="newxiaozhu1@gmail.com",
+            )
+        )
         self.assertEqual(
             self.service.find_existing_account(
                 [unnamed_owner, child],
                 email="newxiaozhu1@gmail.com",
+                existing_id=2894,
                 role="owner",
                 team_email="newxiaozhu1@gmail.com",
             )["id"],
@@ -267,14 +276,48 @@ class Sub2ApiImportTests(unittest.TestCase):
             "name": "Team new2 母号",
             "credentials": {"email": "newxiaozhu2@gmail.com"},
         }
-        self.assertEqual(
+        self.assertIsNone(
             self.service.find_existing_account(
                 [owner, unnamed_child],
                 email="13.each-curl@icloud.com",
                 role="child",
                 team_email="newxiaozhu2@gmail.com",
+            )
+        )
+
+    def test_matches_official_id_before_email(self):
+        by_official = {
+            "id": 11,
+            "name": "乱名",
+            "credentials": {"chatgpt_account_id": "acct-official", "email": "other@icloud.com"},
+        }
+        by_email = {
+            "id": 12,
+            "name": "Team xxx 母号",
+            "credentials": {"email": "owner@icloud.com"},
+        }
+        self.assertEqual(
+            self.service.find_existing_account(
+                [by_email, by_official],
+                email="owner@icloud.com",
+                chatgpt_account_id="acct-official",
             )["id"],
-            2924,
+            11,
+        )
+
+    def test_gmail_name_is_not_bound_as_owner(self):
+        gmail = {
+            "id": 70,
+            "name": "Team xxx 母号",
+            "credentials": {"email": "pro.user@gmail.com"},
+        }
+        self.assertIsNone(
+            self.service.find_existing_account(
+                [gmail],
+                email="owner@icloud.com",
+                role="owner",
+                team_email="owner@icloud.com",
+            )
         )
     def test_oauth_probe_200_opens_schedulable(self):
         self.assertTrue(self.service.should_open_schedulable_after_oauth_probe({"kind": "200", "label": "200"}))

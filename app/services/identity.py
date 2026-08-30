@@ -1,6 +1,6 @@
-"""Phase 1 Identity：新表回填与只读审计。
+"""Phase 1 Identity + Phase 2 Explicit Sub2API Binding。
 
-本地数据库认人。Gmail / 名字 / family 不是身份真相。
+本地数据库认人。Sub2API 只认显式 binding。Gmail / 名字 / family 不是绑定真相。
 旧 Team / ChildAccount 读写路径不走这里。
 """
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -63,7 +64,10 @@ OFFICIAL_ROLE_OWNER = "owner"
 OFFICIAL_ROLE_UNKNOWN = "unknown"
 
 BINDING_PENDING = "pending"
+BINDING_VERIFIED = "verified"
 BINDING_CONFLICT = "conflict"
+BINDING_MISSING = "missing"
+BINDING_ORPHANED = "orphaned"
 
 GMAIL_DOMAINS = ("gmail.com", "googlemail.com")
 
@@ -120,6 +124,50 @@ def workspace_official_id(team: Team) -> Optional[str]:
 
 def _now():
     return get_now()
+
+
+def extract_remote_account_id(account: Dict[str, Any]) -> str:
+    from app.services.sub2api import sub2api_service
+
+    pk = sub2api_service._coerce_account_pk(account.get("id"))
+    if pk:
+        return str(pk)
+    return str(account.get("id") or "").strip()
+
+
+def extract_remote_email(account: Dict[str, Any]) -> str:
+    from app.services.sub2api import sub2api_service
+
+    return normalize_email(sub2api_service._account_email(account))
+
+
+def extract_remote_official_account_id(account: Dict[str, Any]) -> str:
+    from app.services.sub2api import sub2api_service
+
+    return str(sub2api_service._account_chatgpt_id(account) or "").strip()
+
+
+def extract_remote_workspace_id(account: Dict[str, Any]) -> Optional[str]:
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    cred = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+    for source in (account, cred, extra):
+        if not isinstance(source, dict):
+            continue
+        for key in ("workspace_id", "chatgpt_workspace_id", "official_workspace_id"):
+            value = str(source.get(key) or "").strip()
+            if value and is_workspace_account_id(value):
+                return value
+    return None
+
+
+def remote_snapshot(account: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    return {
+        "remote_account_id": extract_remote_account_id(account),
+        "email": extract_remote_email(account) or None,
+        "official_account_id": extract_remote_official_account_id(account) or None,
+        "workspace_id": extract_remote_workspace_id(account),
+        "name": str(account.get("name") or "") or None,
+    }
 
 
 class IdentityService:
@@ -474,6 +522,285 @@ class IdentityService:
                     conflicts += 1
         return conflicts
 
+    async def verify_bindings(
+        self,
+        db_session: AsyncSession,
+        remote_accounts: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """用传入的 Sub2API account dict 交叉验证 binding。不打生产接口，不新建本地账号。"""
+        remotes_by_id: Dict[str, Dict[str, Any]] = {}
+        for item in remote_accounts or []:
+            if not isinstance(item, dict):
+                continue
+            remote_id = extract_remote_account_id(item)
+            if not remote_id or remote_id in remotes_by_id:
+                continue
+            remotes_by_id[remote_id] = item
+
+        accounts = (await db_session.execute(select(Account).order_by(Account.id))).scalars().all()
+        accounts_by_id = {row.id: row for row in accounts}
+        accounts_by_email: Dict[str, Account] = {}
+        accounts_by_official: Dict[str, List[Account]] = defaultdict(list)
+        for account in accounts:
+            accounts_by_email[normalize_email(account.email)] = account
+            official = str(account.official_account_id or "").strip()
+            if official:
+                accounts_by_official[official].append(account)
+
+        memberships = (await db_session.execute(select(WorkspaceMembership))).scalars().all()
+        memberships_by_account: Dict[int, List[WorkspaceMembership]] = defaultdict(list)
+        for row in memberships:
+            memberships_by_account[row.account_id].append(row)
+        workspaces_by_id = {
+            row.id: row
+            for row in (await db_session.execute(select(Workspace))).scalars().all()
+        }
+
+        bindings = (
+            await db_session.execute(
+                select(ExternalBinding).where(ExternalBinding.provider == PROVIDER_SUB2API).order_by(ExternalBinding.id)
+            )
+        ).scalars().all()
+        bindings_by_remote = {row.remote_account_id: row for row in bindings}
+        bindings_by_local = {row.local_account_id: row for row in bindings}
+
+        stats = {
+            "observed": 0,
+            "verified": 0,
+            "pending": 0,
+            "conflict": 0,
+            "missing": 0,
+            "orphaned": 0,
+            "created": 0,
+        }
+        orphans: List[Dict[str, Any]] = []
+
+        for binding in list(bindings):
+            remote = remotes_by_id.get(binding.remote_account_id)
+            local = accounts_by_id.get(binding.local_account_id)
+            if local is None:
+                self._write_binding(
+                    binding,
+                    BINDING_CONFLICT,
+                    error=f"local account {binding.local_account_id} missing",
+                    observed=False,
+                )
+                continue
+            if remote is None:
+                self._write_binding(
+                    binding,
+                    BINDING_MISSING,
+                    error=f"remote id {binding.remote_account_id} missing from snapshot",
+                    observed=False,
+                )
+                continue
+            stats["observed"] += 1
+            expected_workspace_id = self._expected_workspace_id(
+                local,
+                memberships=memberships_by_account.get(local.id, []),
+                workspaces_by_id=workspaces_by_id,
+            )
+            self._apply_cross_check(binding, local, remote, expected_workspace_id)
+
+        for remote_id, remote in remotes_by_id.items():
+            if remote_id in bindings_by_remote:
+                continue
+            local, match_error = self._match_unbound_local_account(
+                remote,
+                accounts_by_email=accounts_by_email,
+                accounts_by_official=accounts_by_official,
+            )
+            snapshot = remote_snapshot(remote)
+            if local is None:
+                stats["orphaned"] += 1
+                orphans.append({**snapshot, "reason": match_error or "no local account matched"})
+                continue
+            existing_local = bindings_by_local.get(local.id)
+            if existing_local is not None and existing_local.remote_account_id != remote_id:
+                self._write_binding(
+                    existing_local,
+                    BINDING_CONFLICT,
+                    error=(
+                        f"local account {local.id} already bound to remote {existing_local.remote_account_id}, "
+                        f"refusing {remote_id}"
+                    ),
+                    remote=remote,
+                )
+                continue
+            binding = ExternalBinding(
+                provider=PROVIDER_SUB2API,
+                local_account_id=local.id,
+                remote_account_id=remote_id,
+                binding_state=BINDING_PENDING,
+                created_at=_now(),
+                updated_at=_now(),
+            )
+            db_session.add(binding)
+            await db_session.flush()
+            bindings.append(binding)
+            bindings_by_remote[remote_id] = binding
+            bindings_by_local[local.id] = binding
+            stats["created"] += 1
+            stats["observed"] += 1
+            expected_workspace_id = self._expected_workspace_id(
+                local,
+                memberships=memberships_by_account.get(local.id, []),
+                workspaces_by_id=workspaces_by_id,
+            )
+            self._apply_cross_check(binding, local, remote, expected_workspace_id)
+
+        await db_session.flush()
+        await self._mark_duplicate_remote_bindings(db_session)
+        await db_session.commit()
+
+        refreshed = (
+            await db_session.execute(
+                select(ExternalBinding).where(ExternalBinding.provider == PROVIDER_SUB2API).order_by(ExternalBinding.id)
+            )
+        ).scalars().all()
+        for row in refreshed:
+            state = row.binding_state or BINDING_PENDING
+            if state in stats:
+                stats[state] += 1
+
+        return {
+            "stats": stats,
+            "orphans": orphans,
+            "bindings": [self._serialize_binding(row) for row in refreshed],
+        }
+
+    def _expected_workspace_id(
+        self,
+        account: Account,
+        *,
+        memberships: Sequence[WorkspaceMembership],
+        workspaces_by_id: Dict[int, Workspace],
+    ) -> Optional[str]:
+        owned = [
+            workspace
+            for workspace in workspaces_by_id.values()
+            if workspace.owner_account_id == account.id
+            and workspace.official_workspace_id
+            and is_workspace_account_id(workspace.official_workspace_id)
+        ]
+        if owned:
+            return owned[0].official_workspace_id
+        for row in memberships:
+            workspace = workspaces_by_id.get(row.workspace_id)
+            if (
+                workspace
+                and workspace.official_workspace_id
+                and is_workspace_account_id(workspace.official_workspace_id)
+            ):
+                return workspace.official_workspace_id
+        return None
+
+    def _match_unbound_local_account(
+        self,
+        remote: Dict[str, Any],
+        *,
+        accounts_by_email: Dict[str, Account],
+        accounts_by_official: Dict[str, List[Account]],
+    ) -> Tuple[Optional[Account], Optional[str]]:
+        official_id = extract_remote_official_account_id(remote)
+        if official_id:
+            matches = accounts_by_official.get(official_id) or []
+            if len(matches) > 1:
+                return None, f"official account id {official_id} matches multiple local accounts"
+            if len(matches) == 1:
+                return matches[0], None
+        email = extract_remote_email(remote)
+        if email:
+            account = accounts_by_email.get(email)
+            if account is not None:
+                return account, None
+        return None, "no official id or exact email match"
+
+    def _apply_cross_check(
+        self,
+        binding: ExternalBinding,
+        account: Account,
+        remote: Dict[str, Any],
+        expected_workspace_id: Optional[str],
+    ) -> None:
+        remote_email = extract_remote_email(remote)
+        local_email = normalize_email(account.email)
+        remote_official = extract_remote_official_account_id(remote)
+        local_official = str(account.official_account_id or "").strip()
+        remote_workspace = extract_remote_workspace_id(remote)
+
+        mismatches: List[str] = []
+        if remote_email and local_email and remote_email != local_email:
+            mismatches.append(f"email mismatch remote={remote_email} local={local_email}")
+        if remote_official and local_official and remote_official != local_official:
+            mismatches.append(
+                f"official account id mismatch remote={remote_official} local={local_official}"
+            )
+        if expected_workspace_id and remote_workspace and remote_workspace != expected_workspace_id:
+            mismatches.append(
+                f"workspace id mismatch remote={remote_workspace} local={expected_workspace_id}"
+            )
+        if mismatches:
+            self._write_binding(binding, BINDING_CONFLICT, error="; ".join(mismatches), remote=remote)
+            return
+
+        incomplete: List[str] = []
+        email_confirmed = bool(remote_email and local_email and remote_email == local_email)
+        official_confirmed = bool(remote_official and local_official and remote_official == local_official)
+        if not email_confirmed and not official_confirmed:
+            incomplete.append("email/official id not confirmed")
+
+        if incomplete:
+            self._write_binding(
+                binding,
+                BINDING_PENDING,
+                error="; ".join(incomplete) + "; not promoting to verified",
+                remote=remote,
+            )
+            return
+
+        self._write_binding(binding, BINDING_VERIFIED, error=None, remote=remote)
+
+    def _write_binding(
+        self,
+        binding: ExternalBinding,
+        state: str,
+        *,
+        error: Optional[str],
+        remote: Optional[Dict[str, Any]] = None,
+        observed: bool = True,
+    ) -> None:
+        if binding.binding_state == BINDING_CONFLICT and state != BINDING_CONFLICT:
+            if observed:
+                binding.last_observed_at = _now()
+            if error:
+                binding.last_error = error
+            binding.updated_at = _now()
+            return
+        binding.binding_state = state
+        binding.last_error = error
+        if observed:
+            binding.last_observed_at = _now()
+        if state == BINDING_VERIFIED and remote is not None:
+            binding.verified_email = extract_remote_email(remote) or None
+            binding.verified_official_account_id = extract_remote_official_account_id(remote) or None
+            binding.verified_workspace_id = extract_remote_workspace_id(remote)
+        binding.updated_at = _now()
+
+    def _serialize_binding(self, binding: ExternalBinding) -> Dict[str, Any]:
+        return {
+            "id": binding.id,
+            "provider": binding.provider,
+            "local_account_id": binding.local_account_id,
+            "remote_account_id": binding.remote_account_id,
+            "binding_state": binding.binding_state,
+            "verified_email": binding.verified_email,
+            "verified_official_account_id": binding.verified_official_account_id,
+            "verified_workspace_id": binding.verified_workspace_id,
+            "last_observed_at": binding.last_observed_at,
+            "last_error": binding.last_error,
+        }
+
     async def audit(self, db_session: AsyncSession) -> Dict[str, Any]:
         accounts = (await db_session.execute(select(Account).order_by(Account.id))).scalars().all()
         memberships = (await db_session.execute(select(WorkspaceMembership))).scalars().all()
@@ -581,8 +908,13 @@ class IdentityService:
             elif not bindings:
                 result = AUDIT_UNBOUND
                 reasons.append("没有 Sub2API binding")
-            if result == AUDIT_VERIFIED and any(binding.binding_state == BINDING_PENDING for binding in bindings):
-                reasons.append("Sub2API binding 仍是 pending，尚未 email / official id 交叉验证")
+            if result == AUDIT_VERIFIED:
+                if any(binding.binding_state == BINDING_VERIFIED for binding in bindings):
+                    reasons.append("Sub2API binding 已交叉验证")
+                if any(binding.binding_state == BINDING_PENDING for binding in bindings):
+                    reasons.append("Sub2API binding 仍是 pending，尚未 email / official id 交叉验证")
+                if any(binding.binding_state == BINDING_MISSING for binding in bindings):
+                    reasons.append("Sub2API remote 快照里找不到这个 remote id")
 
         if not reasons:
             if result == AUDIT_VERIFIED:
@@ -672,9 +1004,14 @@ identity_service = IdentityService()
 
 
 async def _run_cli(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Phase 1 Identity backfill / audit")
-    parser.add_argument("command", choices=("backfill", "audit"), help="backfill 写入新表；audit 只读")
-    parser.add_argument("--json", action="store_true", help="audit 输出 JSON")
+    parser = argparse.ArgumentParser(description="Phase 1 Identity / Phase 2 Sub2API Binding")
+    parser.add_argument(
+        "command",
+        choices=("backfill", "audit", "verify-bindings"),
+        help="backfill 写入新表；audit 只读；verify-bindings 交叉验证传入的 Sub2API 账号列表",
+    )
+    parser.add_argument("--json", action="store_true", help="audit / verify-bindings 输出 JSON")
+    parser.add_argument("--file", help="verify-bindings 读取的 Sub2API account JSON 列表，省略则读 stdin")
     args = parser.parse_args(argv)
 
     from app.database import AsyncSessionLocal
@@ -684,12 +1021,31 @@ async def _run_cli(argv: Optional[Sequence[str]] = None) -> int:
             stats = await identity_service.backfill(session)
             print(json.dumps(stats, ensure_ascii=False, indent=2))
             return 0
+        if args.command == "verify-bindings":
+            report = await identity_service.verify_bindings(session, _load_remote_accounts(args.file))
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            return 0
         report = await identity_service.audit(session)
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         else:
             print(identity_service.format_audit_text(report), end="")
         return 0
+
+
+def _load_remote_accounts(path: Optional[str]) -> List[Dict[str, Any]]:
+    if path:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    else:
+        raw = sys.stdin.read()
+    data = json.loads(raw or "[]")
+    if isinstance(data, dict):
+        items = data.get("accounts") or data.get("items") or data.get("data") or []
+        data = items if isinstance(items, list) else []
+    if not isinstance(data, list):
+        raise SystemExit("verify-bindings 需要 JSON 数组或 {accounts/items: [...]}")
+    return [item for item in data if isinstance(item, dict)]
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
