@@ -112,6 +112,8 @@ def serialize_operation(row: Operation, *, steps: Optional[Sequence[OperationSte
         "lease_expires_at": row.lease_expires_at.isoformat() if row.lease_expires_at else "",
         "current_step": row.current_step or "",
         "input": unpack_input(row.input_json),
+        "resolved_proxy": row.resolved_proxy or "",
+        "resolved_proxy_profile_id": row.resolved_proxy_profile_id,
     }
     if steps is not None:
         payload["steps"] = [

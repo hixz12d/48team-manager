@@ -1,4 +1,4 @@
-"""iCloud HME 客户端：列别名、领下一个未占用、打本地标签。"""
+"""iCloud HME 客户端：列别名、领下一个未占用、打本地标签。Phase 5 补本地状态机。"""
 from __future__ import annotations
 
 import asyncio
@@ -11,11 +11,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ChildAccount, HmeAliasLease, Team
+from app.models import ChildAccount, HmeAliasLease, Operation, Team
 from app.services.child_accounts import CHILD_STATUS_UNUSED, normalize_email
 from app.utils.time_utils import get_now
 
@@ -28,6 +28,33 @@ HME_SETTING_TEAM_TAG_MAP = "hme_team_tag_map"
 DEFAULT_HME_BASE_URL = "http://icloud-hme:8081"
 FREE_ACCOUNT_LABEL = "GPT已使用"
 LEASE_TTL = timedelta(minutes=25)
+HME_STATE_RESERVED = "reserved"
+HME_STATE_SIGNUP_STARTED = "signup_started"
+HME_STATE_CONSUMED = "consumed"
+HME_STATE_QUARANTINED = "quarantined"
+HME_STATE_MANUAL_REVIEW = "manual_review"
+HME_HELD_STATES = (
+    HME_STATE_SIGNUP_STARTED,
+    HME_STATE_CONSUMED,
+    HME_STATE_QUARANTINED,
+    HME_STATE_MANUAL_REVIEW,
+)
+SIGNUP_STARTED_STAGES = {
+    "email_otp",
+    "about_you",
+    "add_phone",
+    "oauth",
+}
+SIGNUP_STARTED_ERROR_CODES = {
+    "mail_otp_timeout",
+    "mail_otp_rejected",
+    "about_you_stuck",
+    "sms_failed",
+    "sms_rejected",
+    "sms_missing",
+    "oauth_callback_missing",
+    "oauth_expired",
+}
 PRE_SIGNUP_ERROR_CODES = {
     "browser_failed",
     "proxy_failed",
@@ -315,10 +342,30 @@ def resolve_account(accounts: Sequence[Dict[str, Any]], account_id: str) -> Dict
     raise HmeError("没有 active 的 HME 账号", "hme_no_account")
 
 
+async def _operation_id(session: AsyncSession, job_id: str) -> Optional[int]:
+    if not job_id:
+        return None
+    row = await session.scalar(select(Operation.id).where(Operation.public_id == job_id))
+    return int(row) if row is not None else None
+
+
+def signup_started_from_progress(*, stage: str = "", error_code: str = "") -> bool:
+    code = str(error_code or "").strip().lower()
+    if code in SIGNUP_STARTED_ERROR_CODES:
+        return True
+    return str(stage or "").strip().lower() in SIGNUP_STARTED_STAGES
+
+
 async def active_leased_emails(session: AsyncSession, *, now: Optional[datetime] = None) -> Set[str]:
     current = now or get_now()
     result = await session.execute(
-        select(HmeAliasLease.email).where(HmeAliasLease.expires_at > current)
+        select(HmeAliasLease.email).where(
+            or_(
+                HmeAliasLease.local_state.in_(HME_HELD_STATES),
+                HmeAliasLease.label_sync_pending.is_(True),
+                HmeAliasLease.expires_at > current,
+            )
+        )
     )
     return {normalize_email(row[0]) for row in result.all() if row[0]}
 
@@ -341,14 +388,42 @@ async def child_occupied_emails(session: AsyncSession) -> Set[str]:
 
 async def purge_expired_leases(session: AsyncSession, *, now: Optional[datetime] = None) -> None:
     current = now or get_now()
-    await session.execute(delete(HmeAliasLease).where(HmeAliasLease.expires_at <= current))
+    await session.execute(
+        delete(HmeAliasLease).where(
+            HmeAliasLease.expires_at <= current,
+            or_(HmeAliasLease.local_state.is_(None), HmeAliasLease.local_state == HME_STATE_RESERVED),
+            or_(HmeAliasLease.label_sync_pending.is_(None), HmeAliasLease.label_sync_pending.is_(False)),
+        )
+    )
 
 
 async def release_lease(session: AsyncSession, claimed: Optional[ClaimedAlias]) -> None:
     if not claimed:
         return
-    await session.execute(delete(HmeAliasLease).where(HmeAliasLease.id == claimed.lease_id))
+    lease = await session.get(HmeAliasLease, claimed.lease_id)
+    if lease is None:
+        return
+    if lease.label_sync_pending:
+        return
+    state = str(lease.local_state or "") or HME_STATE_RESERVED
+    if state in {HME_STATE_SIGNUP_STARTED, HME_STATE_QUARANTINED, HME_STATE_MANUAL_REVIEW}:
+        return
+    await session.delete(lease)
     await session.commit()
+
+
+async def heartbeat_lease(session: AsyncSession, job_id: str) -> None:
+    if not job_id:
+        return
+    now = get_now()
+    rows = list(
+        (await session.execute(select(HmeAliasLease).where(HmeAliasLease.job_id == job_id))).scalars()
+    )
+    for lease in rows:
+        lease.heartbeat_at = now
+        lease.updated_at = now
+    if rows:
+        await session.commit()
 
 
 async def apply_local_label(session: AsyncSession, claimed: ClaimedAlias, label: str) -> None:
@@ -408,10 +483,15 @@ async def claim_next_alias(
             anonymous_id=anonymous_id,
             account_id=account_id,
             job_id=job_id or None,
+            operation_id=await _operation_id(session, job_id),
             purpose=purpose,
             team_id=team_id,
+            local_state=HME_STATE_RESERVED,
+            label_sync_pending=False,
+            heartbeat_at=now,
             expires_at=now + LEASE_TTL,
             created_at=now,
+            updated_at=now,
         )
         session.add(lease)
         try:
@@ -432,6 +512,53 @@ async def claim_next_alias(
     raise HmeError("HME 别名租约冲突，请重试", "hme_busy")
 
 
+async def mark_signup_started(
+    session: AsyncSession,
+    claimed: Optional[ClaimedAlias],
+    *,
+    stage: str = "",
+    error_code: str = "",
+) -> None:
+    if not claimed:
+        return
+    if not signup_started_from_progress(stage=stage, error_code=error_code):
+        return
+    lease = await session.get(HmeAliasLease, claimed.lease_id)
+    if lease is None:
+        return
+    now = get_now()
+    if str(lease.local_state or "") not in {HME_STATE_CONSUMED, HME_STATE_QUARANTINED, HME_STATE_MANUAL_REVIEW}:
+        lease.local_state = HME_STATE_SIGNUP_STARTED
+    lease.heartbeat_at = now
+    lease.updated_at = now
+    await session.commit()
+
+
+async def mark_consumed(
+    session: AsyncSession,
+    claimed: Optional[ClaimedAlias],
+    *,
+    label: str = "",
+    pending: bool = False,
+    error: str = "",
+) -> None:
+    if not claimed:
+        return
+    lease = await session.get(HmeAliasLease, claimed.lease_id)
+    if lease is None:
+        return
+    now = get_now()
+    lease.local_state = HME_STATE_CONSUMED
+    if label:
+        lease.label_desired = label
+    lease.label_sync_pending = bool(pending)
+    if error:
+        lease.last_error = str(error)[:500]
+    lease.heartbeat_at = now
+    lease.updated_at = now
+    await session.commit()
+
+
 async def finalize_claim(
     session: AsyncSession,
     claimed: Optional[ClaimedAlias],
@@ -446,14 +573,68 @@ async def finalize_claim(
         occupy = True
         tag = tag or FREE_ACCOUNT_LABEL
     if occupy:
+        await mark_consumed(session, claimed, label=tag, pending=True)
         try:
             await apply_local_label(session, claimed, tag)
-        except Exception:
-            logger.exception("HME 打标失败 email=%s label=%s，保留租约", claimed.email, tag)
+        except Exception as exc:
+            logger.exception("HME 打标失败 email=%s label=%s，保留 consumed + label_sync_pending", claimed.email, tag)
+            await mark_consumed(session, claimed, label=tag, pending=True, error=str(exc))
             return
+        await mark_consumed(session, claimed, label=tag, pending=False)
         await release_lease(session, claimed)
         return
     await release_lease(session, claimed)
+
+
+async def reconcile_aliases(
+    session: AsyncSession,
+    aliases: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """只读对账。发现 conflict 就报告，不自动改远端、不动 Apple。"""
+    from app.models import Operation
+
+    now = get_now()
+    await purge_expired_leases(session)
+    remote_by_email: Dict[str, Dict[str, Any]] = {}
+    if aliases is None:
+        cfg = await load_config(session)
+        if cfg.configured:
+            accounts = await asyncio.to_thread(hme_client.list_accounts, cfg)
+            account = resolve_account(accounts, cfg.account_id)
+            aliases = await asyncio.to_thread(hme_client.list_aliases, cfg, str(account.get("id") or ""))
+        else:
+            aliases = []
+    for item in aliases or []:
+        email = normalize_email(item.get("email") or "")
+        if email:
+            remote_by_email[email] = item
+    leases = list((await session.execute(select(HmeAliasLease))).scalars())
+    occupied = await child_occupied_emails(session)
+    running_ops = {
+        str(row.public_id)
+        for row in (await session.execute(select(Operation).where(Operation.state.in_(("queued", "running", "waiting"))))).scalars()
+    }
+    findings: List[Dict[str, Any]] = []
+    for lease in leases:
+        email = normalize_email(lease.email)
+        remote = remote_by_email.get(email)
+        remote_unused = bool(remote and remote.get("active") and is_unoccupied_label(remote.get("label") or ""))
+        state = str(lease.local_state or HME_STATE_RESERVED)
+        if state == HME_STATE_CONSUMED and remote_unused:
+            findings.append({"kind": "remote_unused_local_consumed", "email": email, "lease_id": lease.id})
+        if lease.expires_at <= now and state == HME_STATE_SIGNUP_STARTED and lease.job_id in running_ops:
+            findings.append({"kind": "expired_lease_running_operation", "email": email, "lease_id": lease.id, "job_id": lease.job_id})
+        if lease.label_sync_pending:
+            findings.append({"kind": "label_sync_pending", "email": email, "lease_id": lease.id, "label": lease.label_desired or ""})
+    for email, item in remote_by_email.items():
+        if not item.get("active") or is_unoccupied_label(item.get("label") or ""):
+            continue
+        if email in occupied:
+            continue
+        if any(normalize_email(lease.email) == email for lease in leases):
+            continue
+        findings.append({"kind": "remote_used_local_missing", "email": email, "label": item.get("label") or ""})
+    return {"ok": True, "conflicts": len(findings), "findings": findings}
 
 
 async def probe_status(session: AsyncSession) -> Dict[str, Any]:

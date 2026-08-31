@@ -126,8 +126,9 @@ def _persist_insert(job: Dict[str, Any], input_payload: Optional[Dict[str, Any]]
             INSERT INTO operations (
                 public_id, type, entity_type, entity_id, workspace_id, email, phone,
                 state, current_step, locked_by, lease_expires_at, cancel_requested,
-                input_json, log_json, created_at, started_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                input_json, log_json, created_at, started_at, updated_at,
+                resolved_proxy, resolved_proxy_profile_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job["id"],
@@ -146,6 +147,8 @@ def _persist_insert(job: Dict[str, Any], input_payload: Optional[Dict[str, Any]]
                 stamp,
                 stamp,
                 stamp,
+                payload.get("resolved_proxy") or payload.get("proxy") or None,
+                payload.get("resolved_proxy_profile_id"),
             ),
         )
         conn.commit()
@@ -220,6 +223,41 @@ def _persist_update(job_id: str, fields: Dict[str, Any]) -> None:
         conn.commit()
     except sqlite3.Error as exc:
         logger.warning("persist job update failed id=%s error=%s", job_id, exc)
+    finally:
+        conn.close()
+
+
+def _touch_resource_leases(job_id: str, stage: str = "", error_code: str = "") -> None:
+    conn = _connect()
+    if conn is None:
+        return
+    stamp = get_now().isoformat()
+    try:
+        conn.execute(
+            "UPDATE phone_pool SET lease_heartbeat_at = ?, reserved_at = ?, updated_at = ? WHERE reserved_by = ?",
+            (stamp, stamp, stamp, job_id),
+        )
+        conn.execute(
+            "UPDATE hme_alias_leases SET heartbeat_at = ?, updated_at = ? WHERE job_id = ?",
+            (stamp, stamp, job_id),
+        )
+        stage_l = str(stage or "").strip().lower()
+        code_l = str(error_code or "").strip().lower()
+        from app.services.hme import SIGNUP_STARTED_ERROR_CODES, SIGNUP_STARTED_STAGES
+
+        if stage_l in SIGNUP_STARTED_STAGES or code_l in SIGNUP_STARTED_ERROR_CODES:
+            conn.execute(
+                """
+                UPDATE hme_alias_leases
+                SET local_state = 'signup_started', heartbeat_at = ?, updated_at = ?
+                WHERE job_id = ?
+                  AND IFNULL(local_state, 'reserved') NOT IN ('consumed', 'quarantined', 'manual_review')
+                """,
+                (stamp, stamp, job_id),
+            )
+        conn.commit()
+    except sqlite3.Error as exc:
+        logger.debug("touch resource leases failed id=%s error=%s", job_id, exc)
     finally:
         conn.close()
 
@@ -408,6 +446,7 @@ def note(job_id: Optional[str], stage: str, message: str, *, error: str = "", er
             "status": job.get("status") or "running",
         }
     _persist_update(job_id, snapshot)
+    _touch_resource_leases(job_id, stage=stage, error_code=error_code)
 
 
 def request_cancel(job_id: str) -> Optional[Dict[str, Any]]:

@@ -128,6 +128,28 @@ class OnboardService:
     def _team_proxy(self, team: Team) -> str:
         return require_proxy(team.proxy, "母号 Team API")
 
+    async def _freeze_child_proxy(
+        self,
+        db_session: AsyncSession,
+        *,
+        job_id: Optional[str],
+        form_proxy: str = "",
+        child_proxy: str = "",
+        mother_proxy: str = "",
+        fallback_proxy: str = "",
+    ) -> str:
+        from app.services.proxy_profiles import proxy_profile_service
+
+        url, _profile_id = await proxy_profile_service.freeze(
+            db_session,
+            job_id=job_id,
+            form_proxy=form_proxy,
+            child_proxy=child_proxy,
+            mother_proxy=mother_proxy,
+            fallback_proxy=fallback_proxy,
+        )
+        return url
+
     async def _mapping(self, db_session: AsyncSession, team_id: int, email: str) -> Optional[TeamEmailMapping]:
         result = await db_session.execute(
             select(TeamEmailMapping).where(
@@ -718,9 +740,13 @@ class OnboardService:
                 sms_url = sms_url or existing.sms_url or ""
             child_proxy = child_proxy or existing.proxy or ""
             password = password or child_account_service.decrypt_secret(existing.password_encrypted)
-        child_proxy = child_proxy or team.proxy or ""
-        if child_proxy:
-            child_proxy = normalize_proxy_url(child_proxy) or child_proxy
+        child_proxy = await self._freeze_child_proxy(
+            db_session,
+            job_id=job_id,
+            form_proxy=child_proxy,
+            child_proxy=existing.proxy if existing else "",
+            mother_proxy=team.proxy or "",
+        )
 
         child = await child_account_service.upsert_from_input(
             db_session,
@@ -1340,9 +1366,13 @@ class OnboardService:
 
         phone, sms_url, _phone_source = self._bind_phone(phone_line, job_id)
         saved_proxy = (await settings_service.get_setting(db_session, "free_account_proxy", "")).strip()
-        child_proxy = proxy or (existing.proxy if existing else "") or saved_proxy
-        if child_proxy:
-            child_proxy = normalize_proxy_url(child_proxy) or child_proxy
+        child_proxy = await self._freeze_child_proxy(
+            db_session,
+            job_id=job_id,
+            form_proxy=proxy,
+            child_proxy=existing.proxy if existing else "",
+            fallback_proxy=saved_proxy,
+        )
         if not child_proxy:
             return {
                 "success": False,

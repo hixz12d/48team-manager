@@ -302,6 +302,142 @@ def ensure_operation_tables(cursor, migrations_applied):
         )
 
 
+def _add_column_if_missing(cursor, migrations_applied, table_name, column_name, ddl):
+    if table_exists(cursor, table_name) and not column_exists(cursor, table_name, column_name):
+        logger.info("添加 %s.%s 字段", table_name, column_name)
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+        migrations_applied.append(f"{table_name}.{column_name}")
+
+
+def ensure_resource_tables(cursor, migrations_applied):
+    """Phase 5：号码 attempts、HME 状态机、proxy_profiles。不改旧字符串代理语义。"""
+    if not table_exists(cursor, "proxy_profiles"):
+        logger.info("创建 proxy_profiles 表")
+        cursor.execute("""
+            CREATE TABLE proxy_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR(120),
+                scheme VARCHAR(20) NOT NULL,
+                host VARCHAR(255) NOT NULL,
+                port INTEGER NOT NULL,
+                username_encrypted TEXT,
+                password_encrypted TEXT,
+                url_fingerprint VARCHAR(64) NOT NULL UNIQUE,
+                region VARCHAR(80),
+                status VARCHAR(20) NOT NULL DEFAULT 'active',
+                last_exit_ip VARCHAR(64),
+                last_checked_at DATETIME,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+        """)
+        migrations_applied.append("proxy_profiles")
+
+    if table_exists(cursor, "proxy_profiles"):
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proxy_profiles_status ON proxy_profiles (status)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proxy_profiles_host ON proxy_profiles (host, port)"
+        )
+
+    _add_column_if_missing(
+        cursor, migrations_applied, "accounts", "proxy_profile_id", "proxy_profile_id INTEGER"
+    )
+    if table_exists(cursor, "accounts"):
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_proxy_profile ON accounts (proxy_profile_id)"
+        )
+
+    _add_column_if_missing(
+        cursor, migrations_applied, "operations", "resolved_proxy", "resolved_proxy VARCHAR(500)"
+    )
+    _add_column_if_missing(
+        cursor,
+        migrations_applied,
+        "operations",
+        "resolved_proxy_profile_id",
+        "resolved_proxy_profile_id INTEGER",
+    )
+
+    _add_column_if_missing(
+        cursor, migrations_applied, "hme_alias_leases", "operation_id", "operation_id INTEGER"
+    )
+    _add_column_if_missing(
+        cursor,
+        migrations_applied,
+        "hme_alias_leases",
+        "local_state",
+        "local_state VARCHAR(20) NOT NULL DEFAULT 'reserved'",
+    )
+    _add_column_if_missing(
+        cursor, migrations_applied, "hme_alias_leases", "label_desired", "label_desired VARCHAR(255)"
+    )
+    _add_column_if_missing(
+        cursor,
+        migrations_applied,
+        "hme_alias_leases",
+        "label_sync_pending",
+        "label_sync_pending BOOLEAN NOT NULL DEFAULT 0",
+    )
+    _add_column_if_missing(
+        cursor, migrations_applied, "hme_alias_leases", "last_error", "last_error TEXT"
+    )
+    _add_column_if_missing(
+        cursor, migrations_applied, "hme_alias_leases", "heartbeat_at", "heartbeat_at DATETIME"
+    )
+    _add_column_if_missing(
+        cursor, migrations_applied, "hme_alias_leases", "updated_at", "updated_at DATETIME"
+    )
+    if table_exists(cursor, "hme_alias_leases"):
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hme_lease_state ON hme_alias_leases (local_state)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hme_lease_operation ON hme_alias_leases (operation_id)"
+        )
+
+    _add_column_if_missing(
+        cursor, migrations_applied, "phone_pool", "lease_heartbeat_at", "lease_heartbeat_at DATETIME"
+    )
+    _add_column_if_missing(
+        cursor, migrations_applied, "phone_pool", "operation_id", "operation_id INTEGER"
+    )
+    if table_exists(cursor, "phone_pool"):
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phone_pool_heartbeat ON phone_pool (lease_heartbeat_at)"
+        )
+
+    if not table_exists(cursor, "phone_attempts"):
+        logger.info("创建 phone_attempts 表")
+        cursor.execute("""
+            CREATE TABLE phone_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_id INTEGER NOT NULL,
+                operation_id INTEGER,
+                operation_public_id VARCHAR(32),
+                account_id INTEGER,
+                purpose VARCHAR(20) NOT NULL DEFAULT 'signup',
+                result VARCHAR(40) NOT NULL,
+                provider_message TEXT,
+                started_at DATETIME,
+                finished_at DATETIME,
+                created_at DATETIME,
+                FOREIGN KEY(phone_id) REFERENCES phone_pool(id)
+            )
+        """)
+        migrations_applied.append("phone_attempts")
+
+    if table_exists(cursor, "phone_attempts"):
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phone_attempts_phone ON phone_attempts (phone_id, finished_at)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_phone_attempts_operation ON phone_attempts (operation_public_id)"
+        )
+
+
 def run_auto_migration(db_path=None):
     """
     自动运行数据库迁移
@@ -868,6 +1004,7 @@ def run_auto_migration(db_path=None):
         ensure_identity_tables(cursor, migrations_applied)
         ensure_quota_tables(cursor, migrations_applied)
         ensure_operation_tables(cursor, migrations_applied)
+        ensure_resource_tables(cursor, migrations_applied)
 
         if table_exists(cursor, "settings"):
             cursor.execute("SELECT 1 FROM settings WHERE key = ?", ("free_account_proxy",))

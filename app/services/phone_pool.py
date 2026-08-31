@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import PhonePool
+from app.models import Operation, PhoneAttempt, PhonePool
 from app.services.sms import parse_phone_line
 from app.utils.time_utils import get_now
 
@@ -29,6 +29,7 @@ OUTCOME_RISK = "risk"
 OUTCOME_NO_SMS = "no_sms"
 OUTCOME_CANCELLED = "cancelled"
 OUTCOME_UNRELATED = "unrelated"
+OUTCOME_PROVIDER_ERROR = "provider_error"
 
 SETTING_MAX_USES = "sms_max_uses_per_phone"
 SETTING_COOLDOWN_SEC = "sms_cooldown_sec"
@@ -89,6 +90,31 @@ def effective_max_uses(row: PhonePool, cfg: PhonePoolConfig) -> int:
 
 
 class PhonePoolService:
+    def _lease_anchor(self, row: PhonePool):
+        return row.lease_heartbeat_at or row.reserved_at
+
+    def _lease_live(self, row: PhonePool, reserve_cutoff) -> bool:
+        if not row.reserved_by:
+            return False
+        anchor = self._lease_anchor(row)
+        return anchor is None or anchor >= reserve_cutoff
+
+    def _lease_free_clause(self, reserve_cutoff):
+        return or_(
+            PhonePool.reserved_by.is_(None),
+            PhonePool.lease_heartbeat_at.is_not(None) & (PhonePool.lease_heartbeat_at < reserve_cutoff),
+            PhonePool.lease_heartbeat_at.is_(None) & or_(
+                PhonePool.reserved_at.is_(None),
+                PhonePool.reserved_at < reserve_cutoff,
+            ),
+        )
+
+    async def _operation_id(self, session: AsyncSession, job_id: str) -> Optional[int]:
+        if not job_id:
+            return None
+        row = await session.scalar(select(Operation.id).where(Operation.public_id == job_id))
+        return int(row) if row is not None else None
+
     async def get_config(self, session: AsyncSession) -> PhonePoolConfig:
         from app.services.settings import settings_service
 
@@ -131,6 +157,7 @@ class PhonePoolService:
             "last_error_type": row.last_error_type or "",
             "reserved_by": row.reserved_by or "",
             "reserved_at": row.reserved_at.isoformat() if row.reserved_at else "",
+            "lease_heartbeat_at": row.lease_heartbeat_at.isoformat() if row.lease_heartbeat_at else "",
             "risk_count": int(row.risk_count or 0),
             "no_sms_streak": int(row.no_sms_streak or 0),
             "note": row.note or "",
@@ -145,9 +172,15 @@ class PhonePoolService:
             update(PhonePool)
             .where(
                 PhonePool.reserved_by.is_not(None),
-                or_(PhonePool.reserved_at.is_(None), PhonePool.reserved_at < cutoff),
+                self._lease_free_clause(cutoff),
             )
-            .values(reserved_by=None, reserved_at=None, updated_at=get_now())
+            .values(
+                reserved_by=None,
+                reserved_at=None,
+                lease_heartbeat_at=None,
+                operation_id=None,
+                updated_at=get_now(),
+            )
         )
         return int(result.rowcount or 0)
 
@@ -240,7 +273,7 @@ class PhonePoolService:
         cooling = 0
         reserved = 0
         for row in active_rows:
-            lease_live = bool(row.reserved_by) and (row.reserved_at is None or row.reserved_at >= reserve_cutoff)
+            lease_live = self._lease_live(row, reserve_cutoff)
             if lease_live:
                 reserved += 1
                 continue
@@ -264,11 +297,7 @@ class PhonePoolService:
             await self.expire_leases(session, cfg)
             await self.promote_maxed(session, cfg)
             await session.flush()
-            lease_free = or_(
-                PhonePool.reserved_by.is_(None),
-                PhonePool.reserved_at.is_(None),
-                PhonePool.reserved_at < reserve_cutoff,
-            )
+            lease_free = self._lease_free_clause(reserve_cutoff)
             cooldown_ok = or_(PhonePool.last_used_at.is_(None), PhonePool.last_used_at < cooldown_since)
             stmt = (
                 select(PhonePool)
@@ -296,7 +325,13 @@ class PhonePoolService:
                     PhonePool.status == STATUS_ACTIVE,
                     lease_free,
                 )
-                .values(reserved_by=job_key, reserved_at=now, updated_at=now)
+                .values(
+                    reserved_by=job_key,
+                    reserved_at=now,
+                    lease_heartbeat_at=now,
+                    operation_id=await self._operation_id(session, job_key),
+                    updated_at=now,
+                )
             )
             await session.commit()
             if int(result.rowcount or 0) == 1:
@@ -337,6 +372,22 @@ class PhonePoolService:
     def _clear_lease(self, row: PhonePool) -> None:
         row.reserved_by = None
         row.reserved_at = None
+        row.lease_heartbeat_at = None
+        row.operation_id = None
+
+    async def heartbeat(self, session: AsyncSession, job_id: str) -> int:
+        job_key = str(job_id or "").strip()
+        if not job_key:
+            return 0
+        now = get_now()
+        result = await session.execute(
+            update(PhonePool)
+            .where(PhonePool.reserved_by == job_key)
+            .values(lease_heartbeat_at=now, reserved_at=now, updated_at=now)
+        )
+        if int(result.rowcount or 0):
+            await session.commit()
+        return int(result.rowcount or 0)
 
     async def release(
         self,
@@ -375,12 +426,15 @@ class PhonePoolService:
         phone_id: Optional[int] = None,
         number: str = "",
         message: str = "",
+        purpose: str = "signup",
+        account_id: Optional[int] = None,
     ) -> Optional[PhonePool]:
         row = await self._load_for_job(session, job_id=job_id, phone_id=phone_id, number=number)
         if row is None:
             return None
         cfg = await self.get_config(session)
         now = get_now()
+        started_at = row.reserved_at or row.lease_heartbeat_at or now
         outcome = str(result or "").strip().lower()
         row.last_error = (message or "")[:500]
         row.last_error_type = outcome if outcome not in {OUTCOME_SUCCESS, OUTCOME_CANCELLED, OUTCOME_UNRELATED, ""} else (row.last_error_type or "")
@@ -432,6 +486,20 @@ class PhonePoolService:
             self._clear_lease(row)
         else:
             self._clear_lease(row)
+        session.add(
+            PhoneAttempt(
+                phone_id=row.id,
+                operation_id=await self._operation_id(session, job_id),
+                operation_public_id=job_id or None,
+                account_id=account_id,
+                purpose=purpose if purpose in {"signup", "reauth"} else "signup",
+                result=outcome or OUTCOME_PROVIDER_ERROR,
+                provider_message=(message or "")[:500],
+                started_at=started_at,
+                finished_at=now,
+                created_at=now,
+            )
+        )
         await session.commit()
         return row
 
@@ -483,7 +551,7 @@ class PhonePoolService:
                 continue
             max_uses = effective_max_uses(row, cfg)
             left = max(0, max_uses - int(row.used_count or 0))
-            lease_live = bool(row.reserved_by) and (row.reserved_at is None or row.reserved_at >= reserve_cutoff)
+            lease_live = self._lease_live(row, reserve_cutoff)
             cooling_now = row.last_used_at is not None and row.last_used_at >= cooldown_since
             if lease_live:
                 reserved += 1

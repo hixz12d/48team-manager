@@ -353,22 +353,31 @@ class Sub2ApiUsageProbe(Base):
 
 
 class HmeAliasLease(Base):
-    """HME 别名领取租约。未过期视为占用，不用标签当锁。"""
+    """HME 别名领取租约。未过期或 signup_started/consumed 都视为占用。"""
     __tablename__ = "hme_alias_leases"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     email = Column(String(255), unique=True, nullable=False, comment="领取到的别名")
     anonymous_id = Column(String(255), nullable=False, comment="HME anonymousId")
     account_id = Column(String(100), nullable=False, comment="HME 账号 ID")
-    job_id = Column(String(32), comment="拉人任务 ID")
+    job_id = Column(String(32), comment="拉人任务 public_id")
+    operation_id = Column(Integer, comment="operations.id")
     purpose = Column(String(40), comment="onboard/free/rotate")
     team_id = Column(Integer, comment="拉人时的 Team ID")
-    expires_at = Column(DateTime, nullable=False, comment="租约过期时间")
+    local_state = Column(String(20), default="reserved", nullable=False, comment="reserved/signup_started/consumed/quarantined/manual_review")
+    label_desired = Column(String(255), comment="打算写入 HME 的本地标签")
+    label_sync_pending = Column(Boolean, default=False, nullable=False, comment="打标失败，待后台重试")
+    last_error = Column(Text, comment="最近一次打标/对账错误")
+    heartbeat_at = Column(DateTime, comment="任务心跳，signup_started 后忽略过期")
+    expires_at = Column(DateTime, nullable=False, comment="reserved 状态的租约过期时间")
     created_at = Column(DateTime, default=get_now, comment="创建时间")
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now, comment="更新时间")
 
     __table_args__ = (
         Index("idx_hme_lease_expires", "expires_at"),
         Index("idx_hme_lease_job", "job_id"),
+        Index("idx_hme_lease_state", "local_state"),
+        Index("idx_hme_lease_operation", "operation_id"),
     )
 
 
@@ -386,8 +395,10 @@ class PhonePool(Base):
     last_success_at = Column(DateTime, comment="最近一次 OpenAI 接受短信")
     last_error = Column(Text, comment="最近一次失败说明")
     last_error_type = Column(String(40), comment="invalid/recently_used/risk/no_sms")
-    reserved_by = Column(String(64), comment="占用该号的 job_id")
+    reserved_by = Column(String(64), comment="占用该号的 operation public_id")
     reserved_at = Column(DateTime, comment="租约开始时间")
+    lease_heartbeat_at = Column(DateTime, comment="租约心跳，任务运行中续租")
+    operation_id = Column(Integer, comment="当前占用的 operations.id")
     risk_count = Column(Integer, default=0, nullable=False, comment="累计 risk 次数")
     no_sms_streak = Column(Integer, default=0, nullable=False, comment="连续收不到短信次数")
     note = Column(Text, comment="备注")
@@ -397,6 +408,55 @@ class PhonePool(Base):
     __table_args__ = (
         Index("idx_phone_pool_status", "status"),
         Index("idx_phone_pool_reserved", "reserved_by"),
+        Index("idx_phone_pool_heartbeat", "lease_heartbeat_at"),
+    )
+
+
+class PhoneAttempt(Base):
+    """号码使用历史。成功才计入 used_count，本表只记账。"""
+    __tablename__ = "phone_attempts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    phone_id = Column(Integer, ForeignKey("phone_pool.id"), nullable=False)
+    operation_id = Column(Integer, comment="operations.id")
+    operation_public_id = Column(String(32), comment="operations.public_id")
+    account_id = Column(Integer, comment="本地 accounts.id")
+    purpose = Column(String(20), default="signup", nullable=False, comment="signup/reauth")
+    result = Column(String(40), nullable=False, comment="success/recently_used/invalid/risk/no_sms/cancelled/provider_error")
+    provider_message = Column(Text, comment="OpenAI / 接码回执")
+    started_at = Column(DateTime, comment="领取时间")
+    finished_at = Column(DateTime, comment="记结果时间")
+    created_at = Column(DateTime, default=get_now, comment="创建时间")
+
+    __table_args__ = (
+        Index("idx_phone_attempts_phone", "phone_id", "finished_at"),
+        Index("idx_phone_attempts_operation", "operation_public_id"),
+    )
+
+
+class ProxyProfile(Base):
+    """静态 ISP 档案。任务创建时 freeze，不跟页面字符串走。"""
+    __tablename__ = "proxy_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), comment="展示名")
+    scheme = Column(String(20), nullable=False, comment="http/https/socks5/socks5h")
+    host = Column(String(255), nullable=False)
+    port = Column(Integer, nullable=False)
+    username_encrypted = Column(Text)
+    password_encrypted = Column(Text)
+    url_fingerprint = Column(String(64), unique=True, nullable=False, comment="规范化 URL 的 sha256")
+    region = Column(String(80))
+    status = Column(String(20), default="active", nullable=False, comment="active/disabled")
+    last_exit_ip = Column(String(64))
+    last_checked_at = Column(DateTime)
+    failure_count = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=get_now)
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now)
+
+    __table_args__ = (
+        Index("idx_proxy_profiles_status", "status"),
+        Index("idx_proxy_profiles_host", "host", "port"),
     )
 
 
@@ -412,7 +472,8 @@ class Account(Base):
     auth_state = Column(String(30), default="unknown", nullable=False, comment="healthy/refresh_due/oauth_required/manual_required/unknown")
     operational_state = Column(String(20), default="available", nullable=False, comment="available/active/standby/disabled/archived/unused/free")
     local_purpose = Column(String(20), nullable=False, comment="mother/child/standby/free/disabled")
-    proxy = Column(String(500), comment="账号专属静态 ISP，Phase 5 再拆 proxy_profiles")
+    proxy = Column(String(500), comment="账号专属静态 ISP 字符串，兼容旧数据")
+    proxy_profile_id = Column(Integer, ForeignKey("proxy_profiles.id"), comment="规范化代理档案")
     access_token_encrypted = Column(Text, comment="加密存储的 AT")
     refresh_token_encrypted = Column(Text, comment="加密存储的 RT")
     session_token_encrypted = Column(Text, comment="加密存储的 Session Token")
@@ -438,6 +499,7 @@ class Account(Base):
         Index("idx_accounts_source_team", "source_team_id"),
         Index("idx_accounts_source_child", "source_child_account_id"),
         Index("idx_accounts_next_quota_probe", "next_quota_probe_at"),
+        Index("idx_accounts_proxy_profile", "proxy_profile_id"),
     )
 
 
@@ -558,6 +620,8 @@ class Operation(Base):
     account_id = Column(Integer)
     email = Column(String(255))
     phone = Column(String(64))
+    resolved_proxy = Column(String(500), comment="任务创建时冻结的代理 URL")
+    resolved_proxy_profile_id = Column(Integer, comment="任务创建时冻结的 proxy_profiles.id")
     state = Column(String(20), nullable=False, default="queued", comment="queued/running/waiting/success/failed/cancelled/manual_required")
     current_step = Column(String(40))
     idempotency_key = Column(String(120))
