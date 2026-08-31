@@ -675,6 +675,17 @@ async def lifespan(app: FastAPI):
         # 2. 运行自动数据库迁移
         from app.db_migrations import run_auto_migration
         run_auto_migration()
+
+        from app.services.operations import recover_and_resume_stale_operations
+
+        resume_stats = await recover_and_resume_stale_operations()
+        logger.info(
+            "长任务恢复: recovered=%s resumed=%s manual=%s ids=%s",
+            resume_stats.get("recovered", 0),
+            resume_stats.get("resumed", 0),
+            resume_stats.get("manual", 0),
+            resume_stats.get("ids") or [],
+        )
         
         # 3. 初始化管理员密码（如果不存在）
         async with AsyncSessionLocal() as session:

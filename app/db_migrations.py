@@ -228,6 +228,80 @@ def ensure_quota_tables(cursor, migrations_applied):
         )
 
 
+def ensure_operation_tables(cursor, migrations_applied):
+    """Phase 4：长任务落库。不改踢拉业务语义，不删 _JOBS 兼容 API。"""
+    if not table_exists(cursor, "operations"):
+        logger.info("创建 operations 表")
+        cursor.execute("""
+            CREATE TABLE operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                public_id VARCHAR(32) NOT NULL UNIQUE,
+                type VARCHAR(40) NOT NULL,
+                entity_type VARCHAR(40),
+                entity_id INTEGER,
+                workspace_id INTEGER,
+                account_id INTEGER,
+                email VARCHAR(255),
+                phone VARCHAR(64),
+                state VARCHAR(20) NOT NULL DEFAULT 'queued',
+                current_step VARCHAR(40),
+                idempotency_key VARCHAR(120),
+                locked_by VARCHAR(80),
+                lease_expires_at DATETIME,
+                cancel_requested BOOLEAN NOT NULL DEFAULT 0,
+                input_json TEXT,
+                result_json TEXT,
+                error_code VARCHAR(40),
+                error_message TEXT,
+                log_json TEXT,
+                created_at DATETIME,
+                started_at DATETIME,
+                finished_at DATETIME,
+                updated_at DATETIME
+            )
+        """)
+        migrations_applied.append("operations")
+
+    if table_exists(cursor, "operations"):
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_operations_state_lease ON operations (state, lease_expires_at)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_operations_email_created ON operations (email, created_at)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_operations_type_state ON operations (type, state)"
+        )
+
+    if not table_exists(cursor, "operation_steps"):
+        logger.info("创建 operation_steps 表")
+        cursor.execute("""
+            CREATE TABLE operation_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_id INTEGER NOT NULL,
+                step_name VARCHAR(40) NOT NULL,
+                state VARCHAR(20) NOT NULL DEFAULT 'queued',
+                attempt INTEGER NOT NULL DEFAULT 1,
+                input_snapshot TEXT,
+                result_snapshot TEXT,
+                started_at DATETIME,
+                finished_at DATETIME,
+                error_code VARCHAR(40),
+                error_message TEXT,
+                FOREIGN KEY(operation_id) REFERENCES operations(id) ON DELETE CASCADE
+            )
+        """)
+        migrations_applied.append("operation_steps")
+
+    if table_exists(cursor, "operation_steps"):
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_operation_step_name ON operation_steps (operation_id, step_name)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_operation_steps_op ON operation_steps (operation_id, state)"
+        )
+
+
 def run_auto_migration(db_path=None):
     """
     自动运行数据库迁移
@@ -793,6 +867,7 @@ def run_auto_migration(db_path=None):
 
         ensure_identity_tables(cursor, migrations_applied)
         ensure_quota_tables(cursor, migrations_applied)
+        ensure_operation_tables(cursor, migrations_applied)
 
         if table_exists(cursor, "settings"):
             cursor.execute("SELECT 1 FROM settings WHERE key = ?", ("free_account_proxy",))

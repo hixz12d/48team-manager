@@ -543,3 +543,65 @@ class QuotaSnapshot(Base):
         Index("idx_quota_snapshots_account_queried", "account_id", "queried_at"),
         Index("idx_quota_snapshots_success", "account_id", "success", "queried_at"),
     )
+
+
+class Operation(Base):
+    """长任务落库。进程重启后靠 public_id / lease 回收，不活在内存 _JOBS。"""
+    __tablename__ = "operations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    public_id = Column(String(32), unique=True, nullable=False, comment="对外 job_id")
+    op_type = Column("type", String(40), nullable=False, comment="onboard/reauth/rotate/free_register/reregister")
+    entity_type = Column(String(40), comment="team/child/account")
+    entity_id = Column(Integer)
+    workspace_id = Column(Integer, comment="本地 teams.id / workspaces.source_team_id")
+    account_id = Column(Integer)
+    email = Column(String(255))
+    phone = Column(String(64))
+    state = Column(String(20), nullable=False, default="queued", comment="queued/running/waiting/success/failed/cancelled/manual_required")
+    current_step = Column(String(40))
+    idempotency_key = Column(String(120))
+    locked_by = Column(String(80))
+    lease_expires_at = Column(DateTime)
+    cancel_requested = Column(Boolean, default=False, nullable=False)
+    input_json = Column(Text, comment="续跑用入参，敏感字段已加密")
+    result_json = Column(Text)
+    error_code = Column(String(40))
+    error_message = Column(Text)
+    log_json = Column(Text)
+    created_at = Column(DateTime, default=get_now)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    updated_at = Column(DateTime, default=get_now, onupdate=get_now)
+
+    steps = relationship("OperationStep", back_populates="operation", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("idx_operations_state_lease", "state", "lease_expires_at"),
+        Index("idx_operations_email_created", "email", "created_at"),
+        Index("idx_operations_type_state", "type", "state"),
+    )
+
+
+class OperationStep(Base):
+    """长任务步骤。rotate 的 kicked 成功后重启不得再踢。"""
+    __tablename__ = "operation_steps"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    operation_id = Column(Integer, ForeignKey("operations.id", ondelete="CASCADE"), nullable=False)
+    step_name = Column(String(40), nullable=False)
+    state = Column(String(20), nullable=False, default="queued")
+    attempt = Column(Integer, default=1, nullable=False)
+    input_snapshot = Column(Text)
+    result_snapshot = Column(Text)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    error_code = Column(String(40))
+    error_message = Column(Text)
+
+    operation = relationship("Operation", back_populates="steps")
+
+    __table_args__ = (
+        UniqueConstraint("operation_id", "step_name", name="uq_operation_step_name"),
+        Index("idx_operation_steps_op", "operation_id", "state"),
+    )

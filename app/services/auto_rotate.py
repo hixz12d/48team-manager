@@ -974,8 +974,19 @@ class AutoRotateService:
                 )
                 await db_session.commit()
                 return stats
-        job = onboard_jobs.create_job(team_id=team_id, email=email, action="rotate")
         next_eligible_at = official_weekly_reset_at(usage) if reason == "weekly_limit" else None
+        job = onboard_jobs.create_job(
+            team_id=team_id,
+            email=email,
+            action="rotate",
+            input_payload={
+                "team_id": team_id,
+                "email": email,
+                "reason": reason,
+                "force_refill": bool(cfg.get("auto_rotate_force_refill")),
+                "next_eligible_at": next_eligible_at.isoformat() if next_eligible_at else None,
+            },
+        )
         result = await onboard_service.kick_and_refill(
             db_session,
             team_id=team_id,

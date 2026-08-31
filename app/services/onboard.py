@@ -1626,16 +1626,52 @@ class OnboardService:
         kick_target_email = normalize_email(email)
         if not kick_target_email:
             return {"success": False, "error": "缺少要踢的子号邮箱", "error_code": "rotate_email_missing"}
-        kick_result = await self.kick_to_standby(
-            db_session,
-            team_id=team.id,
-            email=kick_target_email,
-            reason=reason,
-            next_eligible_at=next_eligible_at,
-            unbind_sub2api=(reason in {"weekly_limit", "deactivated"}),
-        )
-        if not kick_result.get("success"):
-            return kick_result
+        from app.services.operations import operation_store
+
+        already_kicked = False
+        if job_id:
+            op = await operation_store.get_by_public_id(db_session, job_id)
+            already_kicked = bool(op and await operation_store.step_succeeded(db_session, op, "kicked"))
+        if already_kicked:
+            child = await child_account_service.get_by_email(db_session, kick_target_email)
+            kick_result = {
+                "success": True,
+                "status": "standby",
+                "message": f"{kick_target_email} 本任务已踢过，跳过重复踢人",
+                "child": child_account_service.serialize(child) if child else None,
+                "skipped_duplicate_kick": True,
+            }
+            onboard_jobs.note(job_id, "kicked", kick_result["message"])
+        else:
+            kick_result = await self.kick_to_standby(
+                db_session,
+                team_id=team.id,
+                email=kick_target_email,
+                reason=reason,
+                next_eligible_at=next_eligible_at,
+                unbind_sub2api=(reason in {"weekly_limit", "deactivated"}),
+            )
+            if not kick_result.get("success"):
+                if job_id:
+                    op = await operation_store.get_by_public_id(db_session, job_id)
+                    if op:
+                        await operation_store.mark_step(
+                            db_session,
+                            op,
+                            "kicked",
+                            state="failed",
+                            result=kick_result,
+                            error_code=str(kick_result.get("error_code") or "kick_failed"),
+                            error_message=str(kick_result.get("error") or "踢人失败"),
+                        )
+                        await db_session.commit()
+                return kick_result
+            if job_id:
+                op = await operation_store.get_by_public_id(db_session, job_id)
+                if op:
+                    await operation_store.mark_step(db_session, op, "kicked", state="success", result=kick_result)
+                    await db_session.commit()
+                onboard_jobs.note(job_id, "kicked", kick_result.get("message") or f"已踢出 {kick_target_email}")
 
         await child_account_service.record_event(
             db_session,
@@ -1649,7 +1685,11 @@ class OnboardService:
         await db_session.commit()
 
         vacancy = kick_result.get("vacancy")
-        if not force_refill and not is_safe_to_refill(vacancy):
+        if (
+            not force_refill
+            and not kick_result.get("skipped_duplicate_kick")
+            and not is_safe_to_refill(vacancy)
+        ):
             summary = summarize_for_message(vacancy) or "踢人回执不能证明席位已释放"
             return {
                 "success": False,

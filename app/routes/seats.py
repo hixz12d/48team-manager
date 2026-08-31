@@ -787,7 +787,12 @@ async def start_child_auto_reauth(
         password=password,
         team_name=team.team_name or "",
     )
-    job = jobs.create_job(team_id=team.id, email=target, action="reauth")
+    job = jobs.create_job(
+        team_id=team.id,
+        email=target,
+        action="reauth",
+        input_payload={"team_id": team.id, "email": target, "ticket": session["ticket"]},
+    )
     oauth_sessions.mark_session(session["ticket"], job_id=job["id"], status="running", message=plan["reason"])
     asyncio.create_task(_run_auto_reauth_job(job["id"], session["ticket"]))
     return {
@@ -890,7 +895,12 @@ async def seats_oauth_start(
                     "message": "该邮箱已有进行中的任务",
                     "job": active,
                 }
-        job = onboard_jobs.create_job(team_id=team.id, email=email, action="reauth")
+        job = onboard_jobs.create_job(
+            team_id=team.id,
+            email=email,
+            action="reauth",
+            input_payload={"team_id": team.id, "email": email, "ticket": session["ticket"]},
+        )
         oauth_sessions.mark_session(session["ticket"], job_id=job["id"], status="running", message=plan["reason"])
         live = oauth_sessions.get_session(session["ticket"]) or {}
         asyncio.create_task(_run_auto_reauth_job(job["id"], session["ticket"]))
@@ -1011,7 +1021,12 @@ async def seats_onboard(
         active = onboard_jobs.active_job_for_email(email)
         if active:
             return {"success": True, "accepted": True, "job_id": active["id"], "message": "该邮箱已有进行中的拉人任务", "job": active}
-    job = onboard_jobs.create_job(team_id=payload.team_id, email=email or payload.email, action="onboard")
+    job = onboard_jobs.create_job(
+        team_id=payload.team_id,
+        email=email or payload.email,
+        action="onboard",
+        input_payload=payload.model_dump(),
+    )
     asyncio.create_task(_run_onboard_job(job["id"], payload))
     return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始拉人，进度会留在本页", "job": job}
 
@@ -1038,7 +1053,12 @@ async def seats_onboard_free(
                 "job": busy,
             },
         )
-    job = onboard_jobs.create_job(team_id=0, email=email or payload.email, action="free_register")
+    job = onboard_jobs.create_job(
+        team_id=0,
+        email=email or payload.email,
+        action="free_register",
+        input_payload=payload.model_dump(),
+    )
     asyncio.create_task(_run_free_onboard_job(job["id"], payload))
     return {"success": True, "accepted": True, "job_id": job["id"], "message": "已开始注册免费号，进度会留在本页", "job": job}
 
@@ -1080,7 +1100,12 @@ async def seats_reregister(
             phone=payload.phone or "",
             proxy=payload.proxy or child.proxy or "",
         )
-        job = onboard_jobs.create_job(team_id=0, email=child.email, action="free_register")
+        job = onboard_jobs.create_job(
+            team_id=0,
+            email=child.email,
+            action="free_register",
+            input_payload=request.model_dump(),
+        )
         asyncio.create_task(_run_free_onboard_job(job["id"], request))
         return {"success": True, "accepted": True, "job_id": job["id"], "message": f"开始注册免费号 {child.email}", "job": job}
     active = onboard_jobs.active_job_for_email(child.email)
@@ -1095,7 +1120,12 @@ async def seats_reregister(
         skip_invite=child.status == "invited",
         force=payload.force,
     )
-    job = onboard_jobs.create_job(team_id=int(team_id), email=child.email, action="reregister")
+    job = onboard_jobs.create_job(
+        team_id=int(team_id),
+        email=child.email,
+        action="reregister",
+        input_payload=request.model_dump(),
+    )
     asyncio.create_task(_run_onboard_job(job["id"], request))
     return {"success": True, "accepted": True, "job_id": job["id"], "message": f"开始重新注册 {child.email}", "job": job}
 
