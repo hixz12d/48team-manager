@@ -175,6 +175,8 @@ def _persist_update(job_id: str, fields: Dict[str, Any]) -> None:
         "result": "result_json",
         "log": "log_json",
         "input": "input_json",
+        "resolved_proxy": "resolved_proxy",
+        "resolved_proxy_profile_id": "resolved_proxy_profile_id",
     }
 
     for key, column in mapping.items():
@@ -534,10 +536,16 @@ def finish(job_id: Optional[str], result: Dict[str, Any]) -> None:
 def attach_resume(job_id: Optional[str], payload: Dict[str, Any]) -> None:
     if not job_id:
         return
+    merged = dict(payload or {})
     with _LOCK:
         job = _JOBS.get(job_id)
         if job is not None:
             merged = dict(job.get("resume") or {})
             merged.update(payload)
             job["resume"] = merged
-    _persist_update(job_id, {"input": payload})
+    fields: Dict[str, Any] = {"input": merged}
+    if "resolved_proxy" in payload:
+        fields["resolved_proxy"] = payload.get("resolved_proxy")
+    if "resolved_proxy_profile_id" in payload:
+        fields["resolved_proxy_profile_id"] = payload.get("resolved_proxy_profile_id")
+    _persist_update(job_id, fields)

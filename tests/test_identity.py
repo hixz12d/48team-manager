@@ -564,6 +564,65 @@ class IdentityBindingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finding["result"], AUDIT_VERIFIED)
         self.assertTrue(any("pending" in reason for reason in finding["reasons"]))
 
+    async def test_automation_gate_blocks_conflict_and_owner(self):
+        child_acc = Account(
+            email="kid@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+        )
+        owner_acc = Account(
+            email="owner@icloud.com",
+            official_plan="unknown",
+            local_purpose="mother",
+            operational_state="active",
+            auth_state="unknown",
+        )
+        self.session.add_all([child_acc, owner_acc])
+        await self.session.flush()
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=child_acc.id,
+                remote_account_id="77",
+                binding_state=BINDING_CONFLICT,
+                last_error="email mismatch",
+            )
+        )
+        workspace = Workspace(
+            official_workspace_id=WORKSPACE_UUID,
+            owner_account_id=owner_acc.id,
+            status="active",
+        )
+        self.session.add(workspace)
+        await self.session.flush()
+        self.session.add(
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                account_id=owner_acc.id,
+                official_role="owner",
+                membership_state="joined",
+                local_purpose="mother",
+            )
+        )
+        await self.session.commit()
+
+        blocked = await identity_service.automation_gate(
+            self.session,
+            remote_account_id=77,
+            email="kid@icloud.com",
+        )
+        self.assertFalse(blocked["allow"])
+        self.assertEqual(blocked["error_code"], "identity_conflict")
+
+        owner = await identity_service.automation_gate(
+            self.session,
+            email="owner@icloud.com",
+        )
+        self.assertFalse(owner["allow"])
+        self.assertEqual(owner["error_code"], "owner_manual")
+
 
 if __name__ == "__main__":
     unittest.main()

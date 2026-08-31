@@ -550,6 +550,104 @@ class UsageProbeRunTests(unittest.IsolatedAsyncioTestCase):
         started.assert_awaited_once()
         self.assertEqual(started.await_args.kwargs["email"], "rollers-chocks3v@icloud.com")
 
+    async def test_auto_reauth_does_not_skip_child_named_mother(self):
+        now = datetime(2026, 8, 28, 20, 0, 0)
+        team = await self._seed_reauth_team()
+        child = ChildAccount(
+            email="named-mother@icloud.com",
+            status="active",
+            current_team_id=team.id,
+            sub2api_account_id=3001,
+            password_encrypted="pw",
+            proxy="socks5h://127.0.0.1:1080",
+        )
+        self.session.add(child)
+        await self.session.commit()
+        account = {
+            "id": 3001,
+            "name": "Team .2026.12 母号",
+            "status": "error",
+            "schedulable": False,
+            "error_message": "Token revoked (401)",
+            "credentials": {"email": "named-mother@icloud.com"},
+        }
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.active_job_for_email", return_value=None), \
+             patch("app.services.reauth.auto_reauth_plan", return_value={"auto": True, "reason": "ok"}), \
+             patch("app.routes.seats.start_child_auto_reauth", AsyncMock(return_value={
+                 "success": True,
+                 "job_id": "job-named",
+             })) as started:
+            stats = await self.rotate.run_auto_reauth_once(
+                self.session,
+                now=now,
+                settings={"auto_reauth_enabled": True, "auto_reauth_interval_minutes": 30},
+            )
+        self.assertEqual(stats["queued"], 1)
+        self.assertEqual(stats["email"], "named-mother@icloud.com")
+        started.assert_awaited_once()
+
+    async def test_auto_reauth_stops_on_identity_conflict(self):
+        from app.models import Account, ExternalBinding
+
+        now = datetime(2026, 8, 28, 20, 0, 0)
+        team = await self._seed_reauth_team()
+        child = ChildAccount(
+            email="conflict@icloud.com",
+            status="active",
+            current_team_id=team.id,
+            sub2api_account_id=3002,
+            password_encrypted="pw",
+            proxy="socks5h://127.0.0.1:1080",
+        )
+        self.session.add(child)
+        await self.session.flush()
+        account_row = Account(
+            email="conflict@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+            source_child_account_id=child.id,
+        )
+        self.session.add(account_row)
+        await self.session.flush()
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=account_row.id,
+                remote_account_id="3002",
+                binding_state="conflict",
+                last_error="email mismatch",
+            )
+        )
+        await self.session.commit()
+        account = {
+            "id": 3002,
+            "name": "Team .2026.12 子号 1",
+            "status": "error",
+            "schedulable": False,
+            "error_message": "Token revoked (401)",
+            "credentials": {"email": "conflict@icloud.com"},
+        }
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.active_job_for_email", return_value=None), \
+             patch("app.routes.seats.start_child_auto_reauth", AsyncMock()) as started:
+            stats = await self.rotate.run_auto_reauth_once(
+                self.session,
+                now=now,
+                settings={"auto_reauth_enabled": True, "auto_reauth_interval_minutes": 30},
+            )
+        self.assertEqual(stats["queued"], 0)
+        self.assertGreaterEqual(stats["conflict"], 1)
+        started.assert_not_awaited()
+        probe = (
+            await self.session.execute(select(Sub2ApiUsageProbe).where(Sub2ApiUsageProbe.sub2api_account_id == 3002))
+        ).scalar_one()
+        self.assertEqual(probe.last_reauth_code, "identity_conflict")
+
 
 if __name__ == "__main__":
     unittest.main()

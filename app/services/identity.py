@@ -801,6 +801,172 @@ class IdentityService:
             "last_error": binding.last_error,
         }
 
+    async def automation_gate(
+        self,
+        db_session: AsyncSession,
+        *,
+        remote_account_id: Any = None,
+        email: str = "",
+        child: Optional[ChildAccount] = None,
+    ) -> Dict[str, Any]:
+        """自动化身份门闩。conflict / 母号必须停；不用名字 / Gmail / family 猜。
+
+        identity 表没有这条时，仅允许沿用在籍 ChildAccount，仍不用 Sub2API 展示名当母号。
+        """
+        target_email = normalize_email(email or (child.email if child is not None else "") or "")
+        remote_id = str(remote_account_id).strip() if remote_account_id not in (None, "", 0, "0") else ""
+
+        binding = None
+        if remote_id:
+            binding = (
+                await db_session.execute(
+                    select(ExternalBinding).where(
+                        ExternalBinding.provider == PROVIDER_SUB2API,
+                        ExternalBinding.remote_account_id == remote_id,
+                    )
+                )
+            ).scalar_one_or_none()
+
+        account = None
+        if binding is not None:
+            account = await db_session.get(Account, binding.local_account_id)
+        if account is None and target_email:
+            account = (
+                await db_session.execute(select(Account).where(Account.email == target_email))
+            ).scalar_one_or_none()
+        if account is None and child is not None:
+            account = (
+                await db_session.execute(
+                    select(Account).where(Account.source_child_account_id == child.id)
+                )
+            ).scalar_one_or_none()
+
+        def _payload(
+            *,
+            allow: bool,
+            decision: str,
+            error_code: str,
+            reason: str,
+            source: str,
+            account_id: Optional[int] = None,
+            local_purpose: str = "",
+            binding_state: str = "",
+        ) -> Dict[str, Any]:
+            return {
+                "allow": allow,
+                "decision": decision,
+                "error_code": error_code,
+                "reason": reason,
+                "account_id": account_id,
+                "local_purpose": local_purpose,
+                "binding_state": binding_state,
+                "source": source,
+            }
+
+        if account is not None:
+            if binding is None:
+                binding = (
+                    await db_session.execute(
+                        select(ExternalBinding).where(
+                            ExternalBinding.provider == PROVIDER_SUB2API,
+                            ExternalBinding.local_account_id == account.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+            binding_state = str(binding.binding_state or "") if binding is not None else ""
+            memberships = (
+                await db_session.execute(
+                    select(WorkspaceMembership).where(WorkspaceMembership.account_id == account.id)
+                )
+            ).scalars().all()
+            owner_memberships = [
+                row
+                for row in memberships
+                if row.official_role == OFFICIAL_ROLE_OWNER
+                and row.membership_state in (MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_UNKNOWN)
+            ]
+            if binding_state == BINDING_CONFLICT:
+                return _payload(
+                    allow=False,
+                    decision="conflict",
+                    error_code="identity_conflict",
+                    reason=str(binding.last_error or "Sub2API 绑定 conflict，停止自动重授权"),
+                    source="identity",
+                    account_id=account.id,
+                    local_purpose=account.local_purpose or "",
+                    binding_state=binding_state,
+                )
+            if account.local_purpose == LOCAL_PURPOSE_MOTHER or owner_memberships:
+                return _payload(
+                    allow=False,
+                    decision="owner",
+                    error_code="owner_manual",
+                    reason="本地身份是母号 / workspace owner，不自动重授权",
+                    source="identity",
+                    account_id=account.id,
+                    local_purpose=account.local_purpose or "",
+                    binding_state=binding_state,
+                )
+            if str(account.operational_state or "") in {
+                "standby",
+                "disabled",
+                "archived",
+                "free",
+                "unused",
+            }:
+                return _payload(
+                    allow=False,
+                    decision="skip",
+                    error_code="identity_inactive",
+                    reason=f"本地 operational_state={account.operational_state}，不自动重授权",
+                    source="identity",
+                    account_id=account.id,
+                    local_purpose=account.local_purpose or "",
+                    binding_state=binding_state,
+                )
+            if child is not None and child.status not in (CHILD_STATUS_INVITED, CHILD_STATUS_ACTIVE):
+                return _payload(
+                    allow=False,
+                    decision="skip",
+                    error_code="identity_inactive",
+                    reason=f"子号 status={child.status}，不自动重授权",
+                    source="identity",
+                    account_id=account.id,
+                    local_purpose=account.local_purpose or "",
+                    binding_state=binding_state,
+                )
+            return _payload(
+                allow=True,
+                decision="allow",
+                error_code="",
+                reason="identity 允许自动重授权",
+                source="identity",
+                account_id=account.id,
+                local_purpose=account.local_purpose or LOCAL_PURPOSE_CHILD,
+                binding_state=binding_state,
+            )
+
+        if (
+            child is not None
+            and child.status in (CHILD_STATUS_INVITED, CHILD_STATUS_ACTIVE)
+            and child.current_team_id
+        ):
+            return _payload(
+                allow=True,
+                decision="allow",
+                error_code="",
+                reason="identity 未回填，沿用在籍子号",
+                source="legacy_child",
+                local_purpose=LOCAL_PURPOSE_CHILD,
+            )
+        return _payload(
+            allow=False,
+            decision="unbound",
+            error_code="identity_unbound",
+            reason="对不上本地账号，停止自动重授权",
+            source="identity",
+        )
+
     async def audit(self, db_session: AsyncSession) -> Dict[str, Any]:
         accounts = (await db_session.execute(select(Account).order_by(Account.id))).scalars().all()
         memberships = (await db_session.execute(select(WorkspaceMembership))).scalars().all()

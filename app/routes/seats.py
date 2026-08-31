@@ -639,8 +639,16 @@ async def _run_auto_reauth_job(job_id: str, ticket: str) -> None:
         try:
             session = oauth_sessions.get_session(ticket)
             if not session:
-                onboard_jobs.finish(job_id, {"success": False, "error": "认证会话不存在或已过期", "error_code": "oauth_expired"})
+                onboard_jobs.finish(job_id, {
+                    "success": False,
+                    "error": "认证会话不存在或已过期",
+                    "error_code": "oauth_expired",
+                    "status": "manual_required",
+                })
                 return
+            from app.services.proxy_profiles import proxy_profile_service
+            from app.services.reauth import reauth_terminal_status
+
             team = await db.get(Team, int(session["team_id"]))
             email = str(session.get("email") or "")
             child = await child_account_service.get_by_email(db, email)
@@ -654,7 +662,8 @@ async def _run_auto_reauth_job(job_id: str, ticket: str) -> None:
             use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
             phone = (child.phone if child else "") or ""
             sms_url = (child.sms_url if child else "") or ""
-            proxy = ((child.proxy if child else "") or (team.proxy if team else "") or session.get("proxy") or "")
+            frozen = await proxy_profile_service.frozen_url(db, job_id)
+            proxy = frozen or ((child.proxy if child else "") or (team.proxy if team else "") or session.get("proxy") or "")
             _phone, _sms, phone_source = onboard_service._bind_phone("", job_id)
 
             def on_stage(stage: str, message: str) -> None:
@@ -680,21 +689,28 @@ async def _run_auto_reauth_job(job_id: str, ticket: str) -> None:
             )
             if not browser.get("ok"):
                 error = str(browser.get("error") or "自动授权失败")
+                code = str(browser.get("error_code") or "browser_failed")
                 oauth_sessions.mark_session(ticket, status="error", error=error, message=error)
                 onboard_jobs.finish(job_id, {
                     "success": False,
                     "error": error,
-                    "error_code": browser.get("error_code") or "browser_failed",
+                    "error_code": code,
+                    "status": reauth_terminal_status(success=False, error_code=code),
                 })
                 from app.services.auto_rotate import auto_rotate_service
                 await auto_rotate_service.mark_reauth_outcome(
                     db,
                     email=email,
-                    error_code=str(browser.get("error_code") or "browser_failed"),
+                    error_code=code,
                     success=False,
                 )
                 return
             result = await _complete_seat_oauth(db, ticket, str(browser.get("callback_url") or ""))
+            if not result.get("status"):
+                result["status"] = reauth_terminal_status(
+                    success=bool(result.get("success")),
+                    error_code=str(result.get("error_code") or ""),
+                )
             onboard_jobs.finish(job_id, result)
             from app.services.auto_rotate import auto_rotate_service
             await auto_rotate_service.mark_reauth_outcome(
@@ -728,16 +744,36 @@ async def start_child_auto_reauth(
     """给 iCloud 子号排队自动重授权。全场同时只跑一条浏览器任务。"""
     from app.services import oauth_sessions, onboard_jobs as jobs
     from app.services.chatgpt import chatgpt_service
+    from app.services.identity import identity_service
     from app.services.mail_otp import parse_mail_line
+    from app.services.proxy_profiles import proxy_profile_service
     from app.services.reauth import auto_reauth_plan
 
     target = normalize_email(email)
     if not team or not target:
         return {"success": False, "error": "缺少 Team 或邮箱", "error_code": "reauth_missing"}
-    if normalize_email(team.email) == target:
-        return {"success": False, "skipped": True, "error_code": "owner_manual", "error": "母号请用弹出窗口自己走 Gmail 登录"}
     if child is None:
         child = await child_account_service.get_by_email(db, target)
+    gate = await identity_service.automation_gate(
+        db,
+        remote_account_id=child.sub2api_account_id if child is not None else None,
+        email=target,
+        child=child,
+    )
+    if not gate.get("allow"):
+        return {
+            "success": False,
+            "skipped": True,
+            "error_code": gate.get("error_code") or "identity_unbound",
+            "error": gate.get("reason") or "身份不准，停止自动重授权",
+        }
+    if child is None:
+        return {
+            "success": False,
+            "skipped": True,
+            "error_code": "identity_unbound",
+            "error": "对不上在籍子号，停止自动重授权",
+        }
     password = child_account_service.decrypt_secret(child.password_encrypted) if child else ""
     pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") if child and child.mail_raw else ""
     cf_config = await onboard_service._cf_config(db)
@@ -791,8 +827,18 @@ async def start_child_auto_reauth(
         team_id=team.id,
         email=target,
         action="reauth",
-        input_payload={"team_id": team.id, "email": target, "ticket": session["ticket"]},
+        input_payload={"team_id": team.id, "email": target, "ticket": session["ticket"], "proxy": proxy},
     )
+    frozen, _profile_id = await proxy_profile_service.freeze(
+        db,
+        job_id=job["id"],
+        form_proxy=proxy,
+        child_proxy=(child.proxy if child else "") or "",
+        mother_proxy=team.proxy or "",
+    )
+    if frozen:
+        proxy = frozen
+        oauth_sessions.mark_session(session["ticket"], proxy=proxy)
     oauth_sessions.mark_session(session["ticket"], job_id=job["id"], status="running", message=plan["reason"])
     asyncio.create_task(_run_auto_reauth_job(job["id"], session["ticket"]))
     return {
@@ -899,8 +945,20 @@ async def seats_oauth_start(
             team_id=team.id,
             email=email,
             action="reauth",
-            input_payload={"team_id": team.id, "email": email, "ticket": session["ticket"]},
+            input_payload={"team_id": team.id, "email": email, "ticket": session["ticket"], "proxy": proxy},
         )
+        from app.services.proxy_profiles import proxy_profile_service
+
+        frozen, _profile_id = await proxy_profile_service.freeze(
+            db,
+            job_id=job["id"],
+            form_proxy=proxy,
+            child_proxy=(child.proxy if child else "") or "",
+            mother_proxy=team.proxy or "",
+        )
+        if frozen:
+            proxy = frozen
+            oauth_sessions.mark_session(session["ticket"], proxy=proxy)
         oauth_sessions.mark_session(session["ticket"], job_id=job["id"], status="running", message=plan["reason"])
         live = oauth_sessions.get_session(session["ticket"]) or {}
         asyncio.create_task(_run_auto_reauth_job(job["id"], session["ticket"]))

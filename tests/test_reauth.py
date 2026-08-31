@@ -1,7 +1,7 @@
 import unittest
 
 from app.services.oauth_sessions import chrome_proxy_parts, create_session, get_session, launcher_script
-from app.services.reauth import auto_reauth_plan, is_icloud_email, is_oauth_callback, looks_like_deactivated, owner_refresh_allows_oauth
+from app.services.reauth import auto_reauth_plan, is_icloud_email, is_oauth_callback, looks_like_deactivated, owner_refresh_allows_oauth, reauth_terminal_status
 
 
 class ReauthPlanTests(unittest.TestCase):
@@ -15,6 +15,12 @@ class ReauthPlanTests(unittest.TestCase):
         self.assertFalse(looks_like_deactivated(body="Enter your password"))
         plan = auto_reauth_plan(email="mom@gmail.com", role="owner", password="x", proxy="socks5h://u:p@1.2.3.4:1080")
         self.assertFalse(plan["auto"])
+
+    def test_deactivated_marks_manual_required(self):
+        self.assertEqual(reauth_terminal_status(success=False, error_code="account_deactivated"), "manual_required")
+        self.assertEqual(reauth_terminal_status(success=False, error_code="identity_conflict"), "manual_required")
+        self.assertEqual(reauth_terminal_status(success=False, error_code="browser_failed"), "failed")
+        self.assertEqual(reauth_terminal_status(success=True), "success")
 
     def test_owner_refresh_falls_back_except_identity_mismatch(self):
         self.assertTrue(owner_refresh_allows_oauth("token_refresh_failed"))

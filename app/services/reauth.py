@@ -45,6 +45,17 @@ def owner_refresh_allows_oauth(error_code: str) -> bool:
     return str(error_code or "") != "token_identity_mismatch"
 
 
+def reauth_terminal_status(*, success: bool = False, error_code: str = "") -> str:
+    """deactivate 交给第 3 层，任务标 manual_required，不要当普通失败重试。"""
+    if success:
+        return "success"
+    if str(error_code or "") == "account_deactivated":
+        return "manual_required"
+    if str(error_code or "") == "identity_conflict":
+        return "manual_required"
+    return "failed"
+
+
 def auto_reauth_plan(
     *,
     email: str,

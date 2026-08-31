@@ -603,13 +603,14 @@ async def scheduled_auto_reauth():
         async with AsyncSessionLocal() as session:
             stats = await auto_rotate_service.run_auto_reauth_once(session)
             logger.info(
-                "第 2 层自动重授权扫描: enabled=%s scanned=%s queued=%s skipped=%s failed=%s deactivated=%s email=%s",
+                "第 2 层自动重授权扫描: enabled=%s scanned=%s queued=%s skipped=%s failed=%s deactivated=%s conflict=%s email=%s",
                 stats.get("enabled"),
                 stats.get("scanned", 0),
                 stats.get("queued", 0),
                 stats.get("skipped", 0),
                 stats.get("failed", 0),
                 stats.get("deactivated", 0),
+                stats.get("conflict", 0),
                 stats.get("email") or "",
             )
     except Exception as e:

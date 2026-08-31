@@ -165,6 +165,9 @@ class ProxyProfileService:
         profile = await self.upsert_from_url(session, url)
         if job_id:
             row = await session.scalar(select(Operation).where(Operation.public_id == job_id))
+            if row is None:
+                await session.flush()
+                row = await session.scalar(select(Operation).where(Operation.public_id == job_id))
             if row is not None and not str(row.resolved_proxy or "").strip():
                 row.resolved_proxy = url
                 row.resolved_proxy_profile_id = profile.id
@@ -177,6 +180,13 @@ class ProxyProfileService:
                 row.input_json = pack_input(payload)
                 row.updated_at = get_now()
                 await session.flush()
+            elif row is None:
+                from app.services import onboard_jobs
+
+                onboard_jobs.attach_resume(
+                    job_id,
+                    {"proxy": url, "resolved_proxy": url, "resolved_proxy_profile_id": profile.id},
+                )
         return url, profile.id
 
 

@@ -348,6 +348,37 @@ class ProxyFreezeTests(unittest.IsolatedAsyncioTestCase):
         refreshed = await self.session.get(Operation, op.id)
         self.assertEqual(refreshed.resolved_proxy, "socks5h://127.0.0.1:1080")
 
+    async def test_reauth_job_keeps_frozen_proxy_after_child_change(self):
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.commit()
+        op = await operation_store.create(
+            self.session,
+            op_type="reauth",
+            team_id=team.id,
+            email="kid@icloud.com",
+            input_payload={"proxy": "socks5h://10.0.0.9:1080"},
+        )
+        await self.session.commit()
+        url, profile_id = await proxy_profile_service.freeze(
+            self.session,
+            job_id=op.public_id,
+            form_proxy="socks5h://127.0.0.1:1080",
+            child_proxy="socks5h://10.0.0.9:1080",
+            mother_proxy=team.proxy,
+        )
+        self.assertEqual(url, "socks5h://127.0.0.1:1080")
+        team.proxy = "socks5h://10.0.0.8:1080"
+        await self.session.commit()
+        frozen = await proxy_profile_service.frozen_url(self.session, op.public_id)
+        self.assertEqual(frozen, "socks5h://127.0.0.1:1080")
+        self.assertIsNotNone(profile_id)
+
 
 if __name__ == "__main__":
     unittest.main()

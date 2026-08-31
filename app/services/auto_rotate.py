@@ -701,6 +701,7 @@ class AutoRotateService:
     ) -> Dict[str, Any]:
         from app.routes.seats import start_child_auto_reauth
         from app.services import onboard_jobs
+        from app.services.identity import identity_service
         from app.services.mail_otp import parse_mail_line
         from app.services.reauth import auto_reauth_plan
 
@@ -713,6 +714,7 @@ class AutoRotateService:
             "skipped": 0,
             "failed": 0,
             "deactivated": 0,
+            "conflict": 0,
             "email": "",
         }
         if not cfg.get("auto_reauth_enabled"):
@@ -732,8 +734,6 @@ class AutoRotateService:
         )
         candidates: List[tuple[datetime, Dict[str, Any], Sub2ApiUsageProbe, Any, Team]] = []
         for account in accounts:
-            if is_owner_account(account):
-                continue
             try:
                 account_id = int(account.get("id"))
             except (TypeError, ValueError):
@@ -742,13 +742,36 @@ class AutoRotateService:
             if schedule.get("kind") != "401":
                 continue
             row = rows.get(account_id)
-            if row and row.last_reauth_code == "account_deactivated":
+            if row and row.last_reauth_code in {"account_deactivated", "identity_conflict"}:
                 continue
             if row and row.next_reauth_at and row.next_reauth_at > stamp:
                 continue
             email = sub2api_service._account_email(account)
             child = await self._resolve_active_child(db_session, account, email)
+            gate = await identity_service.automation_gate(
+                db_session,
+                remote_account_id=account.get("id"),
+                email=email,
+                child=child,
+            )
+            if not gate.get("allow"):
+                stats["skipped"] += 1
+                if gate.get("error_code") == "identity_conflict":
+                    stats["conflict"] += 1
+                    if not row:
+                        row = await self._ensure_probe_row(db_session, account, stamp, 3600, None)
+                    row.last_reauth_code = "identity_conflict"
+                    row.updated_at = stamp
+                logger.info(
+                    "第 2 层跳过 account_id=%s email=%s: %s",
+                    account_id,
+                    email or "",
+                    gate.get("reason") or gate.get("error_code"),
+                )
+                continue
             if child is None:
+                stats["skipped"] += 1
+                logger.info("第 2 层跳过 account_id=%s: 对不上在籍子号", account_id)
                 continue
             email = (email or child.email or "").strip()
             if not email:
@@ -782,6 +805,7 @@ class AutoRotateService:
             candidates.append((due_at, account, row, child, team))
         stats["scanned"] = len(candidates)
         if not candidates:
+            await db_session.commit()
             return stats
         candidates.sort(key=lambda item: (item[0], int(item[1].get("id") or 0)))
         account, row, child, team = candidates[0][1], candidates[0][2], candidates[0][3], candidates[0][4]
