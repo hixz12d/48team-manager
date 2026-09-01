@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Operation, OperationStep
@@ -84,7 +84,12 @@ def unpack_input(raw: Optional[str]) -> Dict[str, Any]:
     return unpacked
 
 
-def serialize_operation(row: Operation, *, steps: Optional[Sequence[OperationStep]] = None) -> Dict[str, Any]:
+def serialize_operation(
+    row: Operation,
+    *,
+    steps: Optional[Sequence[OperationStep]] = None,
+    include_input: bool = False,
+) -> Dict[str, Any]:
     log_items = _loads(row.log_json, [])
     if not isinstance(log_items, list):
         log_items = []
@@ -112,7 +117,7 @@ def serialize_operation(row: Operation, *, steps: Optional[Sequence[OperationSte
         "locked_by": row.locked_by or "",
         "lease_expires_at": row.lease_expires_at.isoformat() if row.lease_expires_at else "",
         "current_step": row.current_step or "",
-        "input": unpack_input(row.input_json),
+        "input": unpack_input(row.input_json) if include_input else {},
         "resolved_proxy": row.resolved_proxy or "",
         "resolved_proxy_profile_id": row.resolved_proxy_profile_id,
     }
@@ -231,6 +236,36 @@ class OperationStore:
         if actions is not None:
             stmt = stmt.where(Operation.op_type.in_(list(actions)))
         return list((await session.execute(stmt)).scalars().all())
+
+    async def list_recent(
+        self,
+        session: AsyncSession,
+        *,
+        limit: int = 80,
+        email: Optional[str] = None,
+        account_id: Optional[int] = None,
+        include_steps: bool = False,
+    ) -> List[Dict[str, Any]]:
+        stmt = select(Operation).order_by(desc(Operation.updated_at), desc(Operation.id))
+        if email:
+            stmt = stmt.where(Operation.email == email)
+        if account_id is not None:
+            stmt = stmt.where(Operation.account_id == int(account_id))
+        rows = list((await session.execute(stmt.limit(max(1, min(int(limit or 80), 200))))).scalars().all())
+        if not include_steps:
+            return [serialize_operation(row, include_input=False) for row in rows]
+        payloads = []
+        for row in rows:
+            payloads.append(serialize_operation(row, steps=await self.steps_for(session, row), include_input=False))
+        return payloads
+
+    async def steps_for(self, session: AsyncSession, row: Operation) -> List[OperationStep]:
+        result = await session.execute(
+            select(OperationStep)
+            .where(OperationStep.operation_id == row.id)
+            .order_by(OperationStep.id.asc())
+        )
+        return list(result.scalars().all())
 
     async def heartbeat(
         self,
@@ -447,7 +482,7 @@ async def recover_and_resume_stale_operations() -> Dict[str, Any]:
     stats = {"recovered": 0, "resumed": 0, "manual": 0, "ids": []}
     async with AsyncSessionLocal() as session:
         recovered = await operation_store.recover_stale(session)
-        snapshots = [serialize_operation(row) for row in recovered]
+        snapshots = [serialize_operation(row, include_input=True) for row in recovered]
         stats["recovered"] = len(snapshots)
         stats["ids"] = [item["id"] for item in snapshots]
 

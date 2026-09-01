@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>48 Team Manager v2</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
+    <link rel="stylesheet" href="/static/css/admin_v2.css?v={{ app_version }}">
+</head>
+<body>
+    <header class="v2-top">
+        <div class="v2-brand">
+            <strong>48 Team Manager</strong>
+            <span class="v2-muted">v2</span>
+        </div>
+        <nav class="v2-nav" aria-label="v2">
+            <button data-page="overview" class="active">Overview</button>
+            <button data-page="accounts">Accounts</button>
+            <button data-page="automation">Automation</button>
+            <button data-page="resources">Resources</button>
+            <button data-page="settings">Settings</button>
+        </nav>
+        <a class="v2-legacy" href="/admin">旧后台</a>
+    </header>
+
+    <main class="v2-main">
+        <section id="page-overview" class="v2-page"></section>
+        <section id="page-accounts" class="v2-page hidden"></section>
+        <section id="page-automation" class="v2-page hidden"></section>
+        <section id="page-resources" class="v2-page hidden"></section>
+        <section id="page-settings" class="v2-page hidden"></section>
+    </main>
+
+    <aside id="account-drawer" class="v2-drawer hidden" aria-live="polite"></aside>
+
+    <aside id="task-drawer" class="v2-tasks">
+        <header>
+            <strong>任务</strong>
+            <span id="task-count" class="v2-muted">0</span>
+        </header>
+        <div id="task-list"></div>
+    </aside>
+
+    <div id="confirm-modal" class="v2-modal hidden">
+        <div class="v2-modal-card">
+            <p id="confirm-text"></p>
+            <div class="v2-row">
+                <button id="confirm-cancel" type="button">取消</button>
+                <button id="confirm-ok" type="button" class="danger">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/admin_v2.js?v={{ app_version }}"></script>
+</body>
+</html>

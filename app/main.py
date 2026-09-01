@@ -22,7 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from contextlib import asynccontextmanager
 # 导入路由
 from app import __version__
-from app.routes import redeem, auth, admin, api, user, warranty, seats
+from app.routes import redeem, auth, admin, admin_v2, api, user, warranty, seats
 from app.config import settings
 from app.database import init_db, close_db, AsyncSessionLocal
 from app.services.auth import auth_service
@@ -870,6 +870,7 @@ app.include_router(redeem.router)
 app.include_router(warranty.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(admin_v2.router)
 app.include_router(seats.router)
 app.include_router(api.router)
 
