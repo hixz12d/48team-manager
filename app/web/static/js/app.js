@@ -665,9 +665,8 @@
     body.replaceChildren();
     const addGroup = (title, rows) => {
       const heading = document.createElement("h3");
+      heading.className = "drawer-group-title";
       heading.textContent = title;
-      heading.style.fontSize = "12px";
-      heading.style.color = "var(--muted)";
       body.append(heading);
       if (!rows.length) {
         const p = document.createElement("p");
@@ -679,8 +678,7 @@
       rows.slice(0, 6).forEach((item) => {
         const row = document.createElement("button");
         row.type = "button";
-        row.className = "button ghost";
-        row.style.justifyContent = "flex-start";
+        row.className = "button ghost drawer-item";
         row.textContent = `${labelOf(statusLabels, item.operation)} ${item.target || item.email || ""} · ${item.current_step || "—"}`;
         row.addEventListener("click", () => {
           closeDrawer();
@@ -693,9 +691,8 @@
     addGroup("需人工", manual);
     const all = document.createElement("a");
     all.href = "/operations";
-    all.className = "button";
+    all.className = "button drawer-footer-link";
     all.textContent = "查看全部任务";
-    all.style.marginTop = "12px";
     body.append(all);
   }
 

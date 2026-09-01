@@ -1,36 +1,71 @@
 :root {
   color-scheme: light;
-  --bg: #f7f8fa;
+  
+  /* 颜色 */
+  --bg: #fafafa;
   --surface: #ffffff;
-  --surface-subtle: #fafafa;
-  --sidebar: #f2f3f5;
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
-  --text: #18181b;
-  --muted: #71717a;
-  --danger: #c9362b;
-  --warning: #9a5b00;
-  --success: #18794e;
+  --surface-subtle: #f8f9fa;
+  --surface-hover: #f4f5f7;
+  --sidebar: #f5f5f5;
+  --overlay: rgba(24, 24, 27, .4);
+  
+  --border: #e8e9eb;
+  --border-strong: #d1d5db;
+  
+  --text: #1a1a1a;
+  --muted: #6b7280;
+  
+  --danger: #dc2626;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  
+  --warning: #ea580c;
+  --warning-bg: #fff7ed;
+  --warning-border: #fed7aa;
+  
+  --success: #16a34a;
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
+  
   --accent: #2563eb;
-  --radius: 6px;
+  --accent-hover: #1d4ed8;
+  --accent-bg: #eff6ff;
+  --accent-border: #bfdbfe;
+  
+  /* 圆角 */
   --radius-sm: 4px;
+  --radius: 6px;
   --radius-lg: 10px;
-  --sidebar-w: 232px;
-  --row-h: 46px;
-  --font: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  
+  /* 尺寸 */
+  --sidebar-w: 240px;
+  --sheet-w: 520px;
   --content-max: 1280px;
   --settings-max: 1200px;
   --readable-max: 760px;
-  --sheet-w: 520px;
+  
+  /* 间距 */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
   --space-6: 32px;
+  
+  /* 控件高度 */
   --control-h: 38px;
-  --control-h-comfortable: 40px;
-  --table-row-h: 46px;
-  --focus-ring: 0 0 0 3px rgba(37, 99, 235, .22);
-  --shadow-overlay: 0 8px 24px rgba(24, 24, 27, .12);
+  --table-row-h: 52px;
+  
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 3px rgba(0, 0, 0, .06);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, .05), 0 2px 4px rgba(0, 0, 0, .06);
+  --shadow-overlay: 0 10px 25px rgba(0, 0, 0, .1), 0 4px 10px rgba(0, 0, 0, .08);
+  
+  /* 焦点环 */
+  --focus-ring: 0 0 0 3px var(--accent-bg), 0 0 0 4px var(--accent);
+  
+  /* 字体 */
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
+
+/* 暗色模式暂不启用：系统暗色偏好不会自动切换，避免半成品对比度问题。 */
