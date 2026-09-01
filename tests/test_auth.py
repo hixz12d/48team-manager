@@ -33,7 +33,7 @@ class AuthTests(unittest.TestCase):
             settings = client.get("/api/settings")
             self.assertEqual(settings.status_code, 200)
             self.assertEqual(settings.json()["secrets"]["sub2api_api_key"], "••••••")
-            self.assertFalse(settings.json()["automation"]["auto_rotate"])
+            self.assertTrue(settings.json()["automation"]["official_quota_probe"])
             self.assertEqual(settings.json()["secrets"]["hme_token"], "••••••")
             saved = client.patch(
                 "/api/settings",

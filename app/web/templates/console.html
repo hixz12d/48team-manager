@@ -112,7 +112,7 @@
           <article class="panel">
             <div class="panel-header"><span class="panel-title">对接</span></div>
             <div class="panel-body stack">
-              <p class="muted">密钥只显示圆点。不想改就留着，保存时不会覆盖。</p>
+              <p class="muted">密钥只显示圆点。不想改就留着，保存时不会覆盖。检测用当前表单里的值，不会先保存。</p>
               <label>Sub2API 地址<input name="sub2api_base_url" autocomplete="off"></label>
               <label>Sub2API Key<input name="sub2api_api_key" type="password" autocomplete="new-password"></label>
               <label>Sub2API 管理员邮箱<input name="sub2api_admin_email" autocomplete="off"></label>
@@ -123,17 +123,17 @@
               <label>临时邮箱 API<input name="cf_mail_base_url" autocomplete="off"></label>
               <label>临时邮箱地址<input name="cf_mail_address" autocomplete="off"></label>
               <label>临时邮箱密码<input name="cf_mail_admin_password" type="password" autocomplete="new-password"></label>
+              <div class="settings-probe-actions">
+                <button class="button" type="button" id="settings-probe">检测连接</button>
+              </div>
+              <div id="settings-probe-result" class="probe-result" hidden></div>
             </div>
           </article>
           <article class="panel">
             <div class="panel-header"><span class="panel-title">自动化</span></div>
             <div class="panel-body stack">
-              <p class="muted" id="settings-automation-hint">额度探测可以开。自动重登和自动踢拉默认先别开。</p>
+              <p class="muted" id="settings-automation-hint">现在只能开额度探测。</p>
               <label class="check"><input type="checkbox" name="official_quota_probe"> 查官方额度</label>
-              <label class="check"><input type="checkbox" name="auto_reauth"> 自动重新登录</label>
-              <label class="check"><input type="checkbox" name="auto_rotate"> 自动踢拉</label>
-              <label class="check"><input type="checkbox" name="force_refill"> 强制补位</label>
-              <label>每天最多踢几次<input name="auto_rotate_daily_limit" type="number" min="0" max="20"></label>
             </div>
           </article>
           <article class="panel">

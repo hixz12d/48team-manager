@@ -207,24 +207,9 @@
     form.hme_service_token.value = secrets.hme_service_token || secrets.hme_token || "";
     form.cf_mail_admin_password.value = secrets.cf_mail_admin_password || "";
     form.official_quota_probe.checked = Boolean(automation.official_quota_probe);
-    form.auto_reauth.checked = Boolean(automation.auto_reauth);
-    form.auto_rotate.checked = Boolean(automation.auto_rotate);
-    form.force_refill.checked = Boolean(automation.force_refill);
-    form.auto_rotate_daily_limit.value = automation.auto_rotate_daily_limit ?? "";
     form.sms_max_uses_per_phone.value = resources.sms_max_uses_per_phone ?? "";
     form.sms_cooldown_sec.value = resources.sms_cooldown_sec ?? "";
     form.sms_reserve_sec.value = resources.sms_reserve_sec ?? "";
-    const hint = document.getElementById("settings-automation-hint");
-    if (hint) {
-      const env = automation.env || {};
-      const locked = [];
-      if (!env.auto_reauth) locked.push("自动重登");
-      if (!env.auto_rotate) locked.push("自动踢拉");
-      if (!env.force_refill) locked.push("强制补位");
-      hint.textContent = locked.length
-        ? `${locked.join("、")}还被进程开关按着，这里勾上也不会真跑。额度探测可以开。`
-        : "额度探测可以开。自动重登和自动踢拉确认后再开。";
-    }
     const accountEl = document.getElementById("settings-account");
     if (accountEl) accountEl.textContent = account.username ? `当前登录账号：${account.username}` : "登录账号会显示在这里。";
   }
@@ -264,10 +249,6 @@
       },
       automation: {
         official_quota_probe: form.official_quota_probe.checked,
-        auto_reauth: form.auto_reauth.checked,
-        auto_rotate: form.auto_rotate.checked,
-        force_refill: form.force_refill.checked,
-        auto_rotate_daily_limit: numberOrNull(form.auto_rotate_daily_limit.value),
       },
       resources: {
         sms_max_uses_per_phone: numberOrNull(form.sms_max_uses_per_phone.value),
@@ -303,6 +284,113 @@
         statusEl.className = "error";
         statusEl.textContent = error.message || "保存失败";
       }
+    }
+  }
+
+  function connectionsPayload(form) {
+    return {
+      sub2api_base_url: form.sub2api_base_url.value,
+      sub2api_admin_email: form.sub2api_admin_email.value,
+      hme_base_url: form.hme_base_url.value,
+      hme_account_id: form.hme_account_id.value,
+      cf_mail_base_url: form.cf_mail_base_url.value,
+      cf_mail_address: form.cf_mail_address.value,
+      sub2api_api_key: secretOrNull(form.sub2api_api_key.value),
+      sub2api_admin_password: secretOrNull(form.sub2api_admin_password.value),
+      hme_service_token: secretOrNull(form.hme_service_token.value),
+      cf_mail_admin_password: secretOrNull(form.cf_mail_admin_password.value),
+    };
+  }
+
+  function probeCard(title, ok, body) {
+    const card = document.createElement("div");
+    card.className = `probe-card ${ok ? "is-ok" : "is-bad"}`;
+    const heading = document.createElement("strong");
+    heading.textContent = `${title} · ${ok ? "通了" : "没通"}`;
+    card.append(heading);
+    if (typeof body === "string") {
+      const p = document.createElement("p");
+      p.className = ok ? "muted" : "error";
+      p.textContent = body;
+      card.append(p);
+    } else if (body) {
+      card.append(body);
+    }
+    return card;
+  }
+
+  function renderProbeResult(payload) {
+    const box = document.getElementById("settings-probe-result");
+    if (!box) return;
+    box.hidden = false;
+    box.replaceChildren();
+    const sub = payload.sub2api || {};
+    if (sub.ok) {
+      const list = document.createElement("ul");
+      (sub.groups || []).forEach((group) => {
+        const item = document.createElement("li");
+        const owners = (group.owners || []).join("、") || "还没看到母号";
+        item.textContent = `${group.name} · ${owners}`;
+        list.append(item);
+      });
+      if (!list.childElementCount) {
+        const item = document.createElement("li");
+        item.textContent = "一个分组都没有。";
+        list.append(item);
+      }
+      const summary = document.createElement("p");
+      summary.className = "muted";
+      summary.textContent = `共 ${sub.group_count || 0} 个分组，${sub.account_count || 0} 个账号。` ;
+      const wrap = document.createElement("div");
+      wrap.append(summary, list);
+      box.append(probeCard("Sub2API", true, wrap));
+    } else {
+      box.append(probeCard("Sub2API", false, sub.error || "连不上 Sub2API"));
+    }
+    const hme = payload.hme || {};
+    if (hme.ok) {
+      box.append(
+        probeCard(
+          "iCloud HME",
+          true,
+          `${hme.account_name || hme.account_id || "当前账号"} 一共 ${hme.alias_count || 0} 个邮箱，启用 ${hme.active_count || 0} 个，还能领 ${hme.unused_count || 0} 个。`
+        )
+      );
+    } else {
+      box.append(probeCard("iCloud HME", false, hme.error || "连不上 HME"));
+    }
+    const mail = payload.mail || {};
+    if (mail.ok) {
+      box.append(probeCard("临时邮箱", true, `${mail.address} 能读到信。`));
+    } else {
+      box.append(probeCard("临时邮箱", false, mail.error || "连不上临时邮箱"));
+    }
+  }
+
+  async function probeSettings() {
+    const form = document.getElementById("settings-form");
+    const button = document.getElementById("settings-probe");
+    const box = document.getElementById("settings-probe-result");
+    if (!form || !box) return;
+    if (button) button.disabled = true;
+    box.hidden = false;
+    box.replaceChildren();
+    const pending = document.createElement("p");
+    pending.className = "muted";
+    pending.textContent = "正在检测…";
+    box.append(pending);
+    try {
+      const payload = await fetchEntity("settings-probe", "/api/settings/probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ connections: connectionsPayload(form) }),
+      });
+      renderProbeResult(payload);
+    } catch (error) {
+      box.replaceChildren();
+      box.append(probeCard("检测", false, error.message || "检测失败"));
+    } finally {
+      if (button) button.disabled = false;
     }
   }
 
@@ -344,6 +432,7 @@
         if (form && !form.dataset.bound) {
           form.dataset.bound = "1";
           form.addEventListener("submit", saveSettings);
+          document.getElementById("settings-probe")?.addEventListener("click", probeSettings);
         }
         fillSettings(await fetchEntity("settings", "/api/settings"));
       }

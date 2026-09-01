@@ -53,7 +53,6 @@ def _keep_secret(value: str | None) -> bool:
 async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     from app.application.resources.hme import DEFAULT_HME_BASE_URL, load_config as load_hme_config
     from app.application.resources.phones import phone_pool_service
-    from app.domain.rotate import DEFAULT_AUTO_ROTATE_DAILY_LIMIT
     from app.integrations.mail.cloudflare import (
         CF_SETTING_ADDRESS,
         CF_SETTING_ADMIN_PASSWORD,
@@ -71,23 +70,6 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
         await get_setting_value(db, "official_quota_probe_enabled", str(bool(env.official_quota_probe_enabled)).lower()),
         bool(env.official_quota_probe_enabled),
     )
-    stored_reauth = as_bool(
-        await get_setting_value(db, "auto_reauth_enabled", str(bool(env.auto_reauth_enabled)).lower()),
-        bool(env.auto_reauth_enabled),
-    )
-    stored_rotate = as_bool(
-        await get_setting_value(db, "auto_rotate_enabled", str(bool(env.auto_rotate_enabled)).lower()),
-        bool(env.auto_rotate_enabled),
-    )
-    stored_force = as_bool(
-        await get_setting_value(db, "auto_rotate_force_refill", str(bool(env.force_refill)).lower()),
-        bool(env.force_refill),
-    )
-    daily_raw = await get_setting_value(db, "auto_rotate_daily_limit", str(DEFAULT_AUTO_ROTATE_DAILY_LIMIT))
-    try:
-        daily_limit = max(0, int(daily_raw or DEFAULT_AUTO_ROTATE_DAILY_LIMIT))
-    except (TypeError, ValueError):
-        daily_limit = DEFAULT_AUTO_ROTATE_DAILY_LIMIT
     return {
         "connections": {
             "sub2api_base_url": sub2api_cfg.get("base_url") or DEFAULT_SUB2API_BASE_URL,
@@ -101,15 +83,6 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
         },
         "automation": {
             "official_quota_probe": stored_quota,
-            "auto_reauth": stored_reauth,
-            "auto_rotate": stored_rotate,
-            "force_refill": stored_force,
-            "auto_rotate_daily_limit": daily_limit,
-            "env": {
-                "auto_reauth": bool(env.auto_reauth_enabled),
-                "auto_rotate": bool(env.auto_rotate_enabled),
-                "force_refill": bool(env.force_refill),
-            },
         },
         "resources": {
             "sms_max_uses_per_phone": phones_cfg.max_uses,
@@ -151,19 +124,12 @@ async def save_console_settings(db: AsyncSession, payload) -> dict[str, Any]:
             if value is None or _keep_secret(value):
                 continue
             await upsert_setting(db, key, str(value).strip())
-    if payload.automation is not None:
-        auto = payload.automation
-        flags = {
-            "official_quota_probe_enabled": auto.official_quota_probe,
-            "auto_reauth_enabled": auto.auto_reauth,
-            "auto_rotate_enabled": auto.auto_rotate,
-            "auto_rotate_force_refill": auto.force_refill,
-        }
-        for key, value in flags.items():
-            if value is not None:
-                await upsert_setting(db, key, "true" if value else "false")
-        if auto.auto_rotate_daily_limit is not None:
-            await upsert_setting(db, "auto_rotate_daily_limit", str(int(auto.auto_rotate_daily_limit)))
+    if payload.automation is not None and payload.automation.official_quota_probe is not None:
+        await upsert_setting(
+            db,
+            "official_quota_probe_enabled",
+            "true" if payload.automation.official_quota_probe else "false",
+        )
     if payload.resources is not None:
         res = payload.resources
         numbers = {

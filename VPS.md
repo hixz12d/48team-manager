@@ -20,6 +20,7 @@
 | Sub2API 主实例 | `127.0.0.1:8101` 容器 `sub2api-canary` | 禁止重启、重建、改 Nginx |
 | Sub2API 备实例 | `127.0.0.1:8100` 容器 `sub2api` | 禁止 |
 | 本项目 | `/opt/team48` | 只允许在这里构建和启停 `team48-manager` |
+| 本项目数据盘 | `/data/team48` → `/opt/team48/data` | 50G 盘 `vdb1` 的 bind mount，浏览器档案和 SQLite 都放这里 |
 
 本项目用独立 Compose 项目名 `team48`、独立网络 `team48_net`、独立容器名 `team48-manager`。  
 禁止 `docker compose down`、`--remove-orphans`，禁止进 `/opt/sub2api` 执行任何 compose。

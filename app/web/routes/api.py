@@ -1,15 +1,16 @@
-"""Query APIs. Reads never call OpenAI, Sub2API, or Playwright."""
+"""Console APIs. List queries stay local; connection probes may call Sub2API / HME."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.connection_probe import probe_hme, probe_mail, probe_sub2api
 from app.application.queries import console as console_query
 from app.application.queries.identity import identity_audit_query
 from app.application.settings import save_console_settings
 from app.web.deps import require_admin
-from app.web.schemas.settings import SettingsPatch
+from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
 
 
 def build_api_router(get_db) -> APIRouter:
@@ -66,5 +67,22 @@ def build_api_router(get_db) -> APIRouter:
             return await save_console_settings(db, payload)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @router.post("/settings/probe")
+    async def settings_probe(
+        payload: ConnectionProbeRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        body = payload.connections.model_dump() if payload.connections is not None else {}
+        sub2api = await probe_sub2api(db, body)
+        hme = await probe_hme(db, body)
+        mail = await probe_mail(db, body)
+        return {
+            "ok": bool(sub2api.get("ok") and hme.get("ok") and mail.get("ok")),
+            "sub2api": sub2api,
+            "hme": hme,
+            "mail": mail,
+        }
 
     return router

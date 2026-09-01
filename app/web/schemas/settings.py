@@ -20,10 +20,10 @@ class ConnectionSettings(BaseModel):
 
 class AutomationSettings(BaseModel):
     official_quota_probe: bool | None = None
-    auto_reauth: bool | None = None
-    auto_rotate: bool | None = None
-    force_refill: bool | None = None
-    auto_rotate_daily_limit: int | None = Field(default=None, ge=0, le=20)
+
+
+class ConnectionProbeRequest(BaseModel):
+    connections: ConnectionSettings | None = None
 
 
 class ResourceSettings(BaseModel):

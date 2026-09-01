@@ -62,3 +62,8 @@ class UIContractTests(unittest.TestCase):
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
             payload = client.get("/api/settings").json()
             self.assertTrue(all(value == "••••••" for value in payload["secrets"].values()))
+            page = client.get("/settings").text
+            self.assertIn('name="official_quota_probe"', page)
+            self.assertNotIn('name="auto_reauth"', page)
+            self.assertNotIn('name="auto_rotate"', page)
+            self.assertNotIn('name="force_refill"', page)

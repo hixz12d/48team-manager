@@ -218,8 +218,8 @@ class Sub2ApiClient:
         headers["Authorization"] = f"Bearer {token}"
         return headers
 
-    async def _with_client(self, db: AsyncSession):
-        cfg = await self.load_config(db)
+    async def _with_client(self, db: AsyncSession, cfg: dict[str, Any] | None = None):
+        cfg = cfg or await self.load_config(db)
         if not cfg["base_url"]:
             raise RuntimeError("尚未配置 Sub2API 地址")
         if not cfg["configured"]:
@@ -228,31 +228,74 @@ class Sub2ApiClient:
         headers = await self._login_headers(client, cfg)
         return client, headers, cfg
 
-    async def list_status_accounts(self, db: AsyncSession) -> list[dict[str, Any]]:
-        client, headers, _cfg = await self._with_client(db)
+    def account_group_ids(self, account: dict[str, Any] | None) -> list[int]:
+        payload = account if isinstance(account, dict) else {}
+        ids: list[int] = []
+        seen: set[int] = set()
+
+        def add(raw: Any) -> None:
+            group_id = _as_int(raw)
+            if group_id and group_id not in seen:
+                seen.add(group_id)
+                ids.append(group_id)
+
+        raw_ids = payload.get("group_ids")
+        if isinstance(raw_ids, list):
+            for item in raw_ids:
+                add(item)
+        elif raw_ids not in (None, ""):
+            add(raw_ids)
+        groups = payload.get("groups")
+        if isinstance(groups, list):
+            for item in groups:
+                if isinstance(item, dict):
+                    add(item.get("id"))
+                else:
+                    add(item)
+        add(payload.get("group_id"))
+        return ids
+
+    async def _paginate_admin(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        path: str,
+        extra_params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         seen: dict[int, dict[str, Any]] = {}
+        items_without_id: list[dict[str, Any]] = []
+        page = 1
+        while page <= 8:
+            params = {"page": page, "page_size": 100, **(extra_params or {})}
+            response = await client.get(path, headers=headers, params=params)
+            response.raise_for_status()
+            items = self._account_items(self._unwrap(response.json()))
+            if not items:
+                break
+            for item in items:
+                item_id = self.remote_id(item)
+                if item_id:
+                    seen[item_id] = item
+                else:
+                    items_without_id.append(item)
+            if len(items) < 100:
+                break
+            page += 1
+        return list(seen.values()) + items_without_id
+
+    async def list_status_accounts(self, db: AsyncSession, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        client, headers, _cfg = await self._with_client(db, cfg)
         try:
-            page = 1
-            while page <= 8:
-                response = await client.get(
-                    "/api/v1/admin/accounts",
-                    headers=headers,
-                    params={"page": page, "page_size": 100, "sort_by": "name"},
-                )
-                response.raise_for_status()
-                items = self._account_items(self._unwrap(response.json()))
-                if not items:
-                    break
-                for item in items:
-                    account_id = self.remote_id(item)
-                    if account_id:
-                        seen[account_id] = item
-                if len(items) < 100:
-                    break
-                page += 1
+            return await self._paginate_admin(client, headers, "/api/v1/admin/accounts", {"sort_by": "name"})
         finally:
             await client.aclose()
-        return list(seen.values())
+
+    async def list_groups(self, db: AsyncSession, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        client, headers, _cfg = await self._with_client(db, cfg)
+        try:
+            return await self._paginate_admin(client, headers, "/api/v1/admin/groups")
+        finally:
+            await client.aclose()
 
     async def get_account(self, db: AsyncSession, account_id: int) -> dict[str, Any]:
         if not account_id:
