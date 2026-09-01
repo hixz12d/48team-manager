@@ -42,7 +42,11 @@ def as_bool(value, default: bool = False) -> bool:
 
 
 def _secret_view(value: str | None) -> str:
-    return SECRET_MASK
+    return ""
+
+
+def _secret_state(value: str | None) -> str:
+    return "stored" if str(value or "").strip() else "missing"
 
 
 def _keep_secret(value: str | None) -> bool:
@@ -70,6 +74,14 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
         await get_setting_value(db, "official_quota_probe_enabled", str(bool(env.official_quota_probe_enabled)).lower()),
         bool(env.official_quota_probe_enabled),
     )
+    mail_password = await get_setting_value(db, CF_SETTING_ADMIN_PASSWORD, "") or ""
+    mail_configured = bool(mail_password)
+    secret_state = {
+        "sub2api_api_key": _secret_state(sub2api_cfg.get("api_key")),
+        "sub2api_admin_password": _secret_state(sub2api_cfg.get("password")),
+        "hme_service_token": _secret_state(hme_cfg.service_token),
+        "cf_mail_admin_password": _secret_state(mail_password),
+    }
     return {
         "connections": {
             "sub2api_base_url": sub2api_cfg.get("base_url") or DEFAULT_SUB2API_BASE_URL,
@@ -78,8 +90,12 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
             "hme_account_id": hme_cfg.account_id or "",
             "cf_mail_base_url": (await get_setting_value(db, CF_SETTING_BASE_URL, DEFAULT_CF_MAIL_BASE_URL) or DEFAULT_CF_MAIL_BASE_URL),
             "cf_mail_address": (await get_setting_value(db, CF_SETTING_ADDRESS, DEFAULT_CF_MAIL_ADDRESS) or DEFAULT_CF_MAIL_ADDRESS),
-            "sub2api": {"configured": bool(sub2api_cfg.get("configured"))},
+            "sub2api": {
+                "configured": bool(sub2api_cfg.get("configured")),
+                "auth_mode": "api_key" if sub2api_cfg.get("api_key") else ("admin" if sub2api_cfg.get("email") and sub2api_cfg.get("password") else "none"),
+            },
             "hme": {"configured": bool(hme_cfg.configured)},
+            "mail": {"configured": mail_configured},
         },
         "automation": {
             "official_quota_probe": stored_quota,
@@ -90,12 +106,13 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
             "sms_reserve_sec": phones_cfg.reserve_sec,
         },
         "account": {"username": env.admin_username},
+        "secret_state": secret_state,
         "secrets": {
             "sub2api_api_key": _secret_view(sub2api_cfg.get("api_key")),
             "sub2api_admin_password": _secret_view(sub2api_cfg.get("password")),
             "hme_token": _secret_view(hme_cfg.service_token),
             "hme_service_token": _secret_view(hme_cfg.service_token),
-            "cf_mail_admin_password": _secret_view(await get_setting_value(db, CF_SETTING_ADMIN_PASSWORD, "")),
+            "cf_mail_admin_password": _secret_view(mail_password),
         },
     }
 

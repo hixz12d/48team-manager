@@ -61,9 +61,14 @@ class UIContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
             payload = client.get("/api/settings").json()
-            self.assertTrue(all(value == "••••••" for value in payload["secrets"].values()))
+            self.assertTrue(all(value == "" for value in payload["secrets"].values()))
+            self.assertEqual(payload["secret_state"]["sub2api_api_key"], "missing")
             page = client.get("/settings").text
+            self.assertIn("settings-columns", page)
+            self.assertIn('id="password-form"', page)
+            self.assertIn("sms_cooldown_min", page)
             self.assertIn('name="official_quota_probe"', page)
             self.assertNotIn('name="auto_reauth"', page)
             self.assertNotIn('name="auto_rotate"', page)
             self.assertNotIn('name="force_refill"', page)
+            self.assertIn("优先查看异常", client.get("/").text)

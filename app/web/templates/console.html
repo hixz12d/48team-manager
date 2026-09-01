@@ -11,7 +11,7 @@
 </head>
 <body data-page="{{ page }}">
   <div class="shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="brand">
         <img class="brand-logo" src="/static/logo.svg" alt="">
         <div>
@@ -31,38 +31,77 @@
         <a href="/settings" class="nav-link{% if page == 'settings' %} is-active{% endif %}">设置</a>
       </nav>
       <div class="sidebar-foot">
-        <div class="health-line"><span class="dot"></span> 服务正常</div>
+        <div class="health-line"><span class="dot"></span> 控制台已连接</div>
         <div class="muted">{{ app_version }}</div>
       </div>
     </aside>
     <div class="workspace">
       <header class="topbar">
+        <button type="button" class="button ghost sidebar-toggle" id="sidebar-toggle" aria-label="打开导航">菜单</button>
         <div>
           <h1>{{ title }}</h1>
-          <p class="muted" id="page-subtitle">先看本地状态，不会主动打 OpenAI。</p>
+          <p class="muted" id="page-subtitle">{{ subtitle }}</p>
         </div>
         <div class="topbar-actions">
           <button type="button" class="button" id="open-operations" data-open-operations>任务</button>
         </div>
       </header>
-      <main class="page" id="page-root">
+      <main class="page page-{{ page }}" id="page-root">
+        <div class="page-feedback" id="page-feedback" role="alert" hidden>
+          <strong>页面加载失败</strong>
+          <span id="page-feedback-text"></span>
+          <button type="button" class="button" id="page-retry">重试</button>
+        </div>
         {% if page == 'overview' %}
-        <section class="panel">
-          <div class="panel-header"><span class="panel-title">需要盯一眼</span></div>
-          <div class="panel-body" id="overview-attention">暂时没什么异常</div>
+        <section class="summary-strip" id="overview-summary" aria-label="运营摘要">
+          <a class="summary-item" href="/workspaces"><span class="summary-label">工作区</span><strong class="tabular" data-summary="workspaces">—</strong></a>
+          <a class="summary-item" href="/accounts"><span class="summary-label">账号</span><strong class="tabular" data-summary="accounts">—</strong></a>
+          <a class="summary-item" href="/"><span class="summary-label">待处理</span><strong class="tabular" data-summary="attention">—</strong></a>
+          <a class="summary-item" href="/operations"><span class="summary-label">运行任务</span><strong class="tabular" data-summary="running">—</strong></a>
+          <a class="summary-item" href="/accounts?purpose=conflict"><span class="summary-label">身份冲突</span><strong class="tabular" data-summary="conflicts">—</strong></a>
         </section>
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-header"><span class="panel-title">需要处理</span></div>
+            <div class="panel-body" id="overview-attention">正在加载总览…</div>
+          </section>
+          <section class="panel">
+            <div class="panel-header"><span class="panel-title">正在运行</span></div>
+            <div class="panel-body" id="overview-running">正在加载任务…</div>
+          </section>
+          <section class="panel">
+            <div class="panel-header"><span class="panel-title">工作区健康</span></div>
+            <div class="panel-body" id="overview-health">正在加载工作区…</div>
+          </section>
+        </div>
         {% elif page == 'workspaces' %}
-        <section class="panel">
-          <div class="toolbar"><input class="search" placeholder="搜团队名、邮箱" data-entity="workspace"></div>
-          <table class="data-table">
-            <thead><tr><th>团队</th><th>母号</th><th>成员</th><th>额度 / 健康</th><th>轮换</th><th>上次同步</th><th>状态</th></tr></thead>
-            <tbody id="workspaces-body"><tr><td colspan="7" class="muted">还没有团队。</td></tr></tbody>
-          </table>
+        <section class="panel table-shell">
+          <div class="toolbar">
+            <input class="search" id="workspaces-search" placeholder="搜名称、母号或 Workspace ID" data-entity="workspace" autocomplete="off">
+            <span class="toolbar-count muted" id="workspaces-count"></span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">工作区</th>
+                  <th scope="col">母号</th>
+                  <th scope="col" class="num">席位</th>
+                  <th scope="col">健康</th>
+                  <th scope="col">自动化</th>
+                  <th scope="col">官方 7d</th>
+                  <th scope="col">最近同步</th>
+                  <th scope="col" class="actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="workspaces-body"><tr><td colspan="8" class="muted">正在加载工作区…</td></tr></tbody>
+            </table>
+          </div>
         </section>
         {% elif page == 'accounts' %}
-        <section class="panel">
+        <section class="panel table-shell">
           <div class="toolbar">
-            <input class="search" placeholder="搜邮箱、团队、远端 ID" data-entity="account">
+            <input class="search" id="accounts-search" placeholder="搜邮箱、团队、远端 ID" data-entity="account" autocomplete="off">
             <select class="filter" data-filter="purpose">
               <option value="all">全部</option>
               <option value="mother">母号</option>
@@ -73,105 +112,265 @@
               <option value="conflict">有冲突</option>
               <option value="archived">已归档</option>
             </select>
+            <span class="toolbar-count muted" id="accounts-count"></span>
           </div>
-          <table class="data-table">
-            <thead><tr><th>账号</th><th>用途</th><th>团队</th><th>7 天</th><th>登录</th><th>Sub2API</th><th>代理</th><th>状态</th></tr></thead>
-            <tbody id="accounts-body"><tr><td colspan="8" class="muted">还没有账号。归档的默认不显示。</td></tr></tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">账号</th>
+                  <th scope="col">工作区</th>
+                  <th scope="col">本地用途</th>
+                  <th scope="col">授权</th>
+                  <th scope="col">官方额度</th>
+                  <th scope="col">Sub2API</th>
+                  <th scope="col">运行状态</th>
+                  <th scope="col" class="actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="accounts-body"><tr><td colspan="8" class="muted">正在加载账号…</td></tr></tbody>
+            </table>
+          </div>
         </section>
         {% elif page == 'operations' %}
-        <section class="panel">
-          <table class="data-table">
-            <thead><tr><th>状态</th><th>任务</th><th>对象</th><th>当前步骤</th><th>开始时间</th><th>耗时</th></tr></thead>
-            <tbody id="operations-body"><tr><td colspan="6" class="muted">还没有任务。</td></tr></tbody>
-          </table>
+        <section class="panel table-shell">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">状态</th>
+                  <th scope="col">类型</th>
+                  <th scope="col">对象</th>
+                  <th scope="col">工作区</th>
+                  <th scope="col">当前步骤</th>
+                  <th scope="col">更新时间</th>
+                  <th scope="col" class="actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="operations-body"><tr><td colspan="7" class="muted">正在加载任务…</td></tr></tbody>
+            </table>
+          </div>
         </section>
         {% elif page == 'phones' %}
-        <section class="panel">
-          <table class="data-table">
-            <thead><tr><th>号码</th><th>状态</th><th>已用</th><th>剩余</th><th>占用</th><th>上次报错</th></tr></thead>
-            <tbody id="phones-body"><tr><td colspan="6" class="muted">还没有手机号。</td></tr></tbody>
-          </table>
+        <section class="panel table-shell">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">号码</th>
+                  <th scope="col">状态</th>
+                  <th scope="col" class="num">成功 / 上限</th>
+                  <th scope="col" class="num">风险</th>
+                  <th scope="col">当前租约</th>
+                  <th scope="col">冷却到</th>
+                  <th scope="col">最后结果</th>
+                </tr>
+              </thead>
+              <tbody id="phones-body"><tr><td colspan="7" class="muted">正在加载手机号…</td></tr></tbody>
+            </table>
+          </div>
         </section>
         {% elif page == 'hme' %}
-        <section class="panel">
-          <table class="data-table">
-            <thead><tr><th>别名</th><th>状态</th><th>标签</th><th>同步</th><th>任务</th></tr></thead>
-            <tbody id="hme-body"><tr><td colspan="5" class="muted">还没有 HME 占用记录。</td></tr></tbody>
-          </table>
+        <section class="panel table-shell">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">别名</th>
+                  <th scope="col">本地状态</th>
+                  <th scope="col">目标标签</th>
+                  <th scope="col">同步状态</th>
+                  <th scope="col">任务租约</th>
+                  <th scope="col">到期</th>
+                  <th scope="col">最后错误</th>
+                </tr>
+              </thead>
+              <tbody id="hme-body"><tr><td colspan="7" class="muted">正在加载 HME…</td></tr></tbody>
+            </table>
+          </div>
         </section>
         {% elif page == 'proxies' %}
-        <section class="panel">
-          <table class="data-table">
-            <thead><tr><th>名称</th><th>地址</th><th>状态</th><th>地区</th><th>上次出口</th></tr></thead>
-            <tbody id="proxies-body"><tr><td colspan="5" class="muted">还没有代理。</td></tr></tbody>
-          </table>
+        <section class="panel table-shell">
+          <div class="table-scroll">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th scope="col">名称</th>
+                  <th scope="col">地区</th>
+                  <th scope="col">出口 IP</th>
+                  <th scope="col">状态</th>
+                  <th scope="col">地址</th>
+                  <th scope="col">最后检测</th>
+                </tr>
+              </thead>
+              <tbody id="proxies-body"><tr><td colspan="6" class="muted">正在加载代理…</td></tr></tbody>
+            </table>
+          </div>
         </section>
         {% elif page == 'settings' %}
-        <form id="settings-form" class="settings-grid">
-          <article class="panel">
-            <div class="panel-header"><span class="panel-title">对接</span></div>
-            <div class="panel-body stack">
-              <p class="muted">密钥只显示圆点。不想改就留着，保存时不会覆盖。检测用当前表单里的值，不会先保存。</p>
-              <label>Sub2API 地址<input name="sub2api_base_url" autocomplete="off"></label>
-              <label>Sub2API Key<input name="sub2api_api_key" type="password" autocomplete="new-password"></label>
-              <label>Sub2API 管理员邮箱<input name="sub2api_admin_email" autocomplete="off"></label>
-              <label>Sub2API 管理员密码<input name="sub2api_admin_password" type="password" autocomplete="new-password"></label>
-              <label>HME 地址<input name="hme_base_url" autocomplete="off"></label>
-              <label>HME Token<input name="hme_service_token" type="password" autocomplete="new-password"></label>
-              <label>HME 账号 ID<input name="hme_account_id" autocomplete="off"></label>
-              <label>临时邮箱 API<input name="cf_mail_base_url" autocomplete="off"></label>
-              <label>临时邮箱地址<input name="cf_mail_address" autocomplete="off"></label>
-              <label>临时邮箱密码<input name="cf_mail_admin_password" type="password" autocomplete="new-password"></label>
-              <div class="settings-probe-actions">
-                <button class="button" type="button" id="settings-probe">检测连接</button>
-              </div>
-              <div id="settings-probe-result" class="probe-result" hidden></div>
+        <form id="settings-form" class="settings-page">
+          <div class="settings-columns">
+            <div class="settings-column settings-column-main">
+              <article class="panel service-card" data-service="sub2api">
+                <div class="panel-header">
+                  <div>
+                    <span class="panel-title">Sub2API</span>
+                    <p class="service-meta muted" data-service-meta="sub2api">未检测</p>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="button" type="button" data-probe="sub2api">检测</button>
+                    <button class="button ghost" type="button" data-edit-toggle="sub2api">编辑</button>
+                  </div>
+                </div>
+                <div class="panel-body stack">
+                  <p class="service-summary muted" data-service-summary="sub2api">默认只显示地址和检测摘要。密钥留空则不修改。</p>
+                  <div class="service-edit" data-edit-panel="sub2api" hidden>
+                    <label>地址<input name="sub2api_base_url" autocomplete="off"></label>
+                    <p class="hint" id="sub2api-auth-hint">认证方式会显示在这里。</p>
+                    <label>API Key<input name="sub2api_api_key" type="password" autocomplete="new-password" data-secret="sub2api_api_key"></label>
+                    <label>管理员邮箱<input name="sub2api_admin_email" autocomplete="off"></label>
+                    <label>管理员密码<input name="sub2api_admin_password" type="password" autocomplete="new-password" data-secret="sub2api_admin_password"></label>
+                  </div>
+                </div>
+              </article>
+              <article class="panel service-card" data-service="hme">
+                <div class="panel-header">
+                  <div>
+                    <span class="panel-title">iCloud HME</span>
+                    <p class="service-meta muted" data-service-meta="hme">未检测</p>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="button" type="button" data-probe="hme">检测</button>
+                    <button class="button ghost" type="button" data-edit-toggle="hme">编辑</button>
+                  </div>
+                </div>
+                <div class="panel-body stack">
+                  <p class="service-summary muted" data-service-summary="hme">检测使用当前输入值，不会自动保存。</p>
+                  <div class="service-edit" data-edit-panel="hme" hidden>
+                    <label>HME 地址<input name="hme_base_url" autocomplete="off"></label>
+                    <label>Token<input name="hme_service_token" type="password" autocomplete="new-password" data-secret="hme_service_token"></label>
+                    <label>账号 ID<input name="hme_account_id" autocomplete="off"></label>
+                  </div>
+                </div>
+              </article>
+              <article class="panel service-card" data-service="mail">
+                <div class="panel-header">
+                  <div>
+                    <span class="panel-title">临时邮箱</span>
+                    <p class="service-meta muted" data-service-meta="mail">未检测</p>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="button" type="button" data-probe="mail">检测</button>
+                    <button class="button ghost" type="button" data-edit-toggle="mail">编辑</button>
+                  </div>
+                </div>
+                <div class="panel-body stack">
+                  <p class="service-summary muted" data-service-summary="mail">连接成功后会显示当前邮箱。</p>
+                  <div class="service-edit" data-edit-panel="mail" hidden>
+                    <label>API 地址<input name="cf_mail_base_url" autocomplete="off"></label>
+                    <label>邮箱地址<input name="cf_mail_address" autocomplete="off"></label>
+                    <label>管理员密码<input name="cf_mail_admin_password" type="password" autocomplete="new-password" data-secret="cf_mail_admin_password"></label>
+                  </div>
+                </div>
+              </article>
             </div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><span class="panel-title">自动化</span></div>
-            <div class="panel-body stack">
-              <p class="muted" id="settings-automation-hint">现在只能开额度探测。</p>
-              <label class="check"><input type="checkbox" name="official_quota_probe"> 查官方额度</label>
+            <div class="settings-column settings-column-side">
+              <article class="panel automation-card">
+                <div class="panel-header"><span class="panel-title">自动化</span></div>
+                <div class="panel-body">
+                  <label class="setting-row">
+                    <span>
+                      <strong>官方额度探测</strong>
+                      <span class="hint">定时读取账号的官方 5h / 7d 用量。默认开启。</span>
+                      <span class="hint" id="settings-automation-hint">尚无执行记录。</span>
+                    </span>
+                    <input type="checkbox" name="official_quota_probe">
+                  </label>
+                </div>
+              </article>
+              <article class="panel">
+                <div class="panel-header"><span class="panel-title">手机号池</span></div>
+                <div class="panel-body stack">
+                  <label>每个号码最多使用
+                    <span class="input-with-unit">
+                      <input name="sms_max_uses_per_phone" type="number" min="1" max="20" aria-describedby="hint-max-uses">
+                      <span>次</span>
+                    </span>
+                  </label>
+                  <p class="hint" id="hint-max-uses">超过次数后不会再分配给新的注册或重授权任务。</p>
+                  <label>失败后冷却
+                    <span class="input-with-unit">
+                      <input name="sms_cooldown_min" type="number" min="1" max="1440" aria-describedby="hint-cooldown">
+                      <span>分钟</span>
+                    </span>
+                  </label>
+                  <p class="hint" id="hint-cooldown">冷却期间不会分配给新的注册或重授权任务。</p>
+                  <label>任务占用保留
+                    <span class="input-with-unit">
+                      <input name="sms_reserve_min" type="number" min="1" max="120" aria-describedby="hint-reserve">
+                      <span>分钟</span>
+                    </span>
+                  </label>
+                  <p class="hint" id="hint-reserve">任务进行中会占用该号码，超时后自动释放。</p>
+                </div>
+              </article>
             </div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><span class="panel-title">手机号池</span></div>
-            <div class="panel-body stack">
-              <label>每个号最多用几次<input name="sms_max_uses_per_phone" type="number" min="1" max="20"></label>
-              <label>冷却秒数<input name="sms_cooldown_sec" type="number" min="60" max="86400"></label>
-              <label>占用秒数<input name="sms_reserve_sec" type="number" min="60" max="7200"></label>
+          </div>
+          <div class="settings-savebar" id="settings-savebar">
+            <p id="settings-status" class="muted">没有未保存的修改</p>
+            <div class="settings-savebar-actions">
+              <button class="button ghost" type="button" id="settings-discard" hidden>放弃修改</button>
+              <button class="button" type="button" id="settings-probe-all">全部检测</button>
+              <button class="button primary" type="submit" id="settings-save">保存设置</button>
             </div>
-          </article>
+          </div>
+        </form>
+        <form id="password-form" class="settings-security">
           <article class="panel">
-            <div class="panel-header"><span class="panel-title">后台密码</span></div>
+            <div class="panel-header"><span class="panel-title">后台账号</span></div>
             <div class="panel-body stack">
               <p class="muted" id="settings-account">登录账号会显示在这里。</p>
-              <label>当前密码<input name="old_password" type="password" autocomplete="current-password"></label>
-              <label>新密码<input name="new_password" type="password" autocomplete="new-password"></label>
-              <label>再输一遍<input name="confirm_password" type="password" autocomplete="new-password"></label>
+              <fieldset class="password-fields">
+                <legend>修改密码</legend>
+                <label>当前密码<input name="old_password" type="password" autocomplete="current-password"></label>
+                <label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="6"></label>
+                <label>确认新密码<input name="confirm_password" type="password" autocomplete="new-password" minlength="6"></label>
+              </fieldset>
+              <p class="hint">至少 6 位。修改密码不会保存上方普通设置。</p>
+              <p id="password-status" class="muted" hidden></p>
+              <div class="settings-probe-actions">
+                <button class="button primary" type="submit">修改密码</button>
+              </div>
             </div>
           </article>
-          <div class="settings-actions">
-            <p id="settings-status" class="muted" hidden></p>
-            <button class="button primary" type="submit">保存设置</button>
-          </div>
         </form>
         {% endif %}
       </main>
     </div>
   </div>
   <div class="drawer" id="operations-drawer" hidden>
-    <div class="drawer-panel">
+    <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="operations-drawer-title">
       <header>
-        <strong>任务</strong>
+        <strong id="operations-drawer-title">任务</strong>
         <button type="button" class="button ghost" data-close-drawer>关掉</button>
       </header>
-      <p class="muted">临时看一眼就行，不会一直占着页面。</p>
+      <p class="muted" id="operations-drawer-meta">临时看一眼就行，不会一直占着页面。</p>
       <div id="operations-drawer-body"></div>
     </div>
   </div>
+  <div class="sheet" id="entity-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <header>
+        <div>
+          <strong id="sheet-title">详情</strong>
+          <p class="muted" id="sheet-subtitle"></p>
+        </div>
+        <button type="button" class="button ghost" data-close-sheet>关掉</button>
+      </header>
+      <div class="sheet-body" id="sheet-body"></div>
+    </div>
+  </div>
+  <div class="menu" id="action-menu" hidden></div>
   <dialog class="palette" id="command-palette">
     <input id="command-input" placeholder="去哪…">
     <ul id="command-list"></ul>

@@ -63,5 +63,6 @@ class ConnectionProbeTests(unittest.TestCase):
             self.assertEqual(payload["mail"]["address"], "box@example.com")
 
             saved = client.get("/api/settings").json()
-            self.assertEqual(saved["secrets"]["sub2api_api_key"], "••••••")
+            self.assertEqual(saved["secrets"]["sub2api_api_key"], "")
+            self.assertEqual(saved["secret_state"]["sub2api_api_key"], "missing")
             self.assertFalse(saved["connections"]["hme"]["configured"])

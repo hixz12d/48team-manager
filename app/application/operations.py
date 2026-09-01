@@ -119,7 +119,8 @@ def serialize_operation(row: Operation, *, steps: list[OperationStep] | None = N
         "result": result,
         "locked_by": row.locked_by or "",
         "lease_expires_at": isoformat(row.lease_expires_at),
-        "input": unpack_input(row.input_json),
+        "updated": isoformat(row.updated_at or row.finished_at or row.started_at or row.created_at),
+        "workspace_id": row.workspace_id,
     }
     if steps is not None:
         payload["steps"] = [

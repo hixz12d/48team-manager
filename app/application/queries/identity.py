@@ -19,6 +19,7 @@ from app.persistence.repositories import identity as identity_repo
 
 
 HIDDEN_ACCOUNT_STATES = {"archived"}
+AUTH_NEED_STATES = {"refresh_due", "oauth_required", "phone_required", "manual_required", "deactivated"}
 
 
 def _account_state(account, finding: dict[str, Any] | None) -> str:
@@ -42,22 +43,77 @@ def _binding_label(bindings: list) -> str:
     return next(iter(states))
 
 
+def _workspace_health(*, owner, owner_state: str | None, members: int, seat_limit: int | None, status: str | None) -> str:
+    if owner_state == "conflict":
+        return "identity_conflict"
+    if owner is not None and owner.auth_state in AUTH_NEED_STATES:
+        return "needs_auth"
+    if status in {"error", "expired"}:
+        return "billing"
+    if seat_limit and members < int(seat_limit):
+        return "vacancy"
+    return "ok"
+
+
 async def overview_query(db: AsyncSession) -> dict[str, Any]:
     accounts = await identity_repo.list_accounts(db)
     memberships = await identity_repo.list_memberships(db)
     bindings = await identity_repo.list_bindings(db)
     workspaces = await identity_repo.list_workspaces(db)
     report = build_audit_report(accounts, memberships, bindings, workspaces)
-    attention = [
-        {
-            "account_id": item["account_id"],
-            "email": item["email"],
-            "result": item["result"],
-            "message": "; ".join(item["reasons"]),
-        }
-        for item in report["findings"]
-        if item["result"] in {"conflict", "suspicious"}
-    ]
+    findings_by_id = {item["account_id"]: item for item in report["findings"]}
+    accounts_by_id = {row.id: row for row in accounts}
+    members_by_workspace: dict[int, list] = defaultdict(list)
+    for row in memberships:
+        members_by_workspace[row.workspace_id].append(row)
+    attention = []
+    for item in report["findings"]:
+        if item["result"] not in {"conflict", "suspicious"}:
+            continue
+        account = accounts_by_id.get(item["account_id"])
+        workspace_name = None
+        if account is not None:
+            owned = [row for row in workspaces if row.owner_account_id == account.id]
+            if owned:
+                workspace_name = owned[0].name
+        attention.append(
+            {
+                "account_id": item["account_id"],
+                "email": item["email"],
+                "result": item["result"],
+                "message": "; ".join(item["reasons"]),
+                "workspace": workspace_name,
+                "action": "查看",
+            }
+        )
+    workspace_health = []
+    for workspace in workspaces:
+        owner = accounts_by_id.get(workspace.owner_account_id) if workspace.owner_account_id else None
+        seated = [
+            row
+            for row in members_by_workspace.get(workspace.id, [])
+            if row.membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
+            and row.official_role != OFFICIAL_ROLE_OWNER
+        ]
+        owner_finding = findings_by_id.get(owner.id) if owner is not None else None
+        health = _workspace_health(
+            owner=owner,
+            owner_state=_account_state(owner, owner_finding) if owner is not None else None,
+            members=len(seated),
+            seat_limit=workspace.seat_limit,
+            status=workspace.status,
+        )
+        workspace_health.append(
+            {
+                "id": workspace.id,
+                "name": workspace.name or f"Workspace #{workspace.id}",
+                "members": len(seated),
+                "seat_limit": workspace.seat_limit,
+                "health": health,
+                "status": workspace.status,
+            }
+        )
+    workspace_health.sort(key=lambda item: (item["health"] == "ok", item["name"] or ""))
     return {
         "attention": attention,
         "running_operations": [],
@@ -66,13 +122,24 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
         "identity": report["counts"],
         "workspaces": len(workspaces),
         "accounts": len(accounts),
+        "workspace_health": workspace_health[:8],
+        "summary": {
+            "workspaces": len(workspaces),
+            "accounts": len(accounts),
+            "attention": len(attention),
+            "running_operations": 0,
+            "identity_conflicts": int((report["counts"] or {}).get("conflict") or 0),
+        },
     }
 
 
 async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
     accounts = await identity_repo.list_accounts(db)
     memberships = await identity_repo.list_memberships(db)
+    bindings = await identity_repo.list_bindings(db)
     workspaces = await identity_repo.list_workspaces(db)
+    report = build_audit_report(accounts, memberships, bindings, workspaces)
+    findings_by_id = {item["account_id"]: item for item in report["findings"]}
     accounts_by_id = {row.id: row for row in accounts}
     members_by_workspace: dict[int, list] = defaultdict(list)
     for row in memberships:
@@ -88,6 +155,14 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             if row.membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
             and row.official_role != OFFICIAL_ROLE_OWNER
         ]
+        owner_finding = findings_by_id.get(owner.id) if owner is not None else None
+        health = _workspace_health(
+            owner=owner,
+            owner_state=_account_state(owner, owner_finding) if owner is not None else None,
+            members=len(seated),
+            seat_limit=workspace.seat_limit,
+            status=workspace.status,
+        )
         items.append(
             {
                 "id": workspace.id,
@@ -99,6 +174,8 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "seat_limit": workspace.seat_limit,
                 "quota": None,
                 "rotation": "off",
+                "automation": "off",
+                "health": health,
                 "last_sync": isoformat(workspace.last_official_sync_at),
                 "status": workspace.status,
             }
@@ -132,7 +209,7 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
                 continue
             if purpose == "archived" and account.operational_state != "archived":
                 continue
-            if purpose == "needs_auth":
+            if purpose == "needs_auth" and (account.auth_state not in AUTH_NEED_STATES):
                 continue
             if purpose == "quota_full":
                 pass
@@ -148,20 +225,36 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
             for row in active
             if row.workspace_id in workspaces_by_id
         ]
+        binding_rows = bindings_by_account.get(account.id, [])
+        primary_membership = active[0] if active else None
+        primary_binding = binding_rows[0] if binding_rows else None
         items.append(
             {
                 "id": account.id,
                 "email": account.email,
                 "purpose": account.local_purpose,
                 "official_plan": account.official_plan,
+                "official_user_id": account.official_user_id,
+                "official_account_id": account.official_account_id,
                 "workspace": workspace_names[0] if workspace_names else None,
+                "official_role": primary_membership.official_role if primary_membership else None,
+                "membership_state": primary_membership.membership_state if primary_membership else None,
                 "quota_7d": None,
                 "auth": account.auth_state,
-                "sub2api": _binding_label(bindings_by_account.get(account.id, [])),
+                "sub2api": _binding_label(binding_rows),
                 "proxy": "set" if account.proxy else "none",
+                "proxy_profile_id": account.proxy_profile_id,
                 "state": state,
                 "identity": finding["result"] if finding else "unbound",
                 "reasons": finding["reasons"] if finding else [],
+                "has_access_token": bool(account.access_token_encrypted),
+                "has_refresh_token": bool(account.refresh_token_encrypted),
+                "binding": {
+                    "remote_id": primary_binding.remote_account_id if primary_binding else None,
+                    "verified_email": primary_binding.verified_email if primary_binding else None,
+                    "state": primary_binding.binding_state if primary_binding else None,
+                    "last_error": primary_binding.last_error if primary_binding else None,
+                },
             }
         )
     return {"items": items, "next_cursor": None}

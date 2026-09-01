@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.operations import pack_input, unpack_input
 from app.core.crypto import token_cipher
 from app.core.proxy import compose_proxy_url, inherit_proxy_url, mask_proxy_url, split_proxy_url
-from app.core.time import utcnow
+from app.core.time import isoformat, utcnow
 from app.persistence.models.operations import Operation
 from app.persistence.models.resources import ProxyProfile
 
@@ -31,6 +31,7 @@ class ProxyProfileService:
             "status": row.status,
             "region": row.region or "",
             "last_exit_ip": row.last_exit_ip or "",
+            "last_checked_at": isoformat(row.last_checked_at) if hasattr(row, "last_checked_at") else None,
             "failure_count": int(row.failure_count or 0),
             "url": mask_proxy_url(self.compose(row)),
         }

@@ -62,7 +62,7 @@ Safe defaults:
 - auto rotate: off
 - force refill: always false unless explicitly enabled
 
-Secrets are stored hashed or encrypted. API responses mask them as `••••••`.
+Secrets are stored hashed or encrypted. API responses return `secret_state` (`stored` / `missing`) and never echo raw secrets.
 
 `IDENTITY_GMAIL_POLICY` is a local policy (`owner_only` / `warn` / `unrestricted`). The identity engine itself never maps Gmail to owner.
 

@@ -17,6 +17,26 @@ from app.core.time import isoformat
 from app.domain.automation import ACTIVE_STATES
 
 
+def _quota_payload(snapshot) -> dict[str, Any]:
+    if snapshot is None:
+        return {
+            "five_hour_used_percent": None,
+            "seven_day_used_percent": None,
+            "five_hour_reset_at": None,
+            "seven_day_reset_at": None,
+            "queried_at": None,
+            "success": None,
+        }
+    return {
+        "five_hour_used_percent": snapshot.five_hour_used_percent,
+        "seven_day_used_percent": snapshot.seven_day_used_percent,
+        "five_hour_reset_at": isoformat(snapshot.five_hour_reset_at),
+        "seven_day_reset_at": isoformat(snapshot.seven_day_reset_at),
+        "queried_at": isoformat(snapshot.queried_at),
+        "success": bool(snapshot.success),
+    }
+
+
 def _quota_label(snapshot) -> str | None:
     if snapshot is None or not snapshot.success or snapshot.seven_day_used_percent is None:
         return None
@@ -27,26 +47,38 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
     payload = await overview_query(db)
     operations = await operation_store.list_recent(db, limit=20)
     running = [serialize_operation(row) for row in operations if row.state in ACTIVE_STATES]
-    payload["running_operations"] = running
+    latest = await quota_service.latest_official_by_accounts(db)
+    latest_quota_at = None
+    for snap in latest.values():
+        if snap.success and snap.queried_at and (latest_quota_at is None or snap.queried_at > latest_quota_at):
+            latest_quota_at = snap.queried_at
+    payload["running_operations"] = running[:4]
     payload["recent_events"] = [
         {
             "id": row.public_id,
             "operation": row.op_type,
             "status": row.state,
             "target": row.email,
+            "updated": isoformat(row.updated_at or row.finished_at or row.started_at or row.created_at),
         }
         for row in operations[:8]
     ]
+    summary = dict(payload.get("summary") or {})
+    summary["running_operations"] = len(running)
+    payload["summary"] = summary
+    payload["freshness"] = {
+        "official_quota_latest_at": isoformat(latest_quota_at),
+        "identity_audit_at": None,
+        "resources_checked_at": None,
+    }
     return payload
 
 
 async def workspaces(db: AsyncSession) -> dict[str, Any]:
     payload = await workspaces_query(db)
-    latest = await quota_service.latest_official_by_accounts(db)
-    # Workspace quota is informational only; memberships already loaded in identity query.
     for item in payload["items"]:
         item.setdefault("quota", None)
-    del latest
+        item.setdefault("automation", item.get("rotation") or "off")
     return payload
 
 
@@ -56,15 +88,7 @@ async def accounts(db: AsyncSession, purpose: str = "all", include_archived: boo
     for item in payload["items"]:
         snap = latest.get(item["id"])
         item["quota_7d"] = _quota_label(snap)
-        item["quota"] = {
-            "five_hour_used_percent": snap.five_hour_used_percent if snap else None,
-            "seven_day_used_percent": snap.seven_day_used_percent if snap else None,
-            "five_hour_reset_at": isoformat(snap.five_hour_reset_at) if snap else None,
-            "seven_day_reset_at": isoformat(snap.seven_day_reset_at) if snap else None,
-            "success": bool(snap.success) if snap else None,
-        }
-        if purpose == "quota_full":
-            continue
+        item["quota"] = _quota_payload(snap)
     if purpose == "quota_full":
         payload["items"] = [
             item
@@ -96,6 +120,8 @@ async def hme(db: AsyncSession) -> dict[str, Any]:
                 "label": row.label_desired or "",
                 "pending": bool(row.label_sync_pending),
                 "job_id": row.job_id or "",
+                "expires_at": isoformat(row.expires_at),
+                "last_error": row.last_error or "",
             }
             for row in rows
         ],

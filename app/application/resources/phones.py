@@ -10,7 +10,7 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.settings import get_setting_value
-from app.core.time import utcnow
+from app.core.time import isoformat, utcnow
 from app.domain.resources import (
     DEFAULT_COOLDOWN_SEC,
     DEFAULT_MAX_USES,
@@ -113,6 +113,7 @@ class PhonePoolService:
             "reserved_by": row.reserved_by or "",
             "last_error_type": row.last_error_type or "",
             "risk_count": int(row.risk_count or 0),
+            "cooldown_until": isoformat(row.last_used_at),
             "note": row.note or "",
         }
 

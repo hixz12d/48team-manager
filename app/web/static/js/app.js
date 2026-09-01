@@ -4,23 +4,28 @@
   const commandInput = document.getElementById("command-input");
   const commandList = document.getElementById("command-list");
   const drawer = document.getElementById("operations-drawer");
+  const sheet = document.getElementById("entity-sheet");
+  const menu = document.getElementById("action-menu");
   const SECRET_MASK = "••••••";
+  const pageCache = { items: [], kind: "" };
+  let settingsBaseline = "";
+  let settingsDirty = false;
+  let overlayReturn = null;
+  let pollTimer = null;
+  let searchTimer = null;
 
   const destinations = [
     { label: "去总览", href: "/" },
     { label: "去团队", href: "/workspaces" },
     { label: "去账号", href: "/accounts" },
     { label: "去任务", href: "/operations" },
+    { label: "去手机号", href: "/resources/phones" },
+    { label: "去 HME", href: "/resources/hme" },
+    { label: "去代理", href: "/resources/proxies" },
     { label: "打开设置", href: "/settings" },
   ];
 
-  const purposeLabels = {
-    mother: "母号",
-    child: "子号",
-    standby: "待命",
-    disabled: "停用",
-  };
-
+  const purposeLabels = { mother: "母号", child: "子号", standby: "待命", disabled: "停用", free: "空闲号" };
   const stateLabels = {
     active: "在用",
     available: "空闲",
@@ -29,23 +34,46 @@
     conflict: "有冲突",
     archived: "已归档",
     unknown: "未知",
+    disabled: "停用",
+    free: "空闲",
   };
-
   const statusLabels = {
-    queued: "排队中",
+    queued: "排队",
     running: "进行中",
-    waiting: "等着",
+    waiting: "等待",
     success: "完成",
     failed: "失败",
     cancelled: "已取消",
-    manual_required: "要人工看",
-    pending: "待同步",
-    verified: "已核对",
-    missing: "对不上",
-    unbound: "没绑",
-    none: "没有",
-    set: "有",
+    manual_required: "需人工",
+    pending: "待确认",
+    verified: "已验证",
+    missing: "缺失",
+    unbound: "未绑定",
+    conflict: "冲突",
+    none: "未绑定",
+    set: "已设",
     off: "关着",
+    healthy: "正常",
+    refresh_due: "需刷新",
+    refreshing: "刷新中",
+    oauth_required: "需 OAuth",
+    phone_required: "需手机",
+    deactivated: "已停用",
+    ok: "正常",
+    needs_auth: "需授权",
+    identity_conflict: "身份冲突",
+    vacancy: "空席",
+    billing: "账单不清",
+    quota_probe: "额度刷新",
+    reauth: "重新授权",
+    onboard: "拉人",
+    rotate: "轮转",
+    auth_probe: "授权探测",
+    reconcile: "对账",
+    sub2api_sync: "Sub2API 同步",
+    proxy_check: "代理检测",
+    free_register: "空闲号注册",
+    reregister: "重注册",
   };
 
   function abortEntity(key) {
@@ -54,6 +82,14 @@
     const next = new AbortController();
     controllers.set(key, next);
     return next;
+  }
+
+  function friendlyError(error) {
+    const text = String(error && error.message ? error.message : error || "请求失败");
+    if (text.length > 180 || text.trim().startsWith("{") || text.trim().startsWith("[")) {
+      return "请求失败，请重试。";
+    }
+    return text;
   }
 
   async function fetchEntity(key, url, options = {}) {
@@ -67,7 +103,7 @@
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       const detail = payload.detail || `请求失败: ${key}`;
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      throw new Error(typeof detail === "string" ? detail : "请求失败，请重试。");
     }
     return response.json();
   }
@@ -77,115 +113,650 @@
     return map[value] || String(value);
   }
 
-  function renderOverview(payload) {
-    const root = document.getElementById("overview-attention");
-    if (!root) return;
-    if (!payload.attention || payload.attention.length === 0) {
-      root.textContent = "暂时没什么异常";
-      return;
-    }
-    root.replaceChildren();
-    payload.attention.forEach((item) => {
-      const row = document.createElement("div");
-      row.textContent = item.message || item;
-      root.append(row);
-    });
+  function toneFor(code) {
+    if (["conflict", "identity_conflict", "failed", "manual_required", "deactivated", "danger"].includes(code)) return "danger";
+    if (["warning", "needs_auth", "refresh_due", "oauth_required", "phone_required", "vacancy", "billing", "waiting", "pending", "quota_full"].includes(code)) return "warning";
+    if (["success", "verified", "healthy", "ok", "active", "running"].includes(code)) return "success";
+    if (["queued", "accent"].includes(code)) return "accent";
+    return "";
   }
 
-  function cell(row, text) {
+  function relativeTime(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    const seconds = Math.round((Date.now() - date.getTime()) / 1000);
+    const future = seconds < 0;
+    const abs = Math.abs(seconds);
+    let text = "刚刚";
+    if (abs >= 60 && abs < 3600) text = `${Math.floor(abs / 60)} 分钟${future ? "后" : "前"}`;
+    else if (abs >= 3600 && abs < 86400) text = `${Math.floor(abs / 3600)} 小时${future ? "后" : "前"}`;
+    else if (abs >= 86400) text = `${Math.floor(abs / 86400)} 天${future ? "后" : "前"}`;
+    else if (abs >= 8 && abs < 60) text = `${abs} 秒${future ? "后" : "前"}`;
+    return text;
+  }
+
+  function timeNode(value) {
+    const span = document.createElement("span");
+    span.className = "cell-sub";
+    span.textContent = relativeTime(value);
+    if (value) span.title = String(value);
+    return span;
+  }
+
+  function statusNode(code, text) {
+    const span = document.createElement("span");
+    span.className = "status";
+    const tone = toneFor(code);
+    if (tone) span.dataset.tone = tone;
+    span.textContent = text || labelOf(statusLabels, code);
+    return span;
+  }
+
+  function cell(row, content, className) {
     const td = document.createElement("td");
-    td.textContent = text == null || text === "" ? "—" : String(text);
+    if (className) td.className = className;
+    if (content instanceof Node) td.append(content);
+    else td.textContent = content == null || content === "" ? "—" : String(content);
     row.append(td);
+    return td;
   }
 
-  function renderRows(bodyId, items, emptyText, columns, renderItem) {
+  function twoLine(primary, secondary) {
+    const wrap = document.createElement("div");
+    wrap.className = "cell-main";
+    const strong = document.createElement("strong");
+    strong.textContent = primary || "—";
+    wrap.append(strong);
+    if (secondary) {
+      const sub = document.createElement("span");
+      sub.className = "cell-sub";
+      sub.textContent = secondary;
+      wrap.append(sub);
+    }
+    return wrap;
+  }
+
+  function emptyState(title, detail) {
+    const wrap = document.createElement("div");
+    wrap.className = "empty-state";
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    const p = document.createElement("p");
+    p.textContent = detail;
+    wrap.append(strong, p);
+    return wrap;
+  }
+
+  function showPageError(message) {
+    const box = document.getElementById("page-feedback");
+    const text = document.getElementById("page-feedback-text");
+    if (!box || !text) return;
+    text.textContent = message;
+    box.hidden = false;
+  }
+
+  function hidePageError() {
+    const box = document.getElementById("page-feedback");
+    if (box) box.hidden = true;
+  }
+
+  function renderRows(bodyId, items, columns, renderItem, empty) {
     const body = document.getElementById(bodyId);
     if (!body) return;
     body.replaceChildren();
     if (!items.length) {
       const row = document.createElement("tr");
-      const empty = document.createElement("td");
-      empty.colSpan = columns;
-      empty.className = "muted";
-      empty.textContent = emptyText;
-      row.append(empty);
+      const td = document.createElement("td");
+      td.colSpan = columns;
+      td.append(empty);
+      row.append(td);
       body.append(row);
       return;
     }
     items.forEach((item) => body.append(renderItem(item)));
   }
 
+  function menuButton(kind, item) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button ghost";
+    button.textContent = "…";
+    button.setAttribute("aria-label", "更多操作");
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openMenu(button, kind, item);
+    });
+    return button;
+  }
+
+  function bindRow(row, kind, item) {
+    row.classList.add("is-interactive");
+    row.tabIndex = 0;
+    row.dataset.entityId = String(item.id);
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button, a, input, select")) return;
+      openSheet(kind, item, row);
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") openSheet(kind, item, row);
+    });
+  }
+
+  function shortId(value) {
+    const text = String(value || "");
+    if (text.length <= 12) return text;
+    return `${text.slice(0, 8)}…`;
+  }
+
   function workspaceRow(item) {
     const row = document.createElement("tr");
-    row.dataset.entityId = String(item.id);
-    cell(row, item.name);
+    bindRow(row, "workspace", item);
+    const seats = item.seat_limit ? `${item.members} / ${item.seat_limit}` : String(item.members ?? "—");
+    cell(row, twoLine(item.name, shortId(item.official_workspace_id)));
     cell(row, item.owner_email);
-    cell(row, item.members);
-    cell(row, item.quota);
-    cell(row, labelOf(statusLabels, item.rotation));
-    cell(row, item.last_sync);
-    cell(row, labelOf(stateLabels, item.status) === String(item.status) ? item.status : labelOf(stateLabels, item.status));
+    cell(row, seats, "num");
+    cell(row, statusNode(item.health || item.status, labelOf(statusLabels, item.health || item.status)));
+    cell(row, labelOf(statusLabels, item.automation || item.rotation));
+    cell(row, item.quota || "—");
+    cell(row, timeNode(item.last_sync));
+    cell(row, menuButton("workspace", item), "actions");
     return row;
+  }
+
+  function quotaCell(item) {
+    const wrap = document.createElement("div");
+    wrap.className = "cell-main";
+    const quota = item.quota || {};
+    const five = quota.five_hour_used_percent;
+    const seven = quota.seven_day_used_percent;
+    const line1 = document.createElement("span");
+    line1.className = "tabular";
+    line1.textContent = five == null ? "5h  —" : `5h  ${five}%`;
+    const line2 = document.createElement("span");
+    line2.className = "cell-sub tabular";
+    line2.textContent = seven == null ? "7d  —" : `7d  ${seven}% · ${relativeTime(quota.queried_at)}`;
+    if (quota.queried_at) line2.title = quota.queried_at;
+    wrap.append(line1, line2);
+    return wrap;
   }
 
   function accountRow(item) {
     const row = document.createElement("tr");
-    row.dataset.entityId = String(item.id);
-    cell(row, item.email);
-    cell(row, labelOf(purposeLabels, item.purpose));
+    bindRow(row, "account", item);
+    const plan = [item.official_role, item.official_plan].filter(Boolean).join(" · ");
+    cell(row, twoLine(item.email, plan || null));
     cell(row, item.workspace);
-    cell(row, item.quota_7d);
-    cell(row, item.auth);
-    cell(row, labelOf(statusLabels, item.sub2api));
-    cell(row, labelOf(statusLabels, item.proxy));
-    cell(row, labelOf(stateLabels, item.state));
+    cell(row, labelOf(purposeLabels, item.purpose));
+    cell(row, statusNode(item.auth, labelOf(statusLabels, item.auth)));
+    cell(row, quotaCell(item));
+    cell(row, statusNode(item.sub2api, labelOf(statusLabels, item.sub2api)));
+    cell(row, statusNode(item.state, labelOf(stateLabels, item.state)));
+    cell(row, menuButton("account", item), "actions");
     return row;
   }
 
   function operationRow(item) {
     const row = document.createElement("tr");
-    row.dataset.entityId = String(item.id);
-    cell(row, labelOf(statusLabels, item.status));
-    cell(row, item.operation);
-    cell(row, item.target);
-    cell(row, item.current_step);
-    cell(row, item.started);
-    cell(row, item.duration);
+    bindRow(row, "operation", item);
+    cell(row, statusNode(item.state || item.status, labelOf(statusLabels, item.state || item.status)));
+    cell(row, labelOf(statusLabels, item.operation));
+    cell(row, item.target || item.email);
+    cell(row, item.workspace || "—");
+    cell(row, item.current_step || "—");
+    cell(row, timeNode(item.updated || item.started));
+    cell(row, menuButton("operation", item), "actions");
     return row;
   }
 
   function phoneRow(item) {
     const row = document.createElement("tr");
-    row.dataset.entityId = String(item.id);
+    bindRow(row, "phone", item);
     cell(row, item.number);
-    cell(row, item.status);
-    cell(row, item.used_count);
-    cell(row, item.remaining);
-    cell(row, item.reserved_by);
-    cell(row, item.last_error_type);
+    cell(row, statusNode(item.status, item.status));
+    cell(row, `${item.used_count} / ${item.max_uses}`, "num");
+    cell(row, item.risk_count ?? 0, "num");
+    cell(row, item.reserved_by || "—");
+    cell(row, timeNode(item.cooldown_until));
+    cell(row, item.last_error_type || "—");
     return row;
   }
 
   function hmeRow(item) {
     const row = document.createElement("tr");
-    row.dataset.entityId = String(item.id);
+    bindRow(row, "hme", item);
     cell(row, item.email);
     cell(row, item.state);
-    cell(row, item.label);
-    cell(row, item.pending ? "待同步" : "");
-    cell(row, item.job_id);
+    cell(row, item.label || "—");
+    cell(row, item.pending ? "待同步" : "已同步");
+    cell(row, item.job_id || "—");
+    cell(row, timeNode(item.expires_at));
+    cell(row, item.last_error || "—");
     return row;
   }
 
   function proxyRow(item) {
     const row = document.createElement("tr");
-    row.dataset.entityId = String(item.id);
+    bindRow(row, "proxy", item);
     cell(row, item.name);
+    cell(row, item.region || "—");
+    cell(row, item.last_exit_ip || "—");
+    cell(row, statusNode(item.status, item.status));
     cell(row, `${item.scheme}://${item.host}:${item.port}`);
-    cell(row, item.status);
-    cell(row, item.region);
-    cell(row, item.last_exit_ip);
+    cell(row, timeNode(item.last_checked_at));
     return row;
+  }
+
+  function matchesQuery(item, query, fields) {
+    if (!query) return true;
+    const hay = fields.map((key) => String(item[key] || "")).join(" ").toLowerCase();
+    return hay.includes(query);
+  }
+
+  function currentQuery() {
+    return new URLSearchParams(window.location.search);
+  }
+
+  function writeQuery(next) {
+    const url = new URL(window.location.href);
+    url.search = next.toString();
+    window.history.replaceState({}, "", url);
+  }
+
+  function filterItems(kind, items) {
+    const params = currentQuery();
+    const q = (params.get("q") || "").trim().toLowerCase();
+    if (kind === "workspace") {
+      return items.filter((item) =>
+        matchesQuery(item, q, ["name", "owner_email", "official_workspace_id", "id"])
+      );
+    }
+    if (kind === "account") {
+      return items.filter((item) =>
+        matchesQuery(item, q, ["email", "workspace", "official_user_id", "official_account_id"])
+      );
+    }
+    return items;
+  }
+
+  function setCount(id, shown, total) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = shown === total ? `共 ${total} 个` : `${shown} / ${total}`;
+  }
+
+  function renderOverview(payload) {
+    const summary = payload.summary || {};
+    const set = (key, value, alert) => {
+      const node = document.querySelector(`[data-summary="${key}"]`);
+      if (!node) return;
+      node.textContent = value ?? 0;
+      node.parentElement.classList.toggle("is-alert", Boolean(alert && value));
+    };
+    set("workspaces", summary.workspaces ?? payload.workspaces);
+    set("accounts", summary.accounts ?? payload.accounts);
+    set("attention", summary.attention ?? (payload.attention || []).length, true);
+    set("running", summary.running_operations ?? (payload.running_operations || []).length);
+    set("conflicts", summary.identity_conflicts, true);
+
+    const attentionRoot = document.getElementById("overview-attention");
+    attentionRoot.replaceChildren();
+    const attention = payload.attention || [];
+    if (!attention.length) {
+      attentionRoot.append(
+        emptyState("当前没有需要人工处理的事项", "摘要条、运行任务和工作区健康会继续显示。")
+      );
+    } else {
+      const list = document.createElement("div");
+      list.className = "attention-list";
+      attention.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "list-row";
+        const left = document.createElement("div");
+        left.append(twoLine(item.email || item.message, item.message));
+        if (item.workspace) {
+          const extra = document.createElement("div");
+          extra.className = "cell-sub";
+          extra.textContent = item.workspace;
+          left.append(extra);
+        }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "button ghost";
+        button.textContent = item.action || "查看";
+        button.addEventListener("click", () => {
+          window.location.href = "/accounts?purpose=conflict";
+        });
+        row.append(left, button);
+        list.append(row);
+      });
+      attentionRoot.append(list);
+    }
+
+    const runningRoot = document.getElementById("overview-running");
+    runningRoot.replaceChildren();
+    const running = payload.running_operations || [];
+    if (!running.length) {
+      runningRoot.append(emptyState("没有正在运行的任务", "有 active Operation 时会在这里显示最近 4 条。"));
+    } else {
+      const list = document.createElement("div");
+      list.className = "running-list";
+      running.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "list-row is-interactive";
+        row.tabIndex = 0;
+        row.append(
+          twoLine(
+            `${labelOf(statusLabels, item.state || item.status)}  ${labelOf(statusLabels, item.operation)}  ${item.target || item.email || ""}`,
+            `${item.current_step || "—"} · ${relativeTime(item.updated || item.started)}`
+          )
+        );
+        row.addEventListener("click", () => openSheet("operation", item, row));
+        list.append(row);
+      });
+      runningRoot.append(list);
+    }
+
+    const healthRoot = document.getElementById("overview-health");
+    healthRoot.replaceChildren();
+    const health = payload.workspace_health || [];
+    if (!health.length) {
+      healthRoot.append(emptyState("还没有工作区", "导入或同步后会显示席位和健康摘要。"));
+    } else {
+      const list = document.createElement("div");
+      list.className = "health-list";
+      health.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "list-row";
+        const seats = item.seat_limit ? `${item.members}/${item.seat_limit} 席` : `${item.members} 席`;
+        row.append(twoLine(item.name, seats), statusNode(item.health, labelOf(statusLabels, item.health)));
+        list.append(row);
+      });
+      healthRoot.append(list);
+    }
+
+    stopPolling();
+    if (running.length && document.visibilityState === "visible") {
+      pollTimer = window.setTimeout(() => bootPage(), 7000);
+    }
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function kvSection(title, rows) {
+    const section = document.createElement("section");
+    section.className = "sheet-section";
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    const dl = document.createElement("dl");
+    dl.className = "kv";
+    rows.forEach(([label, value]) => {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value == null || value === "" ? "—" : String(value);
+      dl.append(dt, dd);
+    });
+    section.append(heading, dl);
+    return section;
+  }
+
+  function openSheet(kind, item, trigger) {
+    if (!sheet) return;
+    overlayReturn = trigger || document.activeElement;
+    const title = document.getElementById("sheet-title");
+    const subtitle = document.getElementById("sheet-subtitle");
+    const body = document.getElementById("sheet-body");
+    body.replaceChildren();
+    if (kind === "account") {
+      title.textContent = item.email;
+      subtitle.textContent = [labelOf(purposeLabels, item.purpose), item.workspace].filter(Boolean).join(" · ");
+      body.append(
+        kvSection("运行摘要", [
+          ["授权", labelOf(statusLabels, item.auth)],
+          ["运行状态", labelOf(stateLabels, item.state)],
+          ["官方计划", item.official_plan],
+          ["官方角色", item.official_role],
+          ["Membership", item.membership_state],
+        ]),
+        kvSection("官方额度", [
+          ["5h", item.quota?.five_hour_used_percent == null ? "—" : `${item.quota.five_hour_used_percent}%`],
+          ["7d", item.quota?.seven_day_used_percent == null ? "—" : `${item.quota.seven_day_used_percent}%`],
+          ["查询时间", item.quota?.queried_at || "—"],
+        ]),
+        kvSection("Binding", [
+          ["状态", labelOf(statusLabels, item.sub2api)],
+          ["远端 ID", item.binding?.remote_id],
+          ["核对邮箱", item.binding?.verified_email],
+          ["最近错误", item.binding?.last_error],
+        ]),
+        kvSection("技术信息", [
+          ["Official user ID", item.official_user_id],
+          ["Official account ID", item.official_account_id],
+          ["AT", item.has_access_token ? "已保存" : "未设置"],
+          ["RT", item.has_refresh_token ? "已保存" : "未设置"],
+          ["代理", labelOf(statusLabels, item.proxy)],
+          ["身份审计", item.identity],
+          ["原因", (item.reasons || []).join("；")],
+        ])
+      );
+    } else if (kind === "workspace") {
+      title.textContent = item.name;
+      subtitle.textContent = item.owner_email || "";
+      body.append(
+        kvSection("运行摘要", [
+          ["健康", labelOf(statusLabels, item.health || item.status)],
+          ["自动化", labelOf(statusLabels, item.automation || item.rotation)],
+          ["席位", item.seat_limit ? `${item.members} / ${item.seat_limit}` : item.members],
+          ["官方 Workspace ID", item.official_workspace_id],
+          ["最近同步", item.last_sync],
+        ])
+      );
+    } else if (kind === "operation") {
+      title.textContent = labelOf(statusLabels, item.operation);
+      subtitle.textContent = item.target || item.email || item.id;
+      body.append(
+        kvSection("任务", [
+          ["状态", labelOf(statusLabels, item.state || item.status)],
+          ["当前步骤", item.current_step],
+          ["对象", item.target || item.email],
+          ["错误码", item.error_code],
+          ["说明", item.error],
+          ["开始", item.started],
+          ["更新", item.updated],
+          ["Operation ID", item.id],
+        ])
+      );
+    } else if (kind === "phone") {
+      title.textContent = item.number;
+      body.append(
+        kvSection("手机号", [
+          ["状态", item.status],
+          ["成功 / 上限", `${item.used_count} / ${item.max_uses}`],
+          ["风险", item.risk_count],
+          ["租约", item.reserved_by],
+          ["最后结果", item.last_error_type],
+        ])
+      );
+    } else if (kind === "hme") {
+      title.textContent = item.email;
+      body.append(
+        kvSection("HME", [
+          ["状态", item.state],
+          ["标签", item.label],
+          ["同步", item.pending ? "待同步" : "已同步"],
+          ["任务", item.job_id],
+          ["到期", item.expires_at],
+          ["错误", item.last_error],
+        ])
+      );
+    } else if (kind === "proxy") {
+      title.textContent = item.name;
+      body.append(
+        kvSection("代理", [
+          ["地区", item.region],
+          ["出口 IP", item.last_exit_ip],
+          ["状态", item.status],
+          ["地址", `${item.scheme}://${item.host}:${item.port}`],
+          ["最后检测", item.last_checked_at],
+        ])
+      );
+    }
+    closeMenu();
+    sheet.hidden = false;
+    sheet.querySelector("[data-close-sheet]")?.focus();
+  }
+
+  function closeSheet() {
+    if (!sheet || sheet.hidden) return;
+    sheet.hidden = true;
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  function openMenu(button, kind, item) {
+    if (!menu) return;
+    overlayReturn = button;
+    menu.replaceChildren();
+    const add = (label, handler, className) => {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.textContent = label;
+      if (className) option.className = className;
+      option.addEventListener("click", () => {
+        closeMenu();
+        handler();
+      });
+      menu.append(option);
+    };
+    add("查看详情", () => openSheet(kind, item, button));
+    if (kind === "account" && item.email) {
+      add("复制邮箱", async () => {
+        try {
+          await navigator.clipboard.writeText(item.email);
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+    const rect = button.getBoundingClientRect();
+    menu.hidden = false;
+    menu.style.left = `${Math.min(rect.left, window.innerWidth - 200)}px`;
+    menu.style.top = `${rect.bottom + 4}px`;
+  }
+
+  function closeMenu() {
+    if (menu) menu.hidden = true;
+  }
+
+  function renderDrawer(items) {
+    const body = document.getElementById("operations-drawer-body");
+    const meta = document.getElementById("operations-drawer-meta");
+    if (!body) return;
+    const running = items.filter((item) => ["queued", "running", "waiting"].includes(item.state || item.status));
+    const manual = items.filter((item) => (item.state || item.status) === "manual_required");
+    meta.textContent = `${running.length} 个运行中 · ${manual.length} 个需人工`;
+    body.replaceChildren();
+    const addGroup = (title, rows) => {
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      heading.style.fontSize = "12px";
+      heading.style.color = "var(--muted)";
+      body.append(heading);
+      if (!rows.length) {
+        const p = document.createElement("p");
+        p.className = "muted";
+        p.textContent = "没有";
+        body.append(p);
+        return;
+      }
+      rows.slice(0, 6).forEach((item) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "button ghost";
+        row.style.justifyContent = "flex-start";
+        row.textContent = `${labelOf(statusLabels, item.operation)} ${item.target || item.email || ""} · ${item.current_step || "—"}`;
+        row.addEventListener("click", () => {
+          closeDrawer();
+          window.location.href = "/operations";
+        });
+        body.append(row);
+      });
+    };
+    addGroup("进行中", running);
+    addGroup("需人工", manual);
+    const all = document.createElement("a");
+    all.href = "/operations";
+    all.className = "button";
+    all.textContent = "查看全部任务";
+    all.style.marginTop = "12px";
+    body.append(all);
+  }
+
+  async function openDrawer() {
+    if (!drawer) return;
+    overlayReturn = document.getElementById("open-operations");
+    drawer.hidden = false;
+    const body = document.getElementById("operations-drawer-body");
+    body.textContent = "正在加载任务…";
+    try {
+      const payload = await fetchEntity("operation-drawer", "/api/operations");
+      renderDrawer(payload.items || []);
+    } catch (error) {
+      body.replaceChildren(emptyState("任务加载失败", friendlyError(error)));
+    }
+    drawer.querySelector("[data-close-drawer]")?.focus();
+  }
+
+  function closeDrawer() {
+    if (!drawer || drawer.hidden) return;
+    drawer.hidden = true;
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  function secretPlaceholder(state) {
+    return state === "stored" ? "已保存，留空则不修改" : "尚未设置";
+  }
+
+  function snapshotSettings(form) {
+    const data = new FormData(form);
+    return JSON.stringify({
+      sub2api_base_url: data.get("sub2api_base_url"),
+      sub2api_api_key: data.get("sub2api_api_key"),
+      sub2api_admin_email: data.get("sub2api_admin_email"),
+      sub2api_admin_password: data.get("sub2api_admin_password"),
+      hme_base_url: data.get("hme_base_url"),
+      hme_service_token: data.get("hme_service_token"),
+      hme_account_id: data.get("hme_account_id"),
+      cf_mail_base_url: data.get("cf_mail_base_url"),
+      cf_mail_address: data.get("cf_mail_address"),
+      cf_mail_admin_password: data.get("cf_mail_admin_password"),
+      official_quota_probe: form.official_quota_probe.checked,
+      sms_max_uses_per_phone: data.get("sms_max_uses_per_phone"),
+      sms_cooldown_min: data.get("sms_cooldown_min"),
+      sms_reserve_min: data.get("sms_reserve_min"),
+    });
+  }
+
+  function updateDirty() {
+    const form = document.getElementById("settings-form");
+    const bar = document.getElementById("settings-savebar");
+    const status = document.getElementById("settings-status");
+    const discard = document.getElementById("settings-discard");
+    if (!form || !bar) return;
+    settingsDirty = snapshotSettings(form) !== settingsBaseline;
+    bar.classList.toggle("is-dirty", settingsDirty);
+    if (discard) discard.hidden = !settingsDirty;
+    if (status && !status.dataset.locked) {
+      status.className = "muted";
+      status.textContent = settingsDirty ? "有未保存的修改" : "没有未保存的修改";
+    }
   }
 
   function fillSettings(payload) {
@@ -194,7 +765,7 @@
     const connections = payload.connections || {};
     const automation = payload.automation || {};
     const resources = payload.resources || {};
-    const secrets = payload.secrets || {};
+    const secretState = payload.secret_state || {};
     const account = payload.account || {};
     form.sub2api_base_url.value = connections.sub2api_base_url || "";
     form.sub2api_admin_email.value = connections.sub2api_admin_email || "";
@@ -202,16 +773,38 @@
     form.hme_account_id.value = connections.hme_account_id || "";
     form.cf_mail_base_url.value = connections.cf_mail_base_url || "";
     form.cf_mail_address.value = connections.cf_mail_address || "";
-    form.sub2api_api_key.value = secrets.sub2api_api_key || "";
-    form.sub2api_admin_password.value = secrets.sub2api_admin_password || "";
-    form.hme_service_token.value = secrets.hme_service_token || secrets.hme_token || "";
-    form.cf_mail_admin_password.value = secrets.cf_mail_admin_password || "";
+    form.sub2api_api_key.value = "";
+    form.sub2api_admin_password.value = "";
+    form.hme_service_token.value = "";
+    form.cf_mail_admin_password.value = "";
     form.official_quota_probe.checked = Boolean(automation.official_quota_probe);
     form.sms_max_uses_per_phone.value = resources.sms_max_uses_per_phone ?? "";
-    form.sms_cooldown_sec.value = resources.sms_cooldown_sec ?? "";
-    form.sms_reserve_sec.value = resources.sms_reserve_sec ?? "";
+    form.sms_cooldown_min.value = resources.sms_cooldown_sec ? Math.round(resources.sms_cooldown_sec / 60) : "";
+    form.sms_reserve_min.value = resources.sms_reserve_sec ? Math.round(resources.sms_reserve_sec / 60) : "";
+    form.querySelectorAll("[data-secret]").forEach((input) => {
+      const key = input.dataset.secret;
+      input.placeholder = secretPlaceholder(secretState[key]);
+    });
+    const authHint = document.getElementById("sub2api-auth-hint");
+    if (authHint) {
+      const mode = connections.sub2api?.auth_mode;
+      authHint.textContent =
+        mode === "api_key" ? "认证方式：API Key" : mode === "admin" ? "认证方式：管理员账号" : "尚未配置认证";
+    }
+    const configuredText = (flag) => (flag ? "已配置" : "未设置");
+    const setMeta = (service, flag) => {
+      const meta = document.querySelector(`[data-service-meta="${service}"]`);
+      if (meta && !meta.dataset.probed) meta.textContent = `${configuredText(flag)} · 未检测`;
+    };
+    setMeta("sub2api", connections.sub2api?.configured);
+    setMeta("hme", connections.hme?.configured);
+    setMeta("mail", connections.mail?.configured);
     const accountEl = document.getElementById("settings-account");
     if (accountEl) accountEl.textContent = account.username ? `当前登录账号：${account.username}` : "登录账号会显示在这里。";
+    settingsBaseline = snapshotSettings(form);
+    const status = document.getElementById("settings-status");
+    if (status) delete status.dataset.locked;
+    updateDirty();
   }
 
   function numberOrNull(value) {
@@ -227,64 +820,9 @@
     return text;
   }
 
-  async function saveSettings(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const statusEl = document.getElementById("settings-status");
-    const oldPassword = String(form.old_password.value || "");
-    const newPassword = String(form.new_password.value || "");
-    const confirmPassword = String(form.confirm_password.value || "");
-    const payload = {
-      connections: {
-        sub2api_base_url: form.sub2api_base_url.value,
-        sub2api_admin_email: form.sub2api_admin_email.value,
-        hme_base_url: form.hme_base_url.value,
-        hme_account_id: form.hme_account_id.value,
-        cf_mail_base_url: form.cf_mail_base_url.value,
-        cf_mail_address: form.cf_mail_address.value,
-        sub2api_api_key: secretOrNull(form.sub2api_api_key.value),
-        sub2api_admin_password: secretOrNull(form.sub2api_admin_password.value),
-        hme_service_token: secretOrNull(form.hme_service_token.value),
-        cf_mail_admin_password: secretOrNull(form.cf_mail_admin_password.value),
-      },
-      automation: {
-        official_quota_probe: form.official_quota_probe.checked,
-      },
-      resources: {
-        sms_max_uses_per_phone: numberOrNull(form.sms_max_uses_per_phone.value),
-        sms_cooldown_sec: numberOrNull(form.sms_cooldown_sec.value),
-        sms_reserve_sec: numberOrNull(form.sms_reserve_sec.value),
-      },
-    };
-    if (oldPassword || newPassword || confirmPassword) {
-      payload.password = {
-        old_password: oldPassword,
-        new_password: newPassword,
-        confirm_password: confirmPassword,
-      };
-    }
-    try {
-      const saved = await fetchEntity("settings-save", "/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(payload),
-      });
-      fillSettings(saved);
-      form.old_password.value = "";
-      form.new_password.value = "";
-      form.confirm_password.value = "";
-      if (statusEl) {
-        statusEl.hidden = false;
-        statusEl.className = "muted";
-        statusEl.textContent = "已保存。";
-      }
-    } catch (error) {
-      if (statusEl) {
-        statusEl.hidden = false;
-        statusEl.className = "error";
-        statusEl.textContent = error.message || "保存失败";
-      }
-    }
+  function minutesToSeconds(value) {
+    const minutes = numberOrNull(value);
+    return minutes == null ? null : minutes * 60;
   }
 
   function connectionsPayload(form) {
@@ -302,151 +840,300 @@
     };
   }
 
-  function probeCard(title, ok, body) {
-    const card = document.createElement("div");
-    card.className = `probe-card ${ok ? "is-ok" : "is-bad"}`;
-    const heading = document.createElement("strong");
-    heading.textContent = `${title} · ${ok ? "通了" : "没通"}`;
-    card.append(heading);
-    if (typeof body === "string") {
-      const p = document.createElement("p");
-      p.className = ok ? "muted" : "error";
-      p.textContent = body;
-      card.append(p);
-    } else if (body) {
-      card.append(body);
+  function setServiceState(service, text, summary) {
+    const meta = document.querySelector(`[data-service-meta="${service}"]`);
+    const sum = document.querySelector(`[data-service-summary="${service}"]`);
+    if (meta) {
+      meta.textContent = text;
+      meta.dataset.probed = "1";
     }
-    return card;
+    if (sum && summary) sum.textContent = summary;
   }
 
-  function renderProbeResult(payload) {
-    const box = document.getElementById("settings-probe-result");
-    if (!box) return;
-    box.hidden = false;
-    box.replaceChildren();
+  function probeCopy(payload) {
     const sub = payload.sub2api || {};
-    if (sub.ok) {
-      const list = document.createElement("ul");
-      (sub.groups || []).forEach((group) => {
-        const item = document.createElement("li");
-        const owners = (group.owners || []).join("、") || "还没看到母号";
-        item.textContent = `${group.name} · ${owners}`;
-        list.append(item);
-      });
-      if (!list.childElementCount) {
-        const item = document.createElement("li");
-        item.textContent = "一个分组都没有。";
-        list.append(item);
-      }
-      const summary = document.createElement("p");
-      summary.className = "muted";
-      summary.textContent = `共 ${sub.group_count || 0} 个分组，${sub.account_count || 0} 个账号。` ;
-      const wrap = document.createElement("div");
-      wrap.append(summary, list);
-      box.append(probeCard("Sub2API", true, wrap));
-    } else {
-      box.append(probeCard("Sub2API", false, sub.error || "连不上 Sub2API"));
-    }
     const hme = payload.hme || {};
+    const mail = payload.mail || {};
+    if (sub.ok) {
+      setServiceState("sub2api", `连接正常 · ${relativeTime(sub.checked_at)}`, `${sub.group_count || 0} 个分组 · ${sub.account_count || 0} 个账号`);
+    } else {
+      setServiceState("sub2api", sub.error || "检测失败", sub.error || "连不上 Sub2API");
+    }
     if (hme.ok) {
-      box.append(
-        probeCard(
-          "iCloud HME",
-          true,
-          `${hme.account_name || hme.account_id || "当前账号"} 一共 ${hme.alias_count || 0} 个邮箱，启用 ${hme.active_count || 0} 个，还能领 ${hme.unused_count || 0} 个。`
-        )
+      setServiceState(
+        "hme",
+        `连接正常 · ${relativeTime(hme.checked_at)}`,
+        `${hme.account_name || hme.account_id || "当前账号"} · ${hme.alias_count || 0} 个别名 · ${hme.unused_count || 0} 个可用`
       );
     } else {
-      box.append(probeCard("iCloud HME", false, hme.error || "连不上 HME"));
+      setServiceState("hme", hme.error || "检测失败", hme.error || "连不上 HME");
     }
-    const mail = payload.mail || {};
     if (mail.ok) {
-      box.append(probeCard("临时邮箱", true, `${mail.address} 能读到信。`));
+      setServiceState("mail", `连接正常 · ${relativeTime(mail.checked_at)}`, mail.address || "连接成功");
     } else {
-      box.append(probeCard("临时邮箱", false, mail.error || "连不上临时邮箱"));
+      setServiceState("mail", mail.error || "检测失败", mail.error || "连不上临时邮箱");
     }
   }
 
-  async function probeSettings() {
+  async function probeSettings(focus) {
     const form = document.getElementById("settings-form");
-    const button = document.getElementById("settings-probe");
-    const box = document.getElementById("settings-probe-result");
-    if (!form || !box) return;
-    if (button) button.disabled = true;
-    box.hidden = false;
-    box.replaceChildren();
-    const pending = document.createElement("p");
-    pending.className = "muted";
-    pending.textContent = "正在检测…";
-    box.append(pending);
+    if (!form) return;
+    const buttons = [...document.querySelectorAll("[data-probe], #settings-probe-all")];
+    buttons.forEach((button) => {
+      button.disabled = true;
+    });
+    const target = focus || "all";
+    if (target === "all") {
+      ["sub2api", "hme", "mail"].forEach((service) => setServiceState(service, "检测中…"));
+    } else {
+      setServiceState(target, "检测中…");
+    }
     try {
       const payload = await fetchEntity("settings-probe", "/api/settings/probe", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ connections: connectionsPayload(form) }),
       });
-      renderProbeResult(payload);
+      probeCopy(payload);
     } catch (error) {
-      box.replaceChildren();
-      box.append(probeCard("检测", false, error.message || "检测失败"));
+      const message = friendlyError(error);
+      (target === "all" ? ["sub2api", "hme", "mail"] : [target]).forEach((service) => setServiceState(service, message));
+    } finally {
+      buttons.forEach((button) => {
+        button.disabled = false;
+      });
+    }
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const statusEl = document.getElementById("settings-status");
+    const saveButton = document.getElementById("settings-save");
+    const payload = {
+      connections: connectionsPayload(form),
+      automation: { official_quota_probe: form.official_quota_probe.checked },
+      resources: {
+        sms_max_uses_per_phone: numberOrNull(form.sms_max_uses_per_phone.value),
+        sms_cooldown_sec: minutesToSeconds(form.sms_cooldown_min.value),
+        sms_reserve_sec: minutesToSeconds(form.sms_reserve_min.value),
+      },
+    };
+    if (saveButton) saveButton.disabled = true;
+    if (statusEl) {
+      statusEl.dataset.locked = "1";
+      statusEl.className = "muted";
+      statusEl.textContent = "正在保存…";
+    }
+    try {
+      const saved = await fetchEntity("settings-save", "/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+      });
+      fillSettings(saved);
+      if (statusEl) {
+        statusEl.className = "muted";
+        statusEl.textContent = "已保存 · 刚刚";
+      }
+    } catch (error) {
+      if (statusEl) {
+        statusEl.className = "error";
+        statusEl.textContent = friendlyError(error);
+      }
+    } finally {
+      if (saveButton) saveButton.disabled = false;
+      if (statusEl) window.setTimeout(() => delete statusEl.dataset.locked, 1200);
+    }
+  }
+
+  async function savePassword(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const statusEl = document.getElementById("password-status");
+    const button = form.querySelector("button[type='submit']");
+    if (button) button.disabled = true;
+    if (statusEl) {
+      statusEl.hidden = false;
+      statusEl.className = "muted";
+      statusEl.textContent = "正在修改密码…";
+    }
+    try {
+      await fetchEntity("password-save", "/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          password: {
+            old_password: form.old_password.value,
+            new_password: form.new_password.value,
+            confirm_password: form.confirm_password.value,
+          },
+        }),
+      });
+      form.reset();
+      if (statusEl) {
+        statusEl.className = "muted";
+        statusEl.textContent = "密码已修改。";
+      }
+    } catch (error) {
+      if (statusEl) {
+        statusEl.className = "error";
+        statusEl.textContent = friendlyError(error);
+      }
     } finally {
       if (button) button.disabled = false;
     }
   }
 
+  function bindSearch(input, kind) {
+    if (!input || input.dataset.bound) return;
+    input.dataset.bound = "1";
+    const params = currentQuery();
+    if (params.get("q")) input.value = params.get("q");
+    input.addEventListener("input", () => {
+      window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(() => {
+        const next = currentQuery();
+        const value = input.value.trim();
+        if (value) next.set("q", value);
+        else next.delete("q");
+        writeQuery(next);
+        paintList(kind);
+      }, 200);
+    });
+  }
+
+  function paintList(kind) {
+    const items = filterItems(kind, pageCache.items);
+    if (kind === "workspace") {
+      renderRows(
+        "workspaces-body",
+        items,
+        8,
+        workspaceRow,
+        items.length === 0 && pageCache.items.length
+          ? emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。")
+          : emptyState("还没有工作区", "导入或同步后会显示在这里。")
+      );
+      setCount("workspaces-count", items.length, pageCache.items.length);
+    } else if (kind === "account") {
+      renderRows(
+        "accounts-body",
+        items,
+        8,
+        accountRow,
+        items.length === 0 && pageCache.items.length
+          ? emptyState("没有符合当前筛选的账号", "清除筛选或换一个关键词。")
+          : emptyState("还没有账号", "账号导入或创建后会显示在这里。归档的默认不显示。")
+      );
+      setCount("accounts-count", items.length, pageCache.items.length);
+    }
+  }
+
   async function bootPage() {
     const page = document.body.dataset.page;
+    hidePageError();
     try {
       if (page === "overview") {
         renderOverview(await fetchEntity("overview", "/api/overview"));
       } else if (page === "workspaces") {
+        bindSearch(document.getElementById("workspaces-search"), "workspace");
         const payload = await fetchEntity("workspace-list", "/api/workspaces");
-        renderRows("workspaces-body", payload.items || [], "还没有团队。", 7, workspaceRow);
+        pageCache.kind = "workspace";
+        pageCache.items = payload.items || [];
+        paintList("workspace");
       } else if (page === "accounts") {
         const filter = document.querySelector("[data-filter='purpose']");
+        const params = currentQuery();
+        if (filter && params.get("purpose")) filter.value = params.get("purpose");
         if (filter && !filter.dataset.bound) {
           filter.dataset.bound = "1";
-          filter.addEventListener("change", () => bootPage());
+          filter.addEventListener("change", () => {
+            const next = currentQuery();
+            if (filter.value && filter.value !== "all") next.set("purpose", filter.value);
+            else next.delete("purpose");
+            writeQuery(next);
+            bootPage();
+          });
         }
-        const purpose = filter?.value || "all";
+        bindSearch(document.getElementById("accounts-search"), "account");
+        const purpose = filter?.value || params.get("purpose") || "all";
         const includeArchived = purpose === "archived";
         const payload = await fetchEntity(
           "account-list",
           `/api/accounts?purpose=${encodeURIComponent(purpose)}&include_archived=${includeArchived}`
         );
-        renderRows("accounts-body", payload.items || [], "还没有账号。归档的默认不显示。", 8, accountRow);
+        pageCache.kind = "account";
+        pageCache.items = payload.items || [];
+        paintList("account");
       } else if (page === "operations") {
         const payload = await fetchEntity("operation-list", "/api/operations");
-        renderRows("operations-body", payload.items || [], "还没有任务。", 6, operationRow);
+        renderRows(
+          "operations-body",
+          payload.items || [],
+          7,
+          operationRow,
+          emptyState("还没有任务", "创建额度刷新、重新授权或拉人后会显示在这里。")
+        );
       } else if (page === "phones") {
         const payload = await fetchEntity("phone-list", "/api/resources/phones");
-        renderRows("phones-body", payload.items || [], "还没有手机号。", 6, phoneRow);
+        renderRows(
+          "phones-body",
+          payload.items || [],
+          7,
+          phoneRow,
+          emptyState("还没有手机号", "导入号码后会显示余量、冷却和租约。")
+        );
       } else if (page === "hme") {
         const payload = await fetchEntity("hme-list", "/api/resources/hme");
-        renderRows("hme-body", payload.items || [], "还没有 HME 占用记录。", 5, hmeRow);
+        renderRows(
+          "hme-body",
+          payload.items || [],
+          7,
+          hmeRow,
+          emptyState("还没有 HME 占用记录", "领用别名后会显示本地占用和同步状态。")
+        );
       } else if (page === "proxies") {
         const payload = await fetchEntity("proxy-list", "/api/resources/proxies");
-        renderRows("proxies-body", payload.items || [], "还没有代理。", 5, proxyRow);
+        renderRows(
+          "proxies-body",
+          payload.items || [],
+          6,
+          proxyRow,
+          emptyState("还没有代理", "添加代理后会显示地区、出口和最近检测。")
+        );
       } else if (page === "settings") {
         const form = document.getElementById("settings-form");
+        const passwordForm = document.getElementById("password-form");
         if (form && !form.dataset.bound) {
           form.dataset.bound = "1";
           form.addEventListener("submit", saveSettings);
-          document.getElementById("settings-probe")?.addEventListener("click", probeSettings);
+          form.addEventListener("input", updateDirty);
+          form.addEventListener("change", updateDirty);
+          document.getElementById("settings-discard")?.addEventListener("click", () => bootPage());
+          document.getElementById("settings-probe-all")?.addEventListener("click", () => probeSettings("all"));
+          document.querySelectorAll("[data-probe]").forEach((button) => {
+            button.addEventListener("click", () => probeSettings(button.dataset.probe));
+          });
+          document.querySelectorAll("[data-edit-toggle]").forEach((button) => {
+            button.addEventListener("click", () => {
+              const panel = document.querySelector(`[data-edit-panel="${button.dataset.editToggle}"]`);
+              if (!panel) return;
+              panel.hidden = !panel.hidden;
+              button.textContent = panel.hidden ? "编辑" : "收起";
+            });
+          });
+        }
+        if (passwordForm && !passwordForm.dataset.bound) {
+          passwordForm.dataset.bound = "1";
+          passwordForm.addEventListener("submit", savePassword);
         }
         fillSettings(await fetchEntity("settings", "/api/settings"));
       }
     } catch (error) {
-      if (error.name !== "AbortError") console.warn(error);
+      if (error.name === "AbortError") return;
+      showPageError(friendlyError(error));
     }
-  }
-
-  function openDrawer() {
-    drawer.hidden = false;
-  }
-
-  function closeDrawer() {
-    drawer.hidden = true;
   }
 
   function renderPalette(query) {
@@ -466,8 +1153,19 @@
 
   document.getElementById("open-operations")?.addEventListener("click", openDrawer);
   document.querySelector("[data-close-drawer]")?.addEventListener("click", closeDrawer);
+  document.querySelector("[data-close-sheet]")?.addEventListener("click", closeSheet);
+  document.getElementById("page-retry")?.addEventListener("click", bootPage);
+  document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
+    document.body.classList.toggle("nav-open");
+  });
   drawer?.addEventListener("click", (event) => {
     if (event.target === drawer) closeDrawer();
+  });
+  sheet?.addEventListener("click", (event) => {
+    if (event.target === sheet) closeSheet();
+  });
+  document.addEventListener("click", (event) => {
+    if (menu && !menu.hidden && !event.target.closest("#action-menu, .actions")) closeMenu();
   });
 
   window.addEventListener("keydown", (event) => {
@@ -478,10 +1176,21 @@
       commandInput.focus();
     }
     if (event.key === "Escape") {
-      closeDrawer();
+      if (!menu.hidden) closeMenu();
+      else if (sheet && !sheet.hidden) closeSheet();
+      else closeDrawer();
+      document.body.classList.remove("nav-open");
     }
   });
   commandInput?.addEventListener("input", () => renderPalette(commandInput.value));
+  window.addEventListener("beforeunload", (event) => {
+    if (!settingsDirty) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") stopPolling();
+  });
 
   window.Team48 = { abortEntity, fetchEntity };
   bootPage();

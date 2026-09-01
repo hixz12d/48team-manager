@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,8 +34,12 @@ def _error_text(exc: BaseException) -> str:
     return text or exc.__class__.__name__
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _failed(message: str, **extra: Any) -> dict[str, Any]:
-    payload = {"ok": False, "error": message}
+    payload = {"ok": False, "checked_at": extra.pop("checked_at", _now()), "error": message}
     payload.update(extra)
     return payload
 
@@ -137,7 +142,7 @@ async def probe_sub2api(db: AsyncSession, payload: dict[str, Any] | None = None)
                 "owners": unique_owners[:8],
             }
         )
-    return {"ok": True, "group_count": len(items), "account_count": len(accounts), "groups": items}
+    return {"ok": True, "checked_at": _now(), "group_count": len(items), "account_count": len(accounts), "groups": items}
 
 
 async def probe_hme(db: AsyncSession, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -157,6 +162,7 @@ async def probe_hme(db: AsyncSession, payload: dict[str, Any] | None = None) -> 
     unused = [item for item in active if is_unoccupied_label(item.get("label") or "")]
     return {
         "ok": True,
+        "checked_at": _now(),
         "account_id": account_id,
         "account_name": _text(account.get("name") or account.get("email") or account_id),
         "alias_count": len(aliases),
@@ -203,4 +209,4 @@ async def probe_mail(db: AsyncSession, payload: dict[str, Any] | None = None) ->
         )
     except Exception as exc:  # noqa: BLE001
         return _failed(_error_text(exc))
-    return {"ok": True, "address": address, "reachable": True, "sample_count": len(messages)}
+    return {"ok": True, "checked_at": _now(), "address": address, "reachable": True, "sample_count": len(messages)}
