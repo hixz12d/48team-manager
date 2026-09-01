@@ -230,6 +230,20 @@ async def apply_local_label(session: AsyncSession, claimed: ClaimedAlias, label:
     hme_client.set_local_label(cfg, claimed.account_id, claimed.anonymous_id, tag)
 
 
+def resolve_workspace_tag(workspace, mapping: dict[str, str] | None = None) -> str:
+    name = str(getattr(workspace, "name", "") or "").strip()
+    if name:
+        return name
+    mapped = str((mapping or {}).get(str(getattr(workspace, "id", "") or "")) or "").strip()
+    if mapped:
+        return mapped
+    owner = getattr(workspace, "owner_account", None)
+    email = str(getattr(owner, "email", "") or "").strip()
+    if "@" in email:
+        return email.split("@", 1)[0]
+    return email or "team"
+
+
 async def claim_next_alias(
     session: AsyncSession,
     *,
@@ -285,6 +299,20 @@ async def claim_next_alias(
             job_id=job_id,
         )
     raise HmeError("HME lease conflict", "hme_busy")
+
+
+async def maybe_claim_alias(
+    session: AsyncSession,
+    email_line: str,
+    *,
+    job_id: str = "",
+    purpose: str = "onboard",
+    workspace_id: int | None = None,
+) -> tuple[str, ClaimedAlias | None]:
+    if str(email_line or "").strip():
+        return email_line, None
+    claimed = await claim_next_alias(session, job_id=job_id, purpose=purpose, workspace_id=workspace_id)
+    return claimed.email, claimed
 
 
 async def mark_signup_started(

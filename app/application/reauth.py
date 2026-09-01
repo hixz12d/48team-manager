@@ -13,7 +13,7 @@ from app.application.tokens import auth_service, decrypt_secret, set_auth_state
 from app.application.identity import automation_gate
 from app.application.jobs import browser as browser_slot
 from app.application.operations import operation_store, unpack_input
-from app.application.resources.phones import phone_pool_service
+from app.application.resources.phones import phone_source_for
 from app.application.resources.proxies import proxy_profile_service
 from app.application.settings import as_bool, get_setting_value
 from app.core.config import load_settings
@@ -55,46 +55,6 @@ async def load_cf_config(db: AsyncSession) -> dict[str, str]:
     }
 
 
-def phone_source_for(job_id: str, account_id: int | None = None):
-    from app.persistence.database import create_session_factory
-    from app.core.config import load_settings as _load
-    from app.persistence.database import create_engine
-
-    def _call(action: str, **kwargs):
-        import asyncio
-
-        async def _inner():
-            settings = _load()
-            engine = create_engine(settings)
-            factory = create_session_factory(engine)
-            async with factory() as session:
-                if action == "acquire":
-                    try:
-                        row = await phone_pool_service.acquire(session, job_id)
-                    except Exception as exc:  # noqa: BLE001
-                        return {"ok": False, "error": str(exc), "error_code": "phone_pool_empty"}
-                    return {"ok": True, "number": row.number, "sms_url": row.sms_url, "phone_id": row.id}
-                if action == "record":
-                    await phone_pool_service.record_result(
-                        session,
-                        result=str(kwargs.get("result") or ""),
-                        job_id=job_id,
-                        message=str(kwargs.get("message") or ""),
-                        purpose="reauth",
-                        account_id=account_id,
-                    )
-                    return {"ok": True}
-                if action == "release":
-                    row = await phone_pool_service._load_for_job(session, job_id=job_id)
-                    if row is not None:
-                        phone_pool_service._clear_lease(row)
-                        await session.commit()
-                    return {"ok": True}
-                return {"ok": False, "error": "unknown phone action"}
-
-        return asyncio.run(_inner())
-
-    return _call
 
 
 class ReauthService:
@@ -257,7 +217,7 @@ class ReauthService:
         pickup = parse_mail_line(account.mail_raw or "").get("pickup_url") or ""
         cf_config = await load_cf_config(db)
         use_cloudflare = (not pickup) and bool(cf_config["admin_password"])
-        source = phone_source_for(row.public_id, account.id)
+        source = phone_source_for(row.public_id, account.id, purpose="reauth")
 
         def on_stage(stage: str, message: str) -> None:
             oauth_sessions.mark_session(ticket, status="running", message=message)

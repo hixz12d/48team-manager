@@ -15,6 +15,7 @@ from app.persistence.models import (  # noqa: F401
     PhonePool,
     ProxyProfile,
     QuotaSnapshot,
+    SeatVacancyEvent,
     SystemSetting,
     Workspace,
     WorkspaceMembership,

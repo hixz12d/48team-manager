@@ -43,6 +43,33 @@ class ChatGPTClient:
         "proxy",
     )
 
+    @staticmethod
+    def is_already_removed_error(
+        status_code: int | None = None,
+        error: Any = None,
+        error_code: Any = None,
+    ) -> bool:
+        if int(status_code or 0) == 404:
+            return True
+        text = f"{error_code or ''} {error or ''}".lower()
+        markers = (
+            "not found",
+            "does not exist",
+            "already removed",
+            "isn't a member",
+            "is not a member",
+            "no longer a member",
+            "not a member of",
+            "user_not_found",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def pick_user_id(*candidates: Any) -> str | None:
+        from app.domain.vacancy import pick_chatgpt_user_id
+
+        return pick_chatgpt_user_id(*candidates)
+
     def __init__(self):
         self._sessions: dict[str, AsyncSession] = {}
         self._device_ids: dict[str, str] = {}
@@ -142,6 +169,8 @@ class ChatGPTClient:
                         response = await session.post(url, headers=request_headers, data=form_data)
                     else:
                         response = await session.post(url, headers=request_headers, json=json_data or {})
+                elif method == "DELETE":
+                    response = await session.delete(url, headers=request_headers, json=json_data)
                 else:
                     raise ValueError(f"unsupported method {method}")
                 status_code = response.status_code
@@ -163,6 +192,14 @@ class ChatGPTClient:
                 except Exception:
                     pass
                 if 400 <= status_code < 500:
+                    if method == "DELETE" and self.is_already_removed_error(status_code, error_msg, error_code):
+                        return {
+                            "success": True,
+                            "status_code": status_code,
+                            "data": {},
+                            "error": None,
+                            "already_removed": True,
+                        }
                     return {
                         "success": False,
                         "status_code": status_code,
@@ -337,6 +374,134 @@ class ChatGPTClient:
             "id_token": data.get("id_token"),
             "data": data,
         }
+
+    async def get_members(
+        self,
+        access_token: str,
+        account_id: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        all_members: list[dict[str, Any]] = []
+        offset = 0
+        limit = 50
+        while True:
+            url = f"{self.BASE_URL}/accounts/{account_id}/users?offset={offset}&limit={limit}&query="
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "chatgpt-account-id": account_id,
+            }
+            result = await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    "members": [],
+                    "total": 0,
+                    "error": result.get("error"),
+                    "error_code": result.get("error_code"),
+                    "status_code": result.get("status_code"),
+                }
+            data = result.get("data") or {}
+            items = data.get("items", []) if isinstance(data, dict) else []
+            total = data.get("total", 0) if isinstance(data, dict) else 0
+            all_members.extend(item for item in items if isinstance(item, dict))
+            if len(all_members) >= int(total or 0):
+                break
+            offset += limit
+        return {"success": True, "members": all_members, "total": len(all_members), "error": None}
+
+    async def get_invites(
+        self,
+        access_token: str,
+        account_id: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        url = f"{self.BASE_URL}/accounts/{account_id}/invites?offset=0&limit=50&query="
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": account_id,
+        }
+        result = await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
+        if not result.get("success"):
+            return {
+                "success": False,
+                "items": [],
+                "total": 0,
+                "error": result.get("error"),
+                "error_code": result.get("error_code"),
+                "status_code": result.get("status_code"),
+            }
+        data = result.get("data") or {}
+        items = data.get("items", []) if isinstance(data, dict) else []
+        return {"success": True, "items": items, "total": len(items), "error": None}
+
+    async def send_invite(
+        self,
+        access_token: str,
+        account_id: str,
+        email: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        url = f"{self.BASE_URL}/accounts/{account_id}/invites"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": account_id,
+        }
+        return await self._make_request(
+            "POST",
+            url,
+            headers,
+            db_session=db_session,
+            identifier=identifier,
+            json_data={"email_addresses": [email], "role": "standard-user", "resend_emails": True},
+        )
+
+    async def delete_member(
+        self,
+        access_token: str,
+        account_id: str,
+        user_id: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        url = f"{self.BASE_URL}/accounts/{account_id}/users/{user_id}"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": account_id,
+        }
+        result = await self._make_request("DELETE", url, headers, db_session=db_session, identifier=identifier)
+        from app.domain.vacancy import parse_policy_notice
+
+        vacancy = parse_policy_notice(result.get("data"))
+        if vacancy is not None:
+            result["vacancy"] = vacancy
+        return result
+
+    async def delete_invite(
+        self,
+        access_token: str,
+        account_id: str,
+        email: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        url = f"{self.BASE_URL}/accounts/{account_id}/invites"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": account_id,
+        }
+        return await self._make_request(
+            "DELETE",
+            url,
+            headers,
+            db_session=db_session,
+            identifier=identifier,
+            json_data={"email_address": email},
+        )
 
 
 chatgpt_client = ChatGPTClient()

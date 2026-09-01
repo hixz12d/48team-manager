@@ -206,6 +206,35 @@ class OperationStore:
         stmt = stmt.order_by(Operation.started_at.desc(), Operation.id.desc())
         return (await session.execute(stmt)).scalars().first()
 
+    async def active_for_workspace(
+        self,
+        session: AsyncSession,
+        workspace_id: int,
+        *,
+        actions: tuple[str, ...] | None = None,
+        exclude_public_id: str | None = None,
+    ) -> Operation | None:
+        try:
+            target = int(workspace_id or 0)
+        except (TypeError, ValueError):
+            return None
+        if not target:
+            return None
+        stmt = select(Operation).where(Operation.state.in_(ACTIVE_STATES), Operation.workspace_id == target)
+        if actions:
+            stmt = stmt.where(Operation.op_type.in_(actions))
+        exclude = str(exclude_public_id or "").strip()
+        if exclude:
+            stmt = stmt.where(Operation.public_id != exclude)
+        stmt = stmt.order_by(Operation.created_at.desc(), Operation.id.desc())
+        return (await session.execute(stmt)).scalars().first()
+
+    async def iter_running(self, session: AsyncSession, actions: tuple[str, ...] | None = None) -> list[Operation]:
+        stmt = select(Operation).where(Operation.state.in_(ACTIVE_STATES))
+        if actions:
+            stmt = stmt.where(Operation.op_type.in_(actions))
+        return list((await session.execute(stmt)).scalars().all())
+
     async def browser_busy(self, session: AsyncSession) -> Operation | None:
         return await self.any_running(session, BROWSER_ACTIONS)
 

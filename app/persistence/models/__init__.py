@@ -5,6 +5,7 @@ from app.persistence.models.operations import Operation, OperationStep
 from app.persistence.models.quota import QuotaSnapshot
 from app.persistence.models.resources import HmeAliasLease, PhoneAttempt, PhonePool, ProxyProfile
 from app.persistence.models.settings import SystemSetting
+from app.persistence.models.vacancy import SeatVacancyEvent
 
 __all__ = [
     "Account",
@@ -16,6 +17,7 @@ __all__ = [
     "PhonePool",
     "ProxyProfile",
     "QuotaSnapshot",
+    "SeatVacancyEvent",
     "SystemSetting",
     "Workspace",
     "WorkspaceMembership",

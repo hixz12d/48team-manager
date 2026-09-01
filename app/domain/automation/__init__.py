@@ -18,6 +18,7 @@ SENSITIVE_INPUT_KEYS = ("password", "login_password", "code_verifier")
 DEFAULT_LEASE_SECONDS = 180
 MAX_LOG_ITEMS = 40
 BROWSER_ACTIONS = ("reauth", "onboard", "rotate", "free_register", "reregister", "free")
+WORKSPACE_LOCK_ACTIONS = ("rotate", "onboard", "reregister")
 DEFAULT_AUTO_REAUTH_ENABLED = False
 DEFAULT_AUTO_REAUTH_INTERVAL_MINUTES = 30
 MIN_AUTO_REAUTH_INTERVAL_MINUTES = 5

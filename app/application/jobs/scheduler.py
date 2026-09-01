@@ -52,6 +52,17 @@ async def scheduled_auto_reauth() -> None:
         await reauth_service.run_once(session)
 
 
+async def scheduled_auto_rotate() -> None:
+    from app.application.rotate import rotate_service
+    from app.main import app
+
+    factory = getattr(app.state, "session_factory", None)
+    if factory is None:
+        return
+    async with factory() as session:
+        await rotate_service.run_once(session)
+
+
 def configure_jobs(settings: Settings) -> None:
     if scheduler.get_job("official_quota_probe_scan"):
         scheduler.remove_job("official_quota_probe_scan")
@@ -59,9 +70,12 @@ def configure_jobs(settings: Settings) -> None:
         scheduler.remove_job("auth_probe_scan")
     if scheduler.get_job("auto_reauth_scan"):
         scheduler.remove_job("auto_reauth_scan")
+    if scheduler.get_job("auto_rotate_scan"):
+        scheduler.remove_job("auto_rotate_scan")
     scheduler.add_job(scheduled_quota_probe, IntervalTrigger(minutes=2), id="official_quota_probe_scan", replace_existing=True)
     scheduler.add_job(scheduled_auth_probe, IntervalTrigger(minutes=30), id="auth_probe_scan", replace_existing=True)
     scheduler.add_job(scheduled_auto_reauth, IntervalTrigger(minutes=30), id="auto_reauth_scan", replace_existing=True)
+    scheduler.add_job(scheduled_auto_rotate, IntervalTrigger(minutes=30), id="auto_rotate_scan", replace_existing=True)
     if settings.auto_rotate_enabled or settings.force_refill:
         logger.warning("auto rotate / force refill must stay off until explicitly approved")
     if settings.auto_reauth_enabled:

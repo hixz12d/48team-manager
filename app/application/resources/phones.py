@@ -377,3 +377,44 @@ class PhonePoolService:
 
 
 phone_pool_service = PhonePoolService()
+
+
+def phone_source_for(job_id: str, account_id: int | None = None, *, purpose: str = "signup"):
+    from app.core.config import load_settings as _load
+    from app.persistence.database import create_engine, create_session_factory
+
+    def _call(action: str, **kwargs):
+        import asyncio
+
+        async def _inner():
+            settings = _load()
+            engine = create_engine(settings)
+            factory = create_session_factory(engine)
+            async with factory() as session:
+                if action == "acquire":
+                    try:
+                        row = await phone_pool_service.acquire(session, job_id)
+                    except Exception as exc:  # noqa: BLE001
+                        return {"ok": False, "error": str(exc), "error_code": "phone_pool_empty"}
+                    return {"ok": True, "number": row.number, "sms_url": row.sms_url, "phone_id": row.id}
+                if action == "record":
+                    await phone_pool_service.record_result(
+                        session,
+                        result=str(kwargs.get("result") or ""),
+                        job_id=job_id,
+                        message=str(kwargs.get("message") or ""),
+                        purpose=purpose,
+                        account_id=account_id,
+                    )
+                    return {"ok": True}
+                if action == "release":
+                    row = await phone_pool_service._load_for_job(session, job_id=job_id)
+                    if row is not None:
+                        phone_pool_service._clear_lease(row)
+                        await session.commit()
+                    return {"ok": True}
+                return {"ok": False, "error": "unknown phone action"}
+
+        return asyncio.run(_inner())
+
+    return _call
