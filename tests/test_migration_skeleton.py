@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,9 +15,12 @@ class MigrationSkeletonTests(unittest.TestCase):
     def test_existing_file_is_not_modified(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "team_manage.db"
-            path.write_bytes(b"legacy")
+            conn = sqlite3.connect(path)
+            conn.execute("CREATE TABLE teams (id INTEGER PRIMARY KEY, email TEXT, account_id TEXT)")
+            conn.commit()
+            conn.close()
             before = path.read_bytes()
             report = inspect_legacy_db(path)
             self.assertEqual(path.read_bytes(), before)
             self.assertTrue(report.dry_run)
-            self.assertTrue(any("skeleton" in note for note in report.notes))
+            self.assertTrue(any("read-only inspect" in note for note in report.notes))

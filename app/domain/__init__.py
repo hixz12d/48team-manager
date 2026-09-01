@@ -1,1 +1,1 @@
-"""Domain packages. Implementations land in later phases."""
+"""Domain packages. Identity is live; other domains land later."""

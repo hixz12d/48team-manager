@@ -46,33 +46,66 @@
     });
   }
 
-  function renderTable(bodyId, items, emptyText, columns) {
+  function cell(row, text) {
+    const td = document.createElement("td");
+    td.textContent = text == null || text === "" ? "—" : String(text);
+    row.append(td);
+  }
+
+  function renderRows(bodyId, items, emptyText, columns, renderItem) {
     const body = document.getElementById(bodyId);
     if (!body) return;
     body.replaceChildren();
     if (!items.length) {
       const row = document.createElement("tr");
-      const cell = document.createElement("td");
-      cell.colSpan = columns;
-      cell.className = "muted";
-      cell.textContent = emptyText;
-      row.append(cell);
+      const empty = document.createElement("td");
+      empty.colSpan = columns;
+      empty.className = "muted";
+      empty.textContent = emptyText;
+      row.append(empty);
       body.append(row);
       return;
     }
-    items.forEach((item) => {
-      const row = document.createElement("tr");
-      row.dataset.entityId = String(item.id);
-      row.addEventListener("click", () => {
-        /* drawer per entity lands with identity queries */
-      });
-      Object.keys(item).slice(0, columns).forEach((key) => {
-        const cell = document.createElement("td");
-        cell.textContent = item[key] ?? "";
-        row.append(cell);
-      });
-      body.append(row);
-    });
+    items.forEach((item) => body.append(renderItem(item)));
+  }
+
+  function workspaceRow(item) {
+    const row = document.createElement("tr");
+    row.dataset.entityId = String(item.id);
+    cell(row, item.name);
+    cell(row, item.owner_email);
+    cell(row, item.members);
+    cell(row, item.quota);
+    cell(row, item.rotation);
+    cell(row, item.last_sync);
+    cell(row, item.status);
+    return row;
+  }
+
+  function accountRow(item) {
+    const row = document.createElement("tr");
+    row.dataset.entityId = String(item.id);
+    cell(row, item.email);
+    cell(row, item.purpose);
+    cell(row, item.workspace);
+    cell(row, item.quota_7d);
+    cell(row, item.auth);
+    cell(row, item.sub2api);
+    cell(row, item.proxy);
+    cell(row, item.state);
+    return row;
+  }
+
+  function operationRow(item) {
+    const row = document.createElement("tr");
+    row.dataset.entityId = String(item.id);
+    cell(row, item.status);
+    cell(row, item.operation);
+    cell(row, item.target);
+    cell(row, item.current_step);
+    cell(row, item.started);
+    cell(row, item.duration);
+    return row;
   }
 
   async function bootPage() {
@@ -82,13 +115,23 @@
         renderOverview(await fetchEntity("overview", "/api/overview"));
       } else if (page === "workspaces") {
         const payload = await fetchEntity("workspace-list", "/api/workspaces");
-        renderTable("workspaces-body", payload.items || [], "No workspaces yet. Identity lands in the next phase.", 7);
+        renderRows("workspaces-body", payload.items || [], "No workspaces yet.", 7, workspaceRow);
       } else if (page === "accounts") {
-        const payload = await fetchEntity("account-list", "/api/accounts");
-        renderTable("accounts-body", payload.items || [], "No accounts yet. Archived rows stay hidden by default.", 8);
+        const filter = document.querySelector("[data-filter='purpose']");
+        if (filter && !filter.dataset.bound) {
+          filter.dataset.bound = "1";
+          filter.addEventListener("change", () => bootPage());
+        }
+        const purpose = filter?.value || "all";
+        const includeArchived = purpose === "archived";
+        const payload = await fetchEntity(
+          "account-list",
+          `/api/accounts?purpose=${encodeURIComponent(purpose)}&include_archived=${includeArchived}`
+        );
+        renderRows("accounts-body", payload.items || [], "No accounts yet. Archived rows stay hidden by default.", 8, accountRow);
       } else if (page === "operations") {
         const payload = await fetchEntity("operation-list", "/api/operations");
-        renderTable("operations-body", payload.items || [], "No operations.", 6);
+        renderRows("operations-body", payload.items || [], "No operations.", 6, operationRow);
       }
     } catch (error) {
       if (error.name !== "AbortError") console.warn(error);
