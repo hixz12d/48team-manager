@@ -5,14 +5,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.commands.workspaces import RegisterWorkspaceError, register_workspace
+from app.application.commands.workspaces import RegisterWorkspaceError, complete_workspace_oauth, start_workspace_oauth
 from app.application.connection_probe import probe_hme, probe_mail, probe_sub2api
 from app.application.queries import console as console_query
 from app.application.queries.identity import identity_audit_query
 from app.application.settings import save_console_settings
 from app.web.deps import require_admin
 from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
-from app.web.schemas.workspaces import RegisterWorkspaceRequest
+from app.web.schemas.workspaces import CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
 
 
 def build_api_router(get_db) -> APIRouter:
@@ -26,27 +26,25 @@ def build_api_router(get_db) -> APIRouter:
     async def workspaces(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.workspaces(db)
 
-    @router.post("/workspaces")
-    async def create_workspace(
-        payload: RegisterWorkspaceRequest,
+    @router.post("/workspaces/oauth/start")
+    async def start_workspace_oauth_route(
+        payload: StartWorkspaceOAuthRequest,
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
         try:
-            return await register_workspace(
-                db,
-                email=payload.email,
-                official_workspace_id=payload.official_workspace_id,
-                name=payload.name,
-                seat_limit=payload.seat_limit,
-                proxy=payload.proxy,
-                password=payload.password,
-                access_token=payload.access_token,
-                refresh_token=payload.refresh_token,
-                session_token=payload.session_token,
-                id_token=payload.id_token,
-                client_id=payload.client_id,
-            )
+            return await start_workspace_oauth(db, email=payload.email, proxy=payload.proxy)
+        except RegisterWorkspaceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @router.post("/workspaces/oauth/complete")
+    async def complete_workspace_oauth_route(
+        payload: CompleteWorkspaceOAuthRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        try:
+            return await complete_workspace_oauth(db, ticket=payload.ticket, callback_url=payload.callback_url)
         except RegisterWorkspaceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

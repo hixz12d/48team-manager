@@ -381,30 +381,28 @@
       <header>
         <div>
           <strong id="register-title">登记团队</strong>
-          <p class="muted">把已有 ChatGPT Team 母号写进控制台。这里不会在 OpenAI 开新团队。</p>
+          <p class="muted">用母号 OAuth 授权。Workspace 和令牌从回调里取，不会在 OpenAI 开新团队。</p>
         </div>
         <button type="button" class="button ghost" data-close-register>关掉</button>
       </header>
       <form id="register-form" class="sheet-body">
+        <input type="hidden" name="ticket" value="">
         <div class="sheet-section">
-          <h3>必填</h3>
           <label>母号邮箱<input name="email" type="email" autocomplete="off" required></label>
-          <label>Workspace ID<input name="official_workspace_id" autocomplete="off" required placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
-          <p class="hint">必须是官方 Workspace UUID，不能填 user-xxx。</p>
-        </div>
-        <div class="sheet-section">
-          <h3>可选</h3>
-          <label>团队名称<input name="name" autocomplete="off" placeholder="留空则用邮箱"></label>
-          <label>席位上限<input name="seat_limit" type="number" min="1" max="100" inputmode="numeric"></label>
           <label>代理<input name="proxy" autocomplete="off" placeholder="socks5://host:port"></label>
-          <label>母号密码<input name="password" type="password" autocomplete="new-password"></label>
-          <label>Access Token<textarea name="access_token" rows="3"></textarea></label>
-          <label>Refresh Token<textarea name="refresh_token" rows="3"></textarea></label>
-          <p class="hint">令牌和密码可以后补。不填令牌时，拉人 / 轮转仍需先授权。</p>
+          <p class="hint">代理可选。生成链接后在浏览器登录母号，把跳转到 localhost:1455 的整段地址贴回来。</p>
+        </div>
+        <div class="sheet-section" id="register-oauth" hidden>
+          <label>授权链接<textarea id="register-authorize-url" rows="4" readonly></textarea></label>
+          <div class="settings-probe-actions">
+            <button class="button" type="button" id="register-copy-link">复制链接</button>
+            <a class="button" id="register-open-link" href="#" target="_blank" rel="noopener">打开授权</a>
+          </div>
+          <label>回调地址<textarea name="callback_url" rows="4" placeholder="http://localhost:1455/auth/callback?code=...&state=..."></textarea></label>
         </div>
         <p id="register-status" class="muted" hidden></p>
         <div class="settings-probe-actions">
-          <button class="button primary" type="submit">登记</button>
+          <button class="button primary" type="submit" id="register-submit">生成授权链接</button>
         </div>
       </form>
     </div>

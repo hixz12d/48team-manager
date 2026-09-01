@@ -43,6 +43,29 @@ class JWTParser:
         value = auth.get("user_id")
         return str(value) if value else None
 
+    def extract_auth_claim(self, token: str) -> dict[str, Any]:
+        payload = self.decode_token(token) or {}
+        auth = payload.get("https://api.openai.com/auth")
+        return auth if isinstance(auth, dict) else {}
+
+    def extract_chatgpt_account_id(self, token: str) -> str | None:
+        auth = self.extract_auth_claim(token)
+        for key in ("chatgpt_account_id", "account_id"):
+            value = str(auth.get(key) or "").strip()
+            if value:
+                return value
+        return None
+
+    def extract_organizations(self, token: str) -> list[dict[str, Any]]:
+        payload = self.decode_token(token) or {}
+        auth = self.extract_auth_claim(token)
+        raw = auth.get("organizations") or payload.get("organizations") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
+
     def expiration_utc(self, token: str) -> datetime | None:
         payload = self.decode_token(token)
         if not payload:

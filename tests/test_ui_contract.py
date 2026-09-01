@@ -62,6 +62,11 @@ class UIContractTests(unittest.TestCase):
             self.assertIn('id="register-form"', workspaces)
             self.assertIn("登记团队", workspaces)
 
+            self.assertIn("生成授权链接", workspaces)
+            self.assertIn("callback_url", workspaces)
+            self.assertNotIn("official_workspace_id", workspaces)
+            self.assertNotIn("Access Token", workspaces)
+
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})

@@ -1,47 +1,104 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import jwt
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.identity import upsert_child_account
+from app.core.jwt import jwt_parser
 from app.persistence.database import Base
 from tests.helpers import make_client
 from tests.test_identity import WORKSPACE_UUID
 
 
+def fake_access_token(email="owner@icloud.com", workspace_id=WORKSPACE_UUID, role="account-owner"):
+    return jwt.encode(
+        {
+            "email": email,
+            "https://api.openai.com/auth": {
+                "user_id": "user-owner",
+                "chatgpt_account_id": workspace_id,
+                "organizations": [
+                    {
+                        "id": workspace_id,
+                        "title": "Team Alpha",
+                        "role": role,
+                    }
+                ],
+            },
+        },
+        "test",
+        algorithm="HS256",
+    )
+
+
+class FakeOAuthClient:
+    def __init__(self, *, email="owner@icloud.com", workspace_id=WORKSPACE_UUID):
+        self.email = email
+        self.workspace_id = workspace_id
+
+    async def exchange_oauth_code(self, **kwargs):
+        token = fake_access_token(self.email, self.workspace_id)
+        return {
+            "success": True,
+            "access_token": token,
+            "refresh_token": "refresh-token",
+            "id_token": token,
+        }
+
+
+class JwtOrgTests(unittest.TestCase):
+    def test_extracts_workspace_from_organizations(self):
+        token = fake_access_token()
+        self.assertEqual(jwt_parser.extract_email(token), "owner@icloud.com")
+        self.assertEqual(jwt_parser.extract_chatgpt_account_id(token), WORKSPACE_UUID)
+        orgs = jwt_parser.extract_organizations(token)
+        self.assertEqual(orgs[0]["id"], WORKSPACE_UUID)
+
+
 class RegisterWorkspaceTests(unittest.TestCase):
-    def test_register_creates_mother_and_workspace(self):
+    def test_oauth_registers_mother_from_callback(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             denied = client.post(
-                "/api/workspaces",
-                json={"email": "owner@icloud.com", "official_workspace_id": WORKSPACE_UUID},
+                "/api/workspaces/oauth/start",
+                json={"email": "owner@icloud.com"},
             )
             self.assertEqual(denied.status_code, 401)
 
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
-            created = client.post(
-                "/api/workspaces",
-                json={
-                    "email": "Owner@iCloud.com",
-                    "official_workspace_id": WORKSPACE_UUID.upper(),
-                    "name": "Team Alpha",
-                    "seat_limit": 5,
-                    "password": "mother-secret",
-                    "access_token": "access-token",
-                },
+            started = client.post(
+                "/api/workspaces/oauth/start",
+                json={"email": "Owner@iCloud.com", "proxy": "socks5://127.0.0.1:1080"},
             )
-            self.assertEqual(created.status_code, 200, created.text)
-            body = created.json()
+            self.assertEqual(started.status_code, 200, started.text)
+            body = started.json()
             self.assertTrue(body["ok"])
-            self.assertEqual(body["workspace"]["name"], "Team Alpha")
-            self.assertEqual(body["workspace"]["owner_email"], "owner@icloud.com")
-            self.assertEqual(body["workspace"]["official_workspace_id"], WORKSPACE_UUID)
-            self.assertEqual(body["workspace"]["seat_limit"], 5)
-            self.assertEqual(body["account"]["purpose"], "mother")
-            self.assertNotIn("password", body)
-            self.assertNotIn("access_token", body)
-            self.assertNotIn("mother-secret", created.text)
+            self.assertTrue(body["ticket"])
+            self.assertIn("auth.openai.com/oauth/authorize", body["authorize_url"])
+            self.assertEqual(body["email"], "owner@icloud.com")
+            self.assertIn("login_hint=", body["authorize_url"])
+
+            fake = FakeOAuthClient()
+            with patch("app.application.commands.workspaces.chatgpt_client", fake):
+                completed = client.post(
+                    "/api/workspaces/oauth/complete",
+                    json={
+                        "ticket": body["ticket"],
+                        "callback_url": "http://localhost:1455/auth/callback?code=oauth-code",
+                    },
+                )
+            self.assertEqual(completed.status_code, 200, completed.text)
+            created = completed.json()
+            self.assertTrue(created["ok"])
+            self.assertEqual(created["workspace"]["name"], "Team Alpha")
+            self.assertEqual(created["workspace"]["owner_email"], "owner@icloud.com")
+            self.assertEqual(created["workspace"]["official_workspace_id"], WORKSPACE_UUID)
+            self.assertEqual(created["account"]["purpose"], "mother")
+            self.assertNotIn("access_token", created)
+            self.assertNotIn("refresh_token", created)
+            self.assertNotIn("oauth-code", completed.text)
 
             workspaces = client.get("/api/workspaces").json()["items"]
             self.assertEqual(len(workspaces), 1)
@@ -52,33 +109,45 @@ class RegisterWorkspaceTests(unittest.TestCase):
             audit = client.get("/api/identity/audit").json()
             self.assertEqual(audit["counts"]["conflict"], 0)
 
-    def test_rejects_invalid_workspace_id_and_duplicates(self):
+            again = client.post(
+                "/api/workspaces/oauth/start",
+                json={"email": "owner@icloud.com"},
+            )
+            self.assertEqual(again.status_code, 409)
+
+    def test_oauth_rejects_missing_code_and_duplicate_workspace(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
-            bad = client.post(
-                "/api/workspaces",
-                json={"email": "owner@icloud.com", "official_workspace_id": "user-abc"},
+            first = client.post("/api/workspaces/oauth/start", json={"email": "owner@icloud.com"})
+            ticket = first.json()["ticket"]
+            missing = client.post(
+                "/api/workspaces/oauth/complete",
+                json={"ticket": ticket, "callback_url": "http://localhost:1455/auth/callback"},
             )
-            self.assertEqual(bad.status_code, 400)
-            self.assertIn("Workspace ID", bad.json()["detail"])
+            self.assertEqual(missing.status_code, 400)
+            self.assertIn("授权码", missing.json()["detail"])
 
-            first = client.post(
-                "/api/workspaces",
-                json={"email": "owner@icloud.com", "official_workspace_id": WORKSPACE_UUID, "name": "One"},
-            )
-            self.assertEqual(first.status_code, 200)
-            again_email = client.post(
-                "/api/workspaces",
-                json={
-                    "email": "owner@icloud.com",
-                    "official_workspace_id": "22222222-2222-2222-2222-222222222222",
-                },
-            )
-            self.assertEqual(again_email.status_code, 409)
-            again_id = client.post(
-                "/api/workspaces",
-                json={"email": "other@icloud.com", "official_workspace_id": WORKSPACE_UUID},
-            )
+            fake = FakeOAuthClient()
+            with patch("app.application.commands.workspaces.chatgpt_client", fake):
+                created = client.post(
+                    "/api/workspaces/oauth/complete",
+                    json={
+                        "ticket": ticket,
+                        "callback_url": "http://localhost:1455/auth/callback?code=oauth-code",
+                    },
+                )
+            self.assertEqual(created.status_code, 200, created.text)
+
+            second = client.post("/api/workspaces/oauth/start", json={"email": "other@icloud.com"})
+            self.assertEqual(second.status_code, 200)
+            with patch("app.application.commands.workspaces.chatgpt_client", FakeOAuthClient(email="other@icloud.com")):
+                again_id = client.post(
+                    "/api/workspaces/oauth/complete",
+                    json={
+                        "ticket": second.json()["ticket"],
+                        "callback_url": "http://localhost:1455/auth/callback?code=oauth-code-2",
+                    },
+                )
             self.assertEqual(again_id.status_code, 409)
 
 
@@ -98,8 +167,8 @@ class RegisterWorkspaceGuardTests(unittest.IsolatedAsyncioTestCase):
             with make_client(tmp_path) as client:
                 client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
                 refused = client.post(
-                    "/api/workspaces",
-                    json={"email": "kid@icloud.com", "official_workspace_id": WORKSPACE_UUID},
+                    "/api/workspaces/oauth/start",
+                    json={"email": "kid@icloud.com"},
                 )
                 self.assertEqual(refused.status_code, 409)
                 accounts = client.get("/api/accounts").json()["items"]

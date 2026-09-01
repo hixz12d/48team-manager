@@ -19,13 +19,21 @@ TTL = timedelta(minutes=20)
 
 
 def parse_oauth_callback(callback_text: str) -> Dict[str, str]:
-    parsed = urlparse((callback_text or "").strip())
+    text = (callback_text or "").strip()
+    parsed = urlparse(text)
     merged: Dict[str, str] = {}
     for source in (parse_qs(parsed.query), parse_qs(parsed.fragment)):
         for key, values in source.items():
             if values:
                 merged[key] = values[0]
-    return {"code": merged.get("code") or "", "state": merged.get("state") or ""}
+    if not merged.get("code") and text and "://" not in text and " " not in text:
+        merged["code"] = text
+    return {
+        "code": merged.get("code") or "",
+        "state": merged.get("state") or "",
+        "error": merged.get("error") or "",
+        "error_description": merged.get("error_description") or "",
+    }
 
 _LOCK = threading.Lock()
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
@@ -147,6 +155,12 @@ def consume_verifier(ticket: str) -> Optional[Dict[str, Any]]:
         if not session:
             return None
         return dict(session)
+
+
+def pop_session(ticket: str) -> Optional[Dict[str, Any]]:
+    with _LOCK:
+        _purge()
+        return _SESSIONS.pop(ticket or "", None)
 
 
 PROTOCOL_NAME = "team48-oauth"

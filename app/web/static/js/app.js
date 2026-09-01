@@ -462,7 +462,7 @@
     healthRoot.replaceChildren();
     const health = payload.workspace_health || [];
     if (!health.length) {
-      healthRoot.append(emptyState("还没有工作区", "点右上角「登记团队」，把已有 ChatGPT Team 母号写进来。"));
+      healthRoot.append(emptyState("还没有工作区", "点右上角「登记团队」，用母号 OAuth 授权。"));
     } else {
       const list = document.createElement("div");
       list.className = "health-list";
@@ -721,19 +721,34 @@
     overlayReturn = null;
   }
 
+  function setRegisterStatus(text, tone) {
+    const statusEl = document.getElementById("register-status");
+    if (!statusEl) return;
+    statusEl.hidden = !text;
+    statusEl.className = tone || "muted";
+    statusEl.textContent = text || "";
+  }
+
+  function resetRegisterForm() {
+    const form = document.getElementById("register-form");
+    const oauth = document.getElementById("register-oauth");
+    const authorize = document.getElementById("register-authorize-url");
+    const openLink = document.getElementById("register-open-link");
+    const submit = document.getElementById("register-submit");
+    if (form) form.reset();
+    if (oauth) oauth.hidden = true;
+    if (authorize) authorize.value = "";
+    if (openLink) openLink.href = "#";
+    if (submit) submit.textContent = "生成授权链接";
+    setRegisterStatus("", "muted");
+  }
+
   function openRegister(trigger) {
     if (!registerSheet) return;
     overlayReturn = trigger || document.querySelector("[data-open-register]");
-    const form = document.getElementById("register-form");
-    const statusEl = document.getElementById("register-status");
-    if (form) form.reset();
-    if (statusEl) {
-      statusEl.hidden = true;
-      statusEl.className = "muted";
-      statusEl.textContent = "";
-    }
+    resetRegisterForm();
     registerSheet.hidden = false;
-    form?.querySelector("[name='email']")?.focus();
+    document.getElementById("register-form")?.querySelector("[name='email']")?.focus();
   }
 
   function closeRegister() {
@@ -743,47 +758,70 @@
     overlayReturn = null;
   }
 
-  function registerPayload(form) {
+  async function copyText(value) {
+    const text = String(value || "");
+    if (!text) return false;
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function startRegisterOAuth(form) {
     const data = new FormData(form);
-    const seatRaw = String(data.get("seat_limit") || "").trim();
     const payload = {
       email: String(data.get("email") || "").trim(),
-      official_workspace_id: String(data.get("official_workspace_id") || "").trim(),
-      name: String(data.get("name") || "").trim() || null,
       proxy: String(data.get("proxy") || "").trim() || null,
-      password: String(data.get("password") || "").trim() || null,
-      access_token: String(data.get("access_token") || "").trim() || null,
-      refresh_token: String(data.get("refresh_token") || "").trim() || null,
     };
-    if (seatRaw) payload.seat_limit = Number(seatRaw);
-    return payload;
+    const started = await fetchEntity("register-oauth-start", "/api/workspaces/oauth/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(payload),
+    });
+    form.elements.ticket.value = started.ticket || "";
+    const authorize = document.getElementById("register-authorize-url");
+    const openLink = document.getElementById("register-open-link");
+    const oauth = document.getElementById("register-oauth");
+    const submit = document.getElementById("register-submit");
+    if (authorize) authorize.value = started.authorize_url || "";
+    if (openLink) openLink.href = started.authorize_url || "#";
+    if (oauth) oauth.hidden = false;
+    if (submit) submit.textContent = "完成授权";
+    form.querySelector("[name='callback_url']")?.focus();
+    setRegisterStatus("打开授权链接，登录母号后把回调地址贴回来。", "muted");
+  }
+
+  async function completeRegisterOAuth(form) {
+    const data = new FormData(form);
+    await fetchEntity("register-oauth-complete", "/api/workspaces/oauth/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({
+        ticket: String(data.get("ticket") || "").trim(),
+        callback_url: String(data.get("callback_url") || "").trim(),
+      }),
+    });
+    closeRegister();
+    await bootPage();
   }
 
   async function submitRegister(event) {
     event.preventDefault();
     const form = event.currentTarget;
-    const statusEl = document.getElementById("register-status");
-    const button = form.querySelector("button[type='submit']");
+    const button = form.querySelector("#register-submit");
     if (button) button.disabled = true;
-    if (statusEl) {
-      statusEl.hidden = false;
-      statusEl.className = "muted";
-      statusEl.textContent = "正在登记…";
-    }
     try {
-      await fetchEntity("register-workspace", "/api/workspaces", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(registerPayload(form)),
-      });
-      closeRegister();
-      await bootPage();
-    } catch (error) {
-      if (statusEl) {
-        statusEl.hidden = false;
-        statusEl.className = "error";
-        statusEl.textContent = friendlyError(error);
+      if (form.elements.ticket.value) {
+        setRegisterStatus("正在用回调换票并登记…", "muted");
+        await completeRegisterOAuth(form);
+      } else {
+        setRegisterStatus("正在生成授权链接…", "muted");
+        await startRegisterOAuth(form);
       }
+    } catch (error) {
+      setRegisterStatus(friendlyError(error), "error");
     } finally {
       if (button) button.disabled = false;
     }
@@ -1082,7 +1120,7 @@
         workspaceRow,
         items.length === 0 && pageCache.items.length
           ? emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。")
-          : emptyState("还没有工作区", "点「登记团队」，填母号邮箱和 Workspace UUID。")
+          : emptyState("还没有工作区", "点「登记团队」，填母号邮箱并完成 OAuth 授权。")
       );
       setCount("workspaces-count", items.length, pageCache.items.length);
     } else if (kind === "account") {
@@ -1228,6 +1266,12 @@
   });
   document.querySelector("[data-close-register]")?.addEventListener("click", closeRegister);
   document.getElementById("register-form")?.addEventListener("submit", submitRegister);
+
+  document.getElementById("register-copy-link")?.addEventListener("click", async () => {
+    const authorize = document.getElementById("register-authorize-url");
+    const copied = await copyText(authorize?.value);
+    setRegisterStatus(copied ? "授权链接已复制。" : "复制失败，请手动选中链接。", copied ? "muted" : "error");
+  });
   document.getElementById("page-retry")?.addEventListener("click", bootPage);
   document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
     document.body.classList.toggle("nav-open");
