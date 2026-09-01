@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import random
@@ -846,6 +847,334 @@ class AutoRotateService:
         await db_session.commit()
         return stats
 
+    async def _mark_rotate_step(
+        self,
+        db_session: AsyncSession,
+        job_id: Optional[str],
+        step_name: str,
+        *,
+        state: str,
+        result: Optional[Dict[str, Any]] = None,
+        error_code: str = "",
+        error_message: str = "",
+    ) -> None:
+        from app.services.operations import operation_store
+
+        if not job_id:
+            return
+        op = await operation_store.get_by_public_id(db_session, job_id)
+        if op is None:
+            return
+        await operation_store.mark_step(
+            db_session,
+            op,
+            step_name,
+            state=state,
+            result=result,
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+    async def _confirm_rotate_trigger(
+        self,
+        db_session: AsyncSession,
+        *,
+        account: Dict[str, Any],
+        reason: str,
+        usage: Optional[Dict[str, Any]] = None,
+        skip_fetch: bool = False,
+    ) -> Dict[str, Any]:
+        if reason != "weekly_limit":
+            return {"ok": True, "usage": usage, "code": ""}
+        try:
+            account_id = int(account.get("id") or 0)
+        except (TypeError, ValueError):
+            account_id = 0
+        if not account_id:
+            return {
+                "ok": False,
+                "skipped": True,
+                "code": "weekly_limit_missing_id",
+                "error": "周限满缺少 Sub 账号 ID",
+            }
+        fetched = usage
+        if fetched is None and not skip_fetch:
+            try:
+                fetched = await sub2api_service.fetch_account_usage(
+                    db_session,
+                    account_id,
+                    source="active",
+                    force=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "ok": False,
+                    "failed": True,
+                    "code": "usage_confirm_failed",
+                    "error": str(exc),
+                    "account_id": account_id,
+                }
+        still_full = official_weekly_limit_full(fetched)
+        if still_full is not True:
+            return {
+                "ok": False,
+                "skipped": True,
+                "code": "weekly_limit_not_confirmed",
+                "usage": fetched,
+                "account_id": account_id,
+            }
+        return {
+            "ok": True,
+            "usage": fetched,
+            "code": "",
+            "next_eligible_at": official_weekly_reset_at(fetched),
+            "account_id": account_id,
+        }
+
+    async def _pause_and_drain(
+        self,
+        db_session: AsyncSession,
+        *,
+        job_id: Optional[str],
+        account_id: int,
+        drain_seconds: int = 2,
+    ) -> Dict[str, Any]:
+        from app.services import onboard_jobs
+        from app.services.operations import operation_store
+
+        if job_id:
+            op = await operation_store.get_by_public_id(db_session, job_id)
+            if op is not None and await operation_store.step_succeeded(db_session, op, "paused"):
+                return {"ok": True, "skipped": True}
+        if not account_id:
+            await self._mark_rotate_step(
+                db_session,
+                job_id,
+                "paused",
+                state="success",
+                result={"skipped": True, "reason": "no_sub2api_id"},
+            )
+            await self._mark_rotate_step(
+                db_session,
+                job_id,
+                "drained",
+                state="success",
+                result={"skipped": True},
+            )
+            return {"ok": True, "skipped": True}
+        from app.services import onboard_jobs as jobs_mod
+
+        if jobs_mod._in_test_process():
+            paused = {"patched": False, "skipped": True}
+        else:
+            try:
+                paused = await sub2api_service.set_account_schedulable(db_session, account_id, False)
+            except Exception as exc:  # noqa: BLE001
+                await self._mark_rotate_step(
+                    db_session,
+                    job_id,
+                    "paused",
+                    state="failed",
+                    error_code="pause_failed",
+                    error_message=str(exc),
+                )
+                return {"ok": False, "code": "pause_failed", "error": str(exc)}
+        await self._mark_rotate_step(
+            db_session,
+            job_id,
+            "paused",
+            state="success",
+            result={"account_id": account_id, "patched": bool(paused.get("patched"))},
+        )
+        onboard_jobs.note(job_id, "paused", f"已暂停 Sub2API 调度 account_id={account_id}")
+        wait_for = 0 if onboard_jobs._in_test_process() else max(0, int(drain_seconds))
+        if wait_for:
+            onboard_jobs.note(job_id, "drain", f"等待当前请求排空 {wait_for}s")
+            await asyncio.sleep(wait_for)
+        await self._mark_rotate_step(
+            db_session,
+            job_id,
+            "drained",
+            state="success",
+            result={"seconds": wait_for},
+        )
+        return {"ok": True, "account_id": account_id}
+
+    async def run_rotate_saga(
+        self,
+        db_session: AsyncSession,
+        *,
+        job_id: str,
+        team_id: int,
+        email: str,
+        reason: str,
+        force_refill: bool = False,
+        next_eligible_at: Optional[datetime] = None,
+        email_line: str = "",
+        phone_line: str = "",
+        proxy: str = "",
+        child_id: Optional[int] = None,
+        account: Optional[Dict[str, Any]] = None,
+        usage: Optional[Dict[str, Any]] = None,
+        skip_confirm: bool = False,
+        now: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """可续跑踢拉：confirm → pause → drain → kick_and_refill。vacancy 闸仍在，不默认强制补位。"""
+        from app.services import onboard_jobs
+        from app.services.identity import identity_service
+        from app.services.onboard import onboard_service
+        from app.services.operations import WORKSPACE_LOCK_ACTIONS, operation_store
+        from app.services.proxy_profiles import proxy_profile_service
+
+        target = str(email or "").strip().lower()
+        payload_account = dict(account or {})
+        child = await child_account_service.get_by_email(db_session, target) if target else None
+        if child is None and payload_account:
+            child = await self._resolve_active_child(db_session, payload_account, target)
+        remote_id = payload_account.get("id") or (child.sub2api_account_id if child is not None else None)
+        op = await operation_store.get_by_public_id(db_session, job_id) if job_id else None
+        already_kicked = bool(op and await operation_store.step_succeeded(db_session, op, "kicked"))
+        if not already_kicked:
+            busy = await operation_store.active_for_workspace(
+                db_session,
+                team_id,
+                actions=WORKSPACE_LOCK_ACTIONS,
+                exclude_public_id=job_id,
+            )
+            if busy is not None:
+                return {
+                    "success": False,
+                    "error": f"Team {team_id} 已有 {busy.op_type} 任务 {busy.public_id} 在跑",
+                    "error_code": "operation_conflict",
+                    "operation_id": busy.public_id,
+                }
+            gate = await identity_service.automation_gate(
+                db_session,
+                remote_account_id=remote_id,
+                email=target,
+                child=child,
+            )
+            if not gate.get("allow"):
+                await self._mark_rotate_step(
+                    db_session,
+                    job_id,
+                    "confirm_trigger",
+                    state="failed",
+                    result=gate,
+                    error_code=str(gate.get("error_code") or "identity_conflict"),
+                    error_message=str(gate.get("reason") or "身份门闩拒绝自动踢拉"),
+                )
+                return {
+                    "success": False,
+                    "error": gate.get("reason") or "身份门闩拒绝自动踢拉",
+                    "error_code": gate.get("error_code") or "identity_conflict",
+                    "status": "manual_required",
+                }
+        team = await db_session.get(Team, int(team_id)) if team_id else None
+        frozen, _profile_id = await proxy_profile_service.freeze(
+            db_session,
+            job_id=job_id,
+            form_proxy=proxy,
+            child_proxy=(child.proxy if child is not None else "") or "",
+            mother_proxy=(team.proxy if team is not None else "") or "",
+        )
+        proxy = frozen or proxy
+
+        confirmed = {"ok": True, "usage": usage, "next_eligible_at": next_eligible_at, "code": ""}
+        if not already_kicked:
+            if op is not None and await operation_store.step_succeeded(db_session, op, "confirm_trigger"):
+                confirmed = {"ok": True, "usage": usage, "next_eligible_at": next_eligible_at, "code": ""}
+            else:
+                confirmed = await self._confirm_rotate_trigger(
+                    db_session,
+                    account=payload_account or {"id": remote_id},
+                    reason=reason,
+                    usage=usage,
+                    skip_fetch=skip_confirm,
+                )
+                if confirmed.get("ok"):
+                    await self._mark_rotate_step(
+                        db_session,
+                        job_id,
+                        "confirm_trigger",
+                        state="success",
+                        result={
+                            "reason": reason,
+                            "next_eligible_at": (
+                                confirmed.get("next_eligible_at") or next_eligible_at
+                            ).isoformat()
+                            if (confirmed.get("next_eligible_at") or next_eligible_at)
+                            else None,
+                        },
+                    )
+                else:
+                    await self._mark_rotate_step(
+                        db_session,
+                        job_id,
+                        "confirm_trigger",
+                        state="failed" if confirmed.get("failed") else "success",
+                        result=confirmed,
+                        error_code=str(confirmed.get("code") or ""),
+                        error_message=str(confirmed.get("error") or confirmed.get("code") or ""),
+                    )
+                    return {
+                        "success": False,
+                        "error": confirmed.get("error") or "周限未确认，未踢人",
+                        "error_code": confirmed.get("code") or "weekly_limit_not_confirmed",
+                        "skipped": bool(confirmed.get("skipped")),
+                        "failed": bool(confirmed.get("failed")),
+                        "usage": confirmed.get("usage"),
+                    }
+            eligible = confirmed.get("next_eligible_at") or next_eligible_at
+            pause = await self._pause_and_drain(
+                db_session,
+                job_id=job_id,
+                account_id=int(remote_id or 0) if remote_id not in (None, "", "0") else 0,
+            )
+            if not pause.get("ok"):
+                return {
+                    "success": False,
+                    "error": pause.get("error") or "暂停 Sub2API 调度失败，未踢人",
+                    "error_code": pause.get("code") or "pause_failed",
+                }
+        else:
+            eligible = next_eligible_at
+            onboard_jobs.note(job_id, "kicked", f"{target} 本任务已踢过，续跑补位")
+
+        result = await onboard_service.kick_and_refill(
+            db_session,
+            team_id=team_id,
+            email=target,
+            email_line=email_line,
+            phone_line=phone_line,
+            proxy=proxy,
+            child_id=child_id,
+            force_refill=force_refill,
+            job_id=job_id,
+            reason=reason,
+            next_eligible_at=eligible,
+        )
+        result.setdefault("reason", reason)
+        if result.get("error_code") == "vacancy_not_safe_to_refill":
+            await self._mark_rotate_step(
+                db_session,
+                job_id,
+                "refill",
+                state="manual_required",
+                result=result,
+                error_code="vacancy_not_safe_to_refill",
+                error_message=str(result.get("error") or "vacancy 闸拦住补位"),
+            )
+        elif result.get("success"):
+            await self._mark_rotate_step(
+                db_session,
+                job_id,
+                "refill",
+                state="success",
+                result=result,
+            )
+        return result
+
     async def run_auto_rotate_once(
         self,
         db_session: AsyncSession,
@@ -854,7 +1183,8 @@ class AutoRotateService:
         settings: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         from app.services import onboard_jobs
-        from app.services.onboard import onboard_service
+        from app.services.identity import identity_service
+        from app.services.operations import WORKSPACE_LOCK_ACTIONS, operation_store
 
         cfg = settings or await self.load_layer_settings(db_session)
         stamp = now or get_now()
@@ -867,6 +1197,7 @@ class AutoRotateService:
             "skipped": 0,
             "failed": 0,
             "capped": 0,
+            "conflict": 0,
             "email": "",
             "reason": "",
         }
@@ -886,18 +1217,16 @@ class AutoRotateService:
             [int(item["id"]) for item in accounts if item.get("id") is not None],
         )
         occupied_teams: set[int] = set()
-        for job in onboard_jobs.iter_running(("rotate", "onboard")):
+        for job in onboard_jobs.iter_running(("rotate", "onboard", "reregister")):
             try:
                 occupied_teams.add(int(job.get("team_id")))
             except (TypeError, ValueError):
                 continue
+        for op_row in await operation_store.iter_running(db_session, WORKSPACE_LOCK_ACTIONS):
+            if op_row.workspace_id:
+                occupied_teams.add(int(op_row.workspace_id))
         candidates: List[tuple[datetime, Dict[str, Any], Sub2ApiUsageProbe, Any, str]] = []
         for account in accounts:
-            if is_owner_account(account):
-                continue
-            email = sub2api_service._account_email(account)
-            if not email:
-                continue
             try:
                 account_id = int(account.get("id"))
             except (TypeError, ValueError):
@@ -914,8 +1243,35 @@ class AutoRotateService:
                 continue
             if row and row.next_rotate_at and row.next_rotate_at > stamp:
                 continue
-            child = await child_account_service.get_by_email(db_session, email)
-            if child is None or child.status not in ACTIVE_CHILD_STATUSES or not child.current_team_id:
+            email = sub2api_service._account_email(account)
+            child = await self._resolve_active_child(db_session, account, email)
+            gate = await identity_service.automation_gate(
+                db_session,
+                remote_account_id=account.get("id"),
+                email=email,
+                child=child,
+            )
+            if not gate.get("allow"):
+                stats["skipped"] += 1
+                if gate.get("error_code") == "identity_conflict":
+                    stats["conflict"] += 1
+                    if not row:
+                        row = await self._ensure_probe_row(db_session, account, stamp, 3600, None)
+                    row.last_rotate_code = "identity_conflict"
+                    row.updated_at = stamp
+                logger.info(
+                    "第 3 层跳过 account_id=%s email=%s: %s",
+                    account_id,
+                    email or "",
+                    gate.get("reason") or gate.get("error_code"),
+                )
+                continue
+            if child is None or not child.current_team_id:
+                stats["skipped"] += 1
+                continue
+            email = (email or child.email or "").strip()
+            if not email:
+                stats["skipped"] += 1
                 continue
             team_id = int(child.current_team_id)
             if team_id in occupied_teams:
@@ -924,6 +1280,7 @@ class AutoRotateService:
             candidates.append((due_at, account, row, child, reason))
         stats["scanned"] = len(candidates)
         if not candidates:
+            await db_session.commit()
             return stats
         candidates.sort(key=lambda item: (item[0], int(item[1].get("id") or 0)))
         account, row, child, reason = candidates[0][1], candidates[0][2], candidates[0][3], candidates[0][4]
@@ -938,67 +1295,52 @@ class AutoRotateService:
             return stats
         if not row:
             row = await self._ensure_probe_row(db_session, account, stamp, 3600, None)
-        usage = None
-        if reason == "weekly_limit":
-            try:
-                account_id = int(account.get("id"))
-            except (TypeError, ValueError):
-                account_id = 0
-            if not account_id:
-                stats["skipped"] = 1
-                stats["email"] = email
-                stats["reason"] = reason
-                logger.info("第 3 层跳过 %s: 周限满缺少 Sub 账号 ID", email)
-                await db_session.commit()
-                return stats
-            try:
-                usage = await sub2api_service.fetch_account_usage(
-                    db_session,
-                    account_id,
-                    source="active",
-                    force=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                row.rotate_fail_count = int(row.rotate_fail_count or 0) + 1
-                row.last_rotate_code = "usage_confirm_failed"
-                row.next_rotate_at = rotate_backoff_at(stamp, row.rotate_fail_count)
-                row.updated_at = stamp
-                stats["failed"] = 1
-                stats["email"] = email
-                stats["reason"] = reason
-                logger.warning(
-                    "第 3 层踢前官方查询失败: email=%s account_id=%s error=%s",
-                    email,
-                    account_id,
-                    exc,
-                )
-                await db_session.commit()
-                return stats
-            still_full = official_weekly_limit_full(usage)
-            if still_full is not True:
-                merged = sub2api_service.merge_usage_into_account(account, usage)
-                schedule = self._schedule_kind(merged)
-                await self._write_child_probe(db_session, merged, schedule)
-                seven = usage.get("seven_day") if isinstance(usage, dict) else None
-                util = seven.get("utilization") if isinstance(seven, dict) else None
-                row.last_kind = schedule.get("kind")
-                row.last_label = schedule.get("label")
+        email = (email or child.email or "").strip()
+        confirmed = await self._confirm_rotate_trigger(
+            db_session,
+            account=account,
+            reason=reason,
+        )
+        if not confirmed.get("ok"):
+            code = str(confirmed.get("code") or "")
+            usage = confirmed.get("usage") if isinstance(confirmed.get("usage"), dict) else None
+            stats["email"] = email
+            stats["reason"] = reason
+            if code == "weekly_limit_not_confirmed":
+                if usage:
+                    merged = sub2api_service.merge_usage_into_account(account, usage)
+                    schedule = self._schedule_kind(merged)
+                    await self._write_child_probe(db_session, merged, schedule)
+                    row.last_kind = schedule.get("kind")
+                    row.last_label = schedule.get("label")
                 row.last_rotate_code = "weekly_limit_not_confirmed"
                 row.rotate_fail_count = 0
                 row.next_rotate_at = stamp + timedelta(hours=1)
                 row.updated_at = stamp
                 stats["skipped"] = 1
-                stats["email"] = email
-                stats["reason"] = reason
                 logger.info(
-                    "第 3 层跳过 %s: 看板 429 但官方 7 日未满 util=%s kind=%s",
+                    "第 3 层跳过 %s: 看板 429 但官方 7 日未满 kind=%s",
                     email,
-                    util,
-                    schedule.get("kind"),
+                    row.last_kind,
                 )
-                await db_session.commit()
-                return stats
-        next_eligible_at = official_weekly_reset_at(usage) if reason == "weekly_limit" else None
+            elif code == "usage_confirm_failed":
+                row.rotate_fail_count = int(row.rotate_fail_count or 0) + 1
+                row.last_rotate_code = "usage_confirm_failed"
+                row.next_rotate_at = rotate_backoff_at(stamp, row.rotate_fail_count)
+                row.updated_at = stamp
+                stats["failed"] = 1
+                logger.warning(
+                    "第 3 层踢前官方查询失败: email=%s account_id=%s error=%s",
+                    email,
+                    confirmed.get("account_id"),
+                    confirmed.get("error"),
+                )
+            else:
+                stats["skipped"] = 1
+                logger.info("第 3 层跳过 %s: %s", email, confirmed.get("error") or code)
+            await db_session.commit()
+            return stats
+        next_eligible_at = confirmed.get("next_eligible_at")
         job = onboard_jobs.create_job(
             team_id=team_id,
             email=email,
@@ -1008,21 +1350,30 @@ class AutoRotateService:
                 "email": email,
                 "reason": reason,
                 "force_refill": bool(cfg.get("auto_rotate_force_refill")),
+                "account_id": account.get("id"),
                 "next_eligible_at": next_eligible_at.isoformat() if next_eligible_at else None,
             },
         )
-        result = await onboard_service.kick_and_refill(
+        result = await self.run_rotate_saga(
             db_session,
+            job_id=job["id"],
             team_id=team_id,
             email=email,
-            force_refill=bool(cfg.get("auto_rotate_force_refill")),
-            job_id=job["id"],
             reason=reason,
+            force_refill=bool(cfg.get("auto_rotate_force_refill")),
             next_eligible_at=next_eligible_at,
+            account=account,
+            usage=confirmed.get("usage"),
+            skip_confirm=True,
+            now=stamp,
         )
         code = str(result.get("error_code") or "")
         if result.get("success") or result.get("rotated") or code == "vacancy_not_safe_to_refill":
-            onboard_jobs.finish(job["id"], {"success": bool(result.get("success")), **result})
+            finish_status = "manual_required" if code == "vacancy_not_safe_to_refill" else None
+            payload = {"success": bool(result.get("success")), **result}
+            if finish_status:
+                payload["status"] = finish_status
+            onboard_jobs.finish(job["id"], payload)
             row.rotate_fail_count = 0
             row.last_rotate_code = code[:40] if code else None
             row.next_rotate_at = stamp + timedelta(hours=12)
@@ -1047,6 +1398,8 @@ class AutoRotateService:
             row.last_rotate_code = (code or "rotate_failed")[:40]
             row.next_rotate_at = rotate_backoff_at(stamp, row.rotate_fail_count)
             row.updated_at = stamp
+            if code == "identity_conflict":
+                stats["conflict"] = 1
             stats["failed"] = 1
             stats["email"] = email
             stats["reason"] = reason

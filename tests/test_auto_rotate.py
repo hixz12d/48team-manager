@@ -648,6 +648,227 @@ class UsageProbeRunTests(unittest.IsolatedAsyncioTestCase):
         ).scalar_one()
         self.assertEqual(probe.last_reauth_code, "identity_conflict")
 
+    async def test_auto_rotate_does_not_skip_child_named_mother(self):
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        from app.models import Team
+
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        child = ChildAccount(
+            email="named-mother@icloud.com",
+            status="active",
+            current_team_id=team.id,
+            sub2api_account_id=4001,
+        )
+        self.session.add(child)
+        self.session.add(
+            Sub2ApiUsageProbe(
+                sub2api_account_id=4001,
+                email="named-mother@icloud.com",
+                next_probe_at=now,
+                last_reauth_code="account_deactivated",
+            )
+        )
+        await self.session.commit()
+        account = {
+            "id": 4001,
+            "name": "Team .2026.12 母号",
+            "status": "error",
+            "schedulable": False,
+            "error_message": "account deactivated",
+            "credentials": {"email": "named-mother@icloud.com"},
+        }
+        settings = {
+            "auto_rotate_enabled": True,
+            "auto_rotate_on_deactivated": True,
+            "auto_rotate_on_weekly_limit": True,
+            "auto_rotate_force_refill": False,
+            "auto_rotate_daily_limit": 2,
+        }
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.iter_running", return_value=[]), \
+             patch("app.services.onboard_jobs.create_job", return_value={"id": "job-named"}), \
+             patch("app.services.onboard_jobs.finish"), \
+             patch("app.services.onboard.onboard_service.kick_and_refill", AsyncMock(return_value={
+                 "success": True,
+                 "rotated": True,
+             })) as kicked:
+            stats = await self.rotate.run_auto_rotate_once(self.session, now=now, settings=settings)
+        self.assertEqual(stats["rotated"], 1)
+        self.assertEqual(stats["email"], "named-mother@icloud.com")
+        kicked.assert_awaited_once()
+
+    async def test_auto_rotate_stops_on_identity_conflict(self):
+        from app.models import Account, ExternalBinding, Team
+
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        child = ChildAccount(
+            email="conflict@icloud.com",
+            status="active",
+            current_team_id=team.id,
+            sub2api_account_id=4002,
+        )
+        self.session.add(child)
+        self.session.add(
+            Sub2ApiUsageProbe(
+                sub2api_account_id=4002,
+                email="conflict@icloud.com",
+                next_probe_at=now,
+                last_reauth_code="account_deactivated",
+            )
+        )
+        await self.session.flush()
+        account_row = Account(
+            email="conflict@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+            source_child_account_id=child.id,
+        )
+        self.session.add(account_row)
+        await self.session.flush()
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=account_row.id,
+                remote_account_id="4002",
+                binding_state="conflict",
+                last_error="email mismatch",
+            )
+        )
+        await self.session.commit()
+        account = {
+            "id": 4002,
+            "name": "Team .2026.12 子号 1",
+            "status": "error",
+            "error_message": "account deactivated",
+            "credentials": {"email": "conflict@icloud.com"},
+        }
+        settings = {
+            "auto_rotate_enabled": True,
+            "auto_rotate_on_deactivated": True,
+            "auto_rotate_on_weekly_limit": True,
+            "auto_rotate_force_refill": False,
+            "auto_rotate_daily_limit": 2,
+        }
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.iter_running", return_value=[]), \
+             patch("app.services.onboard.onboard_service.kick_and_refill", AsyncMock()) as kicked:
+            stats = await self.rotate.run_auto_rotate_once(self.session, now=now, settings=settings)
+        self.assertEqual(stats["rotated"], 0)
+        self.assertGreaterEqual(stats["conflict"], 1)
+        kicked.assert_not_awaited()
+        probe = (
+            await self.session.execute(select(Sub2ApiUsageProbe).where(Sub2ApiUsageProbe.sub2api_account_id == 4002))
+        ).scalar_one()
+        self.assertEqual(probe.last_rotate_code, "identity_conflict")
+
+    async def test_auto_rotate_skips_team_with_running_operation(self):
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        account, settings = await self._seed_weekly_limit_child(now)
+        from app.services.operations import operation_store
+
+        child = (
+            await self.session.execute(select(ChildAccount).where(ChildAccount.email == "full@icloud.com"))
+        ).scalar_one()
+        await operation_store.create(
+            self.session,
+            op_type="rotate",
+            team_id=child.current_team_id,
+            email="other@icloud.com",
+            input_payload={"team_id": child.current_team_id},
+        )
+        await self.session.commit()
+        with patch("app.services.auto_rotate.sub2api_service.list_status_accounts", AsyncMock(return_value=[account])), \
+             patch("app.services.onboard_jobs.any_running", return_value=None), \
+             patch("app.services.onboard_jobs.iter_running", return_value=[]), \
+             patch("app.services.onboard.onboard_service.kick_and_refill", AsyncMock()) as kicked:
+            stats = await self.rotate.run_auto_rotate_once(self.session, now=now, settings=settings)
+        self.assertEqual(stats["rotated"], 0)
+        kicked.assert_not_awaited()
+
+    async def test_rotate_saga_resume_after_kicked_does_not_kick_again(self):
+        from app.models import Team
+        from app.services.operations import operation_store
+
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        child = ChildAccount(
+            email="old@icloud.com",
+            status="standby",
+            last_team_id=team.id,
+            sub2api_account_id=88,
+        )
+        self.session.add(child)
+        await self.session.commit()
+        op = await operation_store.create(
+            self.session,
+            op_type="rotate",
+            team_id=team.id,
+            email="old@icloud.com",
+            input_payload={"team_id": team.id, "email": "old@icloud.com", "reason": "weekly_limit"},
+        )
+        await operation_store.mark_step(
+            self.session,
+            op,
+            "kicked",
+            state="success",
+            result={"success": True, "status": "standby"},
+        )
+        await self.session.commit()
+        with patch("app.services.onboard.onboard_service.kick_and_refill", AsyncMock(return_value={
+            "success": True,
+            "rotated": True,
+            "kick": {"skipped_duplicate_kick": True},
+        })) as refilled, \
+             patch("app.services.onboard.onboard_service.kick_to_standby", AsyncMock(side_effect=AssertionError("saga must not kick again"))):
+            result = await self.rotate.run_rotate_saga(
+                self.session,
+                job_id=op.public_id,
+                team_id=team.id,
+                email="old@icloud.com",
+                reason="weekly_limit",
+                force_refill=True,
+                skip_confirm=True,
+                now=now,
+            )
+        self.assertTrue(result["success"])
+        refilled.assert_awaited_once()
+        self.assertTrue(refilled.await_args.kwargs["job_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

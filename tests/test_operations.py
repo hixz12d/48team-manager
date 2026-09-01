@@ -73,6 +73,34 @@ class OperationStoreTests(unittest.IsolatedAsyncioTestCase):
         refreshed = await self.session.get(Operation, row.id)
         self.assertEqual(refreshed.state, "manual_required")
 
+    async def test_active_for_workspace_excludes_self(self):
+        first = await operation_store.create(
+            self.session,
+            op_type="rotate",
+            team_id=7,
+            email="old@icloud.com",
+            input_payload={"team_id": 7},
+        )
+        second = await operation_store.create(
+            self.session,
+            op_type="onboard",
+            team_id=7,
+            email="new@icloud.com",
+            input_payload={"team_id": 7},
+        )
+        await self.session.commit()
+        busy = await operation_store.active_for_workspace(self.session, 7, actions=("rotate", "onboard"))
+        self.assertEqual(busy.public_id, second.public_id)
+        same = await operation_store.active_for_workspace(
+            self.session,
+            7,
+            actions=("rotate", "onboard"),
+            exclude_public_id=second.public_id,
+        )
+        self.assertEqual(same.public_id, first.public_id)
+        none = await operation_store.active_for_workspace(self.session, 8)
+        self.assertIsNone(none)
+
 
 class RotateIdempotencyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -136,6 +164,33 @@ class RotateIdempotencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["kick"]["skipped_duplicate_kick"])
         service.kick_to_standby.assert_not_called()
         service.invite_and_onboard.assert_awaited()
+
+    async def test_manual_kick_conflicts_with_running_rotate(self):
+        team = Team(
+            email="owner@example.com",
+            access_token_encrypted="x",
+            account_id="acc-1",
+            max_members=5,
+            current_members=2,
+            proxy="socks5h://127.0.0.1:1080",
+            status="active",
+        )
+        self.session.add(team)
+        await self.session.flush()
+        await operation_store.create(
+            self.session,
+            op_type="rotate",
+            team_id=team.id,
+            email="old@icloud.com",
+            input_payload={"team_id": team.id, "email": "old@icloud.com"},
+        )
+        await self.session.commit()
+        service = OnboardService()
+        service._kick_to_standby_impl = AsyncMock(side_effect=AssertionError("should not kick while rotate holds lock"))
+        result = await service.kick_to_standby(self.session, team_id=team.id, email="old@icloud.com")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "operation_conflict")
+        service._kick_to_standby_impl.assert_not_called()
 
 
 class OperationMigrationTests(unittest.TestCase):

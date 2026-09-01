@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 ACTIVE_STATES = ("queued", "running", "waiting")
 TERMINAL_STATES = ("success", "failed", "cancelled", "manual_required")
 BROWSER_ACTIONS = ("reauth", "onboard", "rotate", "free", "free_register", "reregister")
+WORKSPACE_LOCK_ACTIONS = ("rotate", "onboard", "reregister")
 SENSITIVE_INPUT_KEYS = ("password", "login_password", "code_verifier")
 DEFAULT_LEASE_SECONDS = 180
 MAX_LOG_ITEMS = 40
@@ -194,6 +195,32 @@ class OperationStore:
         if row and row.state in ACTIVE_STATES:
             return row
         return None
+
+    async def active_for_workspace(
+        self,
+        session: AsyncSession,
+        workspace_id: int,
+        *,
+        actions: Optional[Sequence[str]] = None,
+        exclude_public_id: Optional[str] = None,
+    ) -> Optional[Operation]:
+        try:
+            team_id = int(workspace_id or 0)
+        except (TypeError, ValueError):
+            return None
+        if not team_id:
+            return None
+        stmt = select(Operation).where(
+            Operation.state.in_(ACTIVE_STATES),
+            Operation.workspace_id == team_id,
+        )
+        if actions is not None:
+            stmt = stmt.where(Operation.op_type.in_(list(actions)))
+        exclude = str(exclude_public_id or "").strip()
+        if exclude:
+            stmt = stmt.where(Operation.public_id != exclude)
+        stmt = stmt.order_by(Operation.created_at.desc(), Operation.id.desc())
+        return (await session.execute(stmt)).scalars().first()
 
     async def iter_running(
         self,
@@ -416,7 +443,6 @@ async def recover_and_resume_stale_operations() -> Dict[str, Any]:
 
     from app.database import AsyncSessionLocal
     from app.routes.seats import FreeOnboardRequest, OnboardRequest, _run_free_onboard_job, _run_onboard_job
-    from app.services.onboard import onboard_service
 
     stats = {"recovered": 0, "resumed": 0, "manual": 0, "ids": []}
     async with AsyncSessionLocal() as session:
@@ -465,22 +491,23 @@ async def recover_and_resume_stale_operations() -> Dict[str, Any]:
                     eligible = dt.fromisoformat(str(raw_eligible))
                 except ValueError:
                     eligible = None
+            from app.services.auto_rotate import auto_rotate_service
+            from app.services import onboard_jobs
+
             async with AsyncSessionLocal() as session:
-                result = await onboard_service.kick_and_refill(
+                result = await auto_rotate_service.run_rotate_saga(
                     session,
+                    job_id=public_id,
                     team_id=int(payload.get("team_id") or item.get("team_id") or 0),
                     email=str(payload.get("email") or item.get("email") or ""),
+                    reason=str(payload.get("reason") or ""),
+                    force_refill=bool(payload.get("force_refill", False)),
+                    next_eligible_at=eligible,
                     email_line=str(payload.get("email_line") or ""),
                     phone_line=str(payload.get("phone") or payload.get("phone_line") or ""),
                     proxy=str(payload.get("proxy") or ""),
                     child_id=payload.get("child_id"),
-                    force_refill=bool(payload.get("force_refill", False)),
-                    job_id=public_id,
-                    reason=str(payload.get("reason") or ""),
-                    next_eligible_at=eligible,
                 )
-                from app.services import onboard_jobs
-
                 onboard_jobs.finish(public_id, {"success": bool(result.get("success")), **result})
             stats["resumed"] += 1
             continue

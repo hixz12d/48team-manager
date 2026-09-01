@@ -1437,7 +1437,23 @@ class OnboardService:
         reason: str = "",
         next_eligible_at: Optional[Any] = None,
         unbind_sub2api: bool = False,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        from app.services.operations import WORKSPACE_LOCK_ACTIONS, operation_store
+
+        busy = await operation_store.active_for_workspace(
+            db_session,
+            team_id,
+            actions=WORKSPACE_LOCK_ACTIONS,
+            exclude_public_id=job_id,
+        )
+        if busy is not None:
+            return {
+                "success": False,
+                "error": f"Team {team_id} 已有 {busy.op_type} 任务 {busy.public_id} 在跑，避免两边同时踢拉",
+                "error_code": "operation_conflict",
+                "operation_id": busy.public_id,
+            }
         return await self._kick_to_standby_impl(
             db_session,
             team_id=team_id,
@@ -1680,6 +1696,7 @@ class OnboardService:
                 reason=reason,
                 next_eligible_at=next_eligible_at,
                 unbind_sub2api=(reason in {"weekly_limit", "deactivated"}),
+                job_id=job_id,
             )
             if not kick_result.get("success"):
                 if job_id:
