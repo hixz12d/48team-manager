@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 # 导入路由
 from app import __version__
 from app.routes import redeem, auth, admin, admin_v2, api, user, warranty, seats
+from app.legacy_sales import is_legacy_sales_path, legacy_gone_response
 from app.config import settings
 from app.database import init_db, close_db, AsyncSessionLocal
 from app.services.auth import auth_service
@@ -214,60 +215,16 @@ async def configure_proactive_refresh_job_from_settings() -> int:
 
 
 def configure_warranty_auto_kick_job(enabled: bool, interval_hours: int) -> int:
-    """配置（或重配置）质保过期自动踢人任务。"""
-    normalized_interval = normalize_warranty_auto_kick_interval_hours(interval_hours)
+    """质保自动踢人已下线，始终移除任务。"""
     existing_job = scheduler.get_job("warranty_auto_kick")
-
-    if not enabled:
-        if existing_job:
-            scheduler.remove_job("warranty_auto_kick")
-        return normalized_interval
-
-    trigger = IntervalTrigger(hours=normalized_interval)
     if existing_job:
-        scheduler.reschedule_job("warranty_auto_kick", trigger=trigger)
-    else:
-        scheduler.add_job(
-            scheduled_warranty_auto_kick,
-            trigger=trigger,
-            id="warranty_auto_kick",
-            replace_existing=True,
-            max_instances=1,
-            # 使用 get_now() 而非 datetime.now()：APScheduler 把 naive datetime 当作
-            # 调度器 timezone（settings.timezone）下的本地时间。如果服务器系统时区
-            # 与配置时区不一致，datetime.now() 会被解读为另一个时间点，导致首次执行
-            # 被无意推迟。
-            next_run_time=get_now(),
-        )
-
-    if not scheduler.running:
-        scheduler.start()
-
-    return normalized_interval
+        scheduler.remove_job("warranty_auto_kick")
+    return normalize_warranty_auto_kick_interval_hours(interval_hours)
 
 
 async def configure_warranty_auto_kick_job_from_settings() -> tuple[bool, int]:
-    """从系统设置读取质保过期自动踢人配置并应用到定时任务。"""
-    from app.services.settings import settings_service
-
-    async with AsyncSessionLocal() as session:
-        enabled_raw = await settings_service.get_setting(
-            session,
-            "warranty_auto_kick_enabled",
-            str(DEFAULT_WARRANTY_AUTO_KICK_ENABLED).lower(),
-        )
-        interval_raw = await settings_service.get_setting(
-            session,
-            "warranty_auto_kick_interval_hours",
-            str(DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS),
-        )
-
-    enabled = str(enabled_raw).lower() in {"1", "true", "yes", "on"}
-    interval_hours = normalize_warranty_auto_kick_interval_hours(
-        _safe_int(interval_raw, DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS)
-    )
-    applied_interval = configure_warranty_auto_kick_job(enabled, interval_hours)
-    return enabled, applied_interval
+    applied_interval = configure_warranty_auto_kick_job(False, DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS)
+    return False, applied_interval
 
 
 def configure_usage_probe_job(enabled: bool, scan_minutes: int) -> int:
@@ -706,14 +663,8 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("Team 周期状态同步任务已禁用")
 
-        warranty_auto_kick_enabled, warranty_auto_kick_interval = await configure_warranty_auto_kick_job_from_settings()
-        if warranty_auto_kick_enabled:
-            logger.info(
-                "定时任务已启动: 每 %s 小时检查一次质保过期自动踢人",
-                warranty_auto_kick_interval,
-            )
-        else:
-            logger.info("质保过期自动踢人任务已禁用")
+        configure_warranty_auto_kick_job(False, DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS)
+        logger.info("质保过期自动踢人任务已下线")
 
 
         usage_probe_enabled, usage_probe_scan = await configure_usage_probe_job_from_settings()
@@ -763,10 +714,16 @@ async def lifespan(app: FastAPI):
 # 创建 FastAPI 应用实例
 app = FastAPI(
     title="GPT Team 管理系统",
-    description="ChatGPT Team 账号管理和兑换码自动邀请系统",
+    description="ChatGPT Team / Workspace 账号运维控制台",
     version=__version__,
     lifespan=lifespan
 )
+
+@app.middleware("http")
+async def block_legacy_sales_routes(request: Request, call_next):
+    if is_legacy_sales_path(request.url.path):
+        return legacy_gone_response()
+    return await call_next(request)
 
 # 全局异常处理
 @app.exception_handler(StarletteHTTPException)

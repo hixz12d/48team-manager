@@ -11,7 +11,7 @@ from io import BytesIO
 from typing import Any, Optional, List, Dict, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
-from sqlalchemy import select, func, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
@@ -62,11 +62,8 @@ async def resolve_ui_style(db: AsyncSession) -> str:
 
 
 async def get_pending_renewal_request_count(db: AsyncSession) -> int:
-    """获取待处理续期请求数量。"""
-    result = await db.execute(
-        select(func.count(RenewalRequest.id)).where(RenewalRequest.status == "pending")
-    )
-    return int(result.scalar() or 0)
+    """续期入口已下线，badge 固定为 0。"""
+    return 0
 
 
 async def resolve_admin_profile(db: AsyncSession) -> Dict[str, str]:
@@ -92,7 +89,7 @@ async def build_admin_base_context(
         "active_page": active_page,
         "ui_theme": await resolve_ui_theme(db),
         "ui_style": await resolve_ui_style(db),
-        "pending_renewal_request_count": await get_pending_renewal_request_count(db),
+        "pending_renewal_request_count": 0,
         "admin_profile": await resolve_admin_profile(db),
     }
 

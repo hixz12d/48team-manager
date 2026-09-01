@@ -31,7 +31,6 @@
             <a href="#settings-refresh" class="settings-nav-pill settings-nav-link" data-target="settings-refresh">Token 预刷新</a>
             <a href="#settings-team-auto-refresh" class="settings-nav-pill settings-nav-link" data-target="settings-team-auto-refresh">Team 自动刷新</a>
             <a href="#settings-usage-probe" class="settings-nav-pill settings-nav-link" data-target="settings-usage-probe">额度探测</a>
-            <a href="#settings-warranty-auto-kick" class="settings-nav-pill settings-nav-link" data-target="settings-warranty-auto-kick">自动踢人</a>
         </div>
         <div class="settings-nav-group">
             <div class="settings-nav-group-title">业务规则</div>
@@ -258,7 +257,7 @@
                 <input type="checkbox" id="autoRotateEnabled" name="auto_rotate_enabled" {% if (auto_rotate_enabled or 'false')|lower in ['1','true','yes','on'] %}checked{% endif %}>
                 <span>第 3 层：封禁/周限满自动踢拉（默认关）</span>
             </label>
-            <p class="form-help">与质保自动踢人不是同一套任务。掉票 401 先走第 2 层；deactivate 才踢。看板 429 必须再打一次官方 usage，7 日仍 100% 才踢。5h 不满踢。每个 Team 每天最多自动轮换 2 次，成功踢出即计数。vacancy 不安全则只踢不拉。强制补位始终关。</p>
+            <p class="form-help">掉票 401 先走第 2 层；deactivate 才踢。看板 429 必须再打一次官方 usage，7 日仍 100% 才踢。5h 不满踢。每个 Team 每天最多自动轮换 2 次，成功踢出即计数。vacancy 不安全则只踢不拉。强制补位始终关。</p>
         </div>
 
         <button type="submit" class="btn btn-primary">保存额度探测配置</button>
@@ -266,80 +265,6 @@
 </div>
 
 
-<!-- 自动踢人配置 -->
-<div class="content-section settings-panel" id="settings-warranty-auto-kick">
-    <div class="section-header">
-        <h3>自动踢人</h3>
-    </div>
-
-    <form id="warrantyAutoKickForm" class="settings-form">
-        <div class="form-group">
-            <label class="checkbox-label">
-                <input type="checkbox" id="warrantyAutoKickEnabled" name="enabled" {% if (warranty_auto_kick_enabled or 'false')|lower in ['1','true','yes','on'] %}checked{% endif %}>
-                <span>启用兑换码过期自动踢人</span>
-            </label>
-            <p class="form-help">开启后扫描过期且仍绑定 Team 的兑换码，自动踢人并销毁兑换码及历史记录。质保码按"质保时长 + 续期天数"判定，无质保码按下方"使用期限"判定。<strong>开关启用之前已使用的兑换码永久豁免</strong>，只对此后新兑换的兑换码生效，避免对老用户突然生效引起争议。</p>
-            {% if warranty_auto_kick_enabled_since %}
-            <p class="form-help" style="color: var(--accent-color, #2563eb);">生效起点：{{ warranty_auto_kick_enabled_since }}</p>
-            {% endif %}
-        </div>
-
-        <div class="form-group">
-            <label for="warrantyAutoKickInterval">检查间隔 (小时)</label>
-            <input type="number" id="warrantyAutoKickInterval" name="interval_hours"
-                value="{{ warranty_auto_kick_interval_hours or '12' }}" min="1" max="168" class="form-control">
-            <p class="form-help">建议 6~24 小时。任务会按当前质保计算方式重判历史兑换码。</p>
-        </div>
-
-        <div class="form-group">
-            <label for="autoKickUsagePeriodDays">兑换码使用期限 (天)</label>
-            <input type="number" id="autoKickUsagePeriodDays" name="usage_period_days"
-                value="{{ auto_kick_usage_period_days or '30' }}" min="1" max="3650" class="form-control">
-            <p class="form-help">仅作用于无质保兑换码，起算方式沿用"质保时长计算方式"。质保码按自身质保时长判定，不受此值影响。</p>
-        </div>
-
-        <div class="form-group">
-            <label for="warrantyRenewalReminderDays">续期提醒设置 (天)</label>
-            <input type="number" id="warrantyRenewalReminderDays" name="renewal_reminder_days"
-                value="{{ warranty_renewal_reminder_days or '7' }}" min="1" max="30" class="form-control">
-            <p class="form-help">质保码剩余 ≤ 该值且用户切换 Team 时弹出续期提醒（仅启用自动踢人后生效）。无质保码不参与续期。</p>
-        </div>
-
-        <hr style="margin: 16px 0; border: none; border-top: 1px solid var(--border-color, #e5e7eb);">
-
-        <div class="form-group">
-            <label class="checkbox-label">
-                <input type="checkbox" id="autoKickUnauthorizedEnabled" name="unauthorized_enabled" {% if (auto_kick_unauthorized_enabled or 'false')|lower in ['1','true','yes','on'] %}checked{% endif %}>
-                <span>启用非授权成员清退（清除偷偷拉进来的人）</span>
-            </label>
-            <p class="form-help">仅清退"开关启用之后"新加入、且无兑换码记录、非后台手工邀请、非 Team 管理员邮箱的成员。开关启用之前的成员永久豁免；后台手工邀请的邮箱自动加白名单。</p>
-            {% if auto_kick_unauthorized_enabled_since %}
-            <p class="form-help" style="color: var(--accent-color, #2563eb);">生效起点：{{ auto_kick_unauthorized_enabled_since }}</p>
-            {% endif %}
-        </div>
-
-        <div class="form-group">
-            <label class="checkbox-label">
-                <input type="checkbox" id="autoKickAdminInvitedEnabled" name="admin_invited_enabled" {% if (auto_kick_admin_invited_enabled or 'false')|lower in ['1','true','yes','on'] %}checked{% endif %}>
-                <span>启用后台邀请过期踢人（管理员手工邀请也按期限到期）</span>
-            </label>
-            <p class="form-help">仅扫"开关启用之后"新发出的后台邀请，超过下方期限自动踢出。开关启用之前已邀请的成员永久豁免。</p>
-            {% if auto_kick_admin_invited_enabled_since %}
-            <p class="form-help" style="color: var(--accent-color, #2563eb);">生效起点：{{ auto_kick_admin_invited_enabled_since }}</p>
-            {% endif %}
-        </div>
-
-        <div class="form-group">
-            <label for="autoKickAdminInvitedPeriodDays">后台邀请使用期限 (天)</label>
-            <input type="number" id="autoKickAdminInvitedPeriodDays" name="admin_invited_period_days"
-                value="{{ auto_kick_admin_invited_period_days or '30' }}" min="1" max="3650" class="form-control">
-            <p class="form-help">从"邀请发出时刻"起算，超过该期限的后台邀请会被自动踢人扫描清退。需要继续使用请重新邀请。</p>
-        </div>
-
-        <p class="form-help">该操作不可恢复，开启前请确认售后流程允许自动清退成员并销毁兑换码。</p>
-        <button type="submit" class="btn btn-primary">保存自动踢人配置</button>
-    </form>
-</div>
 
 
 <!-- Team 导入配置 -->
@@ -946,64 +871,6 @@
         }
     });
 
-    // 续期提醒天数允许在自动踢人未启用时也调整：admin 可以先把阈值设好，
-    // 之后再翻开关，避免"想保存改的天数"必须先开自动踢人这种反直觉操作。
-
-    // 自动踢人配置表单
-    document.getElementById('warrantyAutoKickForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-
-        const enabled = document.getElementById('warrantyAutoKickEnabled').checked;
-        const interval_hours = parseInt(document.getElementById('warrantyAutoKickInterval').value);
-        const renewal_reminder_days = parseInt(document.getElementById('warrantyRenewalReminderDays').value);
-        const usage_period_days = parseInt(document.getElementById('autoKickUsagePeriodDays').value);
-        const unauthorizedToggle = document.getElementById('autoKickUnauthorizedEnabled');
-        const unauthorized_enabled = !!(unauthorizedToggle && unauthorizedToggle.checked);
-        const adminInvitedToggle = document.getElementById('autoKickAdminInvitedEnabled');
-        const admin_invited_enabled = !!(adminInvitedToggle && adminInvitedToggle.checked);
-        const admin_invited_period_days = parseInt(document.getElementById('autoKickAdminInvitedPeriodDays').value);
-
-        if (isNaN(interval_hours) || interval_hours < 1 || interval_hours > 168) {
-            showToast('检查间隔必须在 1~168 小时之间', 'error');
-            return;
-        }
-
-        if (isNaN(renewal_reminder_days) || renewal_reminder_days < 1 || renewal_reminder_days > 30) {
-            showToast('续期提醒天数必须在 1~30 天之间', 'error');
-            return;
-        }
-
-        if (isNaN(usage_period_days) || usage_period_days < 1 || usage_period_days > 3650) {
-            showToast('兑换码使用期限必须在 1~3650 天之间', 'error');
-            return;
-        }
-
-        if (isNaN(admin_invited_period_days) || admin_invited_period_days < 1 || admin_invited_period_days > 3650) {
-            showToast('后台邀请使用期限必须在 1~3650 天之间', 'error');
-            return;
-        }
-
-        try {
-            const response = await fetch('/admin/settings/warranty-auto-kick', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ enabled, interval_hours, renewal_reminder_days, usage_period_days, unauthorized_enabled, admin_invited_enabled, admin_invited_period_days })
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.success) {
-                showToast(data.message || '自动踢人配置已保存', 'success');
-                markFormSaved(e.target, data.message || '自动踢人配置已保存');
-            } else {
-                showToast(data.error || '保存失败', 'error');
-            }
-        } catch (error) {
-            showToast('网络错误', 'error');
-        }
-    });
 
     // Team 导入配置表单
     document.getElementById('teamImportForm').addEventListener('submit', async (e) => {

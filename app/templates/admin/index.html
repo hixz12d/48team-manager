@@ -710,11 +710,6 @@
             </div>
         </div>
         <div class="page-header-actions">
-            {% if active_page == "welfare" %}
-            <button type="button" class="btn btn-secondary" onclick="showModal('welfareCodeTeamModal')" id="generateWelfareCodeBtn">
-                <i data-lucide="ticket-plus" style="width: 16px; height: 16px;"></i> 生成通用兑换码
-            </button>
-            {% endif %}
             <button type="button" onclick="showModal('importTeamModal')" class="btn btn-primary">
                 <i data-lucide="plus-circle" style="width: 16px; height: 16px;"></i> 导入 Team
             </button>
@@ -815,15 +810,6 @@
                     <button type="button" id="btnBatchDelete" class="btn btn-danger btn-sm">
                         <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i> 批量删除
                     </button>
-                    {% if active_page == "welfare" %}
-                    <button type="button" id="btnBatchTransferPool" class="btn btn-secondary btn-sm">
-                        <i data-lucide="arrow-left-right" style="width: 14px; height: 14px;"></i> 转入常规席位
-                    </button>
-                    {% else %}
-                    <button type="button" id="btnBatchTransferPool" class="btn btn-secondary btn-sm">
-                        <i data-lucide="arrow-left-right" style="width: 14px; height: 14px;"></i> 转入福利车位
-                    </button>
-                    {% endif %}
                     <span class="selected-count text-muted small">已选 0 项</span>
                 </div>
             </div>
@@ -1123,40 +1109,6 @@
     </div>
 </div>
 
-{% if active_page == "welfare" %}
-<div id="welfareCodeTeamModal" class="modal-overlay">
-    <div class="modal">
-        <div class="modal-header">
-            <h3>选择福利 Team 号池</h3>
-            <button class="modal-close" onclick="hideModal('welfareCodeTeamModal')">&times;</button>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label for="welfareCodeTeamSelect">福利 Team</label>
-                <select id="welfareCodeTeamSelect" class="form-control" onchange="updateWelfareCodeTeamHint()">
-                    <option value="">请选择一个福利 Team</option>
-                    {% for team in teams %}
-                    {% set available_slots = team.max_members - team.current_members %}
-                    {% if team.status == 'active' and available_slots > 0 %}
-                    <option
-                        value="{{ team.id }}"
-                        data-team-name="{{ team.team_name or '' }}"
-                        data-team-email="{{ team.email }}"
-                        data-remaining="{{ available_slots }}"
-                    >{{ team.team_name or ('Team #' ~ team.id) }}（{{ team.email }}，剩余 {{ available_slots }}）</option>
-                    {% endif %}
-                    {% endfor %}
-                </select>
-            </div>
-            <div id="welfareCodeTeamHint" class="text-muted small" style="margin-bottom: 1rem;">请选择要作为号池的福利 Team。</div>
-            <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:0.75rem;">
-                <button type="button" class="btn btn-secondary" onclick="hideModal('welfareCodeTeamModal')">取消</button>
-                <button type="button" class="btn btn-primary" id="confirmGenerateWelfareCodeBtn" onclick="generateWelfareCode()">生成兑换码</button>
-            </div>
-        </div>
-    </div>
-</div>
-{% endif %}
 
 <!-- 编辑 Team 模态框 -->
 <div id="editTeamModal" class="modal-overlay">
@@ -1261,10 +1213,6 @@
             document.body.appendChild(seatOauthModal);
         }
 
-        const welfareCodeTeamModal = document.getElementById('welfareCodeTeamModal');
-        if (welfareCodeTeamModal && welfareCodeTeamModal.parentElement !== document.body) {
-            document.body.appendChild(welfareCodeTeamModal);
-        }
 
         // Ensure floating dropdowns are mounted to body for fixed positioning
         if (typeof mountFloatingDropdownsToBody === 'function') {
@@ -1306,7 +1254,6 @@
         document.getElementById('btnBatchPushSub2api')?.addEventListener('click', handleBatchPushSub2api);
         document.getElementById('btnBatchExportJson')?.addEventListener('click', handleBatchExportJson);
         document.getElementById('btnBatchDelete')?.addEventListener('click', handleBatchDelete);
-        document.getElementById('btnBatchTransferPool')?.addEventListener('click', handleBatchTransferPool);
         document.getElementById('btnCheckPoolTeamsLive')?.addEventListener('click', handleCheckPoolTeamsLive);
     });
 
@@ -1905,7 +1852,7 @@
     }
 
     function setBatchActionButtonsDisabled(disabled) {
-        ['btnBatchRefresh', 'btnBatchPushSub2api', 'btnBatchExportJson', 'btnBatchDelete', 'btnBatchTransferPool', 'btnCheckPoolTeamsLive'].forEach(id => {
+        ['btnBatchRefresh', 'btnBatchPushSub2api', 'btnBatchExportJson', 'btnBatchDelete', 'btnCheckPoolTeamsLive'].forEach(id => {
             const button = document.getElementById(id);
             if (button) button.disabled = disabled;
         });
@@ -2304,20 +2251,6 @@
         }
     }
 
-    function handleBatchTransferPool() {
-        const isWelfarePage = '{{ active_page }}' === 'welfare';
-        const targetPoolType = isWelfarePage ? 'normal' : 'welfare';
-        const actionName = isWelfarePage ? '批量转入常规席位' : '批量转入福利车位';
-
-        handleBatchAction('/admin/teams/batch-transfer-pool', actionName, {
-            buildBody(selectedIds) {
-                return {
-                    ids: selectedIds,
-                    target_pool_type: targetPoolType,
-                };
-            }
-        });
-    }
 
     function changePerPage(val) {
         const url = new URL(window.location.href);
