@@ -1,0 +1,267 @@
+import unittest
+from datetime import datetime, timedelta
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.application.operations import operation_store
+from app.application.reauth import reauth_service
+from app.application.tokens import auth_service, encrypt_secret
+from app.core.crypto import token_cipher
+from app.domain.reauth import (
+    auto_reauth_plan,
+    http_401_is_not_ban,
+    is_icloud_email,
+    is_oauth_callback,
+    looks_like_deactivated,
+    owner_refresh_allows_oauth,
+    reauth_backoff_at,
+    reauth_terminal_status,
+)
+from app.persistence.database import Base
+from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
+
+
+WORKSPACE_UUID = "11111111-1111-1111-1111-111111111111"
+
+
+class ReauthPolicyTests(unittest.TestCase):
+    def test_owner_is_manual(self):
+        plan = auto_reauth_plan(email="mom@gmail.com", role="owner", password="x", proxy="socks5h://u:p@1.2.3.4:1080")
+        self.assertFalse(plan["auto"])
+
+    def test_deactivated_copy_stops_reauth(self):
+        self.assertTrue(looks_like_deactivated(body="This account has been deactivated."))
+        self.assertTrue(looks_like_deactivated(error="account_deactivated"))
+        self.assertFalse(looks_like_deactivated(body="Enter your password"))
+
+    def test_deactivated_marks_manual_required(self):
+        self.assertEqual(reauth_terminal_status(success=False, error_code="account_deactivated"), "manual_required")
+        self.assertEqual(reauth_terminal_status(success=False, error_code="identity_conflict"), "manual_required")
+        self.assertEqual(reauth_terminal_status(success=False, error_code="browser_failed"), "failed")
+        self.assertEqual(reauth_terminal_status(success=True), "success")
+
+    def test_401_is_not_ban(self):
+        self.assertTrue(http_401_is_not_ban("http_401", 401))
+        self.assertTrue(http_401_is_not_ban("token_invalidated"))
+        self.assertFalse(http_401_is_not_ban("account_deactivated", 403))
+
+    def test_owner_refresh_falls_back_except_identity_mismatch(self):
+        self.assertTrue(owner_refresh_allows_oauth("token_refresh_failed"))
+        self.assertFalse(owner_refresh_allows_oauth("token_identity_mismatch"))
+
+    def test_icloud_with_password_mail_and_proxy_is_auto(self):
+        self.assertTrue(is_icloud_email("kid@icloud.com"))
+        plan = auto_reauth_plan(
+            email="kid@icloud.com",
+            role="child",
+            password="secret",
+            cf_ready=True,
+            proxy="socks5h://u:p@1.2.3.4:1080",
+        )
+        self.assertTrue(plan["auto"])
+
+    def test_icloud_without_proxy_falls_back(self):
+        plan = auto_reauth_plan(email="kid@icloud.com", role="child", password="secret", cf_ready=True, proxy="")
+        self.assertFalse(plan["auto"])
+
+    def test_callback_detection(self):
+        self.assertTrue(is_oauth_callback("http://localhost:1455/auth/callback?code=abc&state=1"))
+        self.assertFalse(is_oauth_callback("https://auth.openai.com/oauth/authorize"))
+
+    def test_backoff_grows_then_caps(self):
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        first = reauth_backoff_at(now, 1)
+        second = reauth_backoff_at(now, 2)
+        later = reauth_backoff_at(now, 9)
+        self.assertEqual(first, now + timedelta(hours=2))
+        self.assertEqual(second, now + timedelta(hours=4))
+        self.assertEqual(later, now + timedelta(hours=6))
+
+
+class AuthProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.session = self.session_maker()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        await self.engine.dispose()
+
+    async def test_refresh_success_does_not_open_browser(self):
+        account = Account(
+            email="kid@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="refresh_due",
+            refresh_token_encrypted=encrypt_secret("rt-old"),
+            client_id="app_test",
+        )
+        self.session.add(account)
+        await self.session.commit()
+
+        class Client:
+            async def refresh_access_token(self, refresh_token, client_id, db_session, identifier="default"):
+                self.called = (refresh_token, client_id, identifier)
+                return {"success": True, "access_token": "at-new", "refresh_token": "rt-new"}
+
+        client = Client()
+        service = auth_service.__class__(client=client)
+        result = await service.refresh_account(self.session, account)
+        self.assertTrue(result["success"])
+        self.assertEqual(account.auth_state, "healthy")
+        self.assertEqual(token_cipher().decrypt(account.access_token_encrypted), "at-new")
+
+    async def test_refresh_401_becomes_oauth_required_not_deactivated(self):
+        account = Account(
+            email="kid@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="unknown",
+            refresh_token_encrypted=encrypt_secret("rt-old"),
+        )
+        self.session.add(account)
+        await self.session.commit()
+
+        class Client:
+            async def refresh_access_token(self, refresh_token, client_id, db_session, identifier="default"):
+                return {"success": False, "status_code": 401, "error_code": "http_401", "error": "expired"}
+
+        result = await auth_service.__class__(client=Client()).refresh_account(self.session, account)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "token_refresh_failed")
+        self.assertTrue(result["allow_oauth"])
+        self.assertEqual(account.auth_state, "oauth_required")
+        self.assertNotEqual(account.auth_state, "deactivated")
+
+
+class ReauthGateTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.session = self.session_maker()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        await self.engine.dispose()
+
+    async def test_disabled_by_default_does_not_queue(self):
+        account = Account(
+            email="kid@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="oauth_required",
+            proxy="socks5h://127.0.0.1:1080",
+            password_encrypted=encrypt_secret("secret"),
+            mail_raw="kid@icloud.com----https://mail.example/pickup",
+        )
+        self.session.add(account)
+        await self.session.commit()
+        stats = await reauth_service.run_once(self.session, settings={"enabled": False, "interval_minutes": 30})
+        self.assertEqual(stats["skipped"], 1)
+        self.assertEqual(stats["queued"], 0)
+
+    async def test_conflict_and_owner_are_manual_required(self):
+        child = Account(
+            email="kid@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="oauth_required",
+            proxy="socks5h://127.0.0.1:1080",
+            password_encrypted=encrypt_secret("secret"),
+            mail_raw="kid@icloud.com----https://mail.example/pickup",
+        )
+        owner = Account(
+            email="owner@icloud.com",
+            official_plan="unknown",
+            local_purpose="mother",
+            operational_state="active",
+            auth_state="oauth_required",
+            proxy="socks5h://127.0.0.1:1080",
+            password_encrypted=encrypt_secret("secret"),
+        )
+        self.session.add_all([child, owner])
+        await self.session.flush()
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=child.id,
+                remote_account_id="77",
+                binding_state="conflict",
+                last_error="email mismatch",
+            )
+        )
+        workspace = Workspace(official_workspace_id=WORKSPACE_UUID, owner_account_id=owner.id, status="active")
+        self.session.add(workspace)
+        await self.session.flush()
+        self.session.add(
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                account_id=owner.id,
+                official_role="owner",
+                membership_state="joined",
+                local_purpose="mother",
+            )
+        )
+        await self.session.commit()
+        blocked = await reauth_service.start_auto_reauth(self.session, child)
+        self.assertFalse(blocked["success"])
+        self.assertEqual(blocked["error_code"], "identity_conflict")
+        self.assertEqual(blocked["status"], "manual_required")
+        owner_blocked = await reauth_service.start_auto_reauth(self.session, owner)
+        self.assertEqual(owner_blocked["error_code"], "owner_manual")
+        refreshed = await self.session.get(Account, child.id)
+        self.assertEqual(refreshed.auth_state, "manual_required")
+
+    async def test_browser_busy_does_not_start_second_job(self):
+        first = Account(
+            email="one@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="oauth_required",
+        )
+        second = Account(
+            email="two@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="oauth_required",
+            proxy="socks5h://127.0.0.1:1080",
+            password_encrypted=encrypt_secret("secret"),
+            mail_raw="two@icloud.com----https://mail.example/pickup",
+        )
+        self.session.add_all([first, second])
+        await self.session.commit()
+        await operation_store.create(self.session, op_type="reauth", account_id=first.id, email=first.email)
+        await self.session.commit()
+        result = await reauth_service.start_auto_reauth(self.session, second)
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["error_code"], "browser_busy")
+
+    async def test_restart_recovery_does_not_resume_playwright(self):
+        account = Account(
+            email="kid@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="oauth_required",
+        )
+        self.session.add(account)
+        await self.session.flush()
+        row = await operation_store.create(self.session, op_type="reauth", account_id=account.id, email=account.email)
+        await self.session.commit()
+        from app.application.operations import recover_stale_operations
+
+        stats = await recover_stale_operations(self.session)
+        self.assertEqual(stats["manual"], 1)
+        refreshed = await self.session.get(type(row), row.id)
+        self.assertEqual(refreshed.state, "manual_required")

@@ -42,6 +42,10 @@ def build_curl_cffi_proxies(proxy: str | None) -> dict[str, str] | None:
     return {"all": normalized, "http": normalized, "https": normalized}
 
 
+def build_httpx_proxy(proxy: str | None) -> str | None:
+    return normalize_proxy_url(proxy)
+
+
 def mask_proxy_url(proxy: str | None) -> str:
     try:
         normalized = normalize_proxy_url(proxy)

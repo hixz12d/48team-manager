@@ -17,6 +17,7 @@ from app.core.crypto import token_cipher
 from app.core.time import isoformat, utcnow
 from app.domain.automation import (
     ACTIVE_STATES,
+    BROWSER_ACTIONS,
     DEFAULT_LEASE_SECONDS,
     MAX_LOG_ITEMS,
     SENSITIVE_INPUT_KEYS,
@@ -187,6 +188,26 @@ class OperationStore:
     async def list_recent(self, session: AsyncSession, *, limit: int = 100) -> list[Operation]:
         result = await session.execute(select(Operation).order_by(Operation.created_at.desc(), Operation.id.desc()).limit(limit))
         return list(result.scalars().all())
+
+    async def active_for_email(self, session: AsyncSession, email: str, *, actions: tuple[str, ...] | None = None) -> Operation | None:
+        target = (email or "").strip().lower()
+        if not target:
+            return None
+        stmt = select(Operation).where(Operation.email == target, Operation.state.in_(ACTIVE_STATES))
+        if actions:
+            stmt = stmt.where(Operation.op_type.in_(actions))
+        stmt = stmt.order_by(Operation.created_at.desc(), Operation.id.desc())
+        return (await session.execute(stmt)).scalars().first()
+
+    async def any_running(self, session: AsyncSession, actions: tuple[str, ...] | None = None) -> Operation | None:
+        stmt = select(Operation).where(Operation.state.in_(ACTIVE_STATES))
+        if actions:
+            stmt = stmt.where(Operation.op_type.in_(actions))
+        stmt = stmt.order_by(Operation.started_at.desc(), Operation.id.desc())
+        return (await session.execute(stmt)).scalars().first()
+
+    async def browser_busy(self, session: AsyncSession) -> Operation | None:
+        return await self.any_running(session, BROWSER_ACTIONS)
 
     async def heartbeat(
         self,

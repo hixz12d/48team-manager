@@ -30,6 +30,13 @@ class Account(Base):
     session_token_encrypted: Mapped[str | None] = mapped_column(Text)
     id_token_encrypted: Mapped[str | None] = mapped_column(Text)
     client_id: Mapped[str | None] = mapped_column(String(100))
+    password_encrypted: Mapped[str | None] = mapped_column(Text)
+    mail_raw: Mapped[str | None] = mapped_column(Text)
+    phone: Mapped[str | None] = mapped_column(String(64))
+    sms_url: Mapped[str | None] = mapped_column(String(500))
+    next_reauth_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reauth_fail_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_reauth_code: Mapped[str | None] = mapped_column(String(40))
     next_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     quota_slot_minute: Mapped[int | None] = mapped_column(Integer)
     next_quota_probe_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -55,6 +62,8 @@ class Account(Base):
         Index("idx_accounts_source_team", "source_team_id"),
         Index("idx_accounts_source_child", "source_child_account_id"),
         Index("idx_accounts_next_quota_probe", "next_quota_probe_at"),
+        Index("idx_accounts_next_reauth", "next_reauth_at"),
+        Index("idx_accounts_auth_state", "auth_state"),
     )
 
 

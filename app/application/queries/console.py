@@ -118,7 +118,7 @@ async def settings_view(db: AsyncSession) -> dict[str, Any]:
         },
         "automation": {
             "official_quota_probe": bool(settings.official_quota_probe_enabled),
-            "auto_reauth": False,
+            "auto_reauth": bool(settings.auto_reauth_enabled),
             "auto_rotate": False,
             "force_refill": False,
         },

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import random
+import secrets
 import uuid
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from curl_cffi.requests import AsyncSession
 from sqlalchemy import select
@@ -110,6 +113,8 @@ class ChatGPTClient:
         headers: dict[str, str],
         db_session: DBAsyncSession | None = None,
         identifier: str = "default",
+        json_data: dict[str, Any] | None = None,
+        form_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if identifier == "default":
             acc_id = headers.get("chatgpt-account-id")
@@ -130,9 +135,15 @@ class ChatGPTClient:
             try:
                 if attempt > 0:
                     await asyncio.sleep(self.RETRY_DELAYS[attempt - 1] + random.uniform(0.5, 1.5))
-                if method != "GET":
+                if method == "GET":
+                    response = await session.get(url, headers=request_headers)
+                elif method == "POST":
+                    if form_data is not None:
+                        response = await session.post(url, headers=request_headers, data=form_data)
+                    else:
+                        response = await session.post(url, headers=request_headers, json=json_data or {})
+                else:
                     raise ValueError(f"unsupported method {method}")
-                response = await session.get(url, headers=request_headers)
                 status_code = response.status_code
                 if 200 <= status_code < 300:
                     try:
@@ -193,6 +204,139 @@ class ChatGPTClient:
             db_session=db_session,
             identifier=identifier,
         )
+
+    async def refresh_access_token(
+        self,
+        refresh_token: str,
+        client_id: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        if identifier == "default":
+            identifier = f"rt_{refresh_token[:8]}"
+        primary = await self._make_request(
+            "POST",
+            "https://auth.openai.com/oauth/token",
+            {"Content-Type": "application/json"},
+            db_session,
+            identifier,
+            json_data={
+                "client_id": client_id,
+                "grant_type": "refresh_token",
+                "redirect_uri": "com.openai.sora://auth.openai.com/android/com.openai.sora/callback",
+                "refresh_token": refresh_token,
+            },
+        )
+        if primary.get("success"):
+            data = primary.get("data") or {}
+            return {
+                "success": True,
+                "access_token": data.get("access_token"),
+                "id_token": data.get("id_token"),
+                "refresh_token": data.get("refresh_token"),
+                "data": data,
+            }
+        fallback = await self._make_request(
+            "POST",
+            "https://auth0.openai.com/oauth/token",
+            {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            db_session,
+            identifier,
+            form_data={
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "refresh_token": refresh_token,
+                "scope": "openid profile email offline_access",
+            },
+        )
+        if fallback.get("success"):
+            data = fallback.get("data") or {}
+            return {
+                "success": True,
+                "access_token": data.get("access_token"),
+                "id_token": data.get("id_token"),
+                "refresh_token": data.get("refresh_token"),
+                "data": data,
+            }
+        return {
+            "success": False,
+            "error": (
+                f"refresh_token failed. primary={primary.get('error')} ; "
+                f"fallback={fallback.get('error')}"
+            ),
+            "status_code": fallback.get("status_code") or primary.get("status_code"),
+            "error_code": fallback.get("error_code") or primary.get("error_code") or "token_refresh_failed",
+        }
+
+    def create_oauth_authorize_url(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str = "openid email profile offline_access",
+        login_hint: str = "",
+    ) -> dict[str, str]:
+        verifier = secrets.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest()).decode("utf-8").rstrip("=")
+        state = secrets.token_urlsafe(24)
+        query = {
+            "client_id": client_id,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "prompt": "login",
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": scope,
+            "state": state,
+            "codex_cli_simplified_flow": "true",
+            "id_token_add_organizations": "true",
+        }
+        hint = (login_hint or "").strip()
+        if hint:
+            query["login_hint"] = hint
+            query["hint"] = hint
+        return {
+            "authorize_url": f"https://auth.openai.com/oauth/authorize?{urlencode(query)}",
+            "code_verifier": verifier,
+            "state": state,
+            "client_id": client_id,
+        }
+
+    async def exchange_oauth_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "oauth_exchange",
+    ) -> dict[str, Any]:
+        result = await self._make_request(
+            "POST",
+            "https://auth.openai.com/oauth/token",
+            {"Content-Type": "application/json"},
+            db_session,
+            identifier,
+            json_data={
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
+            },
+        )
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error") or "code exchange failed", "error_code": result.get("error_code") or "oauth_exchange_failed"}
+        data = result.get("data") or {}
+        return {
+            "success": True,
+            "access_token": data.get("access_token"),
+            "refresh_token": data.get("refresh_token"),
+            "id_token": data.get("id_token"),
+            "data": data,
+        }
 
 
 chatgpt_client = ChatGPTClient()

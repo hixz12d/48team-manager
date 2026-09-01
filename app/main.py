@@ -60,7 +60,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.engine = engine
         app.state.session_factory = session_factory
         app.state.settings = settings
+        from app.application.jobs.scheduler import start_scheduler, stop_scheduler
+
+        start_scheduler(settings)
         yield
+        stop_scheduler()
         await engine.dispose()
 
     app = FastAPI(
