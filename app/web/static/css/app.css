@@ -3,11 +3,16 @@ html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--te
 a { color: inherit; text-decoration: none; }
 button, input, select { font: inherit; }
 .muted { color: var(--muted); }
-.eyebrow { margin: 0 0 8px; color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.eyebrow { margin: 0 0 8px; color: var(--muted); font-size: 11px; letter-spacing: .08em; }
 .auth-body { min-height: 100vh; display: grid; place-items: center; }
 .auth-card { width: 360px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 28px; }
 .auth-card h1 { margin: 0 0 8px; font-size: 22px; }
-.stack { display: grid; gap: 12px; margin-top: 20px; }
+.stack { display: grid; gap: 12px; }
+.auth-card .stack { margin-top: 20px; }
+.auth-brand { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.brand-logo { width: 28px; height: 28px; border-radius: 9px; display: block; }
+.check { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.check input { width: 16px; height: 16px; margin: 0; }
 label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
 input, select { height: 36px; border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 0 10px; background: var(--surface); }
 .button { min-height: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); padding: 0 12px; cursor: pointer; }
@@ -18,11 +23,11 @@ input, select { height: 36px; border: 1px solid var(--border-strong); border-rad
 .shell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
 .sidebar { background: var(--sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 14px 10px; }
 .brand { display: flex; gap: 10px; align-items: center; padding: 4px 8px 14px; }
-.brand-mark { width: 28px; height: 28px; display: grid; place-items: center; background: var(--text); color: #fff; border-radius: var(--radius); font-size: 11px; font-weight: 700; }
+.brand-mark { width: 28px; height: 28px; display: grid; place-items: center; background: var(--text); color: #fff; border-radius: 9px; font-size: 11px; font-weight: 700; }
 .brand strong, .brand span { display: block; }
 .brand span { color: var(--muted); font-size: 11px; margin-top: 2px; }
 .nav { display: grid; gap: 2px; }
-.nav-label { margin: 14px 8px 4px; color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.nav-label { margin: 14px 8px 4px; color: var(--muted); font-size: 10px; letter-spacing: .08em; }
 .nav-link { min-height: 36px; display: flex; align-items: center; padding: 0 10px; border-radius: var(--radius); color: #3f3f46; }
 .nav-link:hover { background: rgba(24, 24, 27, .04); }
 .nav-link.is-active { background: var(--surface); color: var(--text); }

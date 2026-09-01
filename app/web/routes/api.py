@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.queries import console as console_query
 from app.application.queries.identity import identity_audit_query
+from app.application.settings import save_console_settings
 from app.web.deps import require_admin
+from app.web.schemas.settings import SettingsPatch
 
 
 def build_api_router(get_db) -> APIRouter:
@@ -53,5 +55,16 @@ def build_api_router(get_db) -> APIRouter:
     @router.get("/settings")
     async def settings_view(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.settings_view(db)
+
+    @router.patch("/settings")
+    async def settings_update(
+        payload: SettingsPatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        try:
+            return await save_console_settings(db, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     return router

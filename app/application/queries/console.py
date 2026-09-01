@@ -9,10 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.operations import operation_store, serialize_operation
 from app.application.queries.identity import accounts_query, overview_query, workspaces_query
 from app.application.quota import quota_service
-from app.application.resources.hme import list_leases, load_config
+from app.application.resources.hme import list_leases
 from app.application.resources.phones import phone_pool_service
 from app.application.resources.proxies import proxy_profile_service
-from app.core.config import load_settings
+from app.application.settings import load_console_settings
 from app.core.time import isoformat
 from app.domain.automation import ACTIVE_STATES
 
@@ -109,18 +109,4 @@ async def proxies(db: AsyncSession) -> dict[str, Any]:
 
 
 async def settings_view(db: AsyncSession) -> dict[str, Any]:
-    settings = load_settings()
-    hme_cfg = await load_config(db)
-    return {
-        "connections": {
-            "sub2api": {"configured": False},
-            "hme": {"configured": hme_cfg.configured},
-        },
-        "automation": {
-            "official_quota_probe": bool(settings.official_quota_probe_enabled),
-            "auto_reauth": bool(settings.auto_reauth_enabled),
-            "auto_rotate": bool(settings.auto_rotate_enabled),
-            "force_refill": bool(settings.force_refill),
-        },
-        "secrets": {"sub2api_api_key": "••••••", "hme_token": "••••••"},
-    }
+    return await load_console_settings(db)

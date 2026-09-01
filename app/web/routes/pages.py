@@ -9,14 +9,14 @@ from fastapi.templating import Jinja2Templates
 from app.web.deps import require_admin
 
 PAGES = (
-    ("overview", "Overview", "/"),
-    ("workspaces", "Workspaces", "/workspaces"),
-    ("accounts", "Accounts", "/accounts"),
-    ("operations", "Operations", "/operations"),
-    ("phones", "Phones", "/resources/phones"),
+    ("overview", "总览", "/"),
+    ("workspaces", "团队", "/workspaces"),
+    ("accounts", "账号", "/accounts"),
+    ("operations", "任务", "/operations"),
+    ("phones", "手机号", "/resources/phones"),
     ("hme", "HME", "/resources/hme"),
-    ("proxies", "Proxies", "/resources/proxies"),
-    ("settings", "Settings", "/settings"),
+    ("proxies", "代理", "/resources/proxies"),
+    ("settings", "设置", "/settings"),
 )
 
 
@@ -49,23 +49,23 @@ def build_pages_router(templates: Jinja2Templates, version: str) -> APIRouter:
 
     @router.get("/", response_class=HTMLResponse)
     async def overview(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "overview", "Overview", user)
+        return render(request, "overview", "总览", user)
 
     @router.get("/workspaces", response_class=HTMLResponse)
     async def workspaces(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "workspaces", "Workspaces", user)
+        return render(request, "workspaces", "团队", user)
 
     @router.get("/accounts", response_class=HTMLResponse)
     async def accounts(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "accounts", "Accounts", user)
+        return render(request, "accounts", "账号", user)
 
     @router.get("/operations", response_class=HTMLResponse)
     async def operations(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "operations", "Operations", user)
+        return render(request, "operations", "任务", user)
 
     @router.get("/resources/phones", response_class=HTMLResponse)
     async def phones(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "phones", "Phones", user)
+        return render(request, "phones", "手机号", user)
 
     @router.get("/resources/hme", response_class=HTMLResponse)
     async def hme(request: Request, user: dict = Depends(require_admin)):
@@ -73,10 +73,10 @@ def build_pages_router(templates: Jinja2Templates, version: str) -> APIRouter:
 
     @router.get("/resources/proxies", response_class=HTMLResponse)
     async def proxies(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "proxies", "Proxies", user)
+        return render(request, "proxies", "代理", user)
 
     @router.get("/settings", response_class=HTMLResponse)
     async def settings_page(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "settings", "Settings", user)
+        return render(request, "settings", "设置", user)
 
     return router

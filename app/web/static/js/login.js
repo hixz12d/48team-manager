@@ -14,8 +14,8 @@ form?.addEventListener("submit", async (event) => {
     }),
   });
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ detail: "Sign in failed" }));
-    errorEl.textContent = payload.detail || "Sign in failed";
+    const payload = await response.json().catch(() => ({ detail: "登录失败" }));
+    errorEl.textContent = payload.detail || "登录失败";
     errorEl.hidden = false;
     return;
   }

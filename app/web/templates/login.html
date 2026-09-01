@@ -3,27 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in · 48 Team Manager</title>
+  <title>登录 · 48 Team Manager</title>
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="icon" href="/static/favicon.png">
+  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
 </head>
 <body class="auth-body">
   <main class="auth-card">
-    <p class="eyebrow">48 Team Manager</p>
-    <h1>Sign in</h1>
-    <p class="muted">Self-hosted operations console. One product, no legacy admin.</p>
+    <div class="auth-brand">
+      <img class="brand-logo" src="/static/logo.svg" alt="">
+      <div>
+        <p class="eyebrow">48 Team Manager</p>
+        <h1>登录</h1>
+      </div>
+    </div>
+    <p class="muted">本地后台，账号和任务都在这台机器上。</p>
     <form id="login-form" class="stack">
       <label>
-        Username
+        用户名
         <input name="username" autocomplete="username" required>
       </label>
       <label>
-        Password
+        密码
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
       <p id="login-error" class="error" hidden></p>
-      <button class="button primary" type="submit">Continue</button>
+      <button class="button primary" type="submit">进入后台</button>
     </form>
     <p class="version">{{ app_version }}</p>
   </main>
