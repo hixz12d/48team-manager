@@ -70,6 +70,9 @@
 
 .drawer, .sheet { position: fixed; inset: 0; background: rgba(24, 24, 27, .28); display: grid; justify-items: end; z-index: 40; }
 .drawer[hidden], .sheet[hidden], .menu[hidden] { display: none; }
+#register-sheet .sheet-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+#register-form { align-content: start; }
+#register-form textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .drawer-panel, .sheet-panel { width: min(var(--sheet-w), 100%); height: 100%; background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow-overlay); padding: 16px; overflow: auto; }
 .drawer-panel header, .sheet-panel header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .sheet-body, .drawer-body { display: grid; gap: 16px; }

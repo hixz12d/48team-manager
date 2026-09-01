@@ -16,7 +16,9 @@ button, input, select { font: inherit; }
 .check { display: flex; align-items: center; gap: 8px; min-height: 32px; }
 .check input { width: 16px; height: 16px; margin: 0; }
 label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
-input, select { height: var(--control-h); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 0 10px; background: var(--surface); min-width: 0; width: 100%; }
+input, select, textarea { border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 0 10px; background: var(--surface); min-width: 0; width: 100%; }
+input, select { height: var(--control-h); }
+textarea { min-height: 72px; padding: 8px 10px; resize: vertical; font: inherit; }
 input:disabled, select:disabled, .button:disabled { opacity: .55; cursor: not-allowed; }
 .button { min-height: 32px; min-width: 32px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); padding: 0 12px; cursor: pointer; }
 .button.primary { background: var(--text); color: #fff; border-color: var(--text); }

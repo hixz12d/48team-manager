@@ -56,6 +56,11 @@ class UIContractTests(unittest.TestCase):
             self.assertIn('value="archived"', accounts)
             self.assertNotIn(">Archive<", accounts)
             self.assertNotIn("danger-archive", accounts)
+            self.assertIn('id="register-form"', accounts)
+            self.assertIn("登记团队", accounts)
+            workspaces = client.get("/workspaces").text
+            self.assertIn('id="register-form"', workspaces)
+            self.assertIn("登记团队", workspaces)
 
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

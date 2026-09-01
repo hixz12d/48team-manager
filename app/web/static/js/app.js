@@ -6,6 +6,7 @@
   const drawer = document.getElementById("operations-drawer");
   const sheet = document.getElementById("entity-sheet");
   const menu = document.getElementById("action-menu");
+  const registerSheet = document.getElementById("register-sheet");
   const SECRET_MASK = "••••••";
   const pageCache = { items: [], kind: "" };
   let settingsBaseline = "";
@@ -461,7 +462,7 @@
     healthRoot.replaceChildren();
     const health = payload.workspace_health || [];
     if (!health.length) {
-      healthRoot.append(emptyState("还没有工作区", "导入或同步后会显示席位和健康摘要。"));
+      healthRoot.append(emptyState("还没有工作区", "点右上角「登记团队」，把已有 ChatGPT Team 母号写进来。"));
     } else {
       const list = document.createElement("div");
       list.className = "health-list";
@@ -718,6 +719,74 @@
     drawer.hidden = true;
     overlayReturn?.focus?.();
     overlayReturn = null;
+  }
+
+  function openRegister(trigger) {
+    if (!registerSheet) return;
+    overlayReturn = trigger || document.querySelector("[data-open-register]");
+    const form = document.getElementById("register-form");
+    const statusEl = document.getElementById("register-status");
+    if (form) form.reset();
+    if (statusEl) {
+      statusEl.hidden = true;
+      statusEl.className = "muted";
+      statusEl.textContent = "";
+    }
+    registerSheet.hidden = false;
+    form?.querySelector("[name='email']")?.focus();
+  }
+
+  function closeRegister() {
+    if (!registerSheet || registerSheet.hidden) return;
+    registerSheet.hidden = true;
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  function registerPayload(form) {
+    const data = new FormData(form);
+    const seatRaw = String(data.get("seat_limit") || "").trim();
+    const payload = {
+      email: String(data.get("email") || "").trim(),
+      official_workspace_id: String(data.get("official_workspace_id") || "").trim(),
+      name: String(data.get("name") || "").trim() || null,
+      proxy: String(data.get("proxy") || "").trim() || null,
+      password: String(data.get("password") || "").trim() || null,
+      access_token: String(data.get("access_token") || "").trim() || null,
+      refresh_token: String(data.get("refresh_token") || "").trim() || null,
+    };
+    if (seatRaw) payload.seat_limit = Number(seatRaw);
+    return payload;
+  }
+
+  async function submitRegister(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const statusEl = document.getElementById("register-status");
+    const button = form.querySelector("button[type='submit']");
+    if (button) button.disabled = true;
+    if (statusEl) {
+      statusEl.hidden = false;
+      statusEl.className = "muted";
+      statusEl.textContent = "正在登记…";
+    }
+    try {
+      await fetchEntity("register-workspace", "/api/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(registerPayload(form)),
+      });
+      closeRegister();
+      await bootPage();
+    } catch (error) {
+      if (statusEl) {
+        statusEl.hidden = false;
+        statusEl.className = "error";
+        statusEl.textContent = friendlyError(error);
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function secretPlaceholder(state) {
@@ -1013,7 +1082,7 @@
         workspaceRow,
         items.length === 0 && pageCache.items.length
           ? emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。")
-          : emptyState("还没有工作区", "导入或同步后会显示在这里。")
+          : emptyState("还没有工作区", "点「登记团队」，填母号邮箱和 Workspace UUID。")
       );
       setCount("workspaces-count", items.length, pageCache.items.length);
     } else if (kind === "account") {
@@ -1024,7 +1093,7 @@
         accountRow,
         items.length === 0 && pageCache.items.length
           ? emptyState("没有符合当前筛选的账号", "清除筛选或换一个关键词。")
-          : emptyState("还没有账号", "账号导入或创建后会显示在这里。归档的默认不显示。")
+          : emptyState("还没有账号", "先登记团队母号。归档的默认不显示。")
       );
       setCount("accounts-count", items.length, pageCache.items.length);
     }
@@ -1154,6 +1223,11 @@
   document.getElementById("open-operations")?.addEventListener("click", openDrawer);
   document.querySelector("[data-close-drawer]")?.addEventListener("click", closeDrawer);
   document.querySelector("[data-close-sheet]")?.addEventListener("click", closeSheet);
+  document.querySelectorAll("[data-open-register]").forEach((button) => {
+    button.addEventListener("click", () => openRegister(button));
+  });
+  document.querySelector("[data-close-register]")?.addEventListener("click", closeRegister);
+  document.getElementById("register-form")?.addEventListener("submit", submitRegister);
   document.getElementById("page-retry")?.addEventListener("click", bootPage);
   document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
     document.body.classList.toggle("nav-open");
@@ -1163,6 +1237,9 @@
   });
   sheet?.addEventListener("click", (event) => {
     if (event.target === sheet) closeSheet();
+  });
+  registerSheet?.addEventListener("click", (event) => {
+    if (event.target === registerSheet) closeRegister();
   });
   document.addEventListener("click", (event) => {
     if (menu && !menu.hidden && !event.target.closest("#action-menu, .actions")) closeMenu();
@@ -1177,6 +1254,7 @@
     }
     if (event.key === "Escape") {
       if (!menu.hidden) closeMenu();
+      else if (registerSheet && !registerSheet.hidden) closeRegister();
       else if (sheet && !sheet.hidden) closeSheet();
       else closeDrawer();
       document.body.classList.remove("nav-open");

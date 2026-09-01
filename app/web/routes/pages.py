@@ -17,7 +17,7 @@ PAGES = {
     "workspaces": {
         "title": "团队",
         "path": "/workspaces",
-        "subtitle": "查看席位、母号、自动化策略和最近同步。",
+        "subtitle": "登记已有 ChatGPT Team 母号，查看席位、健康和最近同步。",
     },
     "accounts": {
         "title": "账号",

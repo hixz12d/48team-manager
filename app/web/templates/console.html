@@ -43,6 +43,9 @@
           <p class="muted" id="page-subtitle">{{ subtitle }}</p>
         </div>
         <div class="topbar-actions">
+          {% if page in ('workspaces', 'accounts') %}
+          <button type="button" class="button primary" data-open-register>登记团队</button>
+          {% endif %}
           <button type="button" class="button" id="open-operations" data-open-operations>任务</button>
         </div>
       </header>
@@ -78,6 +81,7 @@
         <section class="panel table-shell">
           <div class="toolbar">
             <input class="search" id="workspaces-search" placeholder="搜名称、母号或 Workspace ID" data-entity="workspace" autocomplete="off">
+            <button type="button" class="button" data-open-register>登记团队</button>
             <span class="toolbar-count muted" id="workspaces-count"></span>
           </div>
           <div class="table-scroll">
@@ -112,6 +116,7 @@
               <option value="conflict">有冲突</option>
               <option value="archived">已归档</option>
             </select>
+            <button type="button" class="button" data-open-register>登记团队</button>
             <span class="toolbar-count muted" id="accounts-count"></span>
           </div>
           <div class="table-scroll">
@@ -371,6 +376,39 @@
     </div>
   </div>
   <div class="menu" id="action-menu" hidden></div>
+  <div class="sheet" id="register-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="register-title">
+      <header>
+        <div>
+          <strong id="register-title">登记团队</strong>
+          <p class="muted">把已有 ChatGPT Team 母号写进控制台。这里不会在 OpenAI 开新团队。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-register>关掉</button>
+      </header>
+      <form id="register-form" class="sheet-body">
+        <div class="sheet-section">
+          <h3>必填</h3>
+          <label>母号邮箱<input name="email" type="email" autocomplete="off" required></label>
+          <label>Workspace ID<input name="official_workspace_id" autocomplete="off" required placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
+          <p class="hint">必须是官方 Workspace UUID，不能填 user-xxx。</p>
+        </div>
+        <div class="sheet-section">
+          <h3>可选</h3>
+          <label>团队名称<input name="name" autocomplete="off" placeholder="留空则用邮箱"></label>
+          <label>席位上限<input name="seat_limit" type="number" min="1" max="100" inputmode="numeric"></label>
+          <label>代理<input name="proxy" autocomplete="off" placeholder="socks5://host:port"></label>
+          <label>母号密码<input name="password" type="password" autocomplete="new-password"></label>
+          <label>Access Token<textarea name="access_token" rows="3"></textarea></label>
+          <label>Refresh Token<textarea name="refresh_token" rows="3"></textarea></label>
+          <p class="hint">令牌和密码可以后补。不填令牌时，拉人 / 轮转仍需先授权。</p>
+        </div>
+        <p id="register-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button class="button primary" type="submit">登记</button>
+        </div>
+      </form>
+    </div>
+  </div>
   <dialog class="palette" id="command-palette">
     <input id="command-input" placeholder="去哪…">
     <ul id="command-list"></ul>
