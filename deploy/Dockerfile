@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app /app/app
-COPY init_db.py /app/init_db.py
+COPY legacy_import /app/legacy_import
 
 EXPOSE 8008
 

@@ -1,62 +1,127 @@
 # 48 Team Manager
 
-自用 ChatGPT Team 控制台。从 [team-manage-refresh](https://github.com/loLollipop/team-manage-refresh) fork 后二开，给多个母号做「踢人不删、7 天再拉、输入邮箱自动注册接码、推 Sub2API」。
+48 Team Manager is a small self-hosted operations console for managing multiple ChatGPT Team / Workspace accounts and their automation resources.
 
-兑换前台、质保售后和定时自动踢人不是主路径。日常只做三件事：
+这是个人自用的运营控制台，不是 SaaS、CRM、兑换码平台或质保系统。
 
-1. 导入母号，每个绑自己的静态 ISP
-2. 输入邮箱拉人，或把 standby 旧号再拉回来
-3. 手动执行「今天的 1 踢 1 拉」
+## Purpose
 
-## 核心语义
+日常只做这些事：
 
-- 踢人 `!=` 删除。踢完子号进 `standby`，密码、token、代理、Sub2API id 都留着
-- 复用旧号走短路径：邀请 → 登录/接受 → 对账成功 → 再推 Sub2API
-- 新号走完整路径：邀请 → 注册 → 邮箱 OTP → api668 接码 → 对账成功 → 推 Sub2API
-- 不对账成功不补位，也不推 Sub2API
-- 母号请求、子号浏览器、接码必须走各自 ISP；没代理直接报错
-- Sub2API 和本项目部署在同一台美西机器上，推送直连，不走代理
+1. 管理多个 Workspace / Team 母号
+2. 管理当前在席子号和 standby / unused 子号
+3. 查看官方额度
+4. 发现授权失效并重新授权
+5. 周额度满或封禁后安全轮转
+6. 管理 HME alias、手机号、静态 ISP / Proxy
+7. 与 Sub2API 同步
+8. 查看后台 Operation
 
-## 本地开发
+官方计划、Workspace Role、本地用途三者永远不能互相推断。
+
+## Architecture
+
+One web container, one SQLite database, one persistent operation runner, one browser execution slot.
+
+```text
+app/
+  domain/          accounts, workspaces, identity, automation, resources
+  application/     queries, commands, jobs
+  integrations/    openai, sub2api, hme, sms, proxy
+  web/             routes, schemas, templates, static
+  persistence/     models, repositories, migrations
+  core/            config, errors, security, time
+legacy_import/     read-only legacy DB importer, not part of runtime
+```
+
+Stack: Python, FastAPI, SQLAlchemy 2, SQLite, Jinja2, vanilla JavaScript, APScheduler, Playwright, httpx / curl-cffi.
+
+## Local development
 
 ```powershell
 cd C:\Projects\Github_Other_Projects\48team-manager
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-playwright install chrome
 copy .env.example .env
 python -m uvicorn app.main:app --reload --port 8008
 ```
 
-打开 `http://127.0.0.1:8008`，根路径会进后台。默认密码见 `.env` 的 `ADMIN_PASSWORD`。
+Open `http://127.0.0.1:8008`. Unauthenticated HTML requests go to `/login`. Default credentials come from `.env`.
 
-## 上机部署
+New schema file is `data/team48.db`. Do not point the new app at a production `team_manage.db`.
 
-默认机器是速维云美西，关联写在 [VPS.md](VPS.md)。本项目只部署到 `/opt/team48`，**绝不进入 `/opt/sub2api`**。
+## Configuration
+
+See `.env.example` and `deploy.env.example`.
+
+Safe defaults:
+
+- official quota probe: on
+- auto reauth: off
+- auto rotate: off
+- force refill: always false unless explicitly enabled
+
+Secrets are stored hashed or encrypted. API responses mask them as `••••••`.
+
+`IDENTITY_GMAIL_POLICY` is a local policy (`owner_only` / `warn` / `unrestricted`). The identity engine itself never maps Gmail to owner.
+
+## Database
+
+SQLite, WAL. New tables are created by `app/persistence/migrations/bootstrap.py`.
+
+Legacy production files are not dropped. Import is read-only and lives in `legacy_import/`.
+
+## Migration
+
+Copy the old database, then dry-run:
+
+```powershell
+python -c "from pathlib import Path; from legacy_import.importer import inspect_legacy_db; print(inspect_legacy_db(Path('copy-of-team_manage.db')).as_dict())"
+```
+
+Conflicts go to manual review. Email suffix, Team in a name, or family prefix is only a hint.
+
+## Operations
+
+Long commands return immediately:
+
+```json
+{ "success": true, "operation_id": "..." }
+```
+
+Operations persist across refresh, navigation, browser close, and container restart. Completed steps are not replayed.
+
+## Deployment
+
+Default machine is documented in [VPS.md](VPS.md). This project only lives in `/opt/team48`.
 
 ```bash
 cd /opt/team48
 docker compose -p team48 up -d --build --no-deps team48
 ```
 
-本机回环访问：`http://127.0.0.1:8018`。端口不要占用 `8100` / `8101`。
+- compose project: `team48`
+- container: `team48-manager`
+- bind: `127.0.0.1:8018`
 
-1. 每个母号在「编辑 Team」里填自己的静态 ISP，先点「检测这条代理」
-2. 系统中心填 Sub2API 地址，容器里用 `http://sub2api-canary:8080`
-3. 子号池里贴邮箱 / 接码，执行拉人或今天的轮转
-4. 删除子号是单独按钮，不会在踢人时发生
+Do not deploy until explicitly approved.
 
-## 代理检测
+## Safety boundaries
 
-保存前可测单条代理，子号池也可批量测已绑定 ISP。检测内容：
+Never touch:
 
-- TCP 能不能连上代理端口
-- 走代理后的出口 IP / 国家 / 城市 / ISP（ip-api，失败再回落到 ipify + ipinfo）
-- 出口是否和 VPS 本机一样；一样就判定代理没生效
+- `/opt/sub2api` and its Compose, `.env`, postgres, redis, data
+- containers `sub2api`, `sub2api-canary`, `sub2api-postgres`, `sub2api-redis`
+- `127.0.0.1:8100` / `127.0.0.1:8101`
+- `docker compose down` or `--remove-orphans`
 
-## 测试
+Sub2API is used only through its HTTP Admin API.
+
+Do not run real kick, invite, or OpenAI billing/seat-changing actions without approval.
+
+## Tests
 
 ```powershell
-python -m unittest tests.test_child_accounts tests.test_proxy_support
+python -m unittest discover -s tests -v
 ```

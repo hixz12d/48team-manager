@@ -1,5 +1,5 @@
-# 独立项目。禁止和 /opt/sub2api 的 compose 混用。
-# 启动：在仓库根目录执行 docker compose -p team48 up -d --build
+# Independent project. Never mix with /opt/sub2api compose.
+# Start from the repo root: docker compose -p team48 up -d --build
 name: team48
 
 services:
@@ -17,11 +17,14 @@ services:
     environment:
       APP_HOST: "0.0.0.0"
       APP_PORT: "8008"
-      DATABASE_URL: "sqlite+aiosqlite:////app/data/team_manage.db"
+      DATABASE_URL: "sqlite+aiosqlite:////app/data/team48.db"
       BROWSER_HEADLESS: "false"
       BROWSER_CHANNEL: ""
       DISPLAY: ":99"
       TZ: "Asia/Shanghai"
+      AUTO_REAUTH_ENABLED: "false"
+      AUTO_ROTATE_ENABLED: "false"
+      FORCE_REFILL: "false"
     volumes:
       - ./data:/app/data
     extra_hosts:

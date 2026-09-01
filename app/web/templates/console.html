@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · 48 Team Manager</title>
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="icon" href="/static/favicon.png">
+</head>
+<body data-page="{{ page }}">
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">48</span>
+        <div>
+          <strong>48 Team Manager</strong>
+          <span>Operations console</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <a href="/" class="nav-link{% if page == 'overview' %} is-active{% endif %}">Overview</a>
+        <a href="/workspaces" class="nav-link{% if page == 'workspaces' %} is-active{% endif %}">Workspaces</a>
+        <a href="/accounts" class="nav-link{% if page == 'accounts' %} is-active{% endif %}">Accounts</a>
+        <a href="/operations" class="nav-link{% if page == 'operations' %} is-active{% endif %}">Operations</a>
+        <p class="nav-label">Resources</p>
+        <a href="/resources/phones" class="nav-link{% if page == 'phones' %} is-active{% endif %}">Phones</a>
+        <a href="/resources/hme" class="nav-link{% if page == 'hme' %} is-active{% endif %}">HME</a>
+        <a href="/resources/proxies" class="nav-link{% if page == 'proxies' %} is-active{% endif %}">Proxies</a>
+        <a href="/settings" class="nav-link{% if page == 'settings' %} is-active{% endif %}">Settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="health-line"><span class="dot"></span> system health</div>
+        <div class="muted">{{ app_version }}</div>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <h1>{{ title }}</h1>
+          <p class="muted" id="page-subtitle">Local console. Queries do not call OpenAI.</p>
+        </div>
+        <div class="topbar-actions">
+          <button type="button" class="button" id="open-operations" data-open-operations>Operations</button>
+        </div>
+      </header>
+      <main class="page" id="page-root">
+        {% if page == 'overview' %}
+        <section class="panel">
+          <div class="panel-header"><span class="panel-title">Needs attention</span></div>
+          <div class="panel-body" id="overview-attention">All systems healthy</div>
+        </section>
+        {% elif page == 'workspaces' %}
+        <section class="panel">
+          <div class="toolbar"><input class="search" placeholder="Search workspaces" data-entity="workspace"></div>
+          <table class="data-table">
+            <thead><tr><th>Workspace</th><th>Owner</th><th>Members</th><th>Quota / Health</th><th>Rotation</th><th>Last sync</th><th>Status</th></tr></thead>
+            <tbody id="workspaces-body"><tr><td colspan="7" class="muted">No workspaces yet. Identity lands in the next phase.</td></tr></tbody>
+          </table>
+        </section>
+        {% elif page == 'accounts' %}
+        <section class="panel">
+          <div class="toolbar">
+            <input class="search" placeholder="Search email, workspace, remote id" data-entity="account">
+            <select class="filter" data-filter="purpose">
+              <option value="all">All</option>
+              <option value="mother">Mother</option>
+              <option value="child">Child</option>
+              <option value="standby">Standby</option>
+              <option value="needs_auth">Needs auth</option>
+              <option value="quota_full">Quota full</option>
+              <option value="conflict">Conflict</option>
+              <option value="archived">Archived</option>
+            </select>
+          </div>
+          <table class="data-table">
+            <thead><tr><th>Account</th><th>Purpose</th><th>Workspace</th><th>7d</th><th>Auth</th><th>Sub2API</th><th>Proxy</th><th>State</th></tr></thead>
+            <tbody id="accounts-body"><tr><td colspan="8" class="muted">No accounts yet. Archived rows stay hidden by default.</td></tr></tbody>
+          </table>
+        </section>
+        {% elif page == 'operations' %}
+        <section class="panel">
+          <table class="data-table">
+            <thead><tr><th>Status</th><th>Operation</th><th>Target</th><th>Current step</th><th>Started</th><th>Duration</th></tr></thead>
+            <tbody id="operations-body"><tr><td colspan="6" class="muted">No operations. Persistent jobs land later; this page is already first-class.</td></tr></tbody>
+          </table>
+        </section>
+        {% elif page in ['phones', 'hme', 'proxies'] %}
+        <section class="panel">
+          <div class="panel-header"><span class="panel-title">{{ title }}</span></div>
+          <div class="panel-body muted">Resource inventory is not wired yet. This page exists so the console has one navigation tree.</div>
+        </section>
+        {% elif page == 'settings' %}
+        <section class="settings-grid">
+          <article class="panel"><div class="panel-header"><span class="panel-title">Connections</span></div><div class="panel-body muted">Sub2API · HME</div></article>
+          <article class="panel"><div class="panel-header"><span class="panel-title">Automation</span></div><div class="panel-body">Official quota probe on. Auto reauth off. Auto rotate off. Force refill off.</div></article>
+          <article class="panel"><div class="panel-header"><span class="panel-title">Resources</span></div><div class="panel-body muted">Phone defaults · Proxy defaults</div></article>
+          <article class="panel"><div class="panel-header"><span class="panel-title">Security</span></div><div class="panel-body muted">Change password. Secrets render as ••••••.</div></article>
+        </section>
+        {% endif %}
+      </main>
+    </div>
+  </div>
+  <div class="drawer" id="operations-drawer" hidden>
+    <div class="drawer-panel">
+      <header>
+        <strong>Operations</strong>
+        <button type="button" class="button ghost" data-close-drawer>Close</button>
+      </header>
+      <p class="muted">Task drawer only. It does not occupy the page permanently.</p>
+      <div id="operations-drawer-body"></div>
+    </div>
+  </div>
+  <dialog class="palette" id="command-palette">
+    <input id="command-input" placeholder="Go to…">
+    <ul id="command-list"></ul>
+  </dialog>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

@@ -1,5 +1,5 @@
-# 备用文件。推荐在仓库根目录用根目录 docker-compose.yml。
-# 如果一定要用本文件：cd 到仓库根目录后执行
+# Backup file. Prefer the root docker-compose.yml.
+# If you must use this file, run it from the repo root:
 # docker compose -p team48 -f deploy/docker-compose.yml up -d --build
 name: team48
 
@@ -18,11 +18,14 @@ services:
     environment:
       APP_HOST: "0.0.0.0"
       APP_PORT: "8008"
-      DATABASE_URL: "sqlite+aiosqlite:////app/data/team_manage.db"
+      DATABASE_URL: "sqlite+aiosqlite:////app/data/team48.db"
       BROWSER_HEADLESS: "false"
       BROWSER_CHANNEL: ""
       DISPLAY: ":99"
       TZ: "Asia/Shanghai"
+      AUTO_REAUTH_ENABLED: "false"
+      AUTO_ROTATE_ENABLED: "false"
+      FORCE_REFILL: "false"
     volumes:
       - ../data:/app/data
     extra_hosts:
