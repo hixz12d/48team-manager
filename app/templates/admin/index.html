@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{% if active_page == "welfare" %}福利车位 - GPT Team 管理系统{% else %}控制台 - GPT Team 管理系统{% endif %}{% endblock %}
+{% block title %}控制台 - GPT Team 管理系统{% endblock %}
 
 {% block extra_css %}
 <style>
@@ -440,32 +440,6 @@
         }
     }
 
-    .team-list-table-container .btn-toggle-warranty-seat[data-enabled="true"] {
-        background: var(--success);
-        color: #fff;
-        border-color: var(--success);
-    }
-
-    .team-list-table-container .btn-toggle-warranty-seat[data-enabled="true"]:hover {
-        background: color-mix(in srgb, var(--success) 84%, #000 16%);
-        color: #fff;
-        border-color: color-mix(in srgb, var(--success) 84%, #000 16%);
-    }
-
-    body.admin-theme .team-list-table-container .btn-toggle-warranty-seat[data-enabled="true"],
-    html.theme-warm body.admin-theme .team-list-table-container .btn-toggle-warranty-seat[data-enabled="true"] {
-        background: var(--ca-success) !important;
-        color: var(--ca-ink) !important;
-        border-color: color-mix(in srgb, var(--ca-success) 78%, var(--ca-border) 22%) !important;
-        box-shadow: var(--ca-shadow-xs) !important;
-    }
-
-    body.admin-theme .team-list-table-container .btn-toggle-warranty-seat[data-enabled="true"]:hover:not(:disabled),
-    html.theme-warm body.admin-theme .team-list-table-container .btn-toggle-warranty-seat[data-enabled="true"]:hover:not(:disabled) {
-        background: color-mix(in srgb, var(--ca-success) 82%, #fff 18%) !important;
-        color: var(--ca-ink) !important;
-        border-color: color-mix(in srgb, var(--ca-success) 88%, var(--ca-border) 12%) !important;
-    }
 
     body.admin-theme.theme-warm .team-list-table-container .btn-edit-team.btn-minimal.btn-primary,
     body.admin-theme.theme-warm .team-list-table-container .btn-push-cliproxyapi.btn-minimal.btn-primary,
@@ -690,14 +664,14 @@
     <div class="page-header">
         <div class="page-header-copy">
             <div class="page-header-kicker">
-                <i data-lucide="{% if active_page == 'welfare' %}heart-handshake{% else %}layout-dashboard{% endif %}"></i>
-                <span>{% if active_page == "welfare" %}Welfare Workspace{% else %}Operations Workspace{% endif %}</span>
+                <i data-lucide="layout-dashboard"></i>
+                <span>Operations Workspace</span>
             </div>
-            <h2>{% if active_page == "welfare" %}福利车位工作台{% else %}Team 工作台{% endif %}</h2>
+            <h2>Team 工作台</h2>
             <div class="page-header-meta">
                 <span class="page-meta-pill">
                     <i data-lucide="database"></i>
-                    <span>{% if active_page == "welfare" %}福利池{% else %}常规池{% endif %}</span>
+                    <span>常规池</span>
                 </span>
                 <span class="page-meta-pill">
                     <i data-lucide="users-round"></i>
@@ -734,36 +708,6 @@
                 <div class="stat-label">可用 Team</div>
             </div>
         </div>
-        {% if active_page == "welfare" %}
-        <div class="stat-card stat-info">
-            <div class="stat-icon"><i data-lucide="car-front"></i></div>
-            <div class="stat-info-group">
-                <div class="stat-value" data-stat-value="remaining_spots">{{ stats.remaining_spots }}</div>
-                <div class="stat-label">福利剩余车位</div>
-            </div>
-        </div>
-        <div class="stat-card stat-warning welfare-code-card">
-            <div class="stat-icon"><i data-lucide="ticket"></i></div>
-            <div class="stat-info-group">
-                <div class="stat-label">通用兑换码</div>
-                <div class="welfare-code-value" id="welfareCommonCodeText" title="{{ stats.welfare_code or '' }}">{{ stats.welfare_code or '-' }}</div>
-                <div class="stat-sub-label" id="welfareCodeUsageText">剩余次数 {{ stats.welfare_code_remaining }} / {{ stats.welfare_code_limit }}</div>
-                <div class="stat-sub-label" id="welfareCodeSourceTeamText">
-                    {% if stats.welfare_code_team_id %}
-                    来源 Team：{{ stats.welfare_code_team_name or ('#' ~ stats.welfare_code_team_id) }}{% if stats.welfare_code_team_email %}（{{ stats.welfare_code_team_email }}）{% endif %}
-                    {% else %}
-                    来源 Team：未绑定
-                    {% endif %}
-                </div>
-                <div class="welfare-code-row">
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="copyWelfareCode()" {% if not stats.welfare_code %}disabled{% endif %} id="copyWelfareCodeBtn">
-                        <i data-lucide="copy" style="width: 14px; height: 14px;"></i> 复制兑换码
-                    </button>
-                </div>
-                <input type="hidden" id="welfareCommonCodeValue" value="{{ stats.welfare_code or '' }}">
-            </div>
-        </div>
-        {% else %}
         <div class="stat-card stat-info">
             <div class="stat-icon"><i data-lucide="alert-triangle"></i></div>
             <div class="stat-info-group">
@@ -778,7 +722,6 @@
                 <div class="stat-label">存活 Team</div>
             </div>
         </div>
-        {% endif %}
     </div>
 
     <div id="batchRefreshProgress" class="batch-progress-panel" aria-live="polite" aria-atomic="true">
@@ -795,7 +738,7 @@
         <div class="content-section team-list-toolbar-section workbench-toolbar">
             <div class="workbench-toolbar-row">
                 <div class="workbench-toolbar-copy">
-                    <h3>{% if active_page == "welfare" %}福利 Team 列表{% else %}Team 列表{% endif %}</h3>
+                    <h3>Team 列表</h3>
                 </div>
                 <div id="batchActions" class="batch-actions-group" style="display: none;">
                     <button type="button" id="btnBatchRefresh" class="btn btn-secondary btn-sm">
@@ -852,12 +795,12 @@
                         </div>
                     </div>
 
-                    <form action="{% if active_page == 'welfare' %}/admin/welfare{% else %}/admin{% endif %}" method="get" class="search-form">
+                    <form action="/admin" method="get" class="search-form">
                         <div class="input-group-clean">
                             <i data-lucide="search" style="width: 14px; height: 14px;"></i>
                             <input type="text" name="search" value="{{ search or '' }}" placeholder="搜索邮箱 / Account ID / Team 名称...">
                             {% if search %}
-                            <a href="{% if active_page == 'welfare' %}/admin/welfare{% else %}/admin{% endif %}{% if status_filter %}?status_filter={{ status_filter|urlencode }}{% endif %}" title="清除搜索">
+                            <a href="/admin{% if status_filter %}?status_filter={{ status_filter|urlencode }}{% endif %}" title="清除搜索">
                                 <i data-lucide="x-circle" style="width: 14px; height: 14px;"></i>
                             </a>
                             {% endif %}
@@ -882,7 +825,7 @@
         <div id="teamTableCard" class="content-section workbench-table-card team-table-card" {% if not teams %}hidden{% endif %}>
             <div class="table-section-head">
                 <div class="table-section-copy">
-                    <h3>{% if active_page == "welfare" %}福利席位明细{% else %}Team 运行明细{% endif %}</h3>
+                    <h3>Team 运行明细</h3>
                 </div>
                 <div class="table-section-meta">
                     {% if search %}
@@ -909,7 +852,7 @@
             <tr>
                 <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this.checked)">
                 </th>
-                <th>{% if active_page == "welfare" %}编号{% else %}ID{% endif %}</th>
+                <th>ID</th>
                 <th>邮箱</th>
                 <th>Account ID</th>
                 <th>Team 名称</th>
@@ -925,7 +868,7 @@
             <tr data-team-id="{{ team.id }}">
                 <td class="team-select-cell" data-label="选择"><input type="checkbox" class="team-checkbox" value="{{ team.id }}" onchange="updateSelectedCount()">
                 </td>
-                <td data-label="{% if active_page == 'welfare' %}编号{% else %}ID{% endif %}"><span class="text-muted">{% if active_page == "welfare" %}{{ ((pagination.current_page - 1) * pagination.per_page) + loop.index }}{% else %}{{ team.id }}{% endif %}</span></td>
+                <td data-label="ID"><span class="text-muted">{{ team.id }}</span></td>
                 <td data-label="邮箱">
                     {{ team.email }}
                     {% if team.account_role and team.account_role != 'account-owner' %}
@@ -1647,9 +1590,9 @@
         }
     });
 
-    const dashboardBasePath = "{{ '/admin/welfare' if active_page == 'welfare' else '/admin' }}";
-    const currentPoolType = "{{ 'welfare' if active_page == 'welfare' else 'normal' }}";
-    const currentPoolLabel = currentPoolType === 'welfare' ? '福利池' : '常规池';
+    const dashboardBasePath = "/admin";
+    const currentPoolType = "normal";
+    const currentPoolLabel = '常规池';
     let totalTeamsInCurrentPool = Number("{{ stats.total_teams or 0 }}") || 0;
     const TEAM_STATUS_LABELS = { active: '可用', full: '已满', expired: '已过期', banned: '已封禁', error: '异常' };
 
@@ -1705,8 +1648,7 @@
         const query = currentListQuery();
         const page = parseInt(query.page, 10) || 1;
         const perPage = parseInt(query.per_page, 10) || 20;
-        const isWelfare = currentPoolType === 'welfare';
-        const idLabel = isWelfare ? ((page - 1) * perPage + index + 1) : team.id;
+        const idLabel = team.id;
         const occupancy = (team.occupancy && team.occupancy.occupancy_text) || `${team.current_members || 0}/${team.max_members || 0}`;
         const expires = team.expires_at ? (typeof formatDateTime === 'function' ? formatDateTime(team.expires_at) : team.expires_at) : '-';
         const roleHint = (team.account_role && team.account_role !== 'account-owner')
@@ -1719,7 +1661,7 @@
         const email = team.email || '';
         return `<tr data-team-id="${escapeHtml(team.id)}">
             <td class="team-select-cell" data-label="选择"><input type="checkbox" class="team-checkbox" value="${escapeHtml(team.id)}"></td>
-            <td data-label="${isWelfare ? '编号' : 'ID'}"><span class="text-muted">${escapeHtml(idLabel)}</span></td>
+            <td data-label="ID"><span class="text-muted">${escapeHtml(idLabel)}</span></td>
             <td data-label="邮箱">${escapeHtml(email)}${roleHint}</td>
             <td data-label="Account ID"><span class="text-muted small">${escapeHtml(team.account_id || '-')}</span></td>
             <td data-label="Team 名称">${escapeHtml(team.team_name || '-')}</td>

@@ -11,7 +11,7 @@ from io import BytesIO
 from typing import Any, Optional, List, Dict, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, Response
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 
@@ -19,18 +19,15 @@ from app.database import AsyncSessionLocal, get_db
 from app.dependencies.auth import require_admin
 from app.services.team import TeamService
 from app.services.onboard import onboard_service
-from app.services.redemption import RedemptionService
-from app.services.warranty import warranty_service
 from app.services.chatgpt import chatgpt_service
 from app.services.settings import (
     settings_service,
-    DEFAULT_WARRANTY_EXPIRATION_MODE,
     DEFAULT_UI_THEME,
     DEFAULT_UI_STYLE,
 )
 from app.services.cliproxyapi import cliproxyapi_service
 from app.services.sub2api import sub2api_service
-from app.models import RedemptionCode, RedemptionRecord, RenewalRequest, Team
+from app.models import Team
 from app.utils.time_utils import get_now
 from app.utils.proxy import mask_proxy_url, normalize_proxy_url
 
@@ -44,7 +41,6 @@ router = APIRouter(
 
 # 服务实例
 team_service = TeamService()
-redemption_service = RedemptionService()
 
 
 async def resolve_ui_theme(db: AsyncSession) -> str:
@@ -59,11 +55,6 @@ async def resolve_ui_style(db: AsyncSession) -> str:
     return settings_service.normalize_ui_style(
         await settings_service.get_setting(db, "ui_style", DEFAULT_UI_STYLE)
     )
-
-
-async def get_pending_renewal_request_count(db: AsyncSession) -> int:
-    """续期入口已下线，badge 固定为 0。"""
-    return 0
 
 
 async def resolve_admin_profile(db: AsyncSession) -> Dict[str, str]:
@@ -89,7 +80,6 @@ async def build_admin_base_context(
         "active_page": active_page,
         "ui_theme": await resolve_ui_theme(db),
         "ui_style": await resolve_ui_style(db),
-        "pending_renewal_request_count": 0,
         "admin_profile": await resolve_admin_profile(db),
     }
 
@@ -106,7 +96,7 @@ class TeamImportRequest(BaseModel):
     email: Optional[str] = Field(None, description="邮箱 (单个导入)")
     account_id: Optional[str] = Field(None, description="Account ID (单个导入)")
     content: Optional[str] = Field(None, description="批量导入内容")
-    pool_type: str = Field("normal", description="导入池类型: normal/welfare")
+    pool_type: str = Field("normal", description="导入池类型")
 
 
 
@@ -144,21 +134,6 @@ class AddMembersRequest(BaseModel):
     emails: List[str] = Field(..., description="成员邮箱列表")
 
 
-class CodeGenerateRequest(BaseModel):
-    """兑换码生成请求"""
-    type: str = Field(..., description="生成类型: single 或 batch")
-    code: Optional[str] = Field(None, description="自定义兑换码 (单个生成)")
-    count: Optional[int] = Field(None, description="生成数量 (批量生成)")
-    expires_days: Optional[int] = Field(None, description="有效期天数")
-    has_warranty: bool = Field(False, description="是否为质保兑换码")
-    warranty_days: int = Field(30, description="质保天数")
-
-
-class WelfareCodeGenerateRequest(BaseModel):
-    """福利通用兑换码生成请求"""
-    team_id: int = Field(..., description="福利 Team ID")
-
-
 class TeamUpdateRequest(BaseModel):
     """Team 更新请求"""
     email: Optional[str] = Field(None, description="新邮箱")
@@ -175,33 +150,6 @@ class TeamUpdateRequest(BaseModel):
     seat_cycle_days: Optional[int] = Field(None, description="子号轮转天数")
 
 
-class WarrantySeatToggleRequest(BaseModel):
-    """Team 质保车位开关请求"""
-    enabled: bool = Field(..., description="是否开启质保车位")
-
-
-class CodeUpdateRequest(BaseModel):
-    """兑换码更新请求"""
-    has_warranty: bool = Field(..., description="是否为质保兑换码")
-    warranty_days: Optional[int] = Field(None, description="质保天数")
-
-class BulkCodeUpdateRequest(BaseModel):
-    """批量兑换码更新请求"""
-    codes: List[str] = Field(..., description="兑换码列表")
-    has_warranty: bool = Field(..., description="是否为质保兑换码")
-    warranty_days: Optional[int] = Field(None, description="质保天数")
-
-
-class BulkCodeDeleteRequest(BaseModel):
-    """批量兑换码删除请求"""
-    codes: List[str] = Field(..., description="待删除兑换码列表")
-
-
-class InvalidCodeCleanupRequest(BaseModel):
-    """无效兑换码清理请求"""
-    codes: List[str] = Field(..., description="待清理的无效兑换码列表")
-
-
 class BulkActionRequest(BaseModel):
     """批量操作请求"""
     ids: List[int] = Field(..., description="Team ID 列表")
@@ -211,13 +159,7 @@ class BatchRefreshRequest(BaseModel):
     """批量刷新请求"""
     ids: List[int] = Field(default_factory=list, description="Team ID 列表")
     all_in_pool: bool = Field(False, description="是否刷新当前池全部 Team")
-    pool_type: Optional[Literal["normal", "welfare"]] = Field(None, description="池类型")
-
-
-class BulkTransferPoolRequest(BaseModel):
-    """批量转池请求"""
-    ids: List[int] = Field(..., description="Team ID 列表")
-    target_pool_type: Literal["normal", "welfare"] = Field(..., description="目标池类型")
+    pool_type: Optional[Literal["normal"]] = Field(None, description="池类型")
 
 
 async def _team_list_payload(
@@ -253,19 +195,6 @@ async def _team_list_payload(
         "banned_teams": team_stats["banned"],
         "expired_teams": team_stats["expired"],
     }
-    if pool_type == "welfare":
-        remaining_spots = await team_service.get_total_available_seats(db, pool_type="welfare")
-        welfare_usage = await redemption_service.get_virtual_welfare_code_usage(db)
-        stats.update({
-            "remaining_spots": remaining_spots,
-            "welfare_code": str(welfare_usage.get("welfare_code") or ""),
-            "welfare_code_limit": max(int(welfare_usage.get("configured_limit") or 0), 0),
-            "welfare_code_used": int(welfare_usage.get("used_count") or 0),
-            "welfare_code_remaining": max(int(welfare_usage.get("remaining_count") or 0), 0),
-            "welfare_code_team_id": welfare_usage.get("team_id"),
-            "welfare_code_team_name": welfare_usage.get("team_name"),
-            "welfare_code_team_email": welfare_usage.get("team_email"),
-        })
     return {
         "success": True,
         "teams": teams_result.get("teams", []),
@@ -350,69 +279,6 @@ async def admin_dashboard(
 
 
 
-@router.get("/welfare", response_class=HTMLResponse)
-async def welfare_dashboard(
-    request: Request,
-    page: int = 1,
-    per_page: int = 20,
-    search: Optional[str] = None,
-    status_filter: Optional[str] = None,
-    legacy_status: Optional[str] = Query(None, alias="status"),
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """福利车位管理页"""
-    try:
-        from app.main import templates
-
-        if status_filter is None and legacy_status is not None:
-            status_filter = legacy_status
-
-        teams_result = await team_service.get_all_teams(db, page=page, per_page=per_page, search=search, status=status_filter, pool_type="welfare")
-        team_stats = await team_service.get_stats(db, pool_type="welfare")
-        remaining_spots = await team_service.get_total_available_seats(db, pool_type="welfare")
-        welfare_usage = await redemption_service.get_virtual_welfare_code_usage(db)
-        welfare_code = str(welfare_usage.get("welfare_code") or "")
-        welfare_used = int(welfare_usage.get("used_count") or 0)
-        configured_limit = max(int(welfare_usage.get("configured_limit") or 0), 0)
-        remaining_count = max(int(welfare_usage.get("remaining_count") or 0), 0)
-
-        stats = {
-            "total_teams": team_stats["total"],
-            "available_teams": team_stats["available"],
-            "remaining_spots": remaining_spots,
-            "welfare_code": welfare_code,
-            "welfare_code_limit": configured_limit,
-            "welfare_code_used": welfare_used,
-            "welfare_code_remaining": remaining_count,
-            "welfare_code_team_id": welfare_usage.get("team_id"),
-            "welfare_code_team_name": welfare_usage.get("team_name"),
-            "welfare_code_team_email": welfare_usage.get("team_email"),
-        }
-
-        context = await build_admin_base_context(request, db, current_user, "welfare")
-        context.update({
-            "teams": teams_result.get("teams", []),
-            "stats": stats,
-            "search": search,
-            "status_filter": status_filter,
-            "pagination": {
-                "current_page": teams_result.get("current_page", page),
-                "total_pages": teams_result.get("total_pages", 1),
-                "total": teams_result.get("total", 0),
-                "per_page": per_page
-            }
-        })
-        return templates.TemplateResponse(
-            request,
-            "admin/index.html",
-            context,
-        )
-    except Exception as e:
-        logger.exception("加载福利车位页面失败")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="加载福利车位页面失败，请稍后重试")
-
-
 @router.get("/teams/list")
 async def teams_list(
     page: int = 1,
@@ -426,7 +292,7 @@ async def teams_list(
 ):
     if status_filter is None and legacy_status is not None:
         status_filter = legacy_status
-    normalized_pool = "welfare" if pool_type == "welfare" else "normal"
+    normalized_pool = "normal"
     payload = await _team_list_payload(
         db,
         page=page,
@@ -438,106 +304,6 @@ async def teams_list(
     status_code = status.HTTP_200_OK if payload.get("success") else status.HTTP_400_BAD_REQUEST
     return JSONResponse(status_code=status_code, content=payload)
 
-
-@router.post("/welfare/code/generate")
-async def generate_welfare_common_code(
-    payload: WelfareCodeGenerateRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """为指定福利 Team 生成/更新当前唯一有效的通用兑换码。"""
-    try:
-        team_result = await db.execute(
-            select(Team).where(Team.id == payload.team_id)
-        )
-        source_team = team_result.scalar_one_or_none()
-        if not source_team:
-            return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
-                content={"success": False, "error": "指定的福利 Team 不存在"}
-            )
-
-        if source_team.pool_type != "welfare":
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"success": False, "error": "只能为福利 Team 生成通用兑换码"}
-            )
-
-        if source_team.status != "active" or source_team.current_members >= source_team.max_members:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"success": False, "error": "该福利 Team 当前没有可用席位，无法生成通用兑换码"}
-            )
-
-        total_seats = max(int(source_team.max_members or 0) - int(source_team.current_members or 0), 0)
-        if total_seats <= 0:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"success": False, "error": "该福利 Team 当前没有可用席位，无法生成通用兑换码"}
-            )
-
-        current_welfare_code = (await settings_service.get_setting(db, "welfare_common_code", "", use_cache=False) or "").strip()
-        max_attempts = 10
-        code = None
-        for _ in range(max_attempts):
-            candidate = redemption_service._generate_random_code()
-            existing_result = await db.execute(
-                select(RedemptionCode).where(RedemptionCode.code == candidate)
-            )
-            if existing_result.scalar_one_or_none():
-                continue
-            existing_record_result = await db.execute(
-                select(RedemptionRecord).where(RedemptionRecord.code == candidate)
-            )
-            if existing_record_result.scalar_one_or_none():
-                continue
-            if current_welfare_code and candidate == current_welfare_code:
-                continue
-            code = candidate
-            break
-
-        if not code:
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"success": False, "error": "生成福利通用兑换码失败，请重试"}
-            )
-
-        await db.execute(
-            update(RedemptionCode)
-            .where(RedemptionCode.pool_type == "welfare", RedemptionCode.reusable_by_seat == True)
-            .values(status="expired")
-        )
-        await db.commit()
-
-        updated = await settings_service.update_settings(db, {
-            "welfare_common_code": code,
-            "welfare_common_code_limit": str(total_seats),
-            "welfare_common_code_used_count": "0",
-            "welfare_common_code_generated_at": get_now().isoformat(),
-            "welfare_common_code_team_id": str(source_team.id),
-        })
-        if not updated:
-            await db.rollback()
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"success": False, "error": "写入福利通用兑换码配置失败，请稍后重试"}
-            )
-        await redemption_service.ensure_virtual_welfare_shadow_code(db, code)
-        await db.commit()
-
-        return JSONResponse(content={
-            "success": True,
-            "code": code,
-            "limit": total_seats,
-            "used": 0,
-            "remaining": total_seats,
-            "team_id": source_team.id,
-            "team_email": source_team.email,
-            "team_name": source_team.team_name,
-        })
-    except Exception as e:
-        logger.exception("生成福利通用兑换码失败")
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"success": False, "error": "操作失败，请稍后重试"})
 
 @router.post("/teams/{team_id}/delete")
 async def delete_team(
@@ -640,34 +406,6 @@ async def update_team(
         )
 
 
-@router.post("/teams/{team_id}/warranty-seat")
-async def toggle_team_warranty_seat(
-    team_id: int,
-    payload: WarrantySeatToggleRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """切换 Team 质保车位开关。"""
-    try:
-        result = await team_service.set_warranty_seat_enabled(
-            team_id=team_id,
-            enabled=payload.enabled,
-            db_session=db,
-        )
-        if not result["success"]:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content=result,
-            )
-        return JSONResponse(content=result)
-    except Exception:
-        logger.exception("更新 Team 质保车位开关失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "操作失败，请稍后重试"}
-        )
-
-
 @router.post("/teams/import")
 async def team_import(
     import_data: TeamImportRequest,
@@ -686,7 +424,7 @@ async def team_import(
         导入结果
     """
     try:
-        pool_type = "welfare" if (import_data.pool_type or "normal") == "welfare" else "normal"
+        pool_type = "normal"
         logger.info(f"管理员导入 Team: {import_data.import_type}, pool={pool_type}")
 
         if import_data.import_type == "single":
@@ -1625,734 +1363,6 @@ async def batch_enable_device_auth(
         )
 
 
-@router.post("/teams/batch-transfer-pool")
-async def batch_transfer_team_pool(
-    action_data: BulkTransferPoolRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """批量转移 Team 池类型。"""
-    try:
-        team_ids = [team_id for team_id in action_data.ids if isinstance(team_id, int)]
-        if not team_ids:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"success": False, "error": "请选择要转移的 Team"}
-            )
-
-        target_pool_type = "welfare" if action_data.target_pool_type == "welfare" else "normal"
-        logger.info(
-            "管理员批量转移 Team 池类型: count=%s, target=%s",
-            len(team_ids),
-            target_pool_type,
-        )
-
-        result = await team_service.batch_transfer_pool(
-            ids=team_ids,
-            target_pool_type=target_pool_type,
-            db_session=db,
-        )
-
-        if not result.get("success"):
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content=result,
-            )
-
-        return JSONResponse(content=result)
-    except Exception:
-        logger.exception("批量转移 Team 池类型失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "操作失败，请稍后重试"}
-        )
-
-
-# ==================== 兑换码管理路由 ====================
-
-@router.get("/codes", response_class=HTMLResponse)
-async def codes_list_page(
-    request: Request,
-    page: int = 1,
-    per_page: int = 50,
-    search: Optional[str] = None,
-    status_filter: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """
-    兑换码列表页面
-
-    Args:
-        request: FastAPI Request 对象
-        page: 页码
-        per_page: 每页数量
-        search: 搜索关键词
-        status_filter: 状态筛选
-        db: 数据库会话
-        current_user: 当前用户（需要登录）
-
-    Returns:
-        兑换码列表页面 HTML
-    """
-    try:
-        from app.main import templates
-
-        logger.info(f"管理员访问兑换码列表页面, search={search}, status={status_filter}, per_page={per_page}")
-
-        # 获取兑换码 (分页)
-        # per_page = 50 (Removed hardcoded value)
-        codes_result = await redemption_service.get_all_codes(
-            db, page=page, per_page=per_page, search=search, status=status_filter, pool_type="normal"
-        )
-        codes = codes_result.get("codes", [])
-        total_codes = codes_result.get("total", 0)
-        total_pages = codes_result.get("total_pages", 1)
-        current_page = codes_result.get("current_page", 1)
-
-        # 获取统计信息
-        stats = await redemption_service.get_stats(db, pool_type="normal")
-        # 兼容旧模版中的 status 统计名 (unused/used/expired)
-        # 注意: get_stats 返回的 used 已经包含了 warranty_active
-
-        # 格式化日期时间
-        from datetime import datetime
-        for code in codes:
-            if code.get("created_at"):
-                dt = datetime.fromisoformat(code["created_at"])
-                code["created_at"] = dt.strftime("%Y-%m-%d %H:%M")
-            if code.get("expires_at"):
-                dt = datetime.fromisoformat(code["expires_at"])
-                code["expires_at"] = dt.strftime("%Y-%m-%d %H:%M")
-            if code.get("used_at"):
-                dt = datetime.fromisoformat(code["used_at"])
-                code["used_at"] = dt.strftime("%Y-%m-%d %H:%M")
-
-        context = await build_admin_base_context(request, db, current_user, "codes")
-        context.update({
-            "codes": codes,
-            "stats": stats,
-            "search": search,
-            "status_filter": status_filter,
-            "pagination": {
-                "current_page": current_page,
-                "total_pages": total_pages,
-                "total": total_codes,
-                "per_page": per_page
-            }
-        })
-        return templates.TemplateResponse(
-            request,
-            "admin/codes/index.html",
-            context,
-        )
-
-    except Exception as e:
-        logger.exception("加载兑换码列表页面失败")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="加载页面失败，请稍后重试"
-        )
-
-
-@router.get("/codes/list")
-async def codes_list(
-    page: int = 1,
-    per_page: int = 50,
-    search: Optional[str] = None,
-    status_filter: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin),
-):
-    codes_result = await redemption_service.get_all_codes(
-        db, page=page, per_page=per_page, search=search, status=status_filter, pool_type="normal"
-    )
-    if not codes_result.get("success"):
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"success": False, "error": codes_result.get("error") or "获取兑换码失败", "codes": []},
-        )
-    stats = await redemption_service.get_stats(db, pool_type="normal")
-    return {
-        "success": True,
-        "codes": codes_result.get("codes", []),
-        "stats": stats,
-        "search": search or "",
-        "status_filter": status_filter or "",
-        "pagination": {
-            "current_page": codes_result.get("current_page", page),
-            "total_pages": codes_result.get("total_pages", 1),
-            "total": codes_result.get("total", 0),
-            "per_page": per_page,
-        },
-    }
-
-
-
-
-@router.post("/codes/generate")
-async def generate_codes(
-    generate_data: CodeGenerateRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """
-    处理兑换码生成
-
-    Args:
-        generate_data: 生成数据
-        db: 数据库会话
-        current_user: 当前用户（需要登录）
-
-    Returns:
-        生成结果
-    """
-    try:
-        logger.info(f"管理员生成兑换码: {generate_data.type}")
-
-        if generate_data.type == "single":
-            # 单个生成
-            result = await redemption_service.generate_code_single(
-                db_session=db,
-                code=generate_data.code,
-                expires_days=generate_data.expires_days,
-                has_warranty=generate_data.has_warranty,
-                warranty_days=generate_data.warranty_days,
-                pool_type="normal"
-            )
-
-            if not result["success"]:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content=result
-                )
-
-            return JSONResponse(content=result)
-
-        elif generate_data.type == "batch":
-            # 批量生成
-            if not generate_data.count:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={
-                        "success": False,
-                        "error": "生成数量不能为空"
-                    }
-                )
-
-            result = await redemption_service.generate_code_batch(
-                db_session=db,
-                count=generate_data.count,
-                expires_days=generate_data.expires_days,
-                has_warranty=generate_data.has_warranty,
-                warranty_days=generate_data.warranty_days,
-                pool_type="normal"
-            )
-
-            if not result["success"]:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content=result
-                )
-
-            return JSONResponse(content=result)
-
-        else:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "success": False,
-                    "error": "无效的生成类型"
-                }
-            )
-
-    except Exception as e:
-        logger.exception("生成兑换码失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "success": False,
-                "error": "生成失败，请稍后重试"
-            }
-        )
-
-
-@router.post("/codes/{code}/delete")
-async def delete_code(
-    code: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """
-    删除兑换码
-
-    Args:
-        code: 兑换码
-        db: 数据库会话
-        current_user: 当前用户（需要登录）
-
-    Returns:
-        删除结果
-    """
-    try:
-        logger.info(f"管理员删除兑换码: {code}")
-
-        result = await redemption_service.delete_code(code, db)
-
-        if not result["success"]:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content=result
-            )
-
-        return JSONResponse(content=result)
-
-    except Exception as e:
-        logger.exception("删除兑换码失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "success": False,
-                "error": "删除失败，请稍后重试"
-            }
-        )
-
-
-@router.get("/codes/invalid/scan")
-async def scan_invalid_codes(
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """扫描可安全清理的无效兑换码。"""
-    try:
-        result = await redemption_service.get_invalid_code_candidates(db, pool_type="normal")
-        status_code = status.HTTP_200_OK if result["success"] else status.HTTP_400_BAD_REQUEST
-        return JSONResponse(status_code=status_code, content=result)
-    except Exception:
-        logger.exception("扫描无效兑换码失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "扫描无效兑换码失败，请稍后重试"}
-        )
-
-
-@router.post("/codes/invalid/cleanup")
-async def cleanup_invalid_codes(
-    cleanup_data: InvalidCodeCleanupRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """批量清理扫描出的无效兑换码。"""
-    try:
-        result = await redemption_service.cleanup_invalid_codes(
-            cleanup_data.codes,
-            db,
-            pool_type="normal"
-        )
-        status_code = status.HTTP_200_OK if result["success"] else status.HTTP_400_BAD_REQUEST
-        return JSONResponse(status_code=status_code, content=result)
-    except Exception:
-        logger.exception("清理无效兑换码失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "清理无效兑换码失败，请稍后重试"}
-        )
-
-
-@router.get("/codes/export")
-async def export_codes(
-    search: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """
-    导出兑换码为Excel文件
-
-    Args:
-        search: 搜索关键词
-        db: 数据库会话
-        current_user: 当前用户（需要登录）
-
-    Returns:
-        兑换码Excel文件
-    """
-    try:
-        from fastapi.responses import Response
-        from datetime import datetime
-        import xlsxwriter
-        from io import BytesIO
-
-        logger.info("管理员导出兑换码为Excel")
-
-        # 获取所有兑换码 (导出不分页，传入大数量)
-        codes_result = await redemption_service.get_all_codes(db, page=1, per_page=100000, search=search, pool_type="normal")
-        all_codes = codes_result.get("codes", [])
-        
-        # 结果可能带统计信息，我们只取 codes
-
-        # 创建Excel文件到内存
-        output = BytesIO()
-        workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-        worksheet = workbook.add_worksheet('兑换码列表')
-
-        # 定义格式
-        header_format = workbook.add_format({
-            'bold': True,
-            'fg_color': '#4F46E5',
-            'font_color': 'white',
-            'align': 'center',
-            'valign': 'vcenter',
-            'border': 1
-        })
-
-        cell_format = workbook.add_format({
-            'align': 'left',
-            'valign': 'vcenter',
-            'border': 1
-        })
-
-        # 设置列宽
-        worksheet.set_column('A:A', 25)  # 兑换码
-        worksheet.set_column('B:B', 12)  # 状态
-        worksheet.set_column('C:C', 18)  # 创建时间
-        worksheet.set_column('D:D', 18)  # 过期时间
-        worksheet.set_column('E:E', 30)  # 使用者邮箱
-        worksheet.set_column('F:F', 18)  # 使用时间
-        worksheet.set_column('G:G', 12)  # 质保时长
-
-        # 写入表头
-        headers = ['兑换码', '状态', '创建时间', '过期时间', '使用者邮箱', '使用时间', '质保时长(天)']
-        for col, header in enumerate(headers):
-            worksheet.write(0, col, header, header_format)
-
-        # 写入数据
-        for row, code in enumerate(all_codes, start=1):
-            status_text = {
-                'unused': '未使用',
-                'used': '已使用',
-                'warranty_active': '质保中',
-                'expired': '已过期'
-            }.get(code['status'], code['status'])
-
-            worksheet.write(row, 0, code['code'], cell_format)
-            worksheet.write(row, 1, status_text, cell_format)
-            worksheet.write(row, 2, code.get('created_at', '-'), cell_format)
-            worksheet.write(row, 3, code.get('expires_at', '永久有效'), cell_format)
-            worksheet.write(row, 4, code.get('used_by_email', '-'), cell_format)
-            worksheet.write(row, 5, code.get('used_at', '-'), cell_format)
-            worksheet.write(row, 6, code.get('warranty_days', '-') if code.get('has_warranty') else '-', cell_format)
-
-        # 关闭workbook
-        workbook.close()
-
-        # 获取Excel数据
-        excel_data = output.getvalue()
-        output.close()
-
-        # 生成文件名
-        filename = f"redemption_codes_{get_now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-
-        # 返回Excel文件
-        return Response(
-            content=excel_data,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-
-    except Exception as e:
-        logger.exception("导出兑换码失败")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="导出失败，请稍后重试"
-        )
-
-
-@router.post("/codes/{code}/update")
-async def update_code(
-    code: str,
-    update_data: CodeUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """更新兑换码信息"""
-    try:
-        result = await redemption_service.update_code(
-            code=code,
-            db_session=db,
-            has_warranty=update_data.has_warranty,
-            warranty_days=update_data.warranty_days
-        )
-        if not result["success"]:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content=result
-            )
-        return JSONResponse(content=result)
-    except Exception as e:
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "操作失败，请稍后重试"}
-        )
-
-
-@router.post("/codes/bulk-update")
-async def bulk_update_codes(
-    update_data: BulkCodeUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """批量更新兑换码信息"""
-    try:
-        result = await redemption_service.bulk_update_codes(
-            codes=update_data.codes,
-            db_session=db,
-            has_warranty=update_data.has_warranty,
-            warranty_days=update_data.warranty_days
-        )
-        if not result["success"]:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content=result
-            )
-        return JSONResponse(content=result)
-    except Exception as e:
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "操作失败，请稍后重试"}
-        )
-
-
-@router.post("/codes/batch-delete")
-async def batch_delete_codes(
-    delete_data: BulkCodeDeleteRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """批量删除兑换码。"""
-    try:
-        result = await redemption_service.bulk_delete_codes(delete_data.codes, db)
-        status_code = status.HTTP_200_OK if result.get("success") else status.HTTP_400_BAD_REQUEST
-        return JSONResponse(status_code=status_code, content=result)
-    except Exception:
-        logger.exception("批量删除兑换码失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "批量删除失败，请稍后重试"}
-        )
-
-
-@router.get("/records", response_class=HTMLResponse)
-async def records_page(
-    request: Request,
-    email: Optional[str] = None,
-    code: Optional[str] = None,
-    team_id: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    page: Optional[str] = "1",
-    per_page: int = 20,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """
-    使用记录页面
-
-    Args:
-        request: FastAPI Request 对象
-        email: 邮箱筛选
-        code: 兑换码筛选
-        team_id: Team ID 筛选
-        start_date: 开始日期
-        end_date: 结束日期
-        page: 页码
-        per_page: 每页数量
-        db: 数据库会话
-        current_user: 当前用户（需要登录）
-
-    Returns:
-        使用记录页面 HTML
-    """
-    try:
-        from app.main import templates
-        from datetime import datetime, timedelta
-        import math
-
-        # 解析参数
-        try:
-            actual_team_id = int(team_id) if team_id and team_id.strip() else None
-        except (ValueError, TypeError):
-            actual_team_id = None
-            
-        try:
-            page_int = int(page) if page and page.strip() else 1
-        except (ValueError, TypeError):
-            page_int = 1
-            
-        logger.info(f"管理员访问使用记录页面 (page={page_int}, per_page={per_page})")
-
-        # 获取记录 (支持邮箱、兑换码、Team ID 筛选)
-        records_result = await redemption_service.get_all_records(
-            db, 
-            email=email, 
-            code=code, 
-            team_id=actual_team_id
-        )
-        all_records = records_result.get("records", [])
-
-        # 仅由于日期范围筛选目前还在内存中处理，如果未来记录数极大可以移至数据库
-        filtered_records = []
-        for record in all_records:
-            # 日期范围筛选
-            if start_date or end_date:
-                try:
-                    record_date = datetime.fromisoformat(record["redeemed_at"]).date()
-
-                    if start_date:
-                        start = datetime.strptime(start_date, "%Y-%m-%d").date()
-                        if record_date < start:
-                            continue
-
-                    if end_date:
-                        end = datetime.strptime(end_date, "%Y-%m-%d").date()
-                        if record_date > end:
-                            continue
-                except:
-                    pass
-
-            filtered_records.append(record)
-
-        # 获取Team信息并关联到记录
-        teams_result = await team_service.get_all_teams(db)
-        teams = teams_result.get("teams", [])
-        team_map = {team["id"]: team for team in teams}
-
-        # 为记录添加Team名称
-        for record in filtered_records:
-            team = team_map.get(record["team_id"])
-            record["team_name"] = team["team_name"] if team else None
-
-        # 计算统计数据
-        now = get_now()
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today_start - timedelta(days=today_start.weekday())
-        month_start = today_start.replace(day=1)
-
-        stats = {
-            "total": len(filtered_records),
-            "today": 0,
-            "this_week": 0,
-            "this_month": 0
-        }
-
-        for record in filtered_records:
-            try:
-                record_time = datetime.fromisoformat(record["redeemed_at"])
-                if record_time >= today_start:
-                    stats["today"] += 1
-                if record_time >= week_start:
-                    stats["this_week"] += 1
-                if record_time >= month_start:
-                    stats["this_month"] += 1
-            except:
-                pass
-
-        # 分页
-        # per_page = 20 (Removed hardcoded value)
-        total_records = len(filtered_records)
-        total_pages = math.ceil(total_records / per_page) if total_records > 0 else 1
-
-        # 确保页码有效
-        if page_int < 1:
-            page_int = 1
-        if page_int > total_pages:
-            page_int = total_pages
-
-        start_idx = (page_int - 1) * per_page
-        end_idx = start_idx + per_page
-        paginated_records = filtered_records[start_idx:end_idx]
-
-        # 格式化时间
-        for record in paginated_records:
-            try:
-                dt = datetime.fromisoformat(record["redeemed_at"])
-                record["redeemed_at"] = dt.strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                pass
-
-        context = await build_admin_base_context(request, db, current_user, "records")
-        context.update({
-            "records": paginated_records,
-            "stats": stats,
-            "filters": {
-                "email": email,
-                "code": code,
-                "team_id": team_id,
-                "start_date": start_date,
-                "end_date": end_date
-            },
-            "pagination": {
-                "current_page": page_int,
-                "total_pages": total_pages,
-                "total": total_records,
-                "per_page": per_page
-            }
-        })
-        return templates.TemplateResponse(
-            request,
-            "admin/records/index.html",
-            context,
-        )
-
-    except Exception as e:
-        logger.exception("获取使用记录失败")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="获取使用记录失败，请稍后重试"
-        )
-
-
-@router.post("/records/{record_id}/withdraw")
-async def withdraw_record(
-    record_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """
-    撤中使用记录 (管理员功能)
-
-    Args:
-        record_id: 记录 ID
-        db: 数据库会话
-        current_user: 当前用户（需要登录）
-
-    Returns:
-        结果 JSON
-    """
-    try:
-        logger.info(f"管理员请求撤回记录: {record_id}")
-        result = await redemption_service.withdraw_record(record_id, db)
-
-        if not result["success"]:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content=result
-            )
-
-        return JSONResponse(content=result)
-
-    except Exception as e:
-        logger.exception("撤回记录失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "success": False,
-                "error": "撤回失败，请稍后重试"
-            }
-        )
-
-
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(
     request: Request,
@@ -2394,16 +1404,6 @@ async def settings_page(
             "periodic_team_sync_enabled": await settings_service.get_setting(db, "periodic_team_sync_enabled", "true"),
             "periodic_team_sync_interval_hours": await settings_service.get_setting(db, "periodic_team_sync_interval_hours", "12"),
             "periodic_team_sync_days": await settings_service.get_setting(db, "periodic_team_sync_days", "7"),
-            "warranty_auto_kick_enabled": await settings_service.get_setting(db, "warranty_auto_kick_enabled", "false"),
-            "warranty_auto_kick_enabled_since": await settings_service.get_setting(db, "warranty_auto_kick_enabled_since", ""),
-            "warranty_auto_kick_interval_hours": await settings_service.get_setting(db, "warranty_auto_kick_interval_hours", "12"),
-            "warranty_renewal_reminder_days": await settings_service.get_setting(db, "warranty_renewal_reminder_days", "7"),
-            "auto_kick_usage_period_days": await settings_service.get_setting(db, "auto_kick_usage_period_days", "30"),
-            "auto_kick_unauthorized_enabled": await settings_service.get_setting(db, "auto_kick_unauthorized_enabled", "false"),
-            "auto_kick_unauthorized_enabled_since": await settings_service.get_setting(db, "auto_kick_unauthorized_enabled_since", ""),
-            "auto_kick_admin_invited_enabled": await settings_service.get_setting(db, "auto_kick_admin_invited_enabled", "false"),
-            "auto_kick_admin_invited_enabled_since": await settings_service.get_setting(db, "auto_kick_admin_invited_enabled_since", ""),
-            "auto_kick_admin_invited_period_days": await settings_service.get_setting(db, "auto_kick_admin_invited_period_days", "30"),
             "default_team_max_members": await settings_service.get_setting(db, "default_team_max_members", "6"),
             "cliproxyapi_base_url": await settings_service.get_setting(db, "cliproxyapi_base_url", ""),
             "cliproxyapi_api_key": await settings_service.get_setting(db, "cliproxyapi_api_key", ""),
@@ -2426,7 +1426,6 @@ async def settings_page(
             "sms_cooldown_sec": await settings_service.get_setting(db, "sms_cooldown_sec", "1200"),
             "sms_reserve_sec": await settings_service.get_setting(db, "sms_reserve_sec", "180"),
             "sms_max_phone_retries": await settings_service.get_setting(db, "sms_max_phone_retries", "3"),
-            "warranty_expiration_mode": await settings_service.get_warranty_expiration_mode(db),
             "ui_theme": settings_service.normalize_ui_theme(await settings_service.get_setting(db, "ui_theme", DEFAULT_UI_THEME)),
             "ui_style": settings_service.normalize_ui_style(await settings_service.get_setting(db, "ui_style", DEFAULT_UI_STYLE)),
             "usage_probe_enabled": await settings_service.get_setting(db, "usage_probe_enabled", "true"),
@@ -2519,39 +1518,6 @@ class TeamAutoRefreshSettingsRequest(BaseModel):
     refresh_interval_days: int = Field(7, ge=1, le=30, description="同步周期（天）")
 
 
-class WarrantyAutoKickSettingsRequest(BaseModel):
-    """兑换码过期自动踢人设置请求"""
-    enabled: bool = Field(False, description="是否启用兑换码过期自动踢人")
-    interval_hours: int = Field(12, ge=1, le=168, description="检查间隔（小时）")
-    renewal_reminder_days: int = Field(7, ge=1, le=30, description="距离质保结束多少天内提醒续期")
-    usage_period_days: int = Field(
-        30,
-        ge=1,
-        le=3650,
-        description="无质保兑换码的使用期限（天）；用于自动踢人判定，不影响质保码（质保码按 warranty_days 计算）",
-    )
-    unauthorized_enabled: bool = Field(
-        False,
-        description=(
-            "是否启用'非授权成员清退'：仅清退该开关启用之后新加入、无兑换记录、"
-            "且非后台手工邀请的成员。开启之前已经存在的成员永远豁免。"
-        ),
-    )
-    admin_invited_enabled: bool = Field(
-        False,
-        description=(
-            "是否启用'后台邀请成员过期踢人'：仅扫该开关启用之后新发出的后台邀请，"
-            "超过 admin_invited_period_days 天未补发邀请则踢除。开启之前已经邀请的成员永远豁免。"
-        ),
-    )
-    admin_invited_period_days: int = Field(
-        30,
-        ge=1,
-        le=3650,
-        description="后台邀请成员的使用期限（天）；超过该期限未补发邀请则踢除",
-    )
-
-
 class UsageProbeSettingsRequest(BaseModel):
     """Sub2API 额度错峰探测设置。第 2/3 层默认关，保存后才注册任务。强制补位始终关。"""
     enabled: bool = Field(True, description="是否启用额度错峰探测")
@@ -2562,14 +1528,6 @@ class UsageProbeSettingsRequest(BaseModel):
     scan_minutes: int = Field(2, ge=1, le=10, description="扫描器检查间隔（分钟）")
     auto_reauth_enabled: bool = Field(False, description="第 2 层：401 自动重授权，必须默认关")
     auto_rotate_enabled: bool = Field(False, description="第 3 层：封禁/周限满踢拉，必须默认关")
-
-
-class WarrantyExpirationSettingsRequest(BaseModel):
-    """质保时长计算模式设置请求"""
-    expiration_mode: Literal["first_use", "refresh_on_redeem"] = Field(
-        DEFAULT_WARRANTY_EXPIRATION_MODE,
-        description="质保时长计算模式"
-    )
 
 
 class UiThemeSettingsRequest(BaseModel):
@@ -2586,20 +1544,6 @@ class AdminProfileRequest(BaseModel):
     """管理员个人资料更新请求"""
     nickname: str = Field("", max_length=32, description="昵称")
     avatar: str = Field("", description="头像 data URL（image/* base64）；空字符串表示清除")
-
-
-class AnnouncementUpdateRequest(BaseModel):
-    """公告配置请求"""
-    enabled: bool = Field(False, description="是否启用公告")
-    markdown: str = Field("", description="公告 Markdown 内容")
-
-
-class RenewalRequestAction(BaseModel):
-    """续期请求处理请求"""
-    extension_days: Optional[int] = Field(None, ge=1, le=365, description="续期天数")
-    # admin_note 限长 500，避免 admin 误粘大段日志撑大数据库行；
-    # 同时 service 层会在销毁兑换码时往 admin_note 追加销毁标记，留余量。
-    admin_note: str = Field("", max_length=500, description="管理员备注")
 
 
 @router.get("/settings/ui-theme")
@@ -2745,209 +1689,6 @@ async def update_admin_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": "保存失败，请稍后重试"}
         )
-
-@router.get("/announcement", response_class=HTMLResponse)
-async def announcement_page(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """公告通知配置页面。"""
-    try:
-        from app.main import templates
-        from app.services.settings import settings_service
-
-        logger.info("管理员访问公告通知页面")
-
-        enabled_raw = await settings_service.get_setting(db, "announcement_enabled", "false")
-        announcement_enabled = str(enabled_raw).lower() in {"1", "true", "yes", "on"}
-        announcement_markdown = await settings_service.get_setting(db, "announcement_markdown", "")
-
-        context = await build_admin_base_context(request, db, current_user, "announcement")
-        context.update({
-            "announcement_enabled": announcement_enabled,
-            "announcement_markdown": announcement_markdown,
-        })
-        return templates.TemplateResponse(
-            request,
-            "admin/announcement/index.html",
-            context,
-        )
-    except Exception as e:
-        logger.exception("获取公告设置失败")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="获取公告设置失败，请稍后重试"
-        )
-
-
-@router.post("/announcement")
-async def update_announcement(
-    payload: AnnouncementUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """保存公告配置。"""
-    try:
-        from app.services.settings import settings_service
-
-        settings_payload = {
-            "announcement_enabled": "true" if payload.enabled else "false",
-            "announcement_markdown": payload.markdown.strip(),
-        }
-        success = await settings_service.update_settings(db, settings_payload)
-
-        if success:
-            return JSONResponse(content={"success": True, "message": "公告已保存"})
-
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "保存失败"}
-        )
-    except Exception as e:
-        logger.exception("保存公告设置失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "保存失败，请稍后重试"}
-        )
-
-
-@router.get("/renewal-requests", response_class=HTMLResponse)
-async def renewal_requests_page(
-    request: Request,
-    status_filter: Optional[Literal["pending", "extended", "ignored"]] = "pending",
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """待处理续期任务页面。"""
-    try:
-        from app.main import templates
-
-        result = await warranty_service.get_renewal_requests(db, status_filter=status_filter)
-        if not result.get("success"):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=result.get("error") or "获取续期请求失败",
-            )
-
-        context = await build_admin_base_context(request, db, current_user, "renewal_requests")
-        context.update({
-            "renewal_requests": result.get("requests", []),
-            "stats": {
-                "total": result.get("total", 0),
-                "pending": result.get("pending_count", 0),
-                "extended": sum(1 for item in result.get("requests", []) if item.get("status") == "extended"),
-                "ignored": sum(1 for item in result.get("requests", []) if item.get("status") == "ignored"),
-            },
-            "status_filter": status_filter,
-        })
-        return templates.TemplateResponse(
-            request,
-            "admin/renewal_requests/index.html",
-            context,
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("获取续期任务页面失败")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="获取续期任务页面失败，请稍后重试",
-        )
-
-
-@router.get("/renewal-requests/pending-count")
-async def renewal_requests_pending_count(
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin),
-):
-    """轻量级"待处理任务"计数：供前端定时同步顶栏 badge，避免多标签页错位。"""
-    try:
-        count = await get_pending_renewal_request_count(db)
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={"success": True, "pending_count": count},
-        )
-    except Exception:
-        logger.exception("获取待处理续期任务数量失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "获取待处理任务数量失败"},
-        )
-
-
-@router.get("/renewal-requests/api")
-async def renewal_requests_api(
-    status_filter: Optional[Literal["pending", "extended", "ignored"]] = "pending",
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin),
-):
-    """续期请求 JSON 列表，供右上角"待处理任务"弹窗实时拉取。"""
-    try:
-        result = await warranty_service.get_renewal_requests(db, status_filter=status_filter)
-        if not result.get("success"):
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"success": False, "error": result.get("error") or "获取续期请求失败"},
-            )
-        return JSONResponse(status_code=status.HTTP_200_OK, content=result)
-    except Exception:
-        logger.exception("获取续期请求列表失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "获取续期请求列表失败，请稍后重试"},
-        )
-
-
-@router.post("/renewal-requests/{request_id}/extend")
-async def extend_renewal_request(
-    request_id: int,
-    payload: RenewalRequestAction,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """续期请求立即生效。"""
-    try:
-        extension_days = int(payload.extension_days or 0)
-        result = await warranty_service.extend_warranty_request(
-            db,
-            request_id=request_id,
-            extension_days=extension_days,
-            admin_note=payload.admin_note,
-        )
-        status_code = status.HTTP_200_OK if result.get("success") else status.HTTP_400_BAD_REQUEST
-        return JSONResponse(status_code=status_code, content=result)
-    except Exception:
-        logger.exception("处理续期请求失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "处理续期请求失败，请稍后重试"},
-        )
-
-
-@router.post("/renewal-requests/{request_id}/ignore")
-async def ignore_renewal_request(
-    request_id: int,
-    payload: RenewalRequestAction,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """忽略续期请求。"""
-    try:
-        result = await warranty_service.ignore_renewal_request(
-            db,
-            request_id=request_id,
-            admin_note=payload.admin_note,
-        )
-        status_code = status.HTTP_200_OK if result.get("success") else status.HTTP_400_BAD_REQUEST
-        return JSONResponse(status_code=status_code, content=result)
-    except Exception:
-        logger.exception("忽略续期请求失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "忽略续期请求失败，请稍后重试"},
-        )
-
 
 @router.post("/settings/proxy")
 async def update_proxy_config(
@@ -3206,186 +1947,6 @@ async def update_team_auto_refresh_settings(
         )
     except Exception as e:
         logger.exception("更新 Team 自动刷新设置失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "更新失败，请稍后重试"}
-        )
-
-
-@router.post("/settings/warranty")
-async def update_warranty_settings(
-    warranty_data: WarrantyExpirationSettingsRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """更新质保时长计算模式。"""
-    try:
-        expiration_mode = settings_service.normalize_warranty_expiration_mode(
-            warranty_data.expiration_mode
-        )
-        logger.info("管理员更新质保计算模式: %s", expiration_mode)
-
-        success = await settings_service.update_setting(
-            db,
-            "warranty_expiration_mode",
-            expiration_mode,
-        )
-        if not success:
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"success": False, "error": "保存失败"}
-            )
-
-        message = (
-            "质保设置已保存：按首次使用时间计算质保期"
-            if expiration_mode == DEFAULT_WARRANTY_EXPIRATION_MODE
-            else "质保设置已保存：质保重兑成功后刷新完整质保期"
-        )
-        return JSONResponse(
-            content={
-                "success": True,
-                "message": message,
-                "expiration_mode": expiration_mode,
-            }
-        )
-    except Exception as e:
-        logger.exception("更新质保设置失败")
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "error": "更新失败，请稍后重试"}
-        )
-
-
-@router.post("/settings/warranty-auto-kick")
-async def update_warranty_auto_kick_settings(
-    auto_kick_data: WarrantyAutoKickSettingsRequest,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_admin)
-):
-    """更新兑换码过期自动踢人设置。"""
-    try:
-        from app.main import configure_warranty_auto_kick_job
-        from app.utils.time_utils import get_now
-
-        logger.info(
-            "管理员更新自动踢人配置: enabled=%s, interval_hours=%s, reminder_days=%s, usage_period_days=%s, unauthorized_enabled=%s, admin_invited_enabled=%s, admin_invited_period_days=%s",
-            auto_kick_data.enabled,
-            auto_kick_data.interval_hours,
-            auto_kick_data.renewal_reminder_days,
-            auto_kick_data.usage_period_days,
-            auto_kick_data.unauthorized_enabled,
-            auto_kick_data.admin_invited_enabled,
-            auto_kick_data.admin_invited_period_days,
-        )
-
-        # 处理"兑换码过期自动踢人"主开关：仅在 false→true 翻转时记录启用时间戳。
-        # 启用时间戳用于豁免"开关启用之前就已经使用的兑换码"，避免对老用户突然生效。
-        prev_main_raw = await settings_service.get_setting(
-            db, "warranty_auto_kick_enabled", "false"
-        )
-        prev_main = str(prev_main_raw).strip().lower() in ("1", "true", "yes", "on")
-        new_main = bool(auto_kick_data.enabled)
-
-        # 处理"非授权成员清退"开关：仅在 false→true 翻转时记录启用时间戳。
-        prev_unauth_raw = await settings_service.get_setting(
-            db, "auto_kick_unauthorized_enabled", "false"
-        )
-        prev_unauth = str(prev_unauth_raw).strip().lower() in ("1", "true", "yes", "on")
-        new_unauth = bool(auto_kick_data.unauthorized_enabled)
-
-        # 处理"后台邀请过期踢人"开关：同样仅在 false→true 翻转时记录启用时间戳。
-        prev_admin_inv_raw = await settings_service.get_setting(
-            db, "auto_kick_admin_invited_enabled", "false"
-        )
-        prev_admin_inv = str(prev_admin_inv_raw).strip().lower() in ("1", "true", "yes", "on")
-        new_admin_inv = bool(auto_kick_data.admin_invited_enabled)
-
-        settings_to_save = {
-            "warranty_auto_kick_enabled": str(auto_kick_data.enabled).lower(),
-            "warranty_auto_kick_interval_hours": str(auto_kick_data.interval_hours),
-            "warranty_renewal_reminder_days": str(auto_kick_data.renewal_reminder_days),
-            "auto_kick_usage_period_days": str(auto_kick_data.usage_period_days),
-            "auto_kick_unauthorized_enabled": str(new_unauth).lower(),
-            "auto_kick_admin_invited_enabled": str(new_admin_inv).lower(),
-            "auto_kick_admin_invited_period_days": str(auto_kick_data.admin_invited_period_days),
-        }
-
-        # 关→开：写入新的启用时间戳；其它情形（保持开 / 保持关 / 开→关）不动 since。
-        if new_main and not prev_main:
-            settings_to_save["warranty_auto_kick_enabled_since"] = get_now().isoformat()
-        if new_unauth and not prev_unauth:
-            settings_to_save["auto_kick_unauthorized_enabled_since"] = get_now().isoformat()
-        if new_admin_inv and not prev_admin_inv:
-            settings_to_save["auto_kick_admin_invited_enabled_since"] = get_now().isoformat()
-
-        success = await settings_service.update_settings(db, settings_to_save)
-        if not success:
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"success": False, "error": "保存失败"}
-            )
-
-        applied_interval = configure_warranty_auto_kick_job(
-            auto_kick_data.enabled,
-            auto_kick_data.interval_hours,
-        )
-
-        message_parts = []
-        if auto_kick_data.enabled:
-            if new_main and not prev_main:
-                message_parts.append(
-                    f"自动踢人已启用（每 {applied_interval} 小时检查一次）；开关启用前已使用的兑换码永久豁免"
-                )
-            else:
-                message_parts.append(f"自动踢人配置已保存（每 {applied_interval} 小时检查一次）")
-        else:
-            message_parts.append("过期自动踢人已关闭")
-        if new_unauth and not prev_unauth:
-            message_parts.append("非授权成员清退已启用，仅清退此后新加入的非授权成员")
-        elif not new_unauth and prev_unauth:
-            message_parts.append("非授权成员清退已关闭")
-        if new_admin_inv and not prev_admin_inv:
-            message_parts.append(
-                f"后台邀请过期踢人已启用，仅扫此后新发出的邀请，期限 {auto_kick_data.admin_invited_period_days} 天"
-            )
-        elif not new_admin_inv and prev_admin_inv:
-            message_parts.append("后台邀请过期踢人已关闭")
-        message = "；".join(message_parts)
-
-        main_since_value = settings_to_save.get("warranty_auto_kick_enabled_since")
-        if main_since_value is None:
-            main_since_value = await settings_service.get_setting(
-                db, "warranty_auto_kick_enabled_since", ""
-            )
-        enabled_since_value = settings_to_save.get("auto_kick_unauthorized_enabled_since")
-        if enabled_since_value is None:
-            enabled_since_value = await settings_service.get_setting(
-                db, "auto_kick_unauthorized_enabled_since", ""
-            )
-        admin_inv_since_value = settings_to_save.get("auto_kick_admin_invited_enabled_since")
-        if admin_inv_since_value is None:
-            admin_inv_since_value = await settings_service.get_setting(
-                db, "auto_kick_admin_invited_enabled_since", ""
-            )
-
-        return JSONResponse(
-            content={
-                "success": True,
-                "message": message,
-                "enabled": auto_kick_data.enabled,
-                "enabled_since": main_since_value or None,
-                "interval_hours": applied_interval,
-                "renewal_reminder_days": auto_kick_data.renewal_reminder_days,
-                "usage_period_days": auto_kick_data.usage_period_days,
-                "unauthorized_enabled": new_unauth,
-                "unauthorized_enabled_since": enabled_since_value or None,
-                "admin_invited_enabled": new_admin_inv,
-                "admin_invited_enabled_since": admin_inv_since_value or None,
-                "admin_invited_period_days": auto_kick_data.admin_invited_period_days,
-            }
-        )
-    except Exception:
-        logger.exception("更新质保过期自动踢人设置失败")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": "更新失败，请稍后重试"}

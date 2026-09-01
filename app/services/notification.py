@@ -4,7 +4,6 @@ import asyncio
 from typing import Optional, Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.settings import settings_service
-from app.services.redemption import RedemptionService
 from app.services.team import team_service
 from app.database import AsyncSessionLocal
 from app.utils.proxy import build_httpx_proxy
@@ -13,9 +12,6 @@ logger = logging.getLogger(__name__)
 
 class NotificationService:
     """通知服务类"""
-
-    def __init__(self):
-        self.redemption_service = RedemptionService()
 
     async def check_and_notify_low_stock(self) -> bool:
         """

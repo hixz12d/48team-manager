@@ -37,9 +37,9 @@
     {% block extra_css %}{% endblock %}
 </head>
 
-<body class="bg-gray-50 text-slate-900 admin-theme theme-{{ ui_theme|default('ocean') }} style-{{ ui_style|default('cartoon') }}{% if not user %} auth-page{% endif %}" data-pool-type="{% if active_page == 'welfare' %}welfare{% else %}normal{% endif %}" data-ui-theme="{{ ui_theme|default('ocean') }}" data-ui-style="{{ ui_style|default('cartoon') }}">
+<body class="bg-gray-50 text-slate-900 admin-theme theme-{{ ui_theme|default('ocean') }} style-{{ ui_style|default('cartoon') }}{% if not user %} auth-page{% endif %}" data-pool-type="normal" data-ui-theme="{{ ui_theme|default('ocean') }}" data-ui-style="{{ ui_style|default('cartoon') }}">
     {% if user %}
-    {% set system_active = active_page in ['settings', 'announcement'] %}
+    {% set system_active = active_page == 'settings' %}
     <nav class="navbar">
         <div class="navbar-container">
             <div class="navbar-left">
@@ -221,9 +221,6 @@
         </div>
     </div>
 
-    <script>
-        function openRenewalRequestsModal() {}
-    </script>
     {% endif %}
 
         <!-- 导入 Team 模态框 -->
@@ -243,7 +240,7 @@
 
                 <div id="singleImport" class="import-panel">
                     <form id="singleImportForm" onsubmit="handleSingleImport(event)">
-                        <input type="hidden" name="poolType" value="{% if active_page == 'welfare' %}welfare{% else %}normal{% endif %}">
+                        <input type="hidden" name="poolType" value="normal">
                         <div id="oauthQuickSection" class="import-mode-card oauth-quick-card">
                             <div class="oauth-quick-head">
                                 <label>一键获取 Token</label>
@@ -319,7 +316,7 @@
 
                 <div id="batchImport" class="import-panel" style="display: none;">
                     <form id="batchImportForm" onsubmit="handleBatchImport(event)">
-                        <input type="hidden" name="poolType" value="{% if active_page == 'welfare' %}welfare{% else %}normal{% endif %}">
+                        <input type="hidden" name="poolType" value="normal">
                         <div class="json-import-box" id="jsonImportBox">
                             <input type="file" id="jsonImportFile" accept=".json,application/json" style="display: none;">
                             <div class="json-import-box-title">JSON 文件导入</div>

@@ -22,8 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from contextlib import asynccontextmanager
 # 导入路由
 from app import __version__
-from app.routes import redeem, auth, admin, admin_v2, api, user, warranty, seats
-from app.legacy_sales import is_legacy_sales_path, legacy_gone_response
+from app.routes import auth, admin, admin_v2, api, user, seats
 from app.config import settings
 from app.database import init_db, close_db, AsyncSessionLocal
 from app.services.auth import auth_service
@@ -53,10 +52,6 @@ MIN_PERIODIC_TEAM_SYNC_INTERVAL_HOURS = 1
 MAX_PERIODIC_TEAM_SYNC_INTERVAL_HOURS = 24 * 7
 MIN_PERIODIC_TEAM_SYNC_DAYS = 1
 MAX_PERIODIC_TEAM_SYNC_DAYS = 30
-DEFAULT_WARRANTY_AUTO_KICK_ENABLED = False
-DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS = 12
-MIN_WARRANTY_AUTO_KICK_INTERVAL_HOURS = 1
-MAX_WARRANTY_AUTO_KICK_INTERVAL_HOURS = 24 * 7
 MIN_USAGE_PROBE_SCAN_MINUTES = 1
 MAX_USAGE_PROBE_SCAN_MINUTES = 10
 MIN_AUTO_REAUTH_INTERVAL_MINUTES = 5
@@ -92,10 +87,6 @@ def normalize_periodic_team_sync_interval_hours(interval_hours: int) -> int:
 
 def normalize_periodic_team_sync_days(refresh_interval_days: int) -> int:
     return max(MIN_PERIODIC_TEAM_SYNC_DAYS, min(MAX_PERIODIC_TEAM_SYNC_DAYS, refresh_interval_days))
-
-
-def normalize_warranty_auto_kick_interval_hours(interval_hours: int) -> int:
-    return max(MIN_WARRANTY_AUTO_KICK_INTERVAL_HOURS, min(MAX_WARRANTY_AUTO_KICK_INTERVAL_HOURS, interval_hours))
 
 
 def normalize_usage_probe_scan_minutes(scan_minutes: int) -> int:
@@ -214,21 +205,8 @@ async def configure_proactive_refresh_job_from_settings() -> int:
     return configure_proactive_refresh_job(interval)
 
 
-def configure_warranty_auto_kick_job(enabled: bool, interval_hours: int) -> int:
-    """质保自动踢人已下线，始终移除任务。"""
-    existing_job = scheduler.get_job("warranty_auto_kick")
-    if existing_job:
-        scheduler.remove_job("warranty_auto_kick")
-    return normalize_warranty_auto_kick_interval_hours(interval_hours)
-
-
-async def configure_warranty_auto_kick_job_from_settings() -> tuple[bool, int]:
-    applied_interval = configure_warranty_auto_kick_job(False, DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS)
-    return False, applied_interval
-
-
 def configure_usage_probe_job(enabled: bool, scan_minutes: int) -> int:
-    """配置（或重配置）Sub2API 额度错峰探测任务。与质保自动踢人无关。"""
+    """配置（或重配置）Sub2API 额度错峰探测任务。"""
     normalized_interval = normalize_usage_probe_scan_minutes(scan_minutes)
     existing_job = scheduler.get_job("usage_probe_scan")
 
@@ -428,88 +406,6 @@ async def scheduled_periodic_team_status_sync():
         logger.error(f"Team 周期状态同步任务执行失败: {e}")
 
 
-async def scheduled_warranty_auto_kick():
-    """定时扫描已过期兑换码并自动踢人，并按开关清退非授权成员。"""
-    from app.services.warranty import warranty_service
-
-    try:
-        async with AsyncSessionLocal() as session:
-            stats = await warranty_service.run_warranty_auto_kick(session)
-            if stats.get("success"):
-                logger.info(
-                    "质保自动踢人完成: scanned=%s expired=%s destroyed=%s skipped=%s failed=%s dismissed_renewals=%s",
-                    stats["scanned"],
-                    stats["expired_candidates"],
-                    stats["destroyed"],
-                    stats["skipped"],
-                    stats["failed"],
-                    stats.get("dismissed_renewal_requests", 0),
-                )
-            else:
-                logger.warning(
-                    "质保自动踢人任务部分失败: scanned=%s expired=%s destroyed=%s skipped=%s failed=%s dismissed_renewals=%s error=%s",
-                    stats.get("scanned", 0),
-                    stats.get("expired_candidates", 0),
-                    stats.get("destroyed", 0),
-                    stats.get("skipped", 0),
-                    stats.get("failed", 0),
-                    stats.get("dismissed_renewal_requests", 0),
-                    stats.get("error"),
-                )
-    except Exception as e:
-        logger.error(f"质保自动踢人任务执行失败: {e}")
-
-    # 紧接着跑一次"非授权成员"清退（仅在开关启用时实际执行扫描）。
-    try:
-        async with AsyncSessionLocal() as session:
-            unauth_stats = await warranty_service.run_unauthorized_member_auto_kick(session)
-            if unauth_stats.get("enabled"):
-                if unauth_stats.get("success"):
-                    logger.info(
-                        "非授权成员清退完成: scanned=%s kicked=%s skipped=%s failed=%s",
-                        unauth_stats.get("scanned", 0),
-                        unauth_stats.get("kicked", 0),
-                        unauth_stats.get("skipped", 0),
-                        unauth_stats.get("failed", 0),
-                    )
-                else:
-                    logger.warning(
-                        "非授权成员清退部分失败: scanned=%s kicked=%s skipped=%s failed=%s error=%s",
-                        unauth_stats.get("scanned", 0),
-                        unauth_stats.get("kicked", 0),
-                        unauth_stats.get("skipped", 0),
-                        unauth_stats.get("failed", 0),
-                        unauth_stats.get("error"),
-                    )
-    except Exception as e:
-        logger.error(f"非授权成员清退任务执行失败: {e}")
-
-    # 再跑一次"后台邀请过期"踢人（独立开关，独立期限）。
-    try:
-        async with AsyncSessionLocal() as session:
-            admin_inv_stats = await warranty_service.run_admin_invited_member_auto_kick(session)
-            if admin_inv_stats.get("enabled"):
-                if admin_inv_stats.get("success"):
-                    logger.info(
-                        "后台邀请过期踢人完成: scanned=%s kicked=%s skipped=%s failed=%s",
-                        admin_inv_stats.get("scanned", 0),
-                        admin_inv_stats.get("kicked", 0),
-                        admin_inv_stats.get("skipped", 0),
-                        admin_inv_stats.get("failed", 0),
-                    )
-                else:
-                    logger.warning(
-                        "后台邀请过期踢人部分失败: scanned=%s kicked=%s skipped=%s failed=%s error=%s",
-                        admin_inv_stats.get("scanned", 0),
-                        admin_inv_stats.get("kicked", 0),
-                        admin_inv_stats.get("skipped", 0),
-                        admin_inv_stats.get("failed", 0),
-                        admin_inv_stats.get("error"),
-                    )
-    except Exception as e:
-        logger.error(f"后台邀请过期踢人任务执行失败: {e}")
-
-
 async def scheduled_usage_probe():
     """定时错峰探测 Sub2API usage，额度恢复后清限流锁并打开 schedulable。"""
     from app.services.auto_rotate import auto_rotate_service
@@ -663,10 +559,6 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("Team 周期状态同步任务已禁用")
 
-        configure_warranty_auto_kick_job(False, DEFAULT_WARRANTY_AUTO_KICK_INTERVAL_HOURS)
-        logger.info("质保过期自动踢人任务已下线")
-
-
         usage_probe_enabled, usage_probe_scan = await configure_usage_probe_job_from_settings()
         if usage_probe_enabled:
             logger.info(
@@ -718,12 +610,6 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan
 )
-
-@app.middleware("http")
-async def block_legacy_sales_routes(request: Request, call_next):
-    if is_legacy_sales_path(request.url.path):
-        return legacy_gone_response()
-    return await call_next(request)
 
 # 全局异常处理
 @app.exception_handler(StarletteHTTPException)
@@ -823,8 +709,6 @@ logger = logging.getLogger(__name__)
 
 # 注册路由
 app.include_router(user.router)  # 用户路由(根路径)
-app.include_router(redeem.router)
-app.include_router(warranty.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(admin_v2.router)

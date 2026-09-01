@@ -11,14 +11,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-WARRANTY_EXPIRATION_MODE_FIRST_USE = "first_use"
-WARRANTY_EXPIRATION_MODE_REFRESH_ON_REDEEM = "refresh_on_redeem"
-DEFAULT_WARRANTY_EXPIRATION_MODE = WARRANTY_EXPIRATION_MODE_FIRST_USE
-VALID_WARRANTY_EXPIRATION_MODES = {
-    WARRANTY_EXPIRATION_MODE_FIRST_USE,
-    WARRANTY_EXPIRATION_MODE_REFRESH_ON_REDEEM,
-}
-
 UI_THEME_OCEAN = "ocean"
 UI_THEME_WARM = "warm"
 DEFAULT_UI_THEME = UI_THEME_OCEAN
@@ -39,8 +31,7 @@ VALID_UI_STYLES = {
 class _CacheDict(dict):
     """兼容旧写法的缓存容器。
 
-    `redeem_flow` 等历史代码直接用 `settings_service._cache[key] = value` 的
-    形式写缓存；保留 dict 协议的同时记录写入时间，便于 TTL 判定。
+    保留 dict 协议的同时记录写入时间，便于 TTL 判定。
     """
 
     def __init__(self):
@@ -82,14 +73,6 @@ class SettingsService:
 
     def __init__(self):
         self._cache: _CacheDict = _CacheDict()
-
-    @staticmethod
-    def normalize_warranty_expiration_mode(mode: Optional[str]) -> str:
-        """规范化质保时长计算模式。"""
-        normalized = str(mode or "").strip().lower()
-        if normalized in VALID_WARRANTY_EXPIRATION_MODES:
-            return normalized
-        return DEFAULT_WARRANTY_EXPIRATION_MODE
 
     @staticmethod
     def normalize_ui_theme(theme: Optional[str]) -> str:
@@ -314,16 +297,6 @@ class SettingsService:
             logger.info(f"日志级别已更新为: {level.upper()}")
 
         return success
-
-    async def get_warranty_expiration_mode(self, session: AsyncSession) -> str:
-        """获取质保时长计算模式。"""
-        raw_value = await self.get_setting(
-            session,
-            "warranty_expiration_mode",
-            DEFAULT_WARRANTY_EXPIRATION_MODE,
-        )
-        return self.normalize_warranty_expiration_mode(raw_value)
-
 
 # 创建全局实例
 settings_service = SettingsService()

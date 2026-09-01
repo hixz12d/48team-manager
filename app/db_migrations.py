@@ -456,7 +456,39 @@ def run_auto_migration(db_path=None):
         cursor = conn.cursor()
         
         migrations_applied = []
-        
+
+        # Phase 9：兑换码 / 质保 / 续期表下线。旧库直接 DROP；新库不再建。
+        if table_exists(cursor, "teams") and column_exists(cursor, "teams", "pool_type"):
+            cursor.execute("UPDATE teams SET pool_type = 'normal' WHERE pool_type IS NULL OR pool_type != 'normal'")
+            migrations_applied.append("teams.pool_type -> normal")
+        for table_name in ("renewal_requests", "redemption_records", "redemption_codes"):
+            if table_exists(cursor, table_name):
+                logger.info("删除遗留销售表 %s", table_name)
+                cursor.execute(f"DROP TABLE {table_name}")
+                migrations_applied.append(f"drop.{table_name}")
+        if table_exists(cursor, "settings"):
+            sales_keys = (
+                "warranty_expiration_mode",
+                "warranty_auto_kick_enabled",
+                "warranty_auto_kick_enabled_since",
+                "warranty_auto_kick_interval_hours",
+                "warranty_renewal_reminder_days",
+                "auto_kick_usage_period_days",
+                "welfare_common_code",
+                "welfare_common_code_limit",
+                "welfare_common_code_used_count",
+                "welfare_common_code_generated_at",
+                "welfare_common_code_team_id",
+                "announcement_enabled",
+                "announcement_markdown",
+            )
+            cursor.execute(
+                "DELETE FROM settings WHERE key IN ({})".format(",".join("?" * len(sales_keys))),
+                sales_keys,
+            )
+            if cursor.rowcount:
+                migrations_applied.append("settings.drop_legacy_sales_keys")
+
         # 检查并添加质保相关字段
         if table_exists(cursor, "redemption_codes") and not column_exists(cursor, "redemption_codes", "has_warranty"):
             logger.info("添加 redemption_codes.has_warranty 字段")
@@ -600,86 +632,6 @@ def run_auto_migration(db_path=None):
                 CREATE INDEX IF NOT EXISTS idx_team_email_status
                 ON team_email_mappings (team_id, status)
             """)
-
-        if not table_exists(cursor, "renewal_requests"):
-            logger.info("创建 renewal_requests 表")
-            cursor.execute("""
-                CREATE TABLE renewal_requests (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email VARCHAR(255) NOT NULL,
-                    code VARCHAR(32) NOT NULL,
-                    team_id INTEGER,
-                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-                    requested_at DATETIME,
-                    handled_at DATETIME,
-                    extension_days INTEGER,
-                    admin_note TEXT,
-                    FOREIGN KEY(code) REFERENCES redemption_codes(code),
-                    FOREIGN KEY(team_id) REFERENCES teams(id)
-                )
-            """)
-            migrations_applied.append("renewal_requests")
-
-        if table_exists(cursor, "renewal_requests"):
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_renewal_request_status
-                ON renewal_requests (status)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_renewal_request_email
-                ON renewal_requests (email)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_renewal_request_code
-                ON renewal_requests (code)
-            """)
-
-        # 把 renewal_requests.code 从 NOT NULL 改为允许 NULL：
-        # 兑换码销毁后 extended/ignored 历史保留作为审计证据，需要 code 可空。
-        # SQLite 不支持 ALTER COLUMN，必须重建表。
-        cursor.execute("PRAGMA table_info(renewal_requests)")
-        rr_cols = {row[1]: row for row in cursor.fetchall()}  # name -> full row
-        if rr_cols and rr_cols.get("code") and rr_cols["code"][3] == 1:
-            # 第四列 (notnull) == 1 表示当前 NOT NULL，需要重建
-            logger.info("renewal_requests.code 改为允许 NULL，重建表")
-            cursor.execute("PRAGMA foreign_keys=OFF")
-            cursor.execute("""
-                CREATE TABLE renewal_requests_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email VARCHAR(255) NOT NULL,
-                    code VARCHAR(32),
-                    team_id INTEGER,
-                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-                    requested_at DATETIME,
-                    handled_at DATETIME,
-                    extension_days INTEGER,
-                    admin_note TEXT,
-                    FOREIGN KEY(code) REFERENCES redemption_codes(code),
-                    FOREIGN KEY(team_id) REFERENCES teams(id)
-                )
-            """)
-            cursor.execute("""
-                INSERT INTO renewal_requests_new
-                (id, email, code, team_id, status, requested_at, handled_at, extension_days, admin_note)
-                SELECT id, email, code, team_id, status, requested_at, handled_at, extension_days, admin_note
-                FROM renewal_requests
-            """)
-            cursor.execute("DROP TABLE renewal_requests")
-            cursor.execute("ALTER TABLE renewal_requests_new RENAME TO renewal_requests")
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_renewal_request_status
-                ON renewal_requests (status)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_renewal_request_email
-                ON renewal_requests (email)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_renewal_request_code
-                ON renewal_requests (code)
-            """)
-            cursor.execute("PRAGMA foreign_keys=ON")
-            migrations_applied.append("renewal_requests.code -> NULLABLE")
 
         if table_exists(cursor, "teams") and not column_exists(cursor, "teams", "proxy"):
             logger.info("添加 teams.proxy 字段")
@@ -999,6 +951,7 @@ def run_auto_migration(db_path=None):
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_phone_pool_reserved ON phone_pool (reserved_by)"
             )
+
 
 
         ensure_identity_tables(cursor, migrations_applied)

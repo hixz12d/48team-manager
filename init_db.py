@@ -60,56 +60,6 @@ async def create_default_settings():
                 description="新导入 Team 的默认总席位"
             ),
             Setting(
-                key="warranty_expiration_mode",
-                value="first_use",
-                description="质保时长计算模式: first_use/refresh_on_redeem"
-            ),
-            Setting(
-                key="warranty_auto_kick_enabled",
-                value="false",
-                description="是否启用质保过期自动踢人"
-            ),
-            Setting(
-                key="warranty_auto_kick_interval_hours",
-                value="12",
-                description="质保过期自动踢人检查间隔（小时）"
-            ),
-            Setting(
-                key="warranty_renewal_reminder_days",
-                value="7",
-                description="距离质保结束多少天内提醒用户联系管理员续期"
-            ),
-            Setting(
-                key="auto_kick_usage_period_days",
-                value="30",
-                description="无质保兑换码的使用期限（天）；自动踢人按该期限判定无质保码是否到期"
-            ),
-            Setting(
-                key="auto_kick_unauthorized_enabled",
-                value="false",
-                description="是否启用'非授权成员清退'：清除无兑换码记录、非后台手工邀请的偷拉成员"
-            ),
-            Setting(
-                key="auto_kick_unauthorized_enabled_since",
-                value="",
-                description="非授权成员清退开关首次启用时的时间戳（ISO 8601）；扫描仅作用于此时间之后新加入的成员"
-            ),
-            Setting(
-                key="auto_kick_admin_invited_enabled",
-                value="false",
-                description="是否启用'后台邀请过期踢人'：管理员手工邀请的成员超过期限自动踢出"
-            ),
-            Setting(
-                key="auto_kick_admin_invited_enabled_since",
-                value="",
-                description="后台邀请过期踢人开关首次启用时的时间戳（ISO 8601）；扫描仅作用于此时间之后新发出的邀请"
-            ),
-            Setting(
-                key="auto_kick_admin_invited_period_days",
-                value="30",
-                description="后台邀请成员的使用期限（天）；超过该期限的后台邀请会被自动踢人扫描清退"
-            ),
-            Setting(
                 key="sub2api_base_url",
                 value="http://sub2api-canary:8080",
                 description="Sub2API 地址。同机容器直连 sub2api-canary:8080",

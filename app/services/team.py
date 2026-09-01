@@ -8,11 +8,11 @@ import asyncio
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import pytz
-from sqlalchemy import select, update, delete, func, or_, case
+from sqlalchemy import select, update, delete, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Team, TeamAccount, RedemptionCode, TeamEmailMapping
+from app.models import Team, TeamAccount, TeamEmailMapping
 from app.services.chatgpt import ChatGPTService
 from app.services.vacancy import parse_policy_notice, present_vacancy, summarize_for_message, vacancy_service
 from app.services.encryption import encryption_service
@@ -40,11 +40,6 @@ class TeamService:
 
     PROACTIVE_REFRESH_WINDOW_HOURS = 2
 
-    @staticmethod
-    def _append_warranty_seat_condition(conditions: List[Any], warranty_required: Optional[bool]) -> None:
-        if warranty_required is None:
-            return
-        conditions.append(Team.warranty_seat_enabled.is_(bool(warranty_required)))
     PLACEHOLDER_ACCOUNT_IDS = {"default", "personal", "none", "null", "me", "self"}
 
     def __init__(self):
@@ -146,88 +141,6 @@ class TeamService:
                 logger.warning("通过 session_token 补齐 id_token 失败: %s", refresh_result.get("error"))
 
         return hydrated
-
-    async def reserve_seat_if_available(
-        self,
-        team_id: int,
-        db_session: AsyncSession,
-        pool_type: str = "normal",
-        warranty_required: Optional[bool] = None,
-    ) -> Dict[str, Any]:
-        """
-        以数据库原子更新的方式预留一个席位。
-
-        这样即使在多 worker / 多实例环境中，也不会仅依赖进程内锁导致超拉。
-        """
-        current_time = get_now()
-        reserve_conditions = [
-            Team.id == team_id,
-            Team.pool_type == pool_type,
-            Team.status == "active",
-            Team.current_members < Team.max_members,
-            or_(Team.expires_at.is_(None), Team.expires_at >= current_time),
-        ]
-        self._append_warranty_seat_condition(reserve_conditions, warranty_required)
-        reserve_stmt = (
-            update(Team)
-            .where(*reserve_conditions)
-            .values(
-                current_members=Team.current_members + 1,
-                status=case(
-                    (Team.current_members + 1 >= Team.max_members, "full"),
-                    else_="active",
-                ),
-            )
-        )
-        reserve_result = await db_session.execute(reserve_stmt)
-        if (reserve_result.rowcount or 0) <= 0:
-            team = await db_session.get(Team, team_id)
-            if not team:
-                return {"success": False, "error": f"目标 Team {team_id} 不存在"}
-            if team.pool_type != pool_type:
-                return {"success": False, "error": f"目标 Team {team_id} 不属于当前兑换池"}
-            if warranty_required is not None and team.warranty_seat_enabled != bool(warranty_required):
-                mode_label = "已开启质保的 Team" if warranty_required else "未开启质保的 Team"
-                return {"success": False, "error": f"当前兑换码仅可加入{mode_label}"}
-            if team.expires_at and team.expires_at < current_time:
-                team.status = "expired"
-                await db_session.flush()
-                return {"success": False, "error": f"目标 Team {team_id} 已过期"}
-            if team.current_members >= team.max_members:
-                team.status = "full"
-                await db_session.flush()
-                return {"success": False, "error": "该 Team 已满, 请选择其他 Team 尝试"}
-            return {
-                "success": False,
-                "error": f"目标 Team {team_id} 不可用 ({team.status})"
-            }
-
-        team = await db_session.get(Team, team_id)
-        if not team:
-            return {"success": False, "error": f"目标 Team {team_id} 不存在"}
-
-        return {"success": True, "team": team, "error": None}
-
-    async def release_reserved_seat(
-        self,
-        team_id: int,
-        db_session: AsyncSession,
-        pool_type: str = "normal"
-    ) -> None:
-        """释放一次已预留的席位，并回写 Team 状态。"""
-        team = await db_session.get(Team, team_id)
-        if not team or team.pool_type != pool_type:
-            return
-
-        if team.current_members > 0:
-            team.current_members -= 1
-
-        if team.current_members >= team.max_members:
-            team.status = "full"
-        elif team.expires_at and team.expires_at < get_now():
-            team.status = "expired"
-        else:
-            team.status = "active"
 
     async def _handle_api_error(self, result: Dict[str, Any], team: Team, db_session: AsyncSession) -> bool:
         """
@@ -1448,67 +1361,6 @@ class TeamService:
             await db_session.rollback()
             logger.exception("更新 Team 失败")
             return {"success": False, "error": "更新失败，请稍后重试"}
-
-    async def batch_transfer_pool(
-        self,
-        ids: List[int],
-        target_pool_type: str,
-        db_session: AsyncSession,
-    ) -> Dict[str, Any]:
-        """批量转移 Team 的池类型。"""
-        try:
-            normalized_ids: List[int] = []
-            seen_ids = set()
-            for team_id in ids:
-                if not isinstance(team_id, int):
-                    continue
-                if team_id in seen_ids:
-                    continue
-                seen_ids.add(team_id)
-                normalized_ids.append(team_id)
-
-            if not normalized_ids:
-                return {"success": False, "error": "请选择要转移的 Team"}
-
-            normalized_target = "welfare" if target_pool_type == "welfare" else "normal"
-
-            query_stmt = select(Team).where(Team.id.in_(normalized_ids))
-            query_result = await db_session.execute(query_stmt)
-            teams = {team.id: team for team in query_result.scalars().all()}
-
-            success_count = 0
-            skipped_count = 0
-            failed_count = 0
-
-            for team_id in normalized_ids:
-                team = teams.get(team_id)
-                if not team:
-                    failed_count += 1
-                    continue
-
-                current_pool_type = (team.pool_type or "normal").strip().lower()
-                if current_pool_type == normalized_target:
-                    skipped_count += 1
-                    continue
-
-                team.pool_type = normalized_target
-                success_count += 1
-
-            await db_session.commit()
-
-            return {
-                "success": True,
-                "message": f"批量转移完成: 成功 {success_count}, 跳过 {skipped_count}, 失败 {failed_count}",
-                "success_count": success_count,
-                "skipped_count": skipped_count,
-                "failed_count": failed_count,
-                "target_pool_type": normalized_target,
-                "error": None,
-            }
-        except Exception:
-            await db_session.rollback()
-            logger.exception("批量转移 Team 池类型失败")
-            return {"success": False, "error": "批量转移失败，请稍后重试"}
 
     async def get_team_info(self, team_id: int, db_session: AsyncSession) -> Dict[str, Any]:
         """获取 Team 详细信息 (含解密 Token)"""
@@ -3199,88 +3051,6 @@ class TeamService:
             logger.exception("开启设备身份验证失败")
             return {"success": False, "error": "开启设备身份验证失败，请稍后重试"}
 
-    async def set_warranty_seat_enabled(
-        self,
-        team_id: int,
-        enabled: bool,
-        db_session: AsyncSession,
-    ) -> Dict[str, Any]:
-        try:
-            team = await db_session.get(Team, team_id)
-            if not team:
-                return {"success": False, "error": f"Team ID {team_id} 不存在"}
-
-            team.warranty_seat_enabled = bool(enabled)
-            await db_session.commit()
-            return {
-                "success": True,
-                "enabled": team.warranty_seat_enabled,
-                "message": "质保车位已开启" if team.warranty_seat_enabled else "质保车位已关闭",
-                "error": None,
-            }
-        except Exception:
-            await db_session.rollback()
-            logger.exception("更新 Team 质保车位开关失败")
-            return {"success": False, "error": "更新质保车位失败，请稍后重试"}
-
-    async def get_available_teams(
-        self,
-        db_session: AsyncSession,
-        pool_type: str = "normal",
-        warranty_required: Optional[bool] = None,
-    ) -> Dict[str, Any]:
-        """
-        获取可用的 Team 列表 (用于用户兑换页面)
-
-        Args:
-            db_session: 数据库会话
-
-        Returns:
-            结果字典,包含 success, teams, error
-        """
-        try:
-            # 查询 status='active' 且 current_members < max_members 的 Team
-            conditions = [
-                Team.status == "active",
-                Team.current_members < Team.max_members,
-                Team.pool_type == pool_type,
-            ]
-            self._append_warranty_seat_condition(conditions, warranty_required)
-            stmt = select(Team).where(*conditions)
-            result = await db_session.execute(stmt)
-            teams = result.scalars().all()
-
-            # 构建返回数据 (不包含敏感信息)
-            team_list = []
-            for team in teams:
-                team_list.append({
-                    "id": team.id,
-                    "team_name": team.team_name,
-                    "current_members": team.current_members,
-                    "max_members": team.max_members,
-                    "expires_at": team.expires_at.isoformat() if team.expires_at else None,
-                    "subscription_plan": team.subscription_plan
-                })
-
-            logger.info(f"获取可用 Team 列表成功: 共 {len(team_list)} 个")
-
-            return {
-                "success": True,
-                "teams": team_list,
-                "error": None
-            }
-
-        except Exception:
-            logger.exception("获取可用 Team 列表失败")
-            return {
-                "success": False,
-                "teams": [],
-                "error": "获取列表失败，请稍后重试"
-            }
-
-
-
-
     async def get_team_by_id(
         self,
         team_id: int,
@@ -3357,7 +3127,6 @@ class TeamService:
                 "status": team.status,
                 "account_role": team.account_role,
                 "device_code_auth_enabled": team.device_code_auth_enabled,
-                "warranty_seat_enabled": team.warranty_seat_enabled,
                 "last_sync": team.last_sync.isoformat() if team.last_sync else None,
                 "created_at": team.created_at.isoformat() if team.created_at else None
             }
@@ -3471,7 +3240,6 @@ class TeamService:
                     "status": team.status,
                     "account_role": getattr(team, "account_role", None) or "",
                     "device_code_auth_enabled": getattr(team, 'device_code_auth_enabled', False),
-                    "warranty_seat_enabled": getattr(team, "warranty_seat_enabled", False),
                     "last_sync": team.last_sync.isoformat() if team.last_sync else None,
                     "created_at": team.created_at.isoformat() if team.created_at else None,
                     "pool_type": getattr(team, "pool_type", "normal"),
@@ -3531,7 +3299,7 @@ class TeamService:
                 logger.warning(f"在 Team {team_id} 中未找到邮箱为 {email} 的成员或邀请")
                 # get_team_members 已拿到实时成员/邀请列表，但历史记录可能已经落后。
                 # 此时主动同步一次，确保 current_members/status 与远端保持一致，
-                # 否则撤回记录等后续流程会删除本地 RedemptionRecord，却保留错误的人数统计。
+                # 此时主动同步一次，确保 current_members/status 与远端保持一致。
                 await self.sync_team_info(team_id, db_session)
                 # 即使没找到也返回成功，以便上层逻辑继续更新记录
                 return {"success": True, "message": "成员已不存在"}
@@ -3575,11 +3343,7 @@ class TeamService:
                     f"未找到 ID 为 {team_id} 的 Team",
                 )
 
-            # 1.5 处理 RedemptionCode 关联 (置空)
-            update_stmt = update(RedemptionCode).where(RedemptionCode.used_team_id == team_id).values(used_team_id=None)
-            await db_session.execute(update_stmt)
-
-            # 2. 删除 Team (级联删除 team_accounts 和 redemption_records)
+            # 2. 删除 Team (级联删除 team_accounts)
             await db_session.delete(team)
             await db_session.commit()
 
