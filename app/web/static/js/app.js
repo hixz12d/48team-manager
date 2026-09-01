@@ -108,6 +108,40 @@
     return row;
   }
 
+  function phoneRow(item) {
+    const row = document.createElement("tr");
+    row.dataset.entityId = String(item.id);
+    cell(row, item.number);
+    cell(row, item.status);
+    cell(row, item.used_count);
+    cell(row, item.remaining);
+    cell(row, item.reserved_by);
+    cell(row, item.last_error_type);
+    return row;
+  }
+
+  function hmeRow(item) {
+    const row = document.createElement("tr");
+    row.dataset.entityId = String(item.id);
+    cell(row, item.email);
+    cell(row, item.state);
+    cell(row, item.label);
+    cell(row, item.pending ? "pending" : "");
+    cell(row, item.job_id);
+    return row;
+  }
+
+  function proxyRow(item) {
+    const row = document.createElement("tr");
+    row.dataset.entityId = String(item.id);
+    cell(row, item.name);
+    cell(row, `${item.scheme}://${item.host}:${item.port}`);
+    cell(row, item.status);
+    cell(row, item.region);
+    cell(row, item.last_exit_ip);
+    return row;
+  }
+
   async function bootPage() {
     const page = document.body.dataset.page;
     try {
@@ -132,6 +166,15 @@
       } else if (page === "operations") {
         const payload = await fetchEntity("operation-list", "/api/operations");
         renderRows("operations-body", payload.items || [], "No operations.", 6, operationRow);
+      } else if (page === "phones") {
+        const payload = await fetchEntity("phone-list", "/api/resources/phones");
+        renderRows("phones-body", payload.items || [], "No phones yet.", 6, phoneRow);
+      } else if (page === "hme") {
+        const payload = await fetchEntity("hme-list", "/api/resources/hme");
+        renderRows("hme-body", payload.items || [], "No HME leases.", 5, hmeRow);
+      } else if (page === "proxies") {
+        const payload = await fetchEntity("proxy-list", "/api/resources/proxies");
+        renderRows("proxies-body", payload.items || [], "No proxy profiles.", 5, proxyRow);
       }
     } catch (error) {
       if (error.name !== "AbortError") console.warn(error);

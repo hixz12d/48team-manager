@@ -5,7 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.queries.identity import accounts_query, identity_audit_query, overview_query, workspaces_query
+from app.application.queries import console as console_query
+from app.application.queries.identity import identity_audit_query
 from app.web.deps import require_admin
 
 
@@ -14,11 +15,11 @@ def build_api_router(get_db) -> APIRouter:
 
     @router.get("/overview")
     async def overview(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-        return await overview_query(db)
+        return await console_query.overview(db)
 
     @router.get("/workspaces")
     async def workspaces(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-        return await workspaces_query(db)
+        return await console_query.workspaces(db)
 
     @router.get("/accounts")
     async def accounts(
@@ -27,39 +28,30 @@ def build_api_router(get_db) -> APIRouter:
         purpose: str = Query("all"),
         include_archived: bool = Query(False),
     ) -> dict:
-        return await accounts_query(db, purpose=purpose, include_archived=include_archived)
+        return await console_query.accounts(db, purpose=purpose, include_archived=include_archived)
 
     @router.get("/identity/audit")
     async def identity_audit(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await identity_audit_query(db)
 
     @router.get("/operations")
-    async def operations(_: dict = Depends(require_admin)) -> dict:
-        return {"items": [], "next_cursor": None}
+    async def operations(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        return await console_query.operations(db)
 
     @router.get("/resources/phones")
-    async def phones(_: dict = Depends(require_admin)) -> dict:
-        return {"items": [], "next_cursor": None}
+    async def phones(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        return await console_query.phones(db)
 
     @router.get("/resources/hme")
-    async def hme(_: dict = Depends(require_admin)) -> dict:
-        return {"items": [], "next_cursor": None}
+    async def hme(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        return await console_query.hme(db)
 
     @router.get("/resources/proxies")
-    async def proxies(_: dict = Depends(require_admin)) -> dict:
-        return {"items": [], "next_cursor": None}
+    async def proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        return await console_query.proxies(db)
 
     @router.get("/settings")
-    async def settings_view(_: dict = Depends(require_admin)) -> dict:
-        return {
-            "connections": {"sub2api": {"configured": False}, "hme": {"configured": False}},
-            "automation": {
-                "official_quota_probe": True,
-                "auto_reauth": False,
-                "auto_rotate": False,
-                "force_refill": False,
-            },
-            "secrets": {"sub2api_api_key": "••••••", "hme_token": "••••••"},
-        }
+    async def settings_view(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        return await console_query.settings_view(db)
 
     return router

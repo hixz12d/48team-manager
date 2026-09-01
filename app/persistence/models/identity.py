@@ -24,12 +24,16 @@ class Account(Base):
     operational_state: Mapped[str] = mapped_column(String(20), default="available", nullable=False)
     local_purpose: Mapped[str] = mapped_column(String(20), nullable=False)
     proxy: Mapped[str | None] = mapped_column(String(500))
+    proxy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("proxy_profiles.id"))
     access_token_encrypted: Mapped[str | None] = mapped_column(Text)
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text)
     session_token_encrypted: Mapped[str | None] = mapped_column(Text)
     id_token_encrypted: Mapped[str | None] = mapped_column(Text)
     client_id: Mapped[str | None] = mapped_column(String(100))
     next_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quota_slot_minute: Mapped[int | None] = mapped_column(Integer)
+    next_quota_probe_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    quota_probe_fail_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     source_team_id: Mapped[int | None] = mapped_column(Integer)
     source_child_account_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -43,11 +47,14 @@ class Account(Base):
     owned_workspaces: Mapped[list[Workspace]] = relationship("Workspace", back_populates="owner_account")
     memberships: Mapped[list[WorkspaceMembership]] = relationship("WorkspaceMembership", back_populates="account")
     external_bindings: Mapped[list[ExternalBinding]] = relationship("ExternalBinding", back_populates="account")
+    quota_snapshots: Mapped[list["QuotaSnapshot"]] = relationship("QuotaSnapshot", back_populates="account")
+    proxy_profile: Mapped["ProxyProfile | None"] = relationship("ProxyProfile")
 
     __table_args__ = (
         Index("idx_accounts_purpose_state", "local_purpose", "operational_state"),
         Index("idx_accounts_source_team", "source_team_id"),
         Index("idx_accounts_source_child", "source_child_account_id"),
+        Index("idx_accounts_next_quota_probe", "next_quota_probe_at"),
     )
 
 

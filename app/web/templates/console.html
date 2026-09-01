@@ -83,13 +83,29 @@
         <section class="panel">
           <table class="data-table">
             <thead><tr><th>Status</th><th>Operation</th><th>Target</th><th>Current step</th><th>Started</th><th>Duration</th></tr></thead>
-            <tbody id="operations-body"><tr><td colspan="6" class="muted">No operations. Persistent jobs land later; this page is already first-class.</td></tr></tbody>
+            <tbody id="operations-body"><tr><td colspan="6" class="muted">No operations.</td></tr></tbody>
           </table>
         </section>
-        {% elif page in ['phones', 'hme', 'proxies'] %}
+        {% elif page == 'phones' %}
         <section class="panel">
-          <div class="panel-header"><span class="panel-title">{{ title }}</span></div>
-          <div class="panel-body muted">Resource inventory is not wired yet. This page exists so the console has one navigation tree.</div>
+          <table class="data-table">
+            <thead><tr><th>Number</th><th>Status</th><th>Used</th><th>Remaining</th><th>Lease</th><th>Last error</th></tr></thead>
+            <tbody id="phones-body"><tr><td colspan="6" class="muted">No phones yet.</td></tr></tbody>
+          </table>
+        </section>
+        {% elif page == 'hme' %}
+        <section class="panel">
+          <table class="data-table">
+            <thead><tr><th>Alias</th><th>State</th><th>Label</th><th>Sync</th><th>Job</th></tr></thead>
+            <tbody id="hme-body"><tr><td colspan="5" class="muted">No HME leases.</td></tr></tbody>
+          </table>
+        </section>
+        {% elif page == 'proxies' %}
+        <section class="panel">
+          <table class="data-table">
+            <thead><tr><th>Name</th><th>Endpoint</th><th>Status</th><th>Region</th><th>Last exit</th></tr></thead>
+            <tbody id="proxies-body"><tr><td colspan="5" class="muted">No proxy profiles.</td></tr></tbody>
+          </table>
         </section>
         {% elif page == 'settings' %}
         <section class="settings-grid">

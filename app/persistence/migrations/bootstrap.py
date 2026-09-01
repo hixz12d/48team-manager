@@ -8,6 +8,13 @@ from app.persistence.database import init_db
 from app.persistence.models import (  # noqa: F401
     Account,
     ExternalBinding,
+    HmeAliasLease,
+    Operation,
+    OperationStep,
+    PhoneAttempt,
+    PhonePool,
+    ProxyProfile,
+    QuotaSnapshot,
     SystemSetting,
     Workspace,
     WorkspaceMembership,

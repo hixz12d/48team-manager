@@ -135,8 +135,8 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
             if purpose == "needs_auth":
                 continue
             if purpose == "quota_full":
-                continue
-            if purpose not in {"conflict", "archived", "needs_auth", "quota_full"} and account.local_purpose != purpose:
+                pass
+            elif purpose not in {"conflict", "archived", "needs_auth", "quota_full"} and account.local_purpose != purpose:
                 continue
         active = [
             row

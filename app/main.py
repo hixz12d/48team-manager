@@ -54,6 +54,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await bootstrap_schema(engine)
         async with session_factory() as session:
             await initialize_admin_password(session, settings)
+            from app.application.operations import recover_stale_operations
+
+            await recover_stale_operations(session)
         app.state.engine = engine
         app.state.session_factory = session_factory
         app.state.settings = settings

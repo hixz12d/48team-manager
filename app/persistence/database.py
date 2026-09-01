@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import Settings
+from app.persistence import models as _models  # noqa: F401
 
 
 class Base(DeclarativeBase):

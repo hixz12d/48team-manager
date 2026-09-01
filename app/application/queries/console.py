@@ -1,0 +1,126 @@
+"""Console read models. Queries never call OpenAI, Sub2API, or Playwright."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.application.operations import operation_store, serialize_operation
+from app.application.queries.identity import accounts_query, overview_query, workspaces_query
+from app.application.quota import quota_service
+from app.application.resources.hme import list_leases, load_config
+from app.application.resources.phones import phone_pool_service
+from app.application.resources.proxies import proxy_profile_service
+from app.core.config import load_settings
+from app.core.time import isoformat
+from app.domain.automation import ACTIVE_STATES
+
+
+def _quota_label(snapshot) -> str | None:
+    if snapshot is None or not snapshot.success or snapshot.seven_day_used_percent is None:
+        return None
+    return f"{snapshot.seven_day_used_percent}%"
+
+
+async def overview(db: AsyncSession) -> dict[str, Any]:
+    payload = await overview_query(db)
+    operations = await operation_store.list_recent(db, limit=20)
+    running = [serialize_operation(row) for row in operations if row.state in ACTIVE_STATES]
+    payload["running_operations"] = running
+    payload["recent_events"] = [
+        {
+            "id": row.public_id,
+            "operation": row.op_type,
+            "status": row.state,
+            "target": row.email,
+        }
+        for row in operations[:8]
+    ]
+    return payload
+
+
+async def workspaces(db: AsyncSession) -> dict[str, Any]:
+    payload = await workspaces_query(db)
+    latest = await quota_service.latest_official_by_accounts(db)
+    # Workspace quota is informational only; memberships already loaded in identity query.
+    for item in payload["items"]:
+        item.setdefault("quota", None)
+    del latest
+    return payload
+
+
+async def accounts(db: AsyncSession, purpose: str = "all", include_archived: bool = False) -> dict[str, Any]:
+    payload = await accounts_query(db, purpose=purpose, include_archived=include_archived)
+    latest = await quota_service.latest_official_by_accounts(db)
+    for item in payload["items"]:
+        snap = latest.get(item["id"])
+        item["quota_7d"] = _quota_label(snap)
+        item["quota"] = {
+            "five_hour_used_percent": snap.five_hour_used_percent if snap else None,
+            "seven_day_used_percent": snap.seven_day_used_percent if snap else None,
+            "five_hour_reset_at": isoformat(snap.five_hour_reset_at) if snap else None,
+            "seven_day_reset_at": isoformat(snap.seven_day_reset_at) if snap else None,
+            "success": bool(snap.success) if snap else None,
+        }
+        if purpose == "quota_full":
+            continue
+    if purpose == "quota_full":
+        payload["items"] = [
+            item
+            for item in payload["items"]
+            if (item.get("quota") or {}).get("seven_day_used_percent") == 100
+        ]
+    return payload
+
+
+async def operations(db: AsyncSession) -> dict[str, Any]:
+    rows = await operation_store.list_recent(db)
+    return {"items": [serialize_operation(row) for row in rows], "next_cursor": None}
+
+
+async def phones(db: AsyncSession) -> dict[str, Any]:
+    cfg = await phone_pool_service.get_config(db)
+    rows = await phone_pool_service.list_phones(db)
+    return {"items": [phone_pool_service.serialize(row, cfg) for row in rows], "next_cursor": None}
+
+
+async def hme(db: AsyncSession) -> dict[str, Any]:
+    rows = await list_leases(db)
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "email": row.email,
+                "state": row.local_state,
+                "label": row.label_desired or "",
+                "pending": bool(row.label_sync_pending),
+                "job_id": row.job_id or "",
+            }
+            for row in rows
+        ],
+        "next_cursor": None,
+    }
+
+
+async def proxies(db: AsyncSession) -> dict[str, Any]:
+    rows = await proxy_profile_service.list_profiles(db)
+    return {"items": [proxy_profile_service.serialize(row) for row in rows], "next_cursor": None}
+
+
+async def settings_view(db: AsyncSession) -> dict[str, Any]:
+    settings = load_settings()
+    hme_cfg = await load_config(db)
+    return {
+        "connections": {
+            "sub2api": {"configured": False},
+            "hme": {"configured": hme_cfg.configured},
+        },
+        "automation": {
+            "official_quota_probe": bool(settings.official_quota_probe_enabled),
+            "auto_reauth": False,
+            "auto_rotate": False,
+            "force_refill": False,
+        },
+        "secrets": {"sub2api_api_key": "••••••", "hme_token": "••••••"},
+    }
