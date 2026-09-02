@@ -9,6 +9,7 @@ OPERATION_TYPES = (
     "onboard",
     "rotate",
     "reconcile",
+    "workspace_sync",
     "sub2api_sync",
     "proxy_check",
     "free_register",

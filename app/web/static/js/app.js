@@ -56,7 +56,10 @@
     none: "未绑定",
     set: "已设",
     off: "关着",
+    unchecked: "未检测",
     healthy: "正常",
+    degraded: "降级",
+    failed: "失败",
     refresh_due: "需刷新",
     refreshing: "刷新中",
     oauth_required: "需 OAuth",
@@ -204,6 +207,51 @@
     if (box) box.hidden = true;
   }
 
+  function toast(message, tone = "muted", action) {
+    const region = document.getElementById("toast-region");
+    if (!region) return;
+    const item = document.createElement("div");
+    item.className = `toast toast-${tone || "muted"}`;
+    const textNode = document.createElement("span");
+    textNode.textContent = message;
+    item.append(textNode);
+    if (action && action.label && action.onClick) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button ghost";
+      button.textContent = action.label;
+      button.addEventListener("click", () => {
+        item.remove();
+        action.onClick();
+      });
+      item.append(button);
+    }
+    region.append(item);
+    window.setTimeout(() => item.remove(), 6500);
+  }
+
+  async function postAction(key, url, body) {
+    const options = {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    };
+    if (body !== undefined) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    return fetchEntity(key, url, options);
+  }
+
+  async function openOperationById(operationId) {
+    if (!operationId) return;
+    try {
+      const detail = await fetchEntity(`operation-${operationId}`, `/api/operations/${encodeURIComponent(operationId)}`);
+      openSheet("operation", detail);
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    }
+  }
+
   function renderRows(bodyId, items, columns, renderItem, empty) {
     const body = document.getElementById(bodyId);
     if (!body) return;
@@ -260,10 +308,30 @@
     cell(row, item.owner_email);
     cell(row, seats, "num");
     cell(row, statusNode(item.health || item.status, labelOf(statusLabels, item.health || item.status)));
-    cell(row, labelOf(statusLabels, item.automation || item.rotation));
-    cell(row, item.quota || "—");
     cell(row, timeNode(item.last_sync));
-    cell(row, menuButton("workspace", item), "actions");
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const sync = document.createElement("button");
+    sync.type = "button";
+    sync.className = "button ghost";
+    sync.textContent = "同步";
+    sync.dataset.action = "workspace.sync";
+    sync.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      sync.disabled = true;
+      try {
+        const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
+        toast(result.ok ? "官方成员同步已完成" : (result.error || "同步失败"), result.ok ? "success" : "error");
+        if (result.operation_id) await openOperationById(result.operation_id);
+        await bootPage();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      } finally {
+        sync.disabled = false;
+      }
+    });
+    actions.append(sync, menuButton("workspace", item));
+    cell(row, actions, "actions");
     return row;
   }
 
@@ -284,6 +352,19 @@
     return wrap;
   }
 
+  function accountPrimaryAction(item) {
+    if (["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due"].includes(item.auth)) {
+      return { id: "account.reauth", label: "重新授权", url: `/api/accounts/${item.id}/reauth` };
+    }
+    if (item.quota?.seven_day_used_percent == null || item.quota?.success === false) {
+      return { id: "account.quota", label: "刷新额度", url: `/api/accounts/${item.id}/quota/probe` };
+    }
+    if (["missing", "unbound", "none"].includes(item.sub2api)) {
+      return { id: "account.sub2api", label: "同步 Sub2API", url: `/api/accounts/${item.id}/sub2api/sync` };
+    }
+    return { id: "account.refresh", label: "刷新状态", url: `/api/accounts/${item.id}/refresh` };
+  }
+
   function accountRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "account", item);
@@ -295,7 +376,30 @@
     cell(row, quotaCell(item));
     cell(row, statusNode(item.sub2api, labelOf(statusLabels, item.sub2api)));
     cell(row, statusNode(item.state, labelOf(stateLabels, item.state)));
-    cell(row, menuButton("account", item), "actions");
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const primary = accountPrimaryAction(item);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button ghost";
+    button.textContent = primary.label;
+    button.dataset.action = primary.id;
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      button.disabled = true;
+      try {
+        const result = await postAction(`${primary.id}-${item.id}`, primary.url);
+        toast(result.ok || result.success ? `${primary.label}已提交` : (result.error || "操作失败"), result.ok || result.success ? "success" : "error");
+        if (result.operation_id) await openOperationById(result.operation_id);
+        await bootPage();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+    actions.append(button, menuButton("account", item));
+    cell(row, actions, "actions");
     return row;
   }
 
@@ -334,7 +438,32 @@
     cell(row, item.pending ? "待同步" : "已同步");
     cell(row, item.job_id || "—");
     cell(row, timeNode(item.expires_at));
-    cell(row, item.last_error || "—");
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    if (item.pending) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "button ghost";
+      retry.textContent = "重试标签";
+      retry.dataset.action = "hme.retry-label";
+      retry.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        retry.disabled = true;
+        try {
+          const result = await postAction(`hme-retry-${item.id}`, `/api/resources/hme/${item.id}/retry-label`);
+          toast(result.ok ? "标签重试已提交" : (result.error || "重试失败"), result.ok ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        } catch (error) {
+          toast(friendlyError(error), "error");
+        } finally {
+          retry.disabled = false;
+        }
+      });
+      actions.append(retry);
+    }
+    actions.append(menuButton("hme", item));
+    cell(row, actions, "actions");
     return row;
   }
 
@@ -344,9 +473,33 @@
     cell(row, item.name);
     cell(row, item.region || "—");
     cell(row, item.last_exit_ip || "—");
-    cell(row, statusNode(item.status, item.status));
+    cell(row, statusNode(item.status, item.status === "active" ? "启用" : item.status));
+    cell(row, statusNode(item.health_state || "unchecked", labelOf(statusLabels, item.health_state || "unchecked")));
     cell(row, `${item.scheme}://${item.host}:${item.port}`);
     cell(row, timeNode(item.last_checked_at));
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const probe = document.createElement("button");
+    probe.type = "button";
+    probe.className = "button ghost";
+    probe.textContent = "检测";
+    probe.dataset.action = "proxy.probe";
+    probe.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      probe.disabled = true;
+      try {
+        const result = await postAction(`proxy-probe-${item.id}`, `/api/resources/proxies/${item.id}/probe`);
+        toast(result.ok ? `检测成功 ${result.last_exit_ip || ""}`.trim() : (result.error || "检测失败"), result.ok ? "success" : "error");
+        if (result.operation_id) await openOperationById(result.operation_id);
+        await bootPage();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      } finally {
+        probe.disabled = false;
+      }
+    });
+    actions.append(probe, menuButton("proxy", item));
+    cell(row, actions, "actions");
     return row;
   }
 
@@ -428,6 +581,18 @@
         button.className = "button ghost";
         button.textContent = item.action || "查看";
         button.addEventListener("click", () => {
+          if (item.account_id) {
+            window.location.href = `/accounts?account=${encodeURIComponent(item.account_id)}`;
+            return;
+          }
+          if (item.workspace_id) {
+            window.location.href = `/workspaces?workspace=${encodeURIComponent(item.workspace_id)}`;
+            return;
+          }
+          if (item.operation_id) {
+            window.location.href = `/operations?op=${encodeURIComponent(item.operation_id)}`;
+            return;
+          }
           window.location.href = "/accounts?purpose=conflict";
         });
         row.append(left, button);
@@ -563,10 +728,11 @@
       body.append(
         kvSection("运行摘要", [
           ["健康", labelOf(statusLabels, item.health || item.status)],
-          ["自动化", labelOf(statusLabels, item.automation || item.rotation)],
           ["席位", item.seat_limit ? `${item.members} / ${item.seat_limit}` : item.members],
           ["官方 Workspace ID", item.official_workspace_id],
-          ["最近同步", item.last_sync],
+          ["最近同步", item.last_sync || "未同步"],
+          ["自动化", item.automation_available ? labelOf(statusLabels, item.automation) : "未接入"],
+          ["官方 7d", item.quota_available ? (item.quota || "—") : "未接入"],
         ]),
         kvSection("母号", [
           ["邮箱", item.owner_email],
@@ -639,6 +805,165 @@
     overlayReturn = null;
   }
 
+  const entityActions = {
+    workspace: [
+      { id: "workspace.view", label: "查看详情", run: (item, trigger) => openSheet("workspace", item, trigger) },
+      {
+        id: "workspace.sync",
+        label: "同步官方成员",
+        run: async (item) => {
+          const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
+          toast(result.ok ? "官方成员同步已完成" : (result.error || "同步失败"), result.ok ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "workspace.open-owner",
+        label: "打开母号账号",
+        visible: (item) => Boolean(item.owner_email),
+        run: (item) => {
+          window.location.href = `/accounts?q=${encodeURIComponent(item.owner_email || "")}`;
+        },
+      },
+    ],
+    account: [
+      { id: "account.view", label: "查看详情", run: (item, trigger) => openSheet("account", item, trigger) },
+      {
+        id: "account.refresh",
+        label: "刷新状态",
+        run: async (item) => {
+          const result = await postAction(`account-refresh-${item.id}`, `/api/accounts/${item.id}/refresh`);
+          toast(result.ok || result.success ? "刷新已提交" : (result.error || "刷新失败"), result.ok || result.success ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "account.auth",
+        label: "检查授权",
+        run: async (item) => {
+          const result = await postAction(`account-auth-${item.id}`, `/api/accounts/${item.id}/auth/probe`);
+          toast(result.ok || result.success ? "授权探测已提交" : (result.error || "探测失败"), result.ok || result.success ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "account.quota",
+        label: "刷新额度",
+        run: async (item) => {
+          const result = await postAction(`account-quota-${item.id}`, `/api/accounts/${item.id}/quota/probe`);
+          toast(result.ok || result.success ? "额度刷新已提交" : (result.error || "刷新失败"), result.ok || result.success ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "account.sub2api",
+        label: "同步 Sub2API",
+        run: async (item) => {
+          const result = await postAction(`account-sub2api-${item.id}`, `/api/accounts/${item.id}/sub2api/sync`);
+          toast(result.ok || result.success ? "Sub2API 同步已提交" : (result.error || "同步失败"), result.ok || result.success ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "account.copy",
+        label: "复制邮箱",
+        visible: (item) => Boolean(item.email),
+        run: async (item) => {
+          const ok = await copyText(item.email);
+          toast(ok ? "邮箱已复制" : "复制失败", ok ? "success" : "error");
+        },
+      },
+    ],
+    operation: [
+      { id: "operation.view", label: "查看详情", run: (item, trigger) => openSheet("operation", item, trigger) },
+      {
+        id: "operation.cancel",
+        label: "请求取消",
+        visible: (item) => ["queued", "running", "waiting"].includes(item.state || item.status) && !item.cancel_requested,
+        run: async (item) => {
+          const result = await postAction(`operation-cancel-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/cancel`);
+          toast(result.ok ? "已请求取消" : (result.error || "取消失败"), result.ok ? "success" : "error");
+          await openOperationById(item.id);
+          await bootPage();
+        },
+      },
+      {
+        id: "operation.retry",
+        label: "安全重试",
+        visible: (item) => ["failed", "cancelled"].includes(item.state || item.status),
+        run: async (item) => {
+          const result = await postAction(`operation-retry-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/retry`);
+          toast(result.ok ? "已创建重试任务" : (result.error || "不可重试"), result.ok ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+    ],
+    phone: [
+      { id: "phone.view", label: "查看详情", run: (item, trigger) => openSheet("phone", item, trigger) },
+      {
+        id: "phone.copy",
+        label: "复制号码",
+        visible: (item) => Boolean(item.number),
+        run: async (item) => {
+          const ok = await copyText(item.number);
+          toast(ok ? "号码已复制" : "复制失败", ok ? "success" : "error");
+        },
+      },
+    ],
+    hme: [
+      { id: "hme.view", label: "查看详情", run: (item, trigger) => openSheet("hme", item, trigger) },
+      {
+        id: "hme.retry-label",
+        label: "重试标签同步",
+        visible: (item) => Boolean(item.pending),
+        run: async (item) => {
+          const result = await postAction(`hme-retry-${item.id}`, `/api/resources/hme/${item.id}/retry-label`);
+          toast(result.ok ? "标签重试已提交" : (result.error || "重试失败"), result.ok ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "hme.release",
+        label: "安全释放",
+        visible: (item) => item.state === "reserved" && !item.pending,
+        run: async (item) => {
+          if (!window.confirm(`确认安全释放 ${item.email}？仅 reserved 且未进入注册的租约可释放。`)) return;
+          const result = await postAction(`hme-release-${item.id}`, `/api/resources/hme/${item.id}/release`);
+          toast(result.ok ? "已释放" : (result.error || "释放失败"), result.ok ? "success" : "error");
+          await bootPage();
+        },
+      },
+    ],
+    proxy: [
+      { id: "proxy.view", label: "查看详情", run: (item, trigger) => openSheet("proxy", item, trigger) },
+      {
+        id: "proxy.probe",
+        label: "检测",
+        run: async (item) => {
+          const result = await postAction(`proxy-probe-${item.id}`, `/api/resources/proxies/${item.id}/probe`);
+          toast(result.ok ? `检测成功 ${result.last_exit_ip || ""}`.trim() : (result.error || "检测失败"), result.ok ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "proxy.copy",
+        label: "复制脱敏地址",
+        run: async (item) => {
+          const ok = await copyText(item.url || `${item.scheme}://${item.host}:${item.port}`);
+          toast(ok ? "已复制" : "复制失败", ok ? "success" : "error");
+        },
+      },
+    ],
+  };
+
   function openMenu(button, kind, item) {
     if (!menu) return;
     overlayReturn = button;
@@ -648,22 +973,22 @@
       option.type = "button";
       option.textContent = label;
       if (className) option.className = className;
-      option.addEventListener("click", () => {
+      option.addEventListener("click", async () => {
         closeMenu();
-        handler();
+        try {
+          await handler();
+        } catch (error) {
+          toast(friendlyError(error), "error");
+        }
       });
       menu.append(option);
     };
-    add("查看详情", () => openSheet(kind, item, button));
-    if (kind === "account" && item.email) {
-      add("复制邮箱", async () => {
-        try {
-          await navigator.clipboard.writeText(item.email);
-        } catch {
-          /* ignore */
-        }
-      });
-    }
+    const actions = entityActions[kind] || [];
+    actions.forEach((action) => {
+      if (action.visible && !action.visible(item)) return;
+      add(action.label, () => action.run(item, button));
+    });
+    if (!actions.length) add("查看详情", () => openSheet(kind, item, button));
     const rect = button.getBoundingClientRect();
     menu.hidden = false;
     menu.style.left = `${Math.min(rect.left, window.innerWidth - 200)}px`;
@@ -699,8 +1024,12 @@
         row.type = "button";
         row.className = "button ghost drawer-item";
         row.textContent = `${labelOf(statusLabels, item.operation)} ${item.target || item.email || ""} · ${item.current_step || "—"}`;
-        row.addEventListener("click", () => {
+        row.addEventListener("click", async () => {
           closeDrawer();
+          if (item.id) {
+            await openOperationById(item.id);
+            return;
+          }
           window.location.href = "/operations";
         });
         body.append(row);
@@ -831,12 +1160,13 @@
       });
       const imported = result.imported ?? 0;
       const skipped = result.skipped ?? 0;
+      const errors = result.errors ?? result.invalid ?? 0;
       closePhoneImport();
       await bootPage();
-      setFormStatus(
-        "phone-import-status",
-        `导入 ${imported} 条，跳过 ${skipped} 条。`,
-        "muted"
+      toast(
+        `已导入 ${imported} 个号码，跳过 ${skipped} 个重复项${errors ? `，${errors} 行格式错误` : ""}`,
+        "success",
+        { label: "查看号码", onClick: () => { window.location.href = "/resources/phones"; } }
       );
     } catch (error) {
       setFormStatus("phone-import-status", friendlyError(error), "error");
@@ -863,6 +1193,7 @@
       });
       closeProxyAdd();
       await bootPage();
+      toast("代理已添加", "success");
     } catch (error) {
       setFormStatus("proxy-add-status", friendlyError(error), "error");
     } finally {
@@ -1111,7 +1442,7 @@
       const payload = await fetchEntity("settings-probe", "/api/settings/probe", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ connections: connectionsPayload(form) }),
+        body: JSON.stringify({ connections: connectionsPayload(form), target: focus || "all" }),
       });
       probeCopy(payload);
     } catch (error) {
@@ -1155,6 +1486,7 @@
         statusEl.className = "muted";
         statusEl.textContent = "已保存 · 刚刚";
       }
+      toast("设置已保存", "success");
     } catch (error) {
       if (statusEl) {
         statusEl.className = "error";
@@ -1249,111 +1581,142 @@
     }
   }
 
+  async function bootOverview() {
+    renderOverview(await fetchEntity("overview", "/api/overview"));
+  }
+
+  async function bootWorkspaces() {
+    bindSearch(document.getElementById("workspaces-search"), "workspace");
+    const payload = await fetchEntity("workspace-list", "/api/workspaces");
+    pageCache.kind = "workspace";
+    pageCache.items = payload.items || [];
+    paintList("workspace");
+  }
+
+  async function bootAccounts() {
+    const filter = document.querySelector("[data-filter='purpose']");
+    const params = currentQuery();
+    if (filter && params.get("purpose")) filter.value = params.get("purpose");
+    if (filter && !filter.dataset.bound) {
+      filter.dataset.bound = "1";
+      filter.addEventListener("change", () => {
+        const next = currentQuery();
+        if (filter.value && filter.value !== "all") next.set("purpose", filter.value);
+        else next.delete("purpose");
+        writeQuery(next);
+        bootPage();
+      });
+    }
+    bindSearch(document.getElementById("accounts-search"), "account");
+    const purpose = filter?.value || params.get("purpose") || "all";
+    const includeArchived = purpose === "archived";
+    const payload = await fetchEntity(
+      "account-list",
+      `/api/accounts?purpose=${encodeURIComponent(purpose)}&include_archived=${includeArchived}`
+    );
+    pageCache.kind = "account";
+    pageCache.items = payload.items || [];
+    paintList("account");
+  }
+
+  async function bootOperations() {
+    const payload = await fetchEntity("operation-list", "/api/operations");
+    renderRows(
+      "operations-body",
+      payload.items || [],
+      7,
+      operationRow,
+      emptyState("还没有任务", "创建额度刷新、重新授权或拉人后会显示在这里。")
+    );
+    const op = currentQuery().get("op");
+    if (op) await openOperationById(op);
+  }
+
+  async function bootPhones() {
+    const payload = await fetchEntity("phone-list", "/api/resources/phones");
+    const items = payload.items || [];
+    renderRows(
+      "phones-body",
+      items,
+      7,
+      phoneRow,
+      emptyState("还没有手机号", "点「导入号码」，按 号码----接码链接 批量入库。")
+    );
+    setCount("phones-count", items.length, items.length);
+  }
+
+  async function bootHme() {
+    const payload = await fetchEntity("hme-list", "/api/resources/hme");
+    const items = payload.items || [];
+    renderRows(
+      "hme-body",
+      items,
+      7,
+      hmeRow,
+      emptyState("还没有 HME 占用记录", "领用别名后会显示本地占用和同步状态。")
+    );
+    setCount("hme-count", items.length, items.length);
+  }
+
+  async function bootProxies() {
+    const payload = await fetchEntity("proxy-list", "/api/resources/proxies");
+    const items = payload.items || [];
+    renderRows(
+      "proxies-body",
+      items,
+      8,
+      proxyRow,
+      emptyState("还没有代理", "点「添加代理」，或在登记母号时填写代理自动入库。")
+    );
+    setCount("proxies-count", items.length, items.length);
+  }
+
+  async function bootSettings() {
+    const form = document.getElementById("settings-form");
+    const passwordForm = document.getElementById("password-form");
+    if (form && !form.dataset.bound) {
+      form.dataset.bound = "1";
+      form.addEventListener("submit", saveSettings);
+      form.addEventListener("input", updateDirty);
+      form.addEventListener("change", updateDirty);
+      document.getElementById("settings-discard")?.addEventListener("click", () => bootPage());
+      document.getElementById("settings-probe-all")?.addEventListener("click", () => probeSettings("all"));
+      document.querySelectorAll("[data-probe]").forEach((button) => {
+        button.addEventListener("click", () => probeSettings(button.dataset.probe));
+      });
+      document.querySelectorAll("[data-edit-toggle]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const panel = document.querySelector(`[data-edit-panel="${button.dataset.editToggle}"]`);
+          if (!panel) return;
+          panel.hidden = !panel.hidden;
+          button.textContent = panel.hidden ? "编辑" : "收起";
+        });
+      });
+    }
+    if (passwordForm && !passwordForm.dataset.bound) {
+      passwordForm.dataset.bound = "1";
+      passwordForm.addEventListener("submit", savePassword);
+    }
+    fillSettings(await fetchEntity("settings", "/api/settings"));
+  }
+
+  const pageBootstraps = {
+    overview: bootOverview,
+    workspaces: bootWorkspaces,
+    accounts: bootAccounts,
+    operations: bootOperations,
+    phones: bootPhones,
+    hme: bootHme,
+    proxies: bootProxies,
+    settings: bootSettings,
+  };
+
   async function bootPage() {
     const page = document.body.dataset.page;
     hidePageError();
     try {
-      if (page === "overview") {
-        renderOverview(await fetchEntity("overview", "/api/overview"));
-      } else if (page === "workspaces") {
-        bindSearch(document.getElementById("workspaces-search"), "workspace");
-        const payload = await fetchEntity("workspace-list", "/api/workspaces");
-        pageCache.kind = "workspace";
-        pageCache.items = payload.items || [];
-        paintList("workspace");
-      } else if (page === "accounts") {
-        const filter = document.querySelector("[data-filter='purpose']");
-        const params = currentQuery();
-        if (filter && params.get("purpose")) filter.value = params.get("purpose");
-        if (filter && !filter.dataset.bound) {
-          filter.dataset.bound = "1";
-          filter.addEventListener("change", () => {
-            const next = currentQuery();
-            if (filter.value && filter.value !== "all") next.set("purpose", filter.value);
-            else next.delete("purpose");
-            writeQuery(next);
-            bootPage();
-          });
-        }
-        bindSearch(document.getElementById("accounts-search"), "account");
-        const purpose = filter?.value || params.get("purpose") || "all";
-        const includeArchived = purpose === "archived";
-        const payload = await fetchEntity(
-          "account-list",
-          `/api/accounts?purpose=${encodeURIComponent(purpose)}&include_archived=${includeArchived}`
-        );
-        pageCache.kind = "account";
-        pageCache.items = payload.items || [];
-        paintList("account");
-      } else if (page === "operations") {
-        const payload = await fetchEntity("operation-list", "/api/operations");
-        renderRows(
-          "operations-body",
-          payload.items || [],
-          7,
-          operationRow,
-          emptyState("还没有任务", "创建额度刷新、重新授权或拉人后会显示在这里。")
-        );
-      } else if (page === "phones") {
-        const payload = await fetchEntity("phone-list", "/api/resources/phones");
-        const items = payload.items || [];
-        renderRows(
-          "phones-body",
-          items,
-          7,
-          phoneRow,
-          emptyState("还没有手机号", "点「导入号码」，按 号码----接码链接 批量入库。")
-        );
-        setCount("phones-count", items.length, items.length);
-      } else if (page === "hme") {
-        const payload = await fetchEntity("hme-list", "/api/resources/hme");
-        renderRows(
-          "hme-body",
-          payload.items || [],
-          7,
-          hmeRow,
-          emptyState("还没有 HME 占用记录", "领用别名后会显示本地占用和同步状态。")
-        );
-      } else if (page === "proxies") {
-        const payload = await fetchEntity("proxy-list", "/api/resources/proxies");
-        const items = payload.items || [];
-        renderRows(
-          "proxies-body",
-          items,
-          6,
-          proxyRow,
-          emptyState("还没有代理", "点「添加代理」，或在登记母号时填写代理自动入库。")
-        );
-        setCount("proxies-count", items.length, items.length);
-      } else if (page === "settings") {
-      } else if (page === "settings") {
-        const form = document.getElementById("settings-form");
-        const passwordForm = document.getElementById("password-form");
-        if (form && !form.dataset.bound) {
-          form.dataset.bound = "1";
-          form.addEventListener("submit", saveSettings);
-          form.addEventListener("input", updateDirty);
-          form.addEventListener("change", updateDirty);
-          document.getElementById("settings-discard")?.addEventListener("click", () => bootPage());
-          document.getElementById("settings-probe-all")?.addEventListener("click", () => probeSettings("all"));
-          document.querySelectorAll("[data-probe]").forEach((button) => {
-            button.addEventListener("click", () => probeSettings(button.dataset.probe));
-          });
-          document.querySelectorAll("[data-edit-toggle]").forEach((button) => {
-            button.addEventListener("click", () => {
-              const panel = document.querySelector(`[data-edit-panel="${button.dataset.editToggle}"]`);
-              if (!panel) return;
-              panel.hidden = !panel.hidden;
-              button.textContent = panel.hidden ? "编辑" : "收起";
-            });
-          });
-        }
-        if (passwordForm && !passwordForm.dataset.bound) {
-          passwordForm.dataset.bound = "1";
-          passwordForm.addEventListener("submit", savePassword);
-        }
-        fillSettings(await fetchEntity("settings", "/api/settings"));
-      }
+      const bootstrap = pageBootstraps[page];
+      if (bootstrap) await bootstrap();
     } catch (error) {
       if (error.name === "AbortError") return;
       showPageError(friendlyError(error));
@@ -1399,6 +1762,50 @@
     const copied = await copyText(authorize?.value);
     setRegisterStatus(copied ? "授权链接已复制。" : "复制失败，请手动选中链接。", copied ? "muted" : "error");
   });
+  document.querySelectorAll("[data-action-page]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = button.dataset.actionPage;
+      button.disabled = true;
+      try {
+        if (action === "hme-reconcile") {
+          const result = await postAction("hme-reconcile", "/api/resources/hme/reconcile");
+          toast(result.ok ? `HME 对账完成，差异 ${result.conflicts ?? 0}` : (result.error || "对账失败"), result.ok ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        } else if (action === "hme-retry-pending") {
+          const payload = await fetchEntity("hme-list", "/api/resources/hme");
+          const pending = (payload.items || []).filter((item) => item.pending);
+          let ok = 0;
+          for (const item of pending) {
+            const result = await postAction(`hme-retry-${item.id}`, `/api/resources/hme/${item.id}/retry-label`);
+            if (result.ok) ok += 1;
+          }
+          toast(`已重试 ${ok}/${pending.length} 个待同步标签`, ok === pending.length ? "success" : "warning");
+          await bootPage();
+        } else if (action === "proxy-probe-all") {
+          const result = await postAction("proxy-probe-all", "/api/resources/proxies/probe-all");
+          toast(result.ok ? `全部检测完成：健康 ${result.healthy}/${result.total}` : `检测完成：失败 ${result.failed}/${result.total}`, result.ok ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        } else if (action === "workspace-sync-all") {
+          const payload = await fetchEntity("workspace-list", "/api/workspaces");
+          const items = payload.items || [];
+          let ok = 0;
+          for (const item of items) {
+            const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
+            if (result.ok) ok += 1;
+          }
+          toast(`同步全部完成：${ok}/${items.length}`, ok === items.length ? "success" : "warning");
+          await bootPage();
+        }
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
   document.getElementById("page-retry")?.addEventListener("click", bootPage);
   document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
     document.body.classList.toggle("nav-open");
@@ -1449,6 +1856,6 @@
     if (document.visibilityState !== "visible") stopPolling();
   });
 
-  window.Team48 = { abortEntity, fetchEntity };
+  window.Team48 = { abortEntity, fetchEntity, entityActions, pageBootstraps };
   bootPage();
 })();

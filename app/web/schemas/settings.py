@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -24,6 +26,7 @@ class AutomationSettings(BaseModel):
 
 class ConnectionProbeRequest(BaseModel):
     connections: ConnectionSettings | None = None
+    target: Literal["sub2api", "hme", "mail", "all"] = "all"
 
 
 class ResourceSettings(BaseModel):

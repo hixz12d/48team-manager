@@ -1,6 +1,12 @@
 """ORM models."""
 
-from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
+from app.persistence.models.identity import (
+    Account,
+    ExternalBinding,
+    Workspace,
+    WorkspaceMembership,
+    WorkspaceOfficialMemberSnapshot,
+)
 from app.persistence.models.operations import Operation, OperationStep
 from app.persistence.models.quota import QuotaSnapshot
 from app.persistence.models.resources import HmeAliasLease, PhoneAttempt, PhonePool, ProxyProfile
@@ -21,4 +27,5 @@ __all__ = [
     "SystemSetting",
     "Workspace",
     "WorkspaceMembership",
+    "WorkspaceOfficialMemberSnapshot",
 ]

@@ -43,8 +43,12 @@
           <p class="muted" id="page-subtitle">{{ subtitle }}</p>
         </div>
         <div class="topbar-actions">
-          {% if page in ('workspaces', 'accounts') %}
+          {% if page == 'workspaces' %}
           <button type="button" class="button primary" data-open-register>登记团队</button>
+          {% elif page == 'hme' %}
+          <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
+          {% elif page == 'proxies' %}
+          <button type="button" class="button" data-action-page="proxy-probe-all">检测全部</button>
           {% endif %}
           <button type="button" class="button" id="open-operations" data-open-operations>任务</button>
         </div>
@@ -81,7 +85,7 @@
         <section class="panel table-shell">
           <div class="toolbar">
             <input class="search" id="workspaces-search" placeholder="搜名称、母号或 Workspace ID" data-entity="workspace" autocomplete="off">
-            <button type="button" class="button" data-open-register>登记团队</button>
+            <button type="button" class="button" data-action-page="workspace-sync-all">同步全部</button>
             <span class="toolbar-count muted" id="workspaces-count"></span>
           </div>
           <div class="table-scroll">
@@ -92,13 +96,11 @@
                   <th scope="col">母号</th>
                   <th scope="col" class="num">席位</th>
                   <th scope="col">健康</th>
-                  <th scope="col">自动化</th>
-                  <th scope="col">官方 7d</th>
                   <th scope="col">最近同步</th>
                   <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="workspaces-body"><tr><td colspan="8" class="muted">正在加载工作区…</td></tr></tbody>
+              <tbody id="workspaces-body"><tr><td colspan="6" class="muted">正在加载工作区…</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -116,7 +118,6 @@
               <option value="conflict">有冲突</option>
               <option value="archived">已归档</option>
             </select>
-            <button type="button" class="button" data-open-register>登记团队</button>
             <span class="toolbar-count muted" id="accounts-count"></span>
           </div>
           <div class="table-scroll">
@@ -181,6 +182,11 @@
         </section>
         {% elif page == 'hme' %}
         <section class="panel table-shell">
+          <div class="toolbar">
+            <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
+            <button type="button" class="button" data-action-page="hme-retry-pending">重试待同步标签</button>
+            <span class="toolbar-count muted" id="hme-count"></span>
+          </div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
@@ -191,7 +197,7 @@
                   <th scope="col">同步状态</th>
                   <th scope="col">任务租约</th>
                   <th scope="col">到期</th>
-                  <th scope="col">最后错误</th>
+                  <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
               <tbody id="hme-body"><tr><td colspan="7" class="muted">正在加载 HME…</td></tr></tbody>
@@ -202,6 +208,7 @@
         <section class="panel table-shell">
           <div class="toolbar">
             <button type="button" class="button primary" data-open-proxy-add>添加代理</button>
+            <button type="button" class="button" data-action-page="proxy-probe-all">检测全部</button>
             <span class="toolbar-count muted" id="proxies-count"></span>
           </div>
           <div class="table-scroll">
@@ -211,12 +218,14 @@
                   <th scope="col">名称</th>
                   <th scope="col">地区</th>
                   <th scope="col">出口 IP</th>
-                  <th scope="col">状态</th>
+                  <th scope="col">启用</th>
+                  <th scope="col">健康</th>
                   <th scope="col">地址</th>
                   <th scope="col">最后检测</th>
+                  <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="proxies-body"><tr><td colspan="6" class="muted">正在加载代理…</td></tr></tbody>
+              <tbody id="proxies-body"><tr><td colspan="8" class="muted">正在加载代理…</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -458,6 +467,7 @@
       </form>
     </div>
   </div>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <dialog class="palette" id="command-palette">
     <input id="command-input" placeholder="去哪…">
     <ul id="command-list"></ul>

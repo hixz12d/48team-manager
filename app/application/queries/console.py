@@ -78,7 +78,9 @@ async def workspaces(db: AsyncSession) -> dict[str, Any]:
     payload = await workspaces_query(db)
     for item in payload["items"]:
         item.setdefault("quota", None)
-        item.setdefault("automation", item.get("rotation") or "off")
+        item.setdefault("quota_available", False)
+        item.setdefault("automation", None)
+        item.setdefault("automation_available", False)
     return payload
 
 
@@ -130,36 +132,7 @@ async def hme(db: AsyncSession) -> dict[str, Any]:
 
 
 async def proxies(db: AsyncSession) -> dict[str, Any]:
-    # Backfill account.proxy strings that never got a ProxyProfile row.
-    from sqlalchemy import select
-
-    from app.persistence.models.identity import Account
-
-    dangling = list(
-        (
-            await db.execute(
-                select(Account).where(
-                    Account.proxy.is_not(None),
-                    Account.proxy != "",
-                    Account.proxy_profile_id.is_(None),
-                )
-            )
-        ).scalars()
-    )
-    changed = False
-    for account in dangling:
-        try:
-            profile = await proxy_profile_service.upsert_from_url(
-                db,
-                str(account.proxy),
-                name=f"母号 {account.email}" if account.email else "",
-            )
-        except ValueError:
-            continue
-        account.proxy_profile_id = profile.id
-        changed = True
-    if changed:
-        await db.commit()
+    # GET stays read-only. Use POST /api/resources/proxies/repair for backfill.
     rows = await proxy_profile_service.list_profiles(db)
     return {"items": [proxy_profile_service.serialize(row) for row in rows], "next_cursor": None}
 

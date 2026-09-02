@@ -110,8 +110,12 @@ class ProxyProfile(Base):
     url_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     region: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    health_state: Mapped[str] = mapped_column(String(20), default="unchecked", nullable=False)
     last_exit_ip: Mapped[str | None] = mapped_column(String(64))
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    last_error: Mapped[str | None] = mapped_column(Text)
     failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -123,4 +127,5 @@ class ProxyProfile(Base):
     __table_args__ = (
         Index("idx_proxy_profiles_status", "status"),
         Index("idx_proxy_profiles_host", "host", "port"),
+        Index("idx_proxy_profiles_health", "health_state"),
     )

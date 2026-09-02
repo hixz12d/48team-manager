@@ -130,6 +130,31 @@ class WorkspaceMembership(Base):
     )
 
 
+class WorkspaceOfficialMemberSnapshot(Base):
+    """Official members/invites snapshot. Remote-only rows stay here, not in Account."""
+
+    __tablename__ = "workspace_official_member_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    normalized_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    official_user_id: Mapped[str | None] = mapped_column(String(100))
+    official_role: Mapped[str] = mapped_column(String(40), default="unknown", nullable=False)
+    remote_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "normalized_email", name="uq_workspace_official_member_email"),
+        Index("idx_workspace_official_member_ws", "workspace_id", "remote_state"),
+    )
+
+
 class ExternalBinding(Base):
     """Explicit remote binding. One remote id maps to one local account."""
 

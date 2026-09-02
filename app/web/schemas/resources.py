@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -12,3 +14,8 @@ class PhoneImportRequest(BaseModel):
 class ProxyCreateRequest(BaseModel):
     url: str = Field(min_length=3, max_length=500)
     name: str | None = Field(default=None, max_length=120)
+
+
+class ProxyPatchRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    status: Literal["active", "disabled"] | None = None
