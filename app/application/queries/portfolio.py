@@ -15,8 +15,9 @@ from app.application.queries.identity import (
 from app.application.quota import quota_service
 from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat
-from app.domain.identity import LOCAL_PURPOSE_CHILD, LOCAL_PURPOSE_MOTHER, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
+from app.domain.identity import LOCAL_PURPOSE_CHILD, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
+from app.integrations.openai.member_adapter import is_owner_role
 from app.persistence.repositories import identity as identity_repo
 
 
@@ -96,7 +97,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
             account = accounts_by_id.get(row.account_id)
             raw = accounts_raw.get(row.account_id)
             email = normalize_email((account or {}).get("email") or (raw.email if raw else ""))
-            is_owner = email == owner_email or row.official_role == "owner" or (account or {}).get("purpose") == LOCAL_PURPOSE_MOTHER
+            is_owner = email == owner_email or is_owner_role(row.official_role)
             if account is None and raw is not None:
                 account = {
                     "id": raw.id,
@@ -129,6 +130,22 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 history.append(card)
             elif row.membership_state == MEMBERSHIP_STATE_JOINED or account.get("purpose") == LOCAL_PURPOSE_CHILD:
                 current_children.append(card)
+        if mother is None and owner_email:
+            owner_item = next(
+                (item for item in accounts_by_id.values() if normalize_email(item.get("email")) == owner_email),
+                None,
+            )
+            if owner_item is not None:
+                assigned_ids.add(owner_item["id"])
+                mother = _account_card(
+                    {
+                        **owner_item,
+                        "workspace_id": ws_id,
+                        "official_role": owner_item.get("official_role") or "owner",
+                        "membership_state": MEMBERSHIP_STATE_JOINED,
+                    },
+                    kind="mother",
+                )
         unmanaged = []
         for remote in workspace.get("official_members") or []:
             if remote.get("is_owner"):

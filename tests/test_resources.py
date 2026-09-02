@@ -266,6 +266,26 @@ class ProxyFreezeTests(unittest.IsolatedAsyncioTestCase):
         refreshed = await self.session.get(Operation, op.id)
         self.assertEqual(refreshed.resolved_proxy, "socks5h://127.0.0.1:1080")
 
+    async def test_create_keeps_resolved_proxy_and_still_builds_profile(self):
+        op = await operation_store.create(
+            self.session,
+            op_type="onboard",
+            email="kid@icloud.com",
+            resolved_proxy="socks5h://127.0.0.1:1080",
+        )
+        await self.session.commit()
+        url, profile_id = await proxy_profile_service.freeze(
+            self.session,
+            job_id=op.public_id,
+            form_proxy="socks5h://10.0.0.9:1080",
+            mother_proxy="socks5h://10.0.0.9:1080",
+        )
+        self.assertEqual(url, "socks5h://127.0.0.1:1080")
+        self.assertIsNotNone(profile_id)
+        refreshed = await self.session.get(Operation, op.id)
+        self.assertEqual(refreshed.resolved_proxy, "socks5h://127.0.0.1:1080")
+        self.assertEqual(refreshed.resolved_proxy_profile_id, profile_id)
+
 
 class ResourceApiTests(unittest.TestCase):
     def test_phone_import_and_proxy_create_via_api(self):

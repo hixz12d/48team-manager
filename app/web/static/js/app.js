@@ -14,7 +14,7 @@
   const proxyEditSheet = document.getElementById("proxy-edit-sheet");
   let focusTrapRoot = null;
   const SECRET_MASK = "••••••";
-  const pageCache = { items: [], kind: "" };
+  const pageCache = { items: [], kind: "", portfolio: null };
   let settingsBaseline = "";
   let settingsDirty = false;
   let overlayReturn = null;
@@ -528,6 +528,7 @@
     const tone = meterTone(percent);
     row.className = tone ? `quota-meter is-${tone}` : "quota-meter";
     const tag = document.createElement("span");
+    tag.className = "meter-window";
     tag.textContent = label;
     const bar = document.createElement("div");
     bar.className = "quota-bar";
@@ -542,10 +543,10 @@
       bar.append(fill);
     }
     const pct = document.createElement("span");
-    pct.className = "tabular";
+    pct.className = "meter-pct tabular";
     pct.textContent = percent == null ? "—" : `${percent}%`;
     const eta = document.createElement("span");
-    eta.className = "cell-sub tabular";
+    eta.className = "meter-ttl cell-sub tabular";
     eta.textContent = countdownLabel(resetAt, percent);
     row.append(tag, bar, pct, eta);
     return row;
@@ -1672,6 +1673,29 @@ function hmeRow(item) {
     overlayReturn = null;
   }
 
+  async function fillProxyProfileOptions(selectedId) {
+    const form = document.getElementById("proxy-edit-form");
+    const select = form?.querySelector("[name='proxy_profile_id']");
+    if (!select) return;
+    select.replaceChildren();
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "不改绑定，只填新 URL";
+    select.append(blank);
+    try {
+      const payload = await fetchEntity("proxy-list-edit", "/api/resources/proxies");
+      (payload.items || []).forEach((item) => {
+        const option = document.createElement("option");
+        option.value = String(item.id);
+        option.textContent = `${item.name || item.host}:${item.port}`;
+        if (selectedId && Number(selectedId) === Number(item.id)) option.selected = true;
+        select.append(option);
+      });
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    }
+  }
+
   function setProxyEditMode(mode) {
     const form = document.getElementById("proxy-edit-form");
     if (!form) return;
@@ -1691,7 +1715,7 @@ function hmeRow(item) {
     }
   }
 
-  function openProxyEdit(trigger, account) {
+  async function openProxyEdit(trigger, account) {
     if (!proxyEditSheet) return;
     overlayReturn = trigger || document.activeElement;
     const form = document.getElementById("proxy-edit-form");
@@ -1703,9 +1727,9 @@ function hmeRow(item) {
       form.email.value = account.email || "";
       form.current_proxy.value = account.proxy_url || "";
       form.proxy.value = "";
-      form.proxy_profile_id.value = account.proxy_profile_id || "";
       form.clear.checked = false;
     }
+    await fillProxyProfileOptions(account.proxy_profile_id);
     setFormStatus("proxy-edit-status", "", "muted");
     proxyEditSheet.hidden = false;
     activateFocusTrap(proxyEditSheet.querySelector(".sheet-panel") || proxyEditSheet);
@@ -1821,10 +1845,11 @@ function hmeRow(item) {
       } else {
         const accountId = Number(form.account_id.value || 0);
         if (!accountId) return;
+        const url = (form.proxy.value || "").trim();
         const body = {
           clear: Boolean(form.clear.checked),
-          proxy: form.proxy.value || null,
-          proxy_profile_id: form.proxy_profile_id.value ? Number(form.proxy_profile_id.value) : null,
+          proxy: url || null,
+          proxy_profile_id: (!url && form.proxy_profile_id.value) ? Number(form.proxy_profile_id.value) : null,
         };
         result = await patchAction(`account-proxy-${accountId}`, `/api/accounts/${accountId}/proxy`, body);
         setFormStatus("proxy-edit-status", result.ok ? "已保存" : (result.error || "失败"), result.ok ? "muted" : "error");
@@ -2303,7 +2328,8 @@ function openRegister(trigger) {
         if (value) next.set("q", value);
         else next.delete("q");
         writeQuery(next);
-        paintList(kind);
+        if (kind === "account" && (currentQuery().get("view") || "portfolio") !== "flat") renderPortfolio(pageCache.portfolio || { groups: [], unassigned: [] });
+        else paintList(kind);
       }, 200);
     });
   }
@@ -2378,35 +2404,73 @@ function openRegister(trigger) {
     const root = document.getElementById("accounts-portfolio");
     const table = document.querySelector("#accounts-body")?.closest(".table-scroll");
     if (!root) return;
+    pageCache.portfolio = payload || pageCache.portfolio || { groups: [], unassigned: [] };
+    const data = pageCache.portfolio;
     root.hidden = false;
     if (table) table.hidden = true;
     root.replaceChildren();
     const q = (currentQuery().get("q") || "").trim().toLowerCase();
-    const groups = payload.groups || [];
+    const purpose = currentQuery().get("purpose") || "all";
+    const groups = data.groups || [];
     let shown = 0;
+
+    const matchesPurpose = (account) => {
+      if (!purpose || purpose === "all") return true;
+      if (!account) return false;
+      if (purpose === "conflict") return account.state === "conflict";
+      if (purpose === "archived") return account.state === "archived" || account.kind === "history";
+      if (purpose === "needs_auth") return ["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due"].includes(account.auth);
+      if (purpose === "quota_full") return (account.quota || {}).seven_day_used_percent === 100;
+      return account.purpose === purpose;
+    };
+    const haystack = (group) => [
+      group.display_name,
+      group.name,
+      group.owner_email,
+      group.official_workspace_id,
+      (group.mother || {}).email,
+      ...(group.current_children || []).map((row) => row.email),
+      ...(group.unmanaged || []).map((row) => row.email),
+      ...(group.history || []).map((row) => row.email),
+    ].join(" ").toLowerCase();
+
     groups.forEach((group) => {
-      const hay = [group.display_name, group.name, group.owner_email, group.official_workspace_id, ...(group.current_children || []).map((row) => row.email), (group.mother || {}).email].join(" ").toLowerCase();
-      if (q && !hay.includes(q)) return;
+      if (q && !haystack(group).includes(q)) return;
+      const mother = group.mother && matchesPurpose(group.mother) ? group.mother : null;
+      const currentChildren = (group.current_children || []).filter(matchesPurpose);
+      const unmanaged = (group.unmanaged || []).filter((row) => purpose === "all" || purpose === "conflict" ? matchesPurpose(row) : false);
+      const history = (group.history || []).filter(matchesPurpose);
+      if (purpose && purpose !== "all" && !mother && !currentChildren.length && !unmanaged.length && !history.length) return;
       shown += 1;
       const box = document.createElement("section");
       box.className = "portfolio-group";
       const head = document.createElement("div");
       head.className = "portfolio-head";
-      
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "button ghost compact tree-toggle";
+      head.tabIndex = 0;
+      head.setAttribute("role", "button");
+      head.setAttribute("aria-expanded", "true");
+
+      const toggle = document.createElement("span");
+      toggle.className = "toggle-icon";
       toggle.textContent = "▾";
-      toggle.setAttribute("aria-label", "展开或收起工作区");
-      
+      toggle.setAttribute("aria-hidden", "true");
+
       const body = document.createElement("div");
       body.className = "portfolio-body";
-      toggle.addEventListener("click", () => {
-        const closed = body.hidden;
-        body.hidden = !closed;
-        toggle.textContent = body.hidden ? "▸" : "▾";
+      const collapse = () => {
+        const closed = box.classList.toggle("is-collapsed");
+        head.setAttribute("aria-expanded", closed ? "false" : "true");
+      };
+      head.addEventListener("click", (event) => {
+        if (event.target.closest(".row-actions")) return;
+        collapse();
       });
-      
+      head.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        collapse();
+      });
+
       const counts = group.counts || {};
       const meta = document.createElement("div");
       meta.className = "portfolio-meta";
@@ -2416,21 +2480,22 @@ function openRegister(trigger) {
       ownerCol.className = "portfolio-owner";
       ownerCol.append(twoLine(group.owner_email || "无母号", "当前 " + (counts.current_children ?? 0) + " · 历史 " + (counts.history ?? 0) + " · 未托管 " + (counts.unmanaged ?? 0)));
 
-      head.append(
-        toggle,
-        meta,
-        ownerCol,
-        statusNode(group.health, labelOf(statusLabels, group.health)),
-        timeNode(group.last_sync),
-      );
-      
+      const healthCol = document.createElement("div");
+      healthCol.className = "portfolio-health";
+      healthCol.append(statusNode(group.health, labelOf(statusLabels, group.health)));
+
+      const syncCol = document.createElement("div");
+      syncCol.className = "portfolio-sync";
+      syncCol.append(timeNode(group.last_sync));
+
       const actions = document.createElement("div");
-      actions.className = "row-actions";
+      actions.className = "portfolio-actions row-actions";
       const sync = document.createElement("button");
       sync.type = "button";
       sync.className = "button ghost compact";
       sync.textContent = "同步";
-      sync.addEventListener("click", async () => {
+      sync.addEventListener("click", async (event) => {
+        event.stopPropagation();
         sync.disabled = true;
         try {
           const result = await postAction("workspace-sync-" + group.id, "/api/workspaces/" + group.id + "/sync");
@@ -2442,35 +2507,36 @@ function openRegister(trigger) {
         }
       });
       actions.append(sync);
-      head.append(actions);
+      head.append(toggle, meta, ownerCol, healthCol, syncCol, actions);
 
-      if (group.mother) body.append(portfolioAccountRow(group.mother, "mother"));
-      (group.current_children || []).forEach((row) => body.append(portfolioAccountRow(row, "child")));
-      (group.unmanaged || []).forEach((row) => body.append(portfolioAccountRow(row, "unmanaged")));
-      if ((group.history || []).length) {
+      if (mother) body.append(portfolioAccountRow(mother, "mother"));
+      currentChildren.forEach((row) => body.append(portfolioAccountRow(row, "child")));
+      unmanaged.forEach((row) => body.append(portfolioAccountRow(row, "unmanaged")));
+      if (history.length) {
         const hist = document.createElement("details");
         hist.className = "portfolio-history";
         const summary = document.createElement("summary");
-        summary.className = "portfolio-history-summary";
-        summary.textContent = "历史归档成员 (" + group.history.length + ")";
+        summary.className = "portfolio-history-toggle";
+        summary.textContent = "历史归档成员 (" + history.length + ")";
         hist.append(summary);
-        group.history.forEach((row) => hist.append(portfolioAccountRow(row, "history")));
+        history.forEach((row) => hist.append(portfolioAccountRow(row, "history")));
         body.append(hist);
       }
       box.append(head, body);
       root.append(box);
     });
-    (payload.unassigned || []).forEach((row) => {
+    (data.unassigned || []).forEach((row) => {
       if (q && !String(row.email || "").toLowerCase().includes(q)) return;
+      if (!matchesPurpose(row)) return;
       shown += 1;
       root.append(portfolioAccountRow(row, "unassigned"));
     });
     if (!shown) root.append(emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。", true));
     const note = document.createElement("p");
     note.className = "hint";
-    note.textContent = payload.usage_note || "";
+    note.textContent = data.usage_note || "";
     root.append(note);
-    setCount("accounts-count", shown, (payload.groups || []).length + (payload.unassigned || []).length);
+    setCount("accounts-count", shown, (data.groups || []).length + (data.unassigned || []).length);
   }
 
   function paintList(kind) {
@@ -2502,8 +2568,10 @@ function openRegister(trigger) {
             ? emptyState("没有符合当前筛选的账号", "清除筛选或换一个关键词。")
             : emptyState("还没有账号", "先登记团队母号。归档的默认不显示。")
         );
+        setCount("accounts-count", items.length, pageCache.items.length);
+      } else if (pageCache.portfolio) {
+        renderPortfolio(pageCache.portfolio);
       }
-      setCount("accounts-count", items.length, pageCache.items.length);
     }
   }
 
@@ -2554,6 +2622,7 @@ function openRegister(trigger) {
       const payload = await fetchEntity("account-portfolio", "/api/accounts/portfolio");
       pageCache.kind = "account";
       pageCache.items = [];
+      pageCache.portfolio = payload;
       renderPortfolio(payload);
       return;
     }

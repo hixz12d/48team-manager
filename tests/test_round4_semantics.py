@@ -15,7 +15,8 @@ from app.application.operations import operation_store
 from app.application.resources.proxies import proxy_profile_service
 from app.application.sub2api_publish import account_sub2api_push, account_sub2api_reconcile, sub2api_publish_eligibility
 from app.application.workspace_sync import WorkspaceSyncService
-from app.domain.identity import MEMBERSHIP_STATE_JOINED, LOCAL_PURPOSE_CHILD
+from app.application.queries.portfolio import portfolio_query
+from app.domain.identity import MEMBERSHIP_STATE_JOINED, LOCAL_PURPOSE_MOTHER, OFFICIAL_ROLE_OWNER
 from app.domain.resources.proxy_names import default_name_for_account, is_legacy_auto_name, name_for_bindings
 from app.domain.workspaces.names import apply_custom_name, apply_official_name, is_placeholder_or_email_name, resolve_display_name
 from app.persistence.database import Base
@@ -64,6 +65,27 @@ class WorkspaceSemanticsTests(unittest.IsolatedAsyncioTestCase):
             seat_limit=None,
         )
         await self.session.commit()
+
+    async def test_portfolio_falls_back_to_owner_account_without_membership_row(self):
+        payload = await portfolio_query(self.session)
+        self.assertEqual(len(payload["groups"]), 1)
+        group = payload["groups"][0]
+        self.assertIsNotNone(group["mother"])
+        self.assertEqual(group["mother"]["email"], "owner@example.com")
+        self.assertEqual(group["mother"]["kind"], "mother")
+
+        await ensure_membership(
+            self.session,
+            workspace_id=self.workspace.id,
+            account_id=group["mother"]["id"],
+            official_role=OFFICIAL_ROLE_OWNER,
+            membership_state=MEMBERSHIP_STATE_JOINED,
+            local_purpose=LOCAL_PURPOSE_MOTHER,
+        )
+        await self.session.commit()
+        again = await portfolio_query(self.session)
+        self.assertEqual(again["groups"][0]["mother"]["email"], "owner@example.com")
+        self.assertEqual(again["groups"][0]["counts"]["current_children"], 0)
 
     async def asyncTearDown(self):
         await self.session.close()

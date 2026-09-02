@@ -164,10 +164,15 @@ class ProxyProfileService:
     ) -> tuple[str, int | None]:
         existing = await self.frozen_url(session, job_id)
         if existing:
-            profile_id = None
+            profile = await self.upsert_from_url(session, existing)
             if job_id:
                 row = await session.scalar(select(Operation).where(Operation.public_id == job_id))
-                profile_id = int(row.resolved_proxy_profile_id) if row and row.resolved_proxy_profile_id else None
+                if row is not None and not row.resolved_proxy_profile_id:
+                    row.resolved_proxy_profile_id = profile.id
+                    await session.flush()
+                profile_id = int(row.resolved_proxy_profile_id) if row and row.resolved_proxy_profile_id else profile.id
+            else:
+                profile_id = profile.id
             return existing, profile_id
         url = inherit_proxy_url(form_proxy, child_proxy, mother_proxy, fallback_proxy)
         if not url:

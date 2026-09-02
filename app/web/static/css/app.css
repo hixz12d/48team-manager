@@ -193,7 +193,8 @@ input:disabled, select:disabled, .button:disabled {
   color: var(--text);
 }
 
-.button.sm {
+.button.sm,
+.button.compact {
   height: var(--control-h-sm);
   padding: 0 8px;
   font-size: 12px;

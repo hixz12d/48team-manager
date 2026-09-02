@@ -85,6 +85,11 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("quota-meter", js)
             self.assertIn("/api/accounts/portfolio", js)
             self.assertIn("/api/workspaces/${item.id}/sync-name", js)
+            self.assertIn("is-collapsed", js)
+            self.assertIn("fillProxyProfileOptions", js)
+            self.assertIn("meter-window", js)
+            self.assertIn("toggle-icon", js)
+            self.assertIn("绑定已有档案", proxies)
 
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

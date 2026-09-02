@@ -260,7 +260,7 @@ class OperationStore:
             cancel_requested=False,
             input_json=pack_input(input_payload),
             log_json=_dumps([{"ts": _now_text(stamp), "stage": "queued", "message": "queued"}]),
-            resolved_proxy=None,
+            resolved_proxy=str(resolved_proxy or "").strip() or None,
             resolved_proxy_profile_id=resolved_proxy_profile_id,
             created_at=stamp,
             started_at=stamp,

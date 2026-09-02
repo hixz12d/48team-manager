@@ -238,10 +238,17 @@
   color: var(--danger-text);
 }
 
-.badge-success {
+.badge-success,
+.badge-primary {
   background: var(--success-bg);
   border-color: var(--success-border);
   color: var(--success-text);
+}
+
+.badge-info {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
 }
 
 /* 紧凑指标 Chip */
@@ -271,7 +278,8 @@
   min-width: 170px;
 }
 
-.quota-cell-metrics {
+.quota-cell-metrics,
+.metric-chip-group {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -323,7 +331,8 @@
 .quota-meter.is-warning .meter-pct { color: var(--warning-text); }
 .quota-meter.is-danger .meter-pct { color: var(--danger-text); }
 
-.quota-cell-foot {
+.quota-cell-foot,
+.quota-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -512,7 +521,7 @@
 
 .portfolio-head {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1.4fr) minmax(0, 1fr) minmax(180px, 1.2fr) auto auto;
+  grid-template-columns: 28px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) auto auto;
   gap: var(--space-xs);
   align-items: center;
   padding: 8px 12px;
@@ -547,7 +556,7 @@
 
 .portfolio-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1.4fr) minmax(0, 1fr) minmax(180px, 1.2fr) auto auto;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.8fr) minmax(180px, 1.4fr) minmax(0, 0.8fr) auto;
   gap: var(--space-xs);
   align-items: center;
   padding: 8px 12px 8px 32px;
@@ -568,6 +577,22 @@
 
 .portfolio-row:last-child {
   border-bottom: 0;
+}
+
+.portfolio-cell,
+.portfolio-meta,
+.portfolio-owner,
+.portfolio-health,
+.portfolio-sync,
+.portfolio-actions {
+  min-width: 0;
+}
+
+.portfolio-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .portfolio-row.is-history {

@@ -601,9 +601,14 @@
         <div class="sheet-section" data-proxy-edit-account>
           <label>账号<input name="email" readonly></label>
           <label>当前代理<input name="current_proxy" readonly></label>
-          <label>新代理 URL<input name="proxy" autocomplete="off" placeholder="socks5://host:port 或留空并勾选清除"></label>
-          <label>代理档案 ID<input name="proxy_profile_id" type="number" min="1" placeholder="可选，优先于 URL"></label>
+          <label>绑定已有档案
+            <select name="proxy_profile_id">
+              <option value="">不改绑定，只填新 URL</option>
+            </select>
+          </label>
+          <label>新代理 URL<input name="proxy" autocomplete="off" placeholder="socks5://host:port；优先于档案选择"></label>
           <label class="check"><input name="clear" type="checkbox"> 清除代理</label>
+          <p class="hint">仅母号可改。新 URL 会入库并绑定；已有档案不会改端点。运行中任务继续使用已冻结的代理。</p>
         </div>
         <div class="sheet-section" data-proxy-edit-profile hidden>
           <label>名称<input name="name" autocomplete="off" placeholder="留空并勾选恢复自动名"></label>
