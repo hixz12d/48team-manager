@@ -13,6 +13,7 @@ from app.core.crypto import token_cipher
 from app.core.proxy import compose_proxy_url, inherit_proxy_url, mask_proxy_url, split_proxy_url
 from app.core.time import isoformat, utcnow
 from app.persistence.models.operations import Operation
+from app.persistence.models.identity import Account
 from app.persistence.models.resources import ProxyProfile
 
 
@@ -134,6 +135,37 @@ class ProxyProfileService:
 
     async def list_profiles(self, session: AsyncSession) -> list[ProxyProfile]:
         return list((await session.execute(select(ProxyProfile).order_by(ProxyProfile.id.asc()))).scalars())
+
+
+    async def list_bindings(self, session: AsyncSession, proxy_id: int) -> dict[str, Any]:
+        profile = await session.get(ProxyProfile, int(proxy_id))
+        if profile is None:
+            return {"ok": False, "error": "proxy not found", "error_code": "not_found"}
+        rows = list(
+            (
+                await session.execute(
+                    select(Account).where(Account.proxy_profile_id == int(proxy_id)).order_by(Account.id.asc())
+                )
+            ).scalars()
+        )
+        items = [
+            {
+                "id": row.id,
+                "email": row.email,
+                "purpose": row.local_purpose,
+                "auth": row.auth_state,
+                "state": row.operational_state,
+                "proxy_url": mask_proxy_url(row.proxy) if row.proxy else None,
+            }
+            for row in rows
+        ]
+        return {
+            "ok": True,
+            "proxy": self.serialize(profile),
+            "items": items,
+            "count": len(items),
+        }
+
 
 
 proxy_profile_service = ProxyProfileService()

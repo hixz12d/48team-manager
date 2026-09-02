@@ -779,3 +779,14 @@
   gap: 4px;
   justify-content: flex-end;
 }
+
+
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+}
+label.check input {
+  width: auto;
+}

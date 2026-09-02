@@ -19,3 +19,42 @@ class ProxyCreateRequest(BaseModel):
 class ProxyPatchRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     status: Literal["active", "disabled"] | None = None
+
+
+class OnboardRequest(BaseModel):
+    email_line: str = Field(default="", max_length=500)
+    phone_line: str = Field(default="", max_length=500)
+    proxy: str = Field(default="", max_length=500)
+    password: str = Field(default="", max_length=200)
+    force: bool = False
+    skip_invite: bool = False
+
+
+class RotateRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    email_line: str = Field(default="", max_length=500)
+    phone_line: str = Field(default="", max_length=500)
+    proxy: str = Field(default="", max_length=500)
+    force_refill: bool = False
+    reason: str = Field(default="console", max_length=120)
+
+
+class KickRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    user_id: str | None = Field(default=None, max_length=120)
+    reason: str = Field(default="console_kick", max_length=120)
+    unbind_sub2api: bool = False
+
+
+class RevokeInviteRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+
+
+class AccountProxyPatch(BaseModel):
+    proxy: str | None = Field(default=None, max_length=500)
+    proxy_profile_id: int | None = None
+    clear: bool = False
+
+
+class PhoneStatusPatch(BaseModel):
+    status: Literal["active", "disabled"]

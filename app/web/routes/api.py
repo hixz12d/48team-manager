@@ -19,7 +19,17 @@ from app.core.proxy import normalize_proxy_url
 from app.core.time import utcnow
 from app.persistence.models.resources import ProxyProfile
 from app.web.deps import require_admin
-from app.web.schemas.resources import PhoneImportRequest, ProxyCreateRequest, ProxyPatchRequest
+from app.web.schemas.resources import (
+    AccountProxyPatch,
+    KickRequest,
+    OnboardRequest,
+    PhoneImportRequest,
+    PhoneStatusPatch,
+    ProxyCreateRequest,
+    ProxyPatchRequest,
+    RevokeInviteRequest,
+    RotateRequest,
+)
 from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
 from app.web.schemas.workspaces import CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
 
@@ -70,6 +80,80 @@ def build_api_router(get_db) -> APIRouter:
         result = await workspace_sync_service.sync_workspace(db, workspace_id)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+
+    @router.post("/workspaces/{workspace_id}/onboard", status_code=status.HTTP_202_ACCEPTED)
+    async def onboard_workspace(
+        workspace_id: int,
+        payload: OnboardRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.start_workspace_onboard(
+            db,
+            workspace_id,
+            email_line=payload.email_line,
+            phone_line=payload.phone_line,
+            proxy=payload.proxy,
+            password=payload.password,
+            force=payload.force,
+            skip_invite=payload.skip_invite,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+    @router.post("/workspaces/{workspace_id}/rotate", status_code=status.HTTP_202_ACCEPTED)
+    async def rotate_workspace_member(
+        workspace_id: int,
+        payload: RotateRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.start_controlled_rotate(
+            db,
+            workspace_id,
+            email=payload.email,
+            email_line=payload.email_line,
+            phone_line=payload.phone_line,
+            proxy=payload.proxy,
+            force_refill=payload.force_refill,
+            reason=payload.reason,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+    @router.post("/workspaces/{workspace_id}/kick", status_code=status.HTTP_202_ACCEPTED)
+    async def kick_workspace_member(
+        workspace_id: int,
+        payload: KickRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.kick_member_to_standby(
+            db,
+            workspace_id,
+            email=payload.email,
+            user_id=payload.user_id,
+            reason=payload.reason,
+            unbind_sub2api=payload.unbind_sub2api,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+    @router.post("/workspaces/{workspace_id}/revoke-invite", status_code=status.HTTP_202_ACCEPTED)
+    async def revoke_workspace_invite_route(
+        workspace_id: int,
+        payload: RevokeInviteRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.revoke_workspace_invite(db, workspace_id, email=payload.email)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
     @router.get("/accounts")
@@ -136,6 +220,27 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
+
+    @router.patch("/accounts/{account_id}/proxy")
+    async def patch_account_proxy(
+        account_id: int,
+        payload: AccountProxyPatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.update_account_proxy(
+            db,
+            account_id,
+            proxy=payload.proxy,
+            proxy_profile_id=payload.proxy_profile_id,
+            clear=payload.clear,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "proxy update failed")
+        return result
+
     @router.get("/identity/audit")
     async def identity_audit(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await identity_audit_query(db)
@@ -194,6 +299,32 @@ def build_api_router(get_db) -> APIRouter:
         result = await phone_pool_service.import_lines(db, payload.text)
         return {"ok": True, **result}
 
+
+    @router.patch("/resources/phones/{phone_id}")
+    async def patch_phone(
+        phone_id: int,
+        payload: PhoneStatusPatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.set_phone_status(db, phone_id, payload.status)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "phone update failed")
+        return result
+
+    @router.post("/resources/phones/{phone_id}/reset-cooldown")
+    async def reset_phone_cooldown(
+        phone_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.reset_phone_cooldown(db, phone_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return result
+
     @router.get("/resources/hme")
     async def hme(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.hme(db)
@@ -229,6 +360,18 @@ def build_api_router(get_db) -> APIRouter:
     @router.get("/resources/proxies")
     async def proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.proxies(db)
+
+
+    @router.get("/resources/proxies/{proxy_id}/bindings")
+    async def proxy_bindings(
+        proxy_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.proxy_bindings(db, proxy_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return result
 
     @router.post("/resources/proxies")
     async def create_proxy(

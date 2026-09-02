@@ -9,6 +9,10 @@
   const registerSheet = document.getElementById("register-sheet");
   const phoneImportSheet = document.getElementById("phone-import-sheet");
   const proxyAddSheet = document.getElementById("proxy-add-sheet");
+  const onboardSheet = document.getElementById("onboard-sheet");
+  const rotateSheet = document.getElementById("rotate-sheet");
+  const proxyEditSheet = document.getElementById("proxy-edit-sheet");
+  let focusTrapRoot = null;
   const SECRET_MASK = "••••••";
   const pageCache = { items: [], kind: "" };
   let settingsBaseline = "";
@@ -230,6 +234,50 @@
     window.setTimeout(() => item.remove(), 6500);
   }
 
+  function confirmDanger(message) {
+    return window.confirm(message);
+  }
+
+  function focusableNodes(root) {
+    if (!root) return [];
+    return Array.from(
+      root.querySelectorAll('a[href], button:not([disabled]), textarea, input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')
+    ).filter((node) => !node.hasAttribute("disabled") && node.getAttribute("aria-hidden") !== "true");
+  }
+
+  function activateFocusTrap(root) {
+    focusTrapRoot = root;
+    const nodes = focusableNodes(root);
+    (nodes[0] || root)?.focus?.();
+  }
+
+  function clearFocusTrap() {
+    focusTrapRoot = null;
+  }
+
+  function handleFocusTrap(event) {
+    if (!focusTrapRoot || event.key !== "Tab") return;
+    const nodes = focusableNodes(focusTrapRoot);
+    if (!nodes.length) return;
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  async function patchAction(key, url, body) {
+    return fetchEntity(key, url, {
+      method: "PATCH",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+  }
+
   async function postAction(key, url, body) {
     const options = {
       method: "POST",
@@ -426,10 +474,45 @@
     cell(row, item.reserved_by || "—");
     cell(row, timeNode(item.cooldown_until));
     cell(row, item.last_error_type || "—");
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "button ghost";
+    const enable = item.status !== "active";
+    toggle.textContent = enable ? "启用" : "停用";
+    toggle.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!confirmDanger(`${enable ? "启用" : "停用"}手机号 ${item.number}？`)) return;
+      toggle.disabled = true;
+      try {
+        const result = await patchAction(`phone-status-${item.id}`, `/api/resources/phones/${item.id}`, {
+          status: enable ? "active" : "disabled",
+        });
+        toast(result.ok ? "手机号状态已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
+        await bootPage();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+    actions.append(toggle);
+    const menuBtn = document.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.className = "button ghost";
+    menuBtn.textContent = "更多";
+    menuBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openMenu(menuBtn, "phone", item);
+    });
+    actions.append(menuBtn);
+    cell(row, actions, "actions");
     return row;
   }
 
-  function hmeRow(item) {
+  
+function hmeRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "hme", item);
     cell(row, item.email);
@@ -581,16 +664,20 @@
         button.className = "button ghost";
         button.textContent = item.action || "查看";
         button.addEventListener("click", () => {
+          if (item.href) {
+            window.location.href = item.href;
+            return;
+          }
+          if (item.operation_id) {
+            window.location.href = `/operations?op=${encodeURIComponent(item.operation_id)}`;
+            return;
+          }
           if (item.account_id) {
             window.location.href = `/accounts?account=${encodeURIComponent(item.account_id)}`;
             return;
           }
           if (item.workspace_id) {
             window.location.href = `/workspaces?workspace=${encodeURIComponent(item.workspace_id)}`;
-            return;
-          }
-          if (item.operation_id) {
-            window.location.href = `/operations?op=${encodeURIComponent(item.operation_id)}`;
             return;
           }
           window.location.href = "/accounts?purpose=conflict";
@@ -783,24 +870,40 @@
       );
     } else if (kind === "proxy") {
       title.textContent = item.name;
-      body.append(
-        kvSection("代理", [
+      const sections = [
+        kvSection("详情", [
           ["地区", item.region],
           ["出口 IP", item.last_exit_ip],
           ["状态", item.status],
+          ["健康", item.health_state],
           ["地址", `${item.scheme}://${item.host}:${item.port}`],
-          ["最后检测", item.last_checked_at],
-        ])
-      );
+          ["最近检测", item.last_checked_at],
+          ["绑定数", item.binding_count ?? (item.bindings || []).length],
+        ]),
+      ];
+      const bindings = item.bindings || [];
+      if (bindings.length) {
+        sections.push(
+          kvSection(
+            "绑定账号",
+            bindings.map((row) => [row.email, [row.purpose, row.auth, row.state].filter(Boolean).join(" · ")])
+          )
+        );
+      } else if (item.binding_count === 0) {
+        sections.push(kvSection("绑定账号", [["账号", "当前没有账号绑定到这份代理"]]));
+      }
+      body.append(...sections);
     }
     closeMenu();
     sheet.hidden = false;
+    activateFocusTrap(sheet.querySelector('.sheet-panel') || sheet);
     sheet.querySelector("[data-close-sheet]")?.focus();
   }
 
   function closeSheet() {
     if (!sheet || sheet.hidden) return;
     sheet.hidden = true;
+    clearFocusTrap();
     overlayReturn?.focus?.();
     overlayReturn = null;
   }
@@ -826,6 +929,17 @@
           window.location.href = `/accounts?q=${encodeURIComponent(item.owner_email || "")}`;
         },
       },
+      {
+        id: "workspace.onboard",
+        label: "创建子号",
+        run: (item, trigger) => openOnboard(trigger, item),
+      },
+      {
+        id: "workspace.rotate",
+        label: "受控轮转",
+        run: (item, trigger) => openRotate(trigger, item),
+      },
+
     ],
     account: [
       { id: "account.view", label: "查看详情", run: (item, trigger) => openSheet("account", item, trigger) },
@@ -878,6 +992,54 @@
           toast(ok ? "邮箱已复制" : "复制失败", ok ? "success" : "error");
         },
       },
+      {
+        id: "account.onboard",
+        label: "创建子号",
+        visible: (item) => Boolean(item.workspace_id) || item.purpose === "mother",
+        run: (item, trigger) => openOnboard(trigger, { id: item.workspace_id, name: item.workspace }),
+      },
+      {
+        id: "account.rotate",
+        label: "受控轮转",
+        visible: (item) => item.purpose === "child" && Boolean(item.workspace_id),
+        run: (item, trigger) => openRotate(trigger, { id: item.workspace_id, name: item.workspace }, item),
+      },
+      {
+        id: "account.kick",
+        label: "踢出待命",
+        visible: (item) => item.purpose === "child" && Boolean(item.workspace_id),
+        run: async (item) => {
+          if (!confirmDanger(`确认把 ${item.email} 踢出并转入待命？这会改官方成员。`)) return;
+          const result = await postAction(`account-kick-${item.id}`, `/api/workspaces/${item.workspace_id}/kick`, {
+            email: item.email,
+            reason: "console_kick",
+          });
+          toast(result.ok || result.success ? "踢人任务已提交" : (result.error || "踢人失败"), result.ok || result.success ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "account.revoke",
+        label: "撤回邀请",
+        visible: (item) => item.purpose === "child" && Boolean(item.workspace_id) && item.membership_state === "invited",
+        run: async (item) => {
+          if (!confirmDanger(`确认撤回 ${item.email} 的邀请？`)) return;
+          const result = await postAction(`account-revoke-${item.id}`, `/api/workspaces/${item.workspace_id}/revoke-invite`, {
+            email: item.email,
+          });
+          toast(result.ok || result.success ? "撤回已提交" : (result.error || "撤回失败"), result.ok || result.success ? "success" : "error");
+          if (result.operation_id) await openOperationById(result.operation_id);
+          await bootPage();
+        },
+      },
+      {
+        id: "account.proxy",
+        label: "修改代理",
+        visible: (item) => item.purpose === "mother",
+        run: (item, trigger) => openProxyEdit(trigger, item),
+      },
+
     ],
     operation: [
       { id: "operation.view", label: "查看详情", run: (item, trigger) => openSheet("operation", item, trigger) },
@@ -915,6 +1077,30 @@
           toast(ok ? "号码已复制" : "复制失败", ok ? "success" : "error");
         },
       },
+      {
+        id: "phone.toggle",
+        label: "启用/停用",
+        run: async (item) => {
+          const enable = item.status !== "active";
+          if (!confirmDanger(`${enable ? "启用" : "停用"}手机号 ${item.number}？`)) return;
+          const result = await patchAction(`phone-status-${item.id}`, `/api/resources/phones/${item.id}`, {
+            status: enable ? "active" : "disabled",
+          });
+          toast(result.ok ? "手机号状态已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
+          await bootPage();
+        },
+      },
+      {
+        id: "phone.reset-cooldown",
+        label: "重置冷却",
+        run: async (item) => {
+          if (!confirmDanger(`确认重置 ${item.number} 的冷却时间？`)) return;
+          const result = await postAction(`phone-reset-${item.id}`, `/api/resources/phones/${item.id}/reset-cooldown`);
+          toast(result.ok ? "冷却已重置" : (result.error || "重置失败"), result.ok ? "success" : "error");
+          await bootPage();
+        },
+      },
+
     ],
     hme: [
       { id: "hme.view", label: "查看详情", run: (item, trigger) => openSheet("hme", item, trigger) },
@@ -961,6 +1147,41 @@
           toast(ok ? "已复制" : "复制失败", ok ? "success" : "error");
         },
       },
+      {
+        id: "proxy.bindings",
+        label: "查看绑定账号",
+        run: async (item, trigger) => {
+          const payload = await fetchEntity(`proxy-bindings-${item.id}`, `/api/resources/proxies/${item.id}/bindings`);
+          const bound = payload.items || [];
+          openSheet("proxy", {
+            ...item,
+            bindings: bound,
+            binding_count: payload.count ?? bound.length,
+          }, trigger);
+        },
+      },
+      {
+        id: "proxy.disable",
+        label: "停用代理",
+        visible: (item) => item.status === "active",
+        run: async (item) => {
+          if (!confirmDanger(`确认停用代理 ${item.name || item.host}？不会删除档案。`)) return;
+          const result = await patchAction(`proxy-status-${item.id}`, `/api/resources/proxies/${item.id}`, { status: "disabled" });
+          toast(result.ok ? "代理已停用" : (result.error || "停用失败"), result.ok ? "success" : "error");
+          await bootPage();
+        },
+      },
+      {
+        id: "proxy.enable",
+        label: "启用代理",
+        visible: (item) => item.status !== "active",
+        run: async (item) => {
+          const result = await patchAction(`proxy-status-${item.id}`, `/api/resources/proxies/${item.id}`, { status: "active" });
+          toast(result.ok ? "代理已启用" : (result.error || "启用失败"), result.ok ? "success" : "error");
+          await bootPage();
+        },
+      },
+
     ],
   };
 
@@ -1088,7 +1309,180 @@
     setRegisterStatus("", "muted");
   }
 
-  function openRegister(trigger) {
+    function syncWorkspaceField(form, workspace) {
+    if (!form) return;
+    const id = workspace?.id || "";
+    form.workspace_id.value = id;
+    if (form.workspace_id_display) form.workspace_id_display.value = id;
+  }
+
+  function openOnboard(trigger, workspace) {
+    if (!onboardSheet) return;
+    overlayReturn = trigger || document.querySelector("[data-open-onboard]");
+    const form = document.getElementById("onboard-form");
+    form?.reset();
+    syncWorkspaceField(form, workspace);
+    setFormStatus("onboard-status", "", "muted");
+    onboardSheet.hidden = false;
+    activateFocusTrap(onboardSheet.querySelector(".sheet-panel") || onboardSheet);
+  }
+
+  function closeOnboard() {
+    if (!onboardSheet || onboardSheet.hidden) return;
+    onboardSheet.hidden = true;
+    clearFocusTrap();
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  function openRotate(trigger, workspace, account) {
+    if (!rotateSheet) return;
+    overlayReturn = trigger || document.activeElement;
+    const form = document.getElementById("rotate-form");
+    form?.reset();
+    syncWorkspaceField(form, workspace);
+    if (form && account?.email) form.email.value = account.email;
+    setFormStatus("rotate-status", "", "muted");
+    rotateSheet.hidden = false;
+    activateFocusTrap(rotateSheet.querySelector(".sheet-panel") || rotateSheet);
+  }
+
+  function closeRotate() {
+    if (!rotateSheet || rotateSheet.hidden) return;
+    rotateSheet.hidden = true;
+    clearFocusTrap();
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  function openProxyEdit(trigger, account) {
+    if (!proxyEditSheet) return;
+    overlayReturn = trigger || document.activeElement;
+    const form = document.getElementById("proxy-edit-form");
+    form?.reset();
+    if (form) {
+      form.account_id.value = account.id || "";
+      form.email.value = account.email || "";
+      form.current_proxy.value = account.proxy_url || "";
+      form.proxy.value = "";
+      form.proxy_profile_id.value = account.proxy_profile_id || "";
+      form.clear.checked = false;
+    }
+    setFormStatus("proxy-edit-status", "", "muted");
+    proxyEditSheet.hidden = false;
+    activateFocusTrap(proxyEditSheet.querySelector(".sheet-panel") || proxyEditSheet);
+  }
+
+  function closeProxyEdit() {
+    if (!proxyEditSheet || proxyEditSheet.hidden) return;
+    proxyEditSheet.hidden = true;
+    clearFocusTrap();
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  async function submitOnboard(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("#onboard-submit");
+    const workspaceId = Number(form.workspace_id_display.value || form.workspace_id.value || 0);
+    if (!workspaceId) {
+      setFormStatus("onboard-status", "请填写 Workspace ID", "error");
+      return;
+    }
+    if (!confirmDanger(`确认向 Workspace #${workspaceId} 创建子号？可能触发邀请与浏览器自动化。`)) return;
+    if (button) button.disabled = true;
+    setFormStatus("onboard-status", "正在提交…", "muted");
+    try {
+      const result = await postAction(`onboard-${workspaceId}`, `/api/workspaces/${workspaceId}/onboard`, {
+        email_line: form.email_line.value || "",
+        phone_line: form.phone_line.value || "",
+        proxy: form.proxy.value || "",
+        force: Boolean(form.force.checked),
+        skip_invite: Boolean(form.skip_invite.checked),
+      });
+      setFormStatus("onboard-status", result.ok || result.success ? "已提交" : (result.error || "失败"), result.ok || result.success ? "muted" : "error");
+      toast(result.ok || result.success ? "创建子号任务已提交" : (result.error || "创建失败"), result.ok || result.success ? "success" : "error");
+      if (result.operation_id) {
+        closeOnboard();
+        await openOperationById(result.operation_id);
+      }
+      await bootPage();
+    } catch (error) {
+      setFormStatus("onboard-status", friendlyError(error), "error");
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function submitRotate(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("#rotate-submit");
+    const workspaceId = Number(form.workspace_id_display.value || form.workspace_id.value || 0);
+    const email = (form.email.value || "").trim();
+    if (!workspaceId || !email) {
+      setFormStatus("rotate-status", "Workspace 与邮箱都必填", "error");
+      return;
+    }
+    if (!confirmDanger(`确认对 ${email} 执行受控轮转？会踢人/撤邀请并可能补位。`)) return;
+    if (button) button.disabled = true;
+    setFormStatus("rotate-status", "正在提交…", "muted");
+    try {
+      const result = await postAction(`rotate-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/rotate`, {
+        email,
+        email_line: form.email_line.value || "",
+        phone_line: form.phone_line.value || "",
+        proxy: form.proxy.value || "",
+        force_refill: Boolean(form.force_refill.checked),
+        reason: "console",
+      });
+      setFormStatus("rotate-status", result.ok || result.success ? "已提交" : (result.error || "失败"), result.ok || result.success ? "muted" : "error");
+      toast(result.ok || result.success ? "轮转任务已提交" : (result.error || "轮转失败"), result.ok || result.success ? "success" : "error");
+      if (result.operation_id) {
+        closeRotate();
+        await openOperationById(result.operation_id);
+      }
+      await bootPage();
+    } catch (error) {
+      setFormStatus("rotate-status", friendlyError(error), "error");
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function submitProxyEdit(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("#proxy-edit-submit");
+    const accountId = Number(form.account_id.value || 0);
+    if (!accountId) return;
+    if (button) button.disabled = true;
+    setFormStatus("proxy-edit-status", "正在保存…", "muted");
+    try {
+      const body = {
+        clear: Boolean(form.clear.checked),
+        proxy: form.proxy.value || null,
+        proxy_profile_id: form.proxy_profile_id.value ? Number(form.proxy_profile_id.value) : null,
+      };
+      const result = await patchAction(`account-proxy-${accountId}`, `/api/accounts/${accountId}/proxy`, body);
+      setFormStatus("proxy-edit-status", result.ok ? "已保存" : (result.error || "失败"), result.ok ? "muted" : "error");
+      toast(result.ok ? "母号代理已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
+      if (result.ok) {
+        closeProxyEdit();
+        await bootPage();
+      }
+    } catch (error) {
+      setFormStatus("proxy-edit-status", friendlyError(error), "error");
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+function openRegister(trigger) {
     if (!registerSheet) return;
     overlayReturn = trigger || document.querySelector("[data-open-register]");
     resetRegisterForm();
@@ -1756,6 +2150,16 @@
   });
   document.querySelector("[data-close-proxy-add]")?.addEventListener("click", closeProxyAdd);
   document.getElementById("proxy-add-form")?.addEventListener("submit", submitProxyAdd);
+  document.querySelectorAll("[data-open-onboard]").forEach((button) => {
+    button.addEventListener("click", () => openOnboard(button));
+  });
+  document.querySelector("[data-close-onboard]")?.addEventListener("click", closeOnboard);
+  document.getElementById("onboard-form")?.addEventListener("submit", submitOnboard);
+  document.querySelector("[data-close-rotate]")?.addEventListener("click", closeRotate);
+  document.getElementById("rotate-form")?.addEventListener("submit", submitRotate);
+  document.querySelector("[data-close-proxy-edit]")?.addEventListener("click", closeProxyEdit);
+  document.getElementById("proxy-edit-form")?.addEventListener("submit", submitProxyEdit);
+
 
   document.getElementById("register-copy-link")?.addEventListener("click", async () => {
     const authorize = document.getElementById("register-authorize-url");
@@ -1838,6 +2242,9 @@
     }
     if (event.key === "Escape") {
       if (!menu.hidden) closeMenu();
+      else if (onboardSheet && !onboardSheet.hidden) closeOnboard();
+      else if (rotateSheet && !rotateSheet.hidden) closeRotate();
+      else if (proxyEditSheet && !proxyEditSheet.hidden) closeProxyEdit();
       else if (phoneImportSheet && !phoneImportSheet.hidden) closePhoneImport();
       else if (proxyAddSheet && !proxyAddSheet.hidden) closeProxyAdd();
       else if (registerSheet && !registerSheet.hidden) closeRegister();
@@ -1845,6 +2252,7 @@
       else closeDrawer();
       document.body.classList.remove("nav-open");
     }
+    handleFocusTrap(event);
   });
   commandInput?.addEventListener("input", () => renderPalette(commandInput.value));
   window.addEventListener("beforeunload", (event) => {

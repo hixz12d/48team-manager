@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import verify_bindings
+from app.application.onboard import onboard_service
 from app.application.operations import operation_store, serialize_operation
 from app.application.quota import quota_service
 from app.application.reauth import reauth_service
@@ -17,17 +18,21 @@ from app.application.resources.hme import (
     reconcile_aliases,
     release_lease,
 )
+from app.application.resources.phones import phone_pool_service
 from app.application.resources.proxies import proxy_profile_service
+from app.application.rotate import rotate_service
 from app.application.tokens import auth_service
-from app.core.proxy import mask_proxy_url
+from app.application.workspaces import workspace_service
+from app.core.proxy import mask_proxy_url, normalize_proxy_url
 from app.core.time import isoformat, utcnow
+from app.domain.identity.ids import normalize_email
 from app.domain.resources import (
     HME_STATE_RESERVED,
 )
 from app.integrations.sub2api.client import sub2api_client
-from app.persistence.models.identity import Account
+from app.persistence.models.identity import Account, Workspace
 from app.persistence.models.operations import OperationStep
-from app.persistence.models.resources import HmeAliasLease
+from app.persistence.models.resources import HmeAliasLease, ProxyProfile
 
 SAFE_RETRY_TYPES = {"quota_probe", "auth_probe", "proxy_check", "workspace_sync", "reconcile", "sub2api_sync"}
 UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free"}
@@ -425,3 +430,250 @@ async def account_refresh(db: AsyncSession, account_id: int) -> dict[str, Any]:
     await operation_store.finish(db, operation, payload)
     await db.commit()
     return {"ok": ok, "operation_id": operation.public_id, **payload}
+
+def _ok_result(result: dict[str, Any], *, operation_id: str | None = None) -> dict[str, Any]:
+    payload = dict(result or {})
+    success = bool(payload.get("success") if "success" in payload else payload.get("ok"))
+    if operation_id and "operation_id" not in payload:
+        payload["operation_id"] = operation_id
+    payload["ok"] = success
+    return payload
+
+
+async def start_workspace_onboard(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email_line: str = "",
+    phone_line: str = "",
+    proxy: str = "",
+    password: str = "",
+    force: bool = False,
+    skip_invite: bool = False,
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    operation = await operation_store.create(
+        db,
+        op_type="onboard",
+        workspace_id=workspace.id,
+        email=str(email_line or "").strip(),
+        phone=str(phone_line or "").strip(),
+        input_payload={
+            "workspace_id": workspace.id,
+            "email_line": email_line,
+            "phone_line": phone_line,
+            "proxy": mask_proxy_url(proxy) if proxy else "",
+            "force": bool(force),
+            "skip_invite": bool(skip_invite),
+        },
+        resolved_proxy=str(proxy or "").strip(),
+    )
+    await db.commit()
+    result = await onboard_service.invite_and_onboard(
+        db,
+        workspace_id=workspace.id,
+        email_line=email_line,
+        phone_line=phone_line,
+        proxy=proxy,
+        password=password,
+        force=force,
+        skip_invite=skip_invite,
+        job_id=operation.public_id,
+        in_test=False,
+    )
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
+async def start_controlled_rotate(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email: str,
+    email_line: str = "",
+    phone_line: str = "",
+    proxy: str = "",
+    force_refill: bool = False,
+    reason: str = "console",
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    target = normalize_email(email)
+    if not target:
+        return {"ok": False, "error": "email required", "error_code": "email_required"}
+    child = (
+        await db.execute(select(Account).where(Account.email == normalize_email(target)))
+    ).scalar_one_or_none()
+    operation = await operation_store.create(
+        db,
+        op_type="rotate",
+        workspace_id=workspace.id,
+        account_id=child.id if child else None,
+        email=target,
+        phone=str(phone_line or "").strip(),
+        input_payload={
+            "workspace_id": workspace.id,
+            "email": target,
+            "email_line": email_line,
+            "phone_line": phone_line,
+            "proxy": mask_proxy_url(proxy) if proxy else "",
+            "force_refill": bool(force_refill),
+            "reason": reason,
+        },
+        resolved_proxy=str(proxy or "").strip(),
+    )
+    await db.commit()
+    result = await rotate_service.kick_and_refill(
+        db,
+        workspace_id=workspace.id,
+        email=target,
+        email_line=email_line,
+        phone_line=phone_line,
+        proxy=proxy,
+        child_id=child.id if child else None,
+        force_refill=force_refill,
+        job_id=operation.public_id,
+        reason=reason,
+        in_test=False,
+    )
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
+async def kick_member_to_standby(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email: str,
+    user_id: str | None = None,
+    reason: str = "console_kick",
+    unbind_sub2api: bool = False,
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    target = normalize_email(email)
+    if not target:
+        return {"ok": False, "error": "email required", "error_code": "email_required"}
+    child = (
+        await db.execute(select(Account).where(Account.email == normalize_email(target)))
+    ).scalar_one_or_none()
+    operation = await operation_store.create(
+        db,
+        op_type="rotate",
+        workspace_id=workspace.id,
+        account_id=child.id if child else None,
+        email=target,
+        input_payload={
+            "workspace_id": workspace.id,
+            "email": target,
+            "user_id": user_id,
+            "reason": reason,
+            "mode": "kick_only",
+            "unbind_sub2api": bool(unbind_sub2api),
+        },
+    )
+    await db.commit()
+    result = await rotate_service.kick_to_standby(
+        db,
+        workspace_id=workspace.id,
+        email=target,
+        user_id=user_id,
+        reason=reason,
+        unbind_sub2api=unbind_sub2api,
+        job_id=operation.public_id,
+    )
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
+async def revoke_workspace_invite(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email: str,
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    target = normalize_email(email)
+    if not target:
+        return {"ok": False, "error": "email required", "error_code": "email_required"}
+    operation = await operation_store.create(
+        db,
+        op_type="rotate",
+        workspace_id=workspace.id,
+        email=target,
+        input_payload={"workspace_id": workspace.id, "email": target, "mode": "revoke_invite"},
+    )
+    await db.commit()
+    result = await workspace_service.revoke_invite(db, workspace.id, target)
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
+async def update_account_proxy(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    proxy: str | None = None,
+    proxy_profile_id: int | None = None,
+    clear: bool = False,
+) -> dict[str, Any]:
+    account = await db.get(Account, int(account_id))
+    if account is None:
+        return {"ok": False, "error": "account not found", "error_code": "not_found"}
+    if account.local_purpose != "mother":
+        return {"ok": False, "error": "only mother accounts can change proxy here", "error_code": "not_mother"}
+
+    if clear:
+        account.proxy = None
+        account.proxy_profile_id = None
+    elif proxy_profile_id is not None:
+        profile = await db.get(ProxyProfile, int(proxy_profile_id))
+        if profile is None:
+            return {"ok": False, "error": "proxy profile not found", "error_code": "proxy_not_found"}
+        account.proxy = proxy_profile_service.compose(profile)
+        account.proxy_profile_id = profile.id
+    else:
+        raw = str(proxy or "").strip()
+        if not raw:
+            return {"ok": False, "error": "proxy required", "error_code": "proxy_required"}
+        try:
+            url = normalize_proxy_url(raw)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "error_code": "invalid_proxy"}
+        if not url:
+            return {"ok": False, "error": "proxy required", "error_code": "proxy_required"}
+        profile = await proxy_profile_service.upsert_from_url(db, url, name=f"mother-{account.id}")
+        account.proxy = url
+        account.proxy_profile_id = profile.id
+
+    account.updated_at = utcnow()
+    await db.commit()
+    return {
+        "ok": True,
+        "account_id": account.id,
+        "proxy": "set" if account.proxy else "none",
+        "proxy_url": mask_proxy_url(account.proxy) if account.proxy else None,
+        "proxy_profile_id": account.proxy_profile_id,
+    }
+
+
+async def set_phone_status(db: AsyncSession, phone_id: int, status: str) -> dict[str, Any]:
+    return await phone_pool_service.set_status(db, phone_id, status)
+
+
+async def reset_phone_cooldown(db: AsyncSession, phone_id: int) -> dict[str, Any]:
+    return await phone_pool_service.reset_cooldown(db, phone_id)
+
+
+async def proxy_bindings(db: AsyncSession, proxy_id: int) -> dict[str, Any]:
+    return await proxy_profile_service.list_bindings(db, proxy_id)

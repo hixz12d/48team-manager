@@ -377,6 +377,33 @@ class PhonePoolService:
         return list((await session.execute(select(PhonePool).order_by(PhonePool.id.asc()))).scalars())
 
 
+    async def set_status(self, session: AsyncSession, phone_id: int, status: str) -> dict[str, Any]:
+        row = await session.get(PhonePool, int(phone_id))
+        if row is None:
+            return {"ok": False, "error": "phone not found", "error_code": "not_found"}
+        wanted = str(status or "").strip().lower()
+        if wanted not in {STATUS_ACTIVE, STATUS_DISABLED}:
+            return {"ok": False, "error": "status must be active or disabled", "error_code": "invalid_status"}
+        if row.status == STATUS_MAXED and wanted == STATUS_ACTIVE:
+            return {"ok": False, "error": "maxed phone cannot be re-enabled without raising max_uses", "error_code": "maxed"}
+        row.status = wanted
+        row.updated_at = utcnow()
+        await session.commit()
+        cfg = await self.get_config(session)
+        return {"ok": True, "item": self.serialize(row, cfg)}
+
+    async def reset_cooldown(self, session: AsyncSession, phone_id: int) -> dict[str, Any]:
+        row = await session.get(PhonePool, int(phone_id))
+        if row is None:
+            return {"ok": False, "error": "phone not found", "error_code": "not_found"}
+        row.last_used_at = None
+        row.updated_at = utcnow()
+        await session.commit()
+        cfg = await self.get_config(session)
+        return {"ok": True, "item": self.serialize(row, cfg)}
+
+
+
 phone_pool_service = PhonePoolService()
 
 

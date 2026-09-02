@@ -45,6 +45,9 @@
         <div class="topbar-actions">
           {% if page == 'workspaces' %}
           <button type="button" class="button primary" data-open-register>登记团队</button>
+          <button type="button" class="button" data-open-onboard>创建子号</button>
+          {% elif page == 'accounts' %}
+          <button type="button" class="button primary" data-open-onboard>创建子号</button>
           {% elif page == 'hme' %}
           <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
           {% elif page == 'proxies' %}
@@ -174,9 +177,10 @@
                   <th scope="col">当前租约</th>
                   <th scope="col">冷却到</th>
                   <th scope="col">最后结果</th>
+                                  <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="phones-body"><tr><td colspan="7" class="muted">正在加载手机号…</td></tr></tbody>
+              <tbody id="phones-body"><tr><td colspan="8" class="muted">正在加载手机号…</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -467,6 +471,86 @@
       </form>
     </div>
   </div>
+  <div class="sheet" id="onboard-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="onboard-title">
+      <header>
+        <div>
+          <strong id="onboard-title">创建子号</strong>
+          <p class="muted">向指定 Workspace 邀请并完成 Playwright 入驻。邮箱可留空以自动领取 HME。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-onboard>关闭</button>
+      </header>
+      <form id="onboard-form" class="sheet-body">
+        <input type="hidden" name="workspace_id" value="">
+        <div class="sheet-section">
+          <label>Workspace ID<input name="workspace_id_display" type="number" min="1" required></label>
+          <label>邮箱 / 邮件原文<textarea name="email_line" rows="3" placeholder="留空则自动领取 HME；也可粘贴完整邮件原文"></textarea></label>
+          <label>手机号行<input name="phone_line" autocomplete="off" placeholder="可选；通常由号池自动分配"></label>
+          <label>代理<input name="proxy" autocomplete="off" placeholder="可选 socks5://host:port"></label>
+          <label class="check"><input name="force" type="checkbox"> 强制（跳过部分门禁）</label>
+          <label class="check"><input name="skip_invite" type="checkbox"> 跳过邀请（仅浏览器入驻）</label>
+          <p class="hint">这会创建真实 onboard 任务，可能调用官方邀请与浏览器自动化。</p>
+        </div>
+        <p id="onboard-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button class="button primary" type="submit" id="onboard-submit">开始创建子号</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="sheet" id="rotate-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="rotate-title">
+      <header>
+        <div>
+          <strong id="rotate-title">受控轮转</strong>
+          <p class="muted">先踢出/撤回目标子号，再按策略补位。需二次确认。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-rotate>关闭</button>
+      </header>
+      <form id="rotate-form" class="sheet-body">
+        <input type="hidden" name="workspace_id" value="">
+        <div class="sheet-section">
+          <label>Workspace ID<input name="workspace_id_display" type="number" min="1" required></label>
+          <label>要轮转的子号邮箱<input name="email" type="email" required autocomplete="off"></label>
+          <label>补位邮箱 / 原文<textarea name="email_line" rows="3" placeholder="可选；留空则系统挑选待命号或领 HME"></textarea></label>
+          <label>手机号行<input name="phone_line" autocomplete="off" placeholder="可选"></label>
+          <label>代理<input name="proxy" autocomplete="off" placeholder="可选"></label>
+          <label class="check"><input name="force_refill" type="checkbox"> 强制补位</label>
+          <p class="hint">危险操作：会改官方成员席位。提交前会再次确认。</p>
+        </div>
+        <p id="rotate-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button class="button primary" type="submit" id="rotate-submit">确认轮转</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="sheet" id="proxy-edit-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="proxy-edit-title">
+      <header>
+        <div>
+          <strong id="proxy-edit-title">修改母号代理</strong>
+          <p class="muted">仅母号可改。可填 URL，或绑定已有代理档案。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-proxy-edit>关闭</button>
+      </header>
+      <form id="proxy-edit-form" class="sheet-body">
+        <input type="hidden" name="account_id" value="">
+        <div class="sheet-section">
+          <label>账号<input name="email" readonly></label>
+          <label>当前代理<input name="current_proxy" readonly></label>
+          <label>新代理 URL<input name="proxy" autocomplete="off" placeholder="socks5://host:port 或留空并勾选清除"></label>
+          <label>代理档案 ID<input name="proxy_profile_id" type="number" min="1" placeholder="可选，优先于 URL"></label>
+          <label class="check"><input name="clear" type="checkbox"> 清除代理</label>
+        </div>
+        <p id="proxy-edit-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button class="button primary" type="submit" id="proxy-edit-submit">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <dialog class="palette" id="command-palette">
     <input id="command-input" placeholder="去哪…">

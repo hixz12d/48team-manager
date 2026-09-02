@@ -86,7 +86,10 @@ class UIContractTests(unittest.TestCase):
             self.assertIn('id="password-form"', page)
             self.assertIn("sms_cooldown_min", page)
             self.assertIn('name="official_quota_probe"', page)
-            self.assertNotIn('name="auto_reauth"', page)
-            self.assertNotIn('name="auto_rotate"', page)
-            self.assertNotIn('name="force_refill"', page)
+            settings_form = page.split('id="settings-form"', 1)[1].split('id="password-form"', 1)[0]
+            self.assertNotIn('name="auto_reauth"', settings_form)
+            self.assertNotIn('name="auto_rotate"', settings_form)
+            self.assertNotIn('name="force_refill"', settings_form)
+            # Shared rotate sheet may include force_refill outside settings form.
+            self.assertIn('id="rotate-sheet"', page)
             self.assertIn("优先查看异常", client.get("/").text)
