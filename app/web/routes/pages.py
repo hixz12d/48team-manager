@@ -12,7 +12,7 @@ PAGES = {
     "overview": {
         "title": "总览",
         "path": "/",
-        "subtitle": "优先查看异常、运行中的任务和工作区健康。",
+        "subtitle": "优先查看异常。工作区资产在左，待处理在右；没有异常时不占大卡片。",
     },
     "workspaces": {
         "title": "团队",
@@ -22,7 +22,7 @@ PAGES = {
     "accounts": {
         "title": "账号",
         "path": "/accounts",
-        "subtitle": "按用途、授权、官方额度和 Binding 管理账号。",
+        "subtitle": "默认按 Workspace 分组查看母号、当前子号和历史成员；可切回平铺排障。",
     },
     "operations": {
         "title": "任务",

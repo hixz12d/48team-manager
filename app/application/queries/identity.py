@@ -191,6 +191,9 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
             {
                 "id": workspace.id,
                 "name": display["display_name"],
+                "display_name": display["display_name"],
+                "official_workspace_id": workspace.official_workspace_id,
+                "owner_email": owner.email if owner else None,
                 "joined_people_total": counts["joined_people_total"],
                 "joined_member_count": counts["joined_member_count"],
                 "managed_count": len(managed),
@@ -200,6 +203,7 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
                 "health": health,
                 "status": workspace.status,
                 "sync_state": sync_state,
+                "last_sync": isoformat(workspace.last_official_sync_at),
             }
         )
     workspace_health.sort(key=lambda item: (item["health"] == "ok", item["name"] or ""))
@@ -358,6 +362,8 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "custom_name": display.get("custom_name") or getattr(workspace, "custom_name", None),
                 "name_source": display.get("name_source") or getattr(workspace, "name_source", None),
                 "official_name_synced_at": isoformat(getattr(workspace, "official_name_synced_at", None)),
+                "official_name_last_error": display.get("official_name_last_error") or getattr(workspace, "official_name_last_error", None),
+                "official_name_payload_source": display.get("official_name_payload_source") or getattr(workspace, "official_name_payload_source", None),
                 "official_workspace_id": workspace.official_workspace_id,
                 "owner_email": owner.email if owner else None,
                 "owner_purpose": owner.local_purpose if owner else None,

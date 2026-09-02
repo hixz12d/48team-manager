@@ -59,3 +59,7 @@ class IdentityQueryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(by_email["kid@icloud.com"]["purpose"], "child")
                 audit = client.get("/api/identity/audit").json()
                 self.assertEqual(audit["counts"]["verified"], 2)
+                portfolio = client.get("/api/accounts/portfolio").json()
+                self.assertEqual(len(portfolio["groups"]), 1)
+                self.assertFalse(portfolio["usage_available"])
+                self.assertIsNone(portfolio["groups"][0]["usage"])

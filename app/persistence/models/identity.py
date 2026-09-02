@@ -79,6 +79,8 @@ class Workspace(Base):
     custom_name: Mapped[str | None] = mapped_column(String(255))
     name_source: Mapped[str] = mapped_column(String(20), default="placeholder", nullable=False)
     official_name_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    official_name_last_error: Mapped[str | None] = mapped_column(String(500))
+    official_name_payload_source: Mapped[str | None] = mapped_column(String(80))
     subscription_plan: Mapped[str | None] = mapped_column(String(100))
     owner_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)

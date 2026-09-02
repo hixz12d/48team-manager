@@ -20,7 +20,7 @@ class AuthTests(unittest.TestCase):
 
             overview = client.get("/", headers={"accept": "text/html"})
             self.assertEqual(overview.status_code, 200)
-            self.assertIn("需要处理", overview.text)
+            self.assertIn("待处理", overview.text)
             self.assertIn("正在加载总览", overview.text)
             self.assertNotIn("/admin/v2", overview.text)
             self.assertNotIn("/admin/v3", overview.text)

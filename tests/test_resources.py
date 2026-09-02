@@ -299,3 +299,20 @@ class ResourceApiTests(unittest.TestCase):
             self.assertEqual(item["port"], 1080)
             proxies = client.get("/api/resources/proxies").json()["items"]
             self.assertEqual(len(proxies), 1)
+
+            renamed = client.patch(
+                f"/api/resources/proxies/{item['id']}",
+                json={"name": "机房入口"},
+            )
+            self.assertEqual(renamed.status_code, 200, renamed.text)
+            self.assertEqual(renamed.json()["item"]["name"], "机房入口")
+            self.assertEqual(renamed.json()["item"]["name_source"], "user")
+            restored = client.patch(
+                f"/api/resources/proxies/{item['id']}",
+                json={"name": "", "restore_auto_name": True},
+            )
+            self.assertEqual(restored.status_code, 200, restored.text)
+            self.assertEqual(restored.json()["item"]["name_source"], "auto")
+            listed = client.get("/api/resources/proxies").json()["items"][0]
+            self.assertNotIn("pass", str(listed))
+            self.assertNotIn("password", listed)

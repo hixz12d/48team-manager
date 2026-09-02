@@ -728,6 +728,7 @@ from app.application.console_maintenance import (  # noqa: E402
     bulk_archive_operations,
     link_remote_only_member,
     repair_workspace_names,
+    sync_workspace_official_name,
     restore_operation,
     update_workspace_display_name,
 )

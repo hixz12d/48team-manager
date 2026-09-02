@@ -56,18 +56,30 @@ def is_placeholder_or_email_name(value: str | None, *, owner_email: str | None =
     return False
 
 
+def name_diagnostics(workspace) -> dict[str, Any]:
+    return {
+        "official_name": str(getattr(workspace, "official_name", None) or "").strip() or None,
+        "custom_name": str(getattr(workspace, "custom_name", None) or "").strip() or None,
+        "name_source": str(getattr(workspace, "name_source", None) or "").strip() or None,
+        "official_name_synced_at": getattr(workspace, "official_name_synced_at", None),
+        "official_name_last_error": str(getattr(workspace, "official_name_last_error", None) or "").strip() or None,
+        "official_name_payload_source": str(getattr(workspace, "official_name_payload_source", None) or "").strip() or None,
+    }
+
+
 def resolve_display_name(workspace, *, owner_email: str | None = None) -> dict[str, Any]:
-    custom = str(getattr(workspace, "custom_name", None) or "").strip() or None
-    official = str(getattr(workspace, "official_name", None) or "").strip() or None
+    diagnostics = name_diagnostics(workspace)
+    custom = diagnostics["custom_name"]
+    official = diagnostics["official_name"]
     legacy = str(getattr(workspace, "name", None) or "").strip() or None
-    source = str(getattr(workspace, "name_source", None) or "").strip() or None
+    source = diagnostics["name_source"]
 
     if custom:
         return {
             "name": custom,
             "display_name": custom,
             "name_source": NAME_SOURCE_CUSTOM,
-            "official_name": official,
+            **diagnostics,
             "custom_name": custom,
         }
     if official and not is_placeholder_or_email_name(official, owner_email=owner_email):
@@ -75,7 +87,7 @@ def resolve_display_name(workspace, *, owner_email: str | None = None) -> dict[s
             "name": official,
             "display_name": official,
             "name_source": NAME_SOURCE_OFFICIAL,
-            "official_name": official,
+            **diagnostics,
             "custom_name": None,
         }
     if legacy and not is_placeholder_or_email_name(legacy, owner_email=owner_email):
@@ -83,7 +95,7 @@ def resolve_display_name(workspace, *, owner_email: str | None = None) -> dict[s
             "name": legacy,
             "display_name": legacy,
             "name_source": source or NAME_SOURCE_LEGACY,
-            "official_name": official,
+            **diagnostics,
             "custom_name": None,
         }
     placeholder = placeholder_name(workspace)
@@ -91,12 +103,20 @@ def resolve_display_name(workspace, *, owner_email: str | None = None) -> dict[s
         "name": placeholder,
         "display_name": placeholder,
         "name_source": NAME_SOURCE_PLACEHOLDER,
-        "official_name": official,
+        **diagnostics,
         "custom_name": None,
     }
 
 
-def apply_official_name(workspace, official_name: str | None, *, owner_email: str | None = None, synced_at=None) -> bool:
+def apply_official_name(
+    workspace,
+    official_name: str | None,
+    *,
+    owner_email: str | None = None,
+    synced_at=None,
+    payload_source: str | None = None,
+    last_error: str | None = None,
+) -> bool:
     cleaned = str(official_name or "").strip() or None
     if cleaned and is_placeholder_or_email_name(cleaned, owner_email=owner_email):
         cleaned = None
@@ -107,6 +127,11 @@ def apply_official_name(workspace, official_name: str | None, *, owner_email: st
     if cleaned and synced_at is not None:
         workspace.official_name_synced_at = synced_at
         changed = True
+    if payload_source is not None and hasattr(workspace, "official_name_payload_source"):
+        workspace.official_name_payload_source = payload_source or None
+        changed = True
+    if hasattr(workspace, "official_name_last_error"):
+        workspace.official_name_last_error = (str(last_error).strip()[:500] or None) if last_error else None
     custom = str(getattr(workspace, "custom_name", None) or "").strip()
     if custom:
         workspace.name_source = NAME_SOURCE_CUSTOM

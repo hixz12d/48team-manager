@@ -18,6 +18,7 @@ class ProxyCreateRequest(BaseModel):
 
 class ProxyPatchRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
+    restore_auto_name: bool = False
     status: Literal["active", "disabled"] | None = None
 
 

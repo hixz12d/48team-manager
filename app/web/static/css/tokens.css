@@ -1,71 +1,98 @@
 :root {
   color-scheme: light;
   
-  /* 颜色 */
-  --bg: #fafafa;
+  /* 颜色 (Light Mode / Primer & Polaris Inspired) */
+  --bg: #f8fafc;
   --surface: #ffffff;
-  --surface-subtle: #f8f9fa;
-  --surface-hover: #f4f5f7;
-  --sidebar: #f5f5f5;
-  --overlay: rgba(24, 24, 27, .4);
+  --surface-subtle: #f8fafc;
+  --surface-muted: #f1f5f9;
+  --surface-hover: #f1f5f9;
+  --sidebar: #ffffff;
+  --overlay: rgba(15, 23, 42, 0.45);
   
-  --border: #e8e9eb;
-  --border-strong: #d1d5db;
+  --border: #e2e8f0;
+  --border-subtle: #edf2f7;
+  --border-strong: #cbd5e1;
   
-  --text: #1a1a1a;
-  --muted: #6b7280;
+  --text: #0f172a;
+  --text-secondary: #475569;
+  --muted: #64748b;
+  --muted-light: #94a3b8;
   
-  --danger: #dc2626;
+  /* 语义危险/警告/成功/高亮 */
+  --danger: #ef4444;
+  --danger-text: #b91c1c;
   --danger-bg: #fef2f2;
   --danger-border: #fecaca;
   
-  --warning: #ea580c;
-  --warning-bg: #fff7ed;
-  --warning-border: #fed7aa;
+  --warning: #f59e0b;
+  --warning-text: #b45309;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
   
-  --success: #16a34a;
-  --success-bg: #f0fdf4;
-  --success-border: #bbf7d0;
+  --success: #10b981;
+  --success-text: #047857;
+  --success-bg: #ecfdf5;
+  --success-border: #a7f3d0;
   
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
+  --accent-text: #1d4ed8;
   --accent-bg: #eff6ff;
   --accent-border: #bfdbfe;
+
+  --neutral-bg: #f1f5f9;
+  --neutral-border: #e2e8f0;
+  --neutral-text: #475569;
   
-  /* 圆角 */
+  /* 圆角规范 */
+  --radius-xs: 3px;
   --radius-sm: 4px;
   --radius: 6px;
+  --radius-md: 8px;
   --radius-lg: 10px;
+  --radius-pill: 9999px;
   
-  /* 尺寸 */
+  /* 尺寸与布局规范 */
   --sidebar-w: 240px;
-  --sheet-w: 520px;
-  --content-max: 1280px;
+  --sheet-w: 540px;
+  --content-max: 1440px;
   --settings-max: 1200px;
   --readable-max: 760px;
   
-  /* 间距 */
+  /* 间距规范 (micro, xxs, xs, sm, md, lg, xl, 2xl) */
+  --space-micro: 2px;
+  --space-xxs: 4px;
   --space-1: 4px;
+  --space-xs: 8px;
   --space-2: 8px;
+  --space-sm: 12px;
   --space-3: 12px;
+  --space-md: 16px;
   --space-4: 16px;
+  --space-lg: 24px;
   --space-5: 24px;
+  --space-xl: 32px;
   --space-6: 32px;
   
-  /* 控件高度 */
-  --control-h: 38px;
+  /* 控件与行高 */
+  --control-h-sm: 28px;
+  --control-h: 36px;
+  --control-h-lg: 40px;
+  --table-header-h: 38px;
   --table-row-h: 52px;
+  --table-row-compact-h: 42px;
   
   /* 阴影 */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 3px rgba(0, 0, 0, .06);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, .05), 0 2px 4px rgba(0, 0, 0, .06);
-  --shadow-overlay: 0 10px 25px rgba(0, 0, 0, .1), 0 4px 10px rgba(0, 0, 0, .08);
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.07), 0 2px 4px -2px rgba(15, 23, 42, 0.05);
+  --shadow-overlay: 0 20px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.08);
   
-  /* 焦点环 */
-  --focus-ring: 0 0 0 3px var(--accent-bg), 0 0 0 4px var(--accent);
+  /* 焦点 */
+  --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px var(--accent);
   
-  /* 字体 */
-  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  /* 字体与排版 */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", Menlo, Monaco, Consolas, monospace;
 }
-
-/* 暗色模式暂不启用：系统暗色偏好不会自动切换，避免半成品对比度问题。 */

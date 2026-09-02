@@ -70,19 +70,23 @@
           <a class="summary-item" href="/operations"><span class="summary-label">运行任务</span><strong class="tabular" data-summary="running">—</strong></a>
           <a class="summary-item" href="/accounts?purpose=conflict"><span class="summary-label">身份冲突</span><strong class="tabular" data-summary="conflicts">—</strong></a>
         </section>
-        <div class="overview-grid">
-          <section class="panel">
-            <div class="panel-header"><span class="panel-title">需要处理</span></div>
-            <div class="panel-body" id="overview-attention">正在加载总览…</div>
-          </section>
-          <section class="panel">
-            <div class="panel-header"><span class="panel-title">正在运行</span></div>
-            <div class="panel-body" id="overview-running">正在加载任务…</div>
-          </section>
-          <section class="panel">
-            <div class="panel-header"><span class="panel-title">工作区健康</span></div>
-            <div class="panel-body" id="overview-health">正在加载工作区…</div>
-          </section>
+        <div class="overview-layout">
+          <div class="overview-main">
+            <section class="panel" id="overview-health-panel">
+              <div class="panel-header"><span class="panel-title">工作区资产</span></div>
+              <div class="panel-body compact" id="overview-health">正在加载工作区…</div>
+            </section>
+          </div>
+          <aside class="overview-side">
+            <section class="panel" id="overview-attention-panel">
+              <div class="panel-header"><span class="panel-title">待处理</span></div>
+              <div class="panel-body compact" id="overview-attention">正在加载总览…</div>
+            </section>
+            <section class="panel" id="overview-running-panel" hidden>
+              <div class="panel-header"><span class="panel-title">正在运行</span></div>
+              <div class="panel-body compact" id="overview-running"></div>
+            </section>
+          </aside>
         </div>
         {% elif page == 'workspaces' %}
         <section class="panel table-shell">
@@ -110,7 +114,7 @@
         {% elif page == 'accounts' %}
         <section class="panel table-shell">
           <div class="toolbar">
-            <input class="search" id="accounts-search" placeholder="搜邮箱、团队、远端 ID" data-entity="account" autocomplete="off">
+            <input class="search" id="accounts-search" placeholder="搜邮箱、团队、Workspace ID、远端 ID" data-entity="account" autocomplete="off">
             <select class="filter" data-filter="purpose">
               <option value="all">全部</option>
               <option value="mother">母号</option>
@@ -121,8 +125,13 @@
               <option value="conflict">有冲突</option>
               <option value="archived">已归档</option>
             </select>
+            <div class="view-toggle" role="group" aria-label="账号视图">
+              <button type="button" class="button ghost is-active" data-accounts-view="portfolio">按工作区</button>
+              <button type="button" class="button ghost" data-accounts-view="flat">平铺排障</button>
+            </div>
             <span class="toolbar-count muted" id="accounts-count"></span>
           </div>
+          <div id="accounts-portfolio" class="portfolio-shell" hidden></div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
@@ -228,7 +237,7 @@
                   <th scope="col">当前租约</th>
                   <th scope="col">冷却到</th>
                   <th scope="col">最后结果</th>
-                                  <th scope="col" class="actions">操作</th>
+                  <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
               <tbody id="phones-body"><tr><td colspan="8" class="muted">正在加载手机号…</td></tr></tbody>
@@ -580,19 +589,32 @@
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="proxy-edit-title">
       <header>
         <div>
-          <strong id="proxy-edit-title">修改母号代理</strong>
-          <p class="muted">仅母号可改。可填 URL，或绑定已有代理档案。</p>
+          <strong id="proxy-edit-title">编辑代理</strong>
+          <p class="muted" id="proxy-edit-subtitle">可改名称或启停。留空名称会恢复自动名。</p>
         </div>
         <button type="button" class="button ghost" data-close-proxy-edit>关闭</button>
       </header>
       <form id="proxy-edit-form" class="sheet-body">
+        <input type="hidden" name="mode" value="account">
         <input type="hidden" name="account_id" value="">
-        <div class="sheet-section">
+        <input type="hidden" name="proxy_id" value="">
+        <div class="sheet-section" data-proxy-edit-account>
           <label>账号<input name="email" readonly></label>
           <label>当前代理<input name="current_proxy" readonly></label>
           <label>新代理 URL<input name="proxy" autocomplete="off" placeholder="socks5://host:port 或留空并勾选清除"></label>
           <label>代理档案 ID<input name="proxy_profile_id" type="number" min="1" placeholder="可选，优先于 URL"></label>
           <label class="check"><input name="clear" type="checkbox"> 清除代理</label>
+        </div>
+        <div class="sheet-section" data-proxy-edit-profile hidden>
+          <label>名称<input name="name" autocomplete="off" placeholder="留空并勾选恢复自动名"></label>
+          <label class="check"><input name="restore_auto_name" type="checkbox"> 恢复自动名称</label>
+          <label>状态
+            <select name="status">
+              <option value="active">启用</option>
+              <option value="disabled">停用</option>
+            </select>
+          </label>
+          <p class="hint">端点和凭据暂不在此抽屉内静默改写；运行中的任务继续使用已冻结的代理 URL。</p>
         </div>
         <p id="proxy-edit-status" class="muted" hidden></p>
         <div class="settings-probe-actions">

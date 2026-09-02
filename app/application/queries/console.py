@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.operations import operation_store, serialize_operation
 from app.application.queries.identity import accounts_query, overview_query, workspaces_query
+from app.application.queries.portfolio import portfolio_query
 from app.application.quota import quota_service
 from app.application.resources.hme import list_leases
 from app.application.resources.phones import phone_pool_service
@@ -218,6 +219,10 @@ async def accounts(db: AsyncSession, purpose: str = "all", include_archived: boo
             if (item.get("quota") or {}).get("seven_day_used_percent") == 100
         ]
     return payload
+
+
+async def portfolio(db: AsyncSession) -> dict[str, Any]:
+    return await portfolio_query(db)
 
 
 async def operations(

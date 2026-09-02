@@ -48,6 +48,8 @@ WORKSPACE_COLUMNS = (
     ("custom_name", "VARCHAR(255)"),
     ("name_source", "VARCHAR(20) DEFAULT 'placeholder' NOT NULL"),
     ("official_name_synced_at", "DATETIME"),
+    ("official_name_last_error", "VARCHAR(500)"),
+    ("official_name_payload_source", "VARCHAR(80)"),
     ("occupied_seats", "INTEGER"),
     ("last_official_sync_state", "VARCHAR(20)"),
 )

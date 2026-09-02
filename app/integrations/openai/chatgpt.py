@@ -513,6 +513,63 @@ class ChatGPTClient:
             "data": data,
         }
 
+    async def get_accounts_check(
+        self,
+        access_token: str,
+        db_session: DBAsyncSession | None,
+        account_id: str | None = None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        """Read-only account context. Feature-detected; 4xx is a miss, not a contract."""
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        if account_id:
+            headers["chatgpt-account-id"] = str(account_id)
+        return await self._make_request(
+            "GET",
+            f"{self.BASE_URL}/accounts/check",
+            headers,
+            db_session=db_session,
+            identifier=identifier,
+        )
+
+    async def get_account_context(
+        self,
+        access_token: str,
+        db_session: DBAsyncSession | None,
+        account_id: str | None = None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        """Try known read-only account-context endpoints. First successful JSON wins."""
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        if account_id:
+            headers["chatgpt-account-id"] = str(account_id)
+        candidates = (
+            "/accounts/check",
+            "/accounts/check/v4-2023-04-27",
+            "/me",
+        )
+        last: dict[str, Any] = {"success": False, "error": "no account-context endpoint succeeded", "error_code": "schema_mismatch"}
+        for path in candidates:
+            result = await self._make_request(
+                "GET",
+                f"{self.BASE_URL}{path}",
+                headers,
+                db_session=db_session,
+                identifier=identifier,
+            )
+            result = dict(result)
+            result["endpoint"] = path
+            if result.get("success") and isinstance(result.get("data"), (dict, list)):
+                return result
+            last = result
+        return last
+
     async def get_members(
         self,
         access_token: str,

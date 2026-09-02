@@ -93,6 +93,18 @@ async def update_workspace_display_name(db: AsyncSession, workspace_id: int, cus
     return {"ok": True, "workspace_id": workspace.id, **display}
 
 
+async def sync_workspace_official_name(db: AsyncSession, workspace_id: int) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    owner = await db.get(Account, workspace.owner_account_id) if workspace.owner_account_id else None
+    from app.application.workspace_metadata import workspace_metadata_resolver
+
+    result = await workspace_metadata_resolver.refresh(db, workspace, owner, persist=True)
+    result["workspace_id"] = workspace.id
+    return result
+
+
 async def link_remote_only_member(
     db: AsyncSession,
     workspace_id: int,

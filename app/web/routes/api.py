@@ -175,6 +175,17 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=400, detail=result.get("error") or "name update failed")
         return result
 
+    @router.post("/workspaces/{workspace_id}/sync-name")
+    async def sync_workspace_name(
+        workspace_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.sync_workspace_official_name(db, workspace_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return result
+
     @router.post("/workspaces/{workspace_id}/members/link")
     async def link_workspace_member(
         workspace_id: int,
@@ -209,6 +220,10 @@ def build_api_router(get_db) -> APIRouter:
         include_archived: bool = Query(False),
     ) -> dict:
         return await console_query.accounts(db, purpose=purpose, include_archived=include_archived)
+
+    @router.get("/accounts/portfolio")
+    async def accounts_portfolio(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        return await console_query.portfolio(db)
 
     @router.post("/accounts/{account_id}/refresh")
     async def refresh_account(
@@ -549,11 +564,13 @@ def build_api_router(get_db) -> APIRouter:
         profile = await db.get(ProxyProfile, int(proxy_id))
         if profile is None:
             raise HTTPException(status_code=404, detail="proxy not found")
-        if payload.name is not None:
-            cleaned = str(payload.name).strip()
-            if cleaned:
-                profile.name = cleaned
-                profile.name_source = "user"
+        if payload.name is not None or payload.restore_auto_name:
+            await proxy_profile_service.rename(
+                db,
+                profile,
+                name=payload.name,
+                restore_auto_name=bool(payload.restore_auto_name) or (payload.name is not None and not str(payload.name).strip()),
+            )
         if payload.status is not None:
             profile.status = payload.status
         profile.updated_at = utcnow()

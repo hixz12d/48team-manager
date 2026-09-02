@@ -249,6 +249,33 @@ class ProxyProfileService:
             await session.flush()
         return {"ok": True, "changed": changed, "skipped": skipped}
 
+    async def rename(
+        self,
+        session: AsyncSession,
+        profile: ProxyProfile,
+        *,
+        name: str | None = None,
+        restore_auto_name: bool = False,
+    ) -> ProxyProfile:
+        from app.domain.resources.proxy_names import NAME_SOURCE_AUTO, NAME_SOURCE_USER, name_for_bindings
+
+        cleaned = str(name).strip() if name is not None else None
+        if restore_auto_name or (name is not None and not cleaned):
+            bindings = list(
+                (
+                    await session.execute(
+                        select(Account).where(Account.proxy_profile_id == profile.id).order_by(Account.id.asc())
+                    )
+                ).scalars()
+            )
+            profile.name = name_for_bindings(host=profile.host, port=profile.port, bindings=bindings)
+            profile.name_source = NAME_SOURCE_AUTO
+        elif cleaned:
+            profile.name = cleaned
+            profile.name_source = NAME_SOURCE_USER
+        profile.updated_at = utcnow()
+        return profile
+
 
 
 proxy_profile_service = ProxyProfileService()

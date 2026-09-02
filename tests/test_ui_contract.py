@@ -74,6 +74,17 @@ class UIContractTests(unittest.TestCase):
             proxies = client.get("/resources/proxies").text
             self.assertIn('data-open-proxy-add', proxies)
             self.assertIn('id="proxy-add-form"', proxies)
+            self.assertIn('data-proxy-edit-profile', proxies)
+            overview = client.get("/").text
+            self.assertIn("overview-layout", overview)
+            self.assertIn("overview-health", overview)
+            accounts = client.get("/accounts").text
+            self.assertIn('data-accounts-view="portfolio"', accounts)
+            self.assertIn('id="accounts-portfolio"', accounts)
+            js = client.get("/static/js/app.js").text
+            self.assertIn("quota-meter", js)
+            self.assertIn("/api/accounts/portfolio", js)
+            self.assertIn("/api/workspaces/${item.id}/sync-name", js)
 
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

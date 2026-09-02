@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -18,6 +20,8 @@ from app.integrations.openai.member_adapter import (
 )
 from app.persistence.models.identity import Account, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 
+
+logger = logging.getLogger(__name__)
 
 def _counts_from_fetch(payload: dict[str, Any], *, default_state: str) -> dict[str, Any]:
     items = payload.get("members") if default_state == "joined" else payload.get("items")
@@ -306,18 +310,18 @@ class WorkspaceSyncService:
 
         # Best-effort official name refresh; never fail member sync for name misses.
         try:
-            from app.domain.workspaces.names import apply_official_name, extract_official_title
+            from app.application.workspace_metadata import workspace_metadata_resolver
 
-            title = None
-            for source in (members_raw, invites_raw):
-                if isinstance(source, dict):
-                    title = extract_official_title(source) or extract_official_title(source.get("seat_metadata") or {})
-                    if title:
-                        break
-            if title:
-                apply_official_name(workspace, title, owner_email=owner.email if owner else None, synced_at=stamp)
+            extra = []
+            if isinstance(members_raw, dict):
+                extra.append(("members", members_raw))
+                extra.append(("members_seat_metadata", members_raw.get("seat_metadata") or {}))
+            if isinstance(invites_raw, dict):
+                extra.append(("invites", invites_raw))
+                extra.append(("invites_seat_metadata", invites_raw.get("seat_metadata") or {}))
+            await workspace_metadata_resolver.refresh(db, workspace, owner, extra=extra, persist=False)
         except Exception:
-            pass
+            logger.exception("official name refresh failed workspace=%s", workspace.id)
 
         joined_people_total = sum(1 for row in remote_rows.values() if row.get("state") == "joined")
         owner_count = sum(
