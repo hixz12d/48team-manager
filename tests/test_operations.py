@@ -31,7 +31,7 @@ class OperationStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unpacked["password"], "secret-pass")
         self.assertEqual(unpacked["email"], "kid@icloud.com")
 
-    async def test_recover_stale_reclaims_active_without_waiting_for_lease(self):
+    async def test_recover_stale_does_not_steal_unexpired_foreign_lease(self):
         future = utcnow() + timedelta(minutes=10)
         row = await operation_store.create(
             self.session,
@@ -42,10 +42,11 @@ class OperationStoreTests(unittest.IsolatedAsyncioTestCase):
         row.locked_by = "old-host:1"
         row.lease_expires_at = future
         await self.session.commit()
-        recovered = await operation_store.recover_stale(self.session, reclaim_all_active=True)
-        self.assertEqual(len(recovered), 1)
-        self.assertEqual(recovered[0].state, "waiting")
-        self.assertIsNone(recovered[0].locked_by)
+        recovered = await operation_store.recover_stale(self.session, reclaim_all_active=False)
+        self.assertEqual(len(recovered), 0)
+        refreshed = await self.session.get(Operation, row.id)
+        self.assertEqual(refreshed.state, "running")
+        self.assertEqual(refreshed.locked_by, "old-host:1")
 
     async def test_finish_keeps_manual_required(self):
         row = await operation_store.create(self.session, op_type="reauth", email="kid@icloud.com")

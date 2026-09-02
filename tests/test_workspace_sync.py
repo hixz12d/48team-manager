@@ -79,7 +79,10 @@ class WorkspaceSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["created_local_accounts"], 0)
         self.assertEqual(result["deleted_local_accounts"], 0)
-        self.assertEqual(result["remote_only"], 3)
+        self.assertEqual(result["remote_only"], 1)
+        self.assertEqual(result["joined"], 2)
+        self.assertEqual(result["invited"], 1)
+        self.assertIn("官方已加入 2", result["message"])
         self.assertEqual(result["matched"], 0)
         snaps = list((await self.session.execute(select(WorkspaceOfficialMemberSnapshot))).scalars())
         emails = {row.normalized_email for row in snaps}

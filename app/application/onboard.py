@@ -29,6 +29,7 @@ from app.domain.identity import (
     OFFICIAL_ROLE_UNKNOWN,
 )
 from app.domain.identity.ids import normalize_email
+from app.integrations.openai.member_adapter import normalize_official_member
 from app.domain.onboard import (
     JOIN_CONFIRM_ATTEMPTS,
     JOIN_CONFIRM_INTERVAL,
@@ -96,10 +97,9 @@ class OnboardService:
         if not members.get("success"):
             raise RuntimeError(members.get("error") or "对账成员列表失败")
         target = normalize_email(email)
-        for item in members.get("members") or []:
-            if not isinstance(item, dict):
-                continue
-            if normalize_email(str(item.get("email") or item.get("email_address") or "")) == target:
+        for item in members.get("members") or members.get("items") or []:
+            adapted = normalize_official_member(item, default_state="joined")
+            if adapted and adapted["email"] == target:
                 return True
         return False
 
@@ -411,7 +411,8 @@ class OnboardService:
                 except RuntimeError:
                     loop = None
                 if loop is not None:
-                    loop.create_task(self._progress(db, job_id=job_id, stage=stage, message=message))
+                    loop.call_soon_threadsafe(lambda: None)
+                    # Progress from Playwright stays queued on the main flow; avoid sharing AsyncSession.
 
         try:
             if in_test:

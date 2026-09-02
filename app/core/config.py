@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     browser_headless: bool = False
     browser_channel: str = ""
+    openai_ca_bundle: str = ""
 
     identity_gmail_policy: str = "owner_only"
     official_quota_probe_enabled: bool = True

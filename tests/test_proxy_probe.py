@@ -69,7 +69,7 @@ class ProxyProbeApiTests(unittest.TestCase):
                 new=AsyncMock(return_value=""),
             ):
                 response = client.post(f"/api/resources/proxies/{created['id']}/probe")
-            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.status_code, 200)
             payload = response.json()
             self.assertTrue(payload["ok"])
             self.assertIn("operation_id", payload)

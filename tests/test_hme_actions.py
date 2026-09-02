@@ -73,5 +73,5 @@ class HmeApiTests(unittest.TestCase):
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
             with patch("app.application.console_actions.reconcile_aliases", return_value={"ok": True, "conflicts": 0, "findings": []}):
                 response = client.post("/api/resources/hme/reconcile")
-            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.status_code, 200)
             self.assertIn("operation_id", response.json())

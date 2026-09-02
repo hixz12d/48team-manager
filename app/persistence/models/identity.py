@@ -141,6 +141,9 @@ class WorkspaceOfficialMemberSnapshot(Base):
     official_user_id: Mapped[str | None] = mapped_column(String(100))
     official_role: Mapped[str] = mapped_column(String(40), default="unknown", nullable=False)
     remote_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    seat_type: Mapped[str | None] = mapped_column(String(40))
+    added_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

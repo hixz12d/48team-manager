@@ -192,7 +192,7 @@ async def occupied_account_emails(session: AsyncSession) -> set[str]:
     for email, state, purpose in rows:
         if not email:
             continue
-        if str(purpose or "") == "disabled" and str(state or "") in {"unused", "archived"}:
+        if str(state or "") in {"unused", "archived", "disabled"} or str(purpose or "") in {"disabled", "free"}:
             continue
         occupied.add(normalize_email(email))
     return occupied
@@ -390,9 +390,11 @@ async def finalize_claim(
 async def reconcile_aliases(
     session: AsyncSession,
     aliases: list[dict[str, Any]] | None = None,
+    readonly: bool = True,
 ) -> dict[str, Any]:
     now = utcnow()
-    await purge_expired_leases(session)
+    if not readonly:
+        await purge_expired_leases(session)
     remote_by_email: dict[str, dict[str, Any]] = {}
     if aliases is None:
         cfg = await load_config(session)
@@ -451,5 +453,4 @@ async def reconcile_aliases(
 
 
 async def list_leases(session: AsyncSession) -> list[HmeAliasLease]:
-    await purge_expired_leases(session)
     return list((await session.execute(select(HmeAliasLease).order_by(HmeAliasLease.id.asc()))).scalars())

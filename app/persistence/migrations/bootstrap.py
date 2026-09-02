@@ -30,6 +30,16 @@ PROXY_PROFILE_COLUMNS = (
     ("last_error", "TEXT"),
 )
 
+SNAPSHOT_COLUMNS = (
+    ("display_name", "VARCHAR(255)"),
+    ("seat_type", "VARCHAR(40)"),
+    ("added_at", "DATETIME"),
+)
+
+OPERATION_COLUMNS = (
+    ("source", "VARCHAR(20) DEFAULT 'manual' NOT NULL"),
+)
+
 
 async def _ensure_sqlite_columns(conn, table: str, columns: tuple[tuple[str, str], ...]) -> None:
     existing = {
@@ -48,3 +58,5 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
         return
     async with engine.begin() as conn:
         await _ensure_sqlite_columns(conn, "proxy_profiles", PROXY_PROFILE_COLUMNS)
+        await _ensure_sqlite_columns(conn, "workspace_official_member_snapshots", SNAPSHOT_COLUMNS)
+        await _ensure_sqlite_columns(conn, "operations", OPERATION_COLUMNS)

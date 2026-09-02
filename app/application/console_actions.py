@@ -34,8 +34,8 @@ from app.persistence.models.identity import Account, Workspace
 from app.persistence.models.operations import OperationStep
 from app.persistence.models.resources import HmeAliasLease, ProxyProfile
 
-SAFE_RETRY_TYPES = {"quota_probe", "auth_probe", "proxy_check", "workspace_sync", "reconcile", "sub2api_sync"}
-UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free"}
+SAFE_RETRY_TYPES = {"quota_probe", "auth_probe", "proxy_check", "workspace_sync", "hme_reconcile", "sub2api_sync"}
+UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free", "kick_member", "revoke_invite"}
 
 
 def _mask_log_items(items: list[Any]) -> list[Any]:
@@ -96,6 +96,14 @@ async def request_operation_cancel(db: AsyncSession, public_id: str) -> dict[str
             "operation_id": row.public_id,
         }
     row.cancel_requested = True
+    if row.state == "queued":
+        await operation_store.finish(
+            db,
+            row,
+            {"success": False, "status": "cancelled", "error_code": "cancelled", "error": "cancelled before start"},
+        )
+        await db.commit()
+        return {"ok": True, "operation_id": row.public_id, "cancel_requested": True, "state": "cancelled"}
     row.updated_at = utcnow()
     await operation_store.note(db, row, row.current_step or "cancel", "cancel requested", touch_lease=False)
     await db.commit()
@@ -120,34 +128,35 @@ async def retry_operation(db: AsyncSession, public_id: str) -> dict[str, Any]:
             "error_code": "retry_forbidden",
             "operation_id": row.public_id,
         }
-    clone = await operation_store.create(
-        db,
-        op_type=row.op_type,
-        workspace_id=int(row.workspace_id or 0),
-        account_id=row.account_id,
-        email=row.email or "",
-        phone=row.phone or "",
-        input_payload={"retry_of": row.public_id},
-        resolved_proxy=row.resolved_proxy or "",
-        resolved_proxy_profile_id=row.resolved_proxy_profile_id,
-    )
-    await operation_store.note(db, clone, "queued", f"retry of {row.public_id}")
-    await operation_store.finish(
-        db,
-        clone,
-        {
-            "success": True,
-            "status": "success",
-            "message": "retry ticket accepted; runner must pick safe typed handlers",
-            "retry_of": row.public_id,
-        },
-    )
-    await db.commit()
-    return {"ok": True, "operation_id": clone.public_id, "retry_of": row.public_id}
+    dispatched = await _dispatch_retry(db, row)
+    if not dispatched.get("ok") and dispatched.get("error_code") in {"retry_unsupported", "not_found"}:
+        return {"ok": False, "error": dispatched.get("error") or "retry failed", "error_code": dispatched.get("error_code") or "retry_unsupported", "operation_id": row.public_id}
+    return {"ok": bool(dispatched.get("ok", True)), "operation_id": dispatched.get("operation_id"), "retry_of": row.public_id, **dispatched}
+
+
+async def _dispatch_retry(db: AsyncSession, row) -> dict[str, Any]:
+    op_type = row.op_type
+    if op_type == "workspace_sync" and row.workspace_id:
+        from app.application.workspace_sync import workspace_sync_service
+
+        return await workspace_sync_service.sync_workspace(db, int(row.workspace_id))
+    if op_type == "auth_probe" and row.account_id:
+        return await account_auth_probe(db, int(row.account_id))
+    if op_type == "quota_probe" and row.account_id:
+        return await account_quota_probe(db, int(row.account_id))
+    if op_type == "sub2api_sync" and row.account_id:
+        return await account_sub2api_sync(db, int(row.account_id))
+    if op_type == "proxy_check" and row.resolved_proxy_profile_id:
+        from app.application.resources.proxy_probe import proxy_probe_service
+
+        return await proxy_probe_service.probe_profile(db, int(row.resolved_proxy_profile_id))
+    if op_type in {"hme_reconcile", "reconcile"}:
+        return await run_hme_reconcile(db)
+    return {"ok": False, "error": f"no typed retry handler for {op_type}", "error_code": "retry_unsupported"}
 
 
 async def run_hme_reconcile(db: AsyncSession) -> dict[str, Any]:
-    operation = await operation_store.create(db, op_type="reconcile", input_payload={"mode": "hme_readonly"})
+    operation = await operation_store.create(db, op_type="hme_reconcile", input_payload={"mode": "hme_readonly"})
     await operation_store.note(db, operation, "reconcile", "readonly HME reconcile")
     report = await reconcile_aliases(db)
     result = {"success": True, "status": "success", "readonly": True, **report}
@@ -173,7 +182,7 @@ async def retry_hme_label(db: AsyncSession, lease_id: int) -> dict[str, Any]:
     )
     operation = await operation_store.create(
         db,
-        op_type="reconcile",
+        op_type="hme_label_retry",
         email=lease.email,
         input_payload={"mode": "retry_label", "lease_id": lease.id, "label": label},
     )
@@ -349,12 +358,17 @@ async def account_sub2api_sync(db: AsyncSession, account_id: int) -> dict[str, A
     )
     remotes = await sub2api_client.list_status_accounts(db)
     report = await verify_bindings(db, remotes)
+    bindings = report.get("bindings") or []
+    own = next((item for item in bindings if item.get("local_account_id") == account.id), None)
     payload = {
         "success": True,
         "status": "success",
         "account_id": account.id,
+        "email": account.email,
+        "binding": own,
+        "binding_state": (own or {}).get("binding_state") or (own or {}).get("state"),
         "remote_count": len(remotes or []),
-        "report": report,
+        "matched": own is not None,
     }
     await operation_store.mark_step(db, operation, "sub2api_sync", state="success", result=payload)
     await operation_store.finish(db, operation, payload)
@@ -419,13 +433,28 @@ async def account_refresh(db: AsyncSession, account_id: int) -> dict[str, Any]:
         error_message=str(steps["sub2api"].get("error") or ""),
     )
 
-    ok = any(item.get("ok") for item in steps.values())
+    all_ok = all(item.get("ok") for item in steps.values())
+    any_ok = any(item.get("ok") for item in steps.values())
+    if all_ok:
+        status = "success"
+        ok = True
+        partial = False
+    elif any_ok:
+        status = "partial"
+        ok = False
+        partial = True
+    else:
+        status = "failed"
+        ok = False
+        partial = False
     payload = {
-        "success": ok,
-        "status": "success" if ok else "failed",
-        "partial": not all(item.get("ok") for item in steps.values()),
+        "success": all_ok,
+        "ok": ok,
+        "status": status,
+        "partial": partial,
         "steps": steps,
         "account_id": account.id,
+        "message": "状态刷新完成" if all_ok else ("部分步骤失败" if partial else "状态刷新失败"),
     }
     await operation_store.finish(db, operation, payload)
     await db.commit()
@@ -518,26 +547,26 @@ async def start_controlled_rotate(
         input_payload={
             "workspace_id": workspace.id,
             "email": target,
-            "email_line": email_line,
-            "phone_line": phone_line,
-            "proxy": mask_proxy_url(proxy) if proxy else "",
             "force_refill": bool(force_refill),
             "reason": reason,
+            "source": "manual",
+            "confirmed": True,
         },
-        resolved_proxy=str(proxy or "").strip(),
+        source="manual",
     )
     await db.commit()
-    result = await rotate_service.kick_and_refill(
+    result = await rotate_service.run_rotate_saga(
         db,
+        job_id=operation.public_id,
         workspace_id=workspace.id,
         email=target,
+        reason=reason or "console",
+        force_refill=force_refill,
         email_line=email_line,
         phone_line=phone_line,
         proxy=proxy,
         child_id=child.id if child else None,
-        force_refill=force_refill,
-        job_id=operation.public_id,
-        reason=reason,
+        skip_confirm=True,
         in_test=False,
     )
     await operation_store.finish(db, operation, result)
@@ -565,7 +594,7 @@ async def kick_member_to_standby(
     ).scalar_one_or_none()
     operation = await operation_store.create(
         db,
-        op_type="rotate",
+        op_type="kick_member",
         workspace_id=workspace.id,
         account_id=child.id if child else None,
         email=target,
@@ -607,7 +636,7 @@ async def revoke_workspace_invite(
         return {"ok": False, "error": "email required", "error_code": "email_required"}
     operation = await operation_store.create(
         db,
-        op_type="rotate",
+        op_type="revoke_invite",
         workspace_id=workspace.id,
         email=target,
         input_payload={"workspace_id": workspace.id, "email": target, "mode": "revoke_invite"},
@@ -657,6 +686,9 @@ async def update_account_proxy(
         account.proxy_profile_id = profile.id
 
     account.updated_at = utcnow()
+    from app.integrations.openai.chatgpt import chatgpt_client
+
+    await chatgpt_client.clear_session(account.email)
     await db.commit()
     return {
         "ok": True,

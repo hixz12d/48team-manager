@@ -28,6 +28,7 @@ class Operation(Base):
     locked_by: Mapped[str | None] = mapped_column(String(80))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), default="manual", nullable=False)
     input_json: Mapped[str | None] = mapped_column(Text)
     result_json: Mapped[str | None] = mapped_column(Text)
     error_code: Mapped[str | None] = mapped_column(String(40))

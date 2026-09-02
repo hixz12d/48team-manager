@@ -167,6 +167,7 @@ class RotateService:
             .where(
                 Operation.workspace_id == int(workspace_id),
                 Operation.op_type == "rotate",
+                Operation.source == "auto",
                 Operation.state == "success",
                 Operation.created_at >= start,
             )
@@ -328,19 +329,29 @@ class RotateService:
             return {"success": False, "error": f"未找到 Workspace {workspace_id}", "error_code": "workspace_not_found"}
         target = normalize_email(email)
         child = (await db.execute(select(Account).where(Account.email == target))).scalar_one_or_none()
+        if job_id:
+            op = await operation_store.get_by_public_id(db, job_id)
+            if op is not None:
+                cancelled = await operation_store.check_cancel(db, op, destructive_started=False)
+                if cancelled:
+                    return cancelled
         live, live_item = await self.workspaces.lookup_live_member(db, workspace, target)
-        if live.get("success") is False:
-            return {"success": False, "error": f"{live.get('error') or '读取成员失败'}，未执行踢人/撤回", "error_code": "kick_lookup_failed"}
+        lookup_state = live.get("lookup_state") or ("found" if live_item else ("absent_confirmed" if live.get("success") else "unknown_due_to_error"))
+        if lookup_state == "unknown_due_to_error" or live.get("success") is False and live_item is None and lookup_state != "absent_confirmed":
+            return {
+                "success": False,
+                "status": "manual_required",
+                "error": f"{live.get('error') or '读取成员失败'}，上游状态未知，未执行踢人/撤回，也未改本地状态",
+                "error_code": live.get("error_code") or "kick_lookup_unknown",
+            }
         live_status = (live_item or {}).get("status")
         if live_item:
-            live_id = self.workspaces.client.pick_user_id(live_item)
+            live_id = live_item.get("user_id") or self.workspaces.client.pick_user_id(live_item)
             if live_id:
                 user_id = live_id
-        should_revoke = live_status == "invited" or (live_item is None and (child is None or child.operational_state != "active"))
+        should_revoke = live_status == "invited"
         if should_revoke:
             result = await self.workspaces.revoke_invite(db, workspace.id, target)
-            if not result.get("success") and live_item is None:
-                result = {"success": True, "message": f"{target} 上游已看不到邀请，按已撤回处理", "already_absent": True}
             if not result.get("success"):
                 return {"success": False, "error": result.get("error") or "撤回邀请失败", "error_code": "revoke_failed"}
             if child:
@@ -348,8 +359,8 @@ class RotateService:
                 child.updated_at = utcnow()
             await db.flush()
             return {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请，子号回到未使用"}
-        if live_item is None and not user_id:
-            result = {"success": True, "message": f"{target} 重试后仍不在成员列表，按已不在 Team 处理", "already_absent": True}
+        if lookup_state == "absent_confirmed" and live_item is None:
+            result = {"success": True, "message": f"{target} 官方成员和邀请都不存在", "already_absent": True}
         else:
             result = await self._kick_joined_and_verify(
                 db,
@@ -362,30 +373,50 @@ class RotateService:
             return {"success": False, "error": result.get("error") or "踢人失败", "error_code": result.get("error_code") or "kick_failed"}
         unbind = bool(unbind_sub2api or should_unbind_sub2api(reason))
         deleted_sub = None
+        remote_unbind_confirmed = False
+        binding_error = None
         remote_id = await self._remote_id_for(db, child) if child is not None else ""
         if child and unbind and remote_id:
             try:
                 deleted_sub = await self.sub2api.delete_accounts(db, [int(remote_id)])
+                remote_unbind_confirmed = True
             except Exception as exc:  # noqa: BLE001
+                binding_error = str(exc)
                 logger.warning("Sub2API 下架失败 email=%s error=%s", target, exc)
         if child:
-            await self.workspaces.mark_standby(db, child, next_eligible_at=next_eligible_at, unbind_sub2api=unbind)
+            await self.workspaces.mark_standby(
+                db,
+                child,
+                next_eligible_at=next_eligible_at,
+                unbind_sub2api=unbind,
+                remote_unbind_confirmed=remote_unbind_confirmed,
+                binding_error=binding_error,
+            )
         await db.flush()
         vacancy = result.get("vacancy")
         message = f"{target} 已踢出，子号进入 standby"
-        if unbind:
+        status = "standby"
+        success = True
+        if unbind and remote_id and not remote_unbind_confirmed:
+            message = f"{message}，官方已踢出但 Sub2API 下架失败，本地 Binding 已保留"
+            status = "partial"
+            success = False
+        elif unbind and remote_unbind_confirmed:
             message = f"{message}，已从 Sub 下架"
         summary = summarize_for_message(vacancy)
         if summary:
             message = f"{message}。{summary}"
         return {
-            "success": True,
-            "status": "standby",
+            "success": success,
+            "status": status,
+            "partial": status == "partial",
             "message": message,
             "child": {"id": child.id, "email": child.email} if child else None,
             "vacancy": vacancy,
-            "unbound_sub2api": unbind,
+            "unbound_sub2api": bool(unbind and remote_unbind_confirmed),
             "deleted_sub2api": deleted_sub,
+            "error": binding_error if status == "partial" else None,
+            "error_code": "sub2api_unbind_failed" if status == "partial" else None,
         }
 
     async def kick_and_refill(
@@ -756,6 +787,7 @@ class RotateService:
                 "force_refill": bool(cfg.get("auto_rotate_force_refill")),
                 "account_id": remote.get("id"),
             },
+            source="auto",
         )
         result = await self.run_rotate_saga(
             db,

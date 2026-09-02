@@ -113,8 +113,10 @@ class PhonePoolService:
             "reserved_by": row.reserved_by or "",
             "last_error_type": row.last_error_type or "",
             "risk_count": int(row.risk_count or 0),
-            "cooldown_until": isoformat(row.last_used_at),
-            "note": row.note or "",
+            "last_used_at": isoformat(row.last_used_at),
+            "available_at": isoformat(row.last_used_at + timedelta(seconds=cfg.cooldown_sec)) if row.last_used_at else None,
+            "remaining_seconds": max(0, int(((row.last_used_at + timedelta(seconds=cfg.cooldown_sec)) - utcnow()).total_seconds())) if row.last_used_at else 0,
+            "cooldown_until": isoformat(row.last_used_at + timedelta(seconds=cfg.cooldown_sec)) if row.last_used_at else None,
         }
 
     async def expire_leases(self, session: AsyncSession, cfg: PhonePoolConfig | None = None) -> int:
@@ -373,7 +375,6 @@ class PhonePoolService:
 
     async def list_phones(self, session: AsyncSession) -> list[PhonePool]:
         cfg = await self.get_config(session)
-        await self.expire_leases(session, cfg)
         return list((await session.execute(select(PhonePool).order_by(PhonePool.id.asc()))).scalars())
 
 

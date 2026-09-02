@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import token_cipher
+from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat, utcnow
 from app.domain.automation import (
     ACTIVE_STATES,
@@ -21,6 +22,7 @@ from app.domain.automation import (
     DEFAULT_LEASE_SECONDS,
     MAX_LOG_ITEMS,
     SENSITIVE_INPUT_KEYS,
+    REDACT_VALUE_MARKERS,
     TERMINAL_STATES,
 )
 from app.persistence.models.operations import Operation, OperationStep
@@ -51,14 +53,50 @@ def _loads(raw: str | None, default: Any) -> Any:
         return default
 
 
+def _looks_sensitive(key: str, value: Any) -> bool:
+    name = str(key or "").lower()
+    if name in SENSITIVE_INPUT_KEYS:
+        return True
+    if any(marker in name for marker in REDACT_VALUE_MARKERS):
+        return True
+    text = str(value or "")
+    if "://" in text and "@" in text:
+        return True
+    return False
+
+
+def _fingerprint(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _redact_value(key: str, value: Any) -> Any:
+    if value in (None, "", [], {}):
+        return value
+    if isinstance(value, dict):
+        return {inner: _redact_value(inner, nested) for inner, nested in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(key, item) for item in value]
+    text = str(value)
+    if "://" in text and "@" in text:
+        return mask_proxy_url(text) or "***"
+    if _looks_sensitive(key, value):
+        return {"redacted": True, "fingerprint": _fingerprint(text)}
+    return value
+
+
 def pack_input(payload: dict[str, Any] | None) -> str:
     packed: dict[str, Any] = {}
     cipher = token_cipher()
     for key, value in dict(payload or {}).items():
-        if key in SENSITIVE_INPUT_KEYS and value:
+        if key in {"password", "login_password", "code_verifier"} and value:
             packed[key] = {"enc": cipher.encrypt(str(value))}
         else:
-            packed[key] = value
+            packed[key] = _redact_value(key, value)
     return _dumps(packed)
 
 
@@ -74,6 +112,8 @@ def unpack_input(raw: str | None) -> dict[str, Any]:
                 unpacked[key] = cipher.decrypt(str(value.get("enc") or ""))
             except Exception:
                 unpacked[key] = ""
+        elif isinstance(value, dict) and value.get("redacted"):
+            unpacked[key] = ""
         else:
             unpacked[key] = value
     return unpacked
@@ -121,6 +161,7 @@ def serialize_operation(row: Operation, *, steps: list[OperationStep] | None = N
         "lease_expires_at": isoformat(row.lease_expires_at),
         "updated": isoformat(row.updated_at or row.finished_at or row.started_at or row.created_at),
         "workspace_id": row.workspace_id,
+        "source": getattr(row, "source", None) or "manual",
     }
     if steps is not None:
         payload["steps"] = [
@@ -158,6 +199,8 @@ class OperationStore:
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
         resolved_proxy: str = "",
         resolved_proxy_profile_id: int | None = None,
+        source: str = "manual",
+        state: str = "running",
     ) -> Operation:
         stamp = now or utcnow()
         row = Operation(
@@ -169,14 +212,15 @@ class OperationStore:
             account_id=account_id,
             email=(email or "").strip().lower(),
             phone=phone or "",
-            state="running",
+            source=source or "manual",
+            state=state or "running",
             current_step="queued",
             locked_by=WORKER_ID,
             lease_expires_at=stamp + timedelta(seconds=lease_seconds),
             cancel_requested=False,
             input_json=pack_input(input_payload),
             log_json=_dumps([{"ts": _now_text(stamp), "stage": "queued", "message": "queued"}]),
-            resolved_proxy=resolved_proxy or None,
+            resolved_proxy=None,
             resolved_proxy_profile_id=resolved_proxy_profile_id,
             created_at=stamp,
             started_at=stamp,
@@ -239,6 +283,24 @@ class OperationStore:
     async def browser_busy(self, session: AsyncSession) -> Operation | None:
         return await self.any_running(session, BROWSER_ACTIONS)
 
+    async def check_cancel(self, session: AsyncSession, row: Operation, *, destructive_started: bool = False) -> dict[str, Any] | None:
+        if not row.cancel_requested:
+            return None
+        if destructive_started:
+            return {
+                "success": False,
+                "status": "partial",
+                "partial": True,
+                "error_code": "cancel_after_side_effect",
+                "error": "cancel requested after an external side effect; left partial/manual_required",
+            }
+        return {
+            "success": False,
+            "status": "cancelled",
+            "error_code": "cancelled",
+            "error": "operation cancelled before further side effects",
+        }
+
     async def heartbeat(
         self,
         session: AsyncSession,
@@ -292,10 +354,13 @@ class OperationStore:
         requested_state = str(result.get("status") or "")
         if cancelled:
             row.state = "cancelled"
-        elif success:
-            row.state = "success"
+        elif requested_state == "partial" or bool(result.get("partial")):
+            row.state = "partial"
+            result = {**result, "success": False, "status": "partial", "partial": True}
         elif requested_state == "manual_required":
             row.state = "manual_required"
+        elif success:
+            row.state = "success"
         else:
             row.state = "failed"
         row.result_json = _dumps(result)
@@ -386,7 +451,7 @@ class OperationStore:
         *,
         now: datetime | None = None,
         worker_id: str = WORKER_ID,
-        reclaim_all_active: bool = True,
+        reclaim_all_active: bool = False,
     ) -> list[Operation]:
         stamp = now or utcnow()
         if reclaim_all_active:

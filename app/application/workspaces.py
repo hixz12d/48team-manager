@@ -19,6 +19,7 @@ from app.domain.identity import (
 from app.domain.identity.ids import normalize_email
 from app.domain.vacancy import parse_policy_notice, present_vacancy, summarize_for_message
 from app.integrations.openai.chatgpt import chatgpt_client
+from app.integrations.openai.member_adapter import adapt_collection, validate_fetch_counts
 from app.persistence.models.identity import Account, Workspace, WorkspaceMembership
 
 logger = logging.getLogger(__name__)
@@ -165,22 +166,48 @@ class WorkspaceService:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         target = normalize_email(email)
         members = await self.get_members(db, workspace)
-        if members.get("success"):
-            for item in members.get("members") or []:
-                if not isinstance(item, dict):
-                    continue
-                if normalize_email(str(item.get("email") or item.get("email_address") or "")) == target:
-                    return members, {**item, "status": "joined"}
         invites = await self.get_invites(db, workspace)
-        if invites.get("success"):
-            for item in invites.get("items") or []:
-                if not isinstance(item, dict):
-                    continue
-                if normalize_email(str(item.get("email_address") or item.get("email") or "")) == target:
-                    return {**members, "invites": invites}, {**item, "status": "invited"}
-        if members.get("success") is False:
-            return members, None
-        return members, None
+        members_adapted = adapt_collection(members.get("members") or members.get("items") or [], default_state="joined")
+        invites_adapted = adapt_collection(invites.get("items") or invites.get("members") or [], default_state="invited")
+        members_check = validate_fetch_counts(
+            reported_total=members.get("reported_total") if members.get("reported_total") is not None else members.get("total"),
+            raw_item_count=int(members.get("raw_item_count") or members_adapted["raw_item_count"]),
+            parsed_item_count=members_adapted["parsed_item_count"],
+            invalid_item_count=members_adapted["invalid_item_count"],
+            incomplete=bool(members.get("incomplete")),
+        )
+        invites_check = validate_fetch_counts(
+            reported_total=invites.get("reported_total") if invites.get("reported_total") is not None else invites.get("total"),
+            raw_item_count=int(invites.get("raw_item_count") or invites_adapted["raw_item_count"]),
+            parsed_item_count=invites_adapted["parsed_item_count"],
+            invalid_item_count=invites_adapted["invalid_item_count"],
+            incomplete=bool(invites.get("incomplete")),
+        )
+        members_ok = bool(members.get("success")) and bool(members_check.get("ok"))
+        invites_ok = bool(invites.get("success")) and bool(invites_check.get("ok"))
+        found = None
+        if members_ok:
+            for item in members_adapted["members"]:
+                if item["email"] == target:
+                    found = {**item, "status": "joined"}
+                    break
+        if found is None and invites_ok:
+            for item in invites_adapted["members"]:
+                if item["email"] == target:
+                    found = {**item, "status": "invited"}
+                    break
+        known = found is not None or (members_ok and invites_ok)
+        envelope = {
+            **members,
+            "invites": invites,
+            "members_ok": members_ok,
+            "invites_ok": invites_ok,
+            "lookup_state": "found" if found else ("absent_confirmed" if members_ok and invites_ok else "unknown_due_to_error"),
+            "success": bool(known),
+            "error": None if known else (members.get("error") or invites.get("error") or members_check.get("error") or invites_check.get("error")),
+            "error_code": None if known else (members.get("error_code") or invites.get("error_code") or members_check.get("error_code") or invites_check.get("error_code") or "lookup_unknown"),
+        }
+        return envelope, found
 
     async def mark_membership_removed(self, db: AsyncSession, workspace_id: int, email: str) -> WorkspaceMembership | None:
         target = normalize_email(email)
@@ -208,6 +235,8 @@ class WorkspaceService:
         *,
         next_eligible_at=None,
         unbind_sub2api: bool = False,
+        remote_unbind_confirmed: bool = False,
+        binding_error: str | None = None,
     ) -> None:
         account.operational_state = "standby"
         account.local_purpose = LOCAL_PURPOSE_STANDBY
@@ -226,7 +255,12 @@ class WorkspaceService:
                 )
             ).scalar_one_or_none()
             if binding is not None:
-                await db.delete(binding)
+                if remote_unbind_confirmed:
+                    await db.delete(binding)
+                else:
+                    binding.binding_state = "error"
+                    binding.last_error = (binding_error or "remote unbind not confirmed")[:500]
+                    binding.updated_at = utcnow()
         account.updated_at = utcnow()
 
     async def delete_member(

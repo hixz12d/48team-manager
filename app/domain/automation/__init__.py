@@ -1,25 +1,41 @@
 """Persistent operations and automation policies."""
 
 ACTIVE_STATES = ("queued", "running", "waiting")
-TERMINAL_STATES = ("success", "failed", "cancelled", "manual_required")
+TERMINAL_STATES = ("success", "partial", "failed", "cancelled", "manual_required")
 OPERATION_TYPES = (
     "quota_probe",
     "auth_probe",
     "reauth",
     "onboard",
     "rotate",
-    "reconcile",
+    "kick_member",
+    "revoke_invite",
+    "hme_reconcile",
+    "hme_label_retry",
     "workspace_sync",
     "sub2api_sync",
     "proxy_check",
     "free_register",
     "reregister",
 )
-SENSITIVE_INPUT_KEYS = ("password", "login_password", "code_verifier")
+SENSITIVE_INPUT_KEYS = (
+    "password",
+    "login_password",
+    "code_verifier",
+    "email_line",
+    "phone_line",
+    "pickup_url",
+    "sms_url",
+    "proxy",
+    "resolved_proxy",
+    "oauth_secret",
+    "client_secret",
+)
+REDACT_VALUE_MARKERS = ("password", "passwd", "secret", "token", "verifier")
 DEFAULT_LEASE_SECONDS = 180
 MAX_LOG_ITEMS = 40
 BROWSER_ACTIONS = ("reauth", "onboard", "rotate", "free_register", "reregister", "free")
-WORKSPACE_LOCK_ACTIONS = ("rotate", "onboard", "reregister")
+WORKSPACE_LOCK_ACTIONS = ("rotate", "onboard", "reregister", "kick_member", "revoke_invite")
 DEFAULT_AUTO_REAUTH_ENABLED = False
 DEFAULT_AUTO_REAUTH_INTERVAL_MINUTES = 30
 MIN_AUTO_REAUTH_INTERVAL_MINUTES = 5

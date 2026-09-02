@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -26,7 +27,7 @@ class OperationApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_detail_cancel_and_retry_whitelist(self):
         async with self.session_maker() as session:
-            safe = await operation_store.create(session, op_type="quota_probe", email="a@example.com")
+            safe = await operation_store.create(session, op_type="quota_probe", email="a@example.com", account_id=1)
             unsafe = await operation_store.create(session, op_type="rotate", email="b@example.com")
             await operation_store.mark_step(session, safe, "probe", state="running")
             await session.commit()
@@ -52,8 +53,12 @@ class OperationApiTests(unittest.IsolatedAsyncioTestCase):
             await operation_store.finish(session, bad, {"success": False, "error": "boom", "error_code": "x"})
             await session.commit()
 
-        retry_ok = self.client.post(f"/api/operations/{safe_id}/retry")
-        self.assertEqual(retry_ok.status_code, 202)
+        async def _probe(db, account_id):
+            return {"ok": True, "operation_id": "retry1", "account_id": account_id}
+
+        with patch("app.application.console_actions.account_quota_probe", new=_probe):
+            retry_ok = self.client.post(f"/api/operations/{safe_id}/retry")
+        self.assertIn(retry_ok.status_code, {200, 202})
         self.assertTrue(retry_ok.json()["ok"])
 
         retry_bad = self.client.post(f"/api/operations/{unsafe_id}/retry")

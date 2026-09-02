@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
+from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 
 
 async def list_accounts(db: AsyncSession) -> list[Account]:
@@ -28,4 +28,9 @@ async def list_bindings(db: AsyncSession, provider: str | None = None) -> list[E
     if provider:
         stmt = stmt.where(ExternalBinding.provider == provider)
     result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def list_official_snapshots(db: AsyncSession) -> list[WorkspaceOfficialMemberSnapshot]:
+    result = await db.execute(select(WorkspaceOfficialMemberSnapshot).order_by(WorkspaceOfficialMemberSnapshot.id))
     return list(result.scalars().all())

@@ -16,6 +16,8 @@ from app.domain.identity import (
     OFFICIAL_ROLE_OWNER,
 )
 from app.domain.identity.audit import build_audit_report
+from app.domain.identity.ids import normalize_email
+from app.integrations.openai.member_adapter import is_owner_role
 from app.persistence.repositories import identity as identity_repo
 
 
@@ -145,6 +147,10 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
     members_by_workspace: dict[int, list] = defaultdict(list)
     for row in memberships:
         members_by_workspace[row.workspace_id].append(row)
+    snapshots = await identity_repo.list_official_snapshots(db)
+    snapshots_by_workspace: dict[int, list] = defaultdict(list)
+    for row in snapshots:
+        snapshots_by_workspace[row.workspace_id].append(row)
 
     items = []
     for workspace in workspaces:
@@ -156,31 +162,89 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             if row.membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
             and row.official_role != OFFICIAL_ROLE_OWNER
         ]
-        owner_finding = findings_by_id.get(owner.id) if owner is not None else None
-        health = _workspace_health(
-            owner=owner,
-            owner_state=_account_state(owner, owner_finding) if owner is not None else None,
-            members=len(seated),
-            seat_limit=workspace.seat_limit,
-            status=workspace.status,
-        )
+        snaps = snapshots_by_workspace.get(workspace.id, [])
+        official_members = []
+        official_by_email: dict[str, Any] = {}
+        owner_email = normalize_email(owner.email) if owner is not None else ""
+        joined = 0
+        invited = 0
+        for snap in snaps:
+            email = normalize_email(snap.normalized_email)
+            item = {
+                "email": email,
+                "name": snap.display_name,
+                "role": snap.official_role,
+                "user_id": snap.official_user_id,
+                "seat_type": snap.seat_type,
+                "state": snap.remote_state,
+                "added_at": isoformat(snap.added_at),
+                "is_owner": is_owner_role(snap.official_role) or email == owner_email,
+            }
+            official_members.append(item)
+            official_by_email[email] = item
+            if item["is_owner"]:
+                continue
+            if snap.remote_state == "invited":
+                invited += 1
+            else:
+                joined += 1
+        local_by_email: dict[str, dict[str, Any]] = {}
         member_items = []
         for row in seated:
             account = accounts_by_id.get(row.account_id)
             if account is None:
                 continue
-            member_items.append(
+            payload = {
+                "id": account.id,
+                "email": account.email,
+                "purpose": account.local_purpose,
+                "official_role": row.official_role,
+                "membership_state": row.membership_state,
+                "auth": account.auth_state,
+                "state": _account_state(account, findings_by_id.get(account.id)),
+            }
+            member_items.append(payload)
+            local_by_email[normalize_email(account.email)] = payload
+        member_items.sort(key=lambda item: ((item.get("email") or "").lower(), item.get("id") or 0))
+        reconciliation = []
+        matched = remote_only = local_only = 0
+        emails = sorted(set(official_by_email) | set(local_by_email))
+        for email in emails:
+            remote = official_by_email.get(email)
+            local = local_by_email.get(email)
+            is_owner = email == owner_email or is_owner_role((remote or {}).get("role") or (local or {}).get("official_role"))
+            if is_owner:
+                status = "owner"
+            elif remote and local:
+                status = "managed"
+                matched += 1
+            elif remote and not local:
+                status = "invited" if remote.get("state") == "invited" else "remote_only"
+                if status == "remote_only":
+                    remote_only += 1
+            else:
+                status = "local_only"
+                local_only += 1
+            reconciliation.append(
                 {
-                    "id": account.id,
-                    "email": account.email,
-                    "purpose": account.local_purpose,
-                    "official_role": row.official_role,
-                    "membership_state": row.membership_state,
-                    "auth": account.auth_state,
-                    "state": _account_state(account, findings_by_id.get(account.id)),
+                    "email": email,
+                    "status": status,
+                    "name": (remote or {}).get("name"),
+                    "role": (remote or {}).get("role") or (local or {}).get("official_role"),
+                    "local_account_id": (local or {}).get("id"),
+                    "is_owner": is_owner,
                 }
             )
-        member_items.sort(key=lambda item: ((item.get("email") or "").lower(), item.get("id") or 0))
+        has_snapshot = bool(snaps) or bool(workspace.last_official_sync_at)
+        official_count = joined + invited
+        owner_finding = findings_by_id.get(owner.id) if owner is not None else None
+        health = _workspace_health(
+            owner=owner,
+            owner_state=_account_state(owner, owner_finding) if owner is not None else None,
+            members=official_count if has_snapshot else len(seated),
+            seat_limit=workspace.seat_limit,
+            status=workspace.status,
+        )
         items.append(
             {
                 "id": workspace.id,
@@ -192,8 +256,25 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "owner_proxy": mask_proxy_url(owner.proxy) if owner and owner.proxy else None,
                 "owner_proxy_set": bool(owner and owner.proxy),
                 "proxy_profile_id": owner.proxy_profile_id if owner else None,
-                "members": len(seated),
+                "members": official_count if has_snapshot else None,
+                "managed_count": len(member_items),
                 "member_accounts": member_items,
+                "official_members": official_members,
+                "official": {
+                    "sync_state": "fresh" if has_snapshot else "never",
+                    "synced_at": isoformat(workspace.last_official_sync_at),
+                    "parsed_joined": joined if has_snapshot else None,
+                    "parsed_invited": invited if has_snapshot else None,
+                    "seat_limit": workspace.seat_limit,
+                    "members": official_members,
+                },
+                "managed": {"count": len(member_items), "accounts": member_items},
+                "reconciliation": {
+                    "matched": matched,
+                    "remote_only": remote_only,
+                    "local_only": local_only,
+                    "items": reconciliation,
+                },
                 "seat_limit": workspace.seat_limit,
                 "quota": None,
                 "quota_available": False,
@@ -252,6 +333,19 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
         ]
         binding_rows = bindings_by_account.get(account.id, [])
         primary_membership = active[0] if active else None
+        membership_payload = [
+            {
+                "workspace_id": row.workspace_id,
+                "workspace": workspaces_by_id[row.workspace_id].name if row.workspace_id in workspaces_by_id else None,
+                "official_role": row.official_role,
+                "membership_state": row.membership_state,
+            }
+            for row in active
+        ]
+        owned = [row for row in workspaces if row.owner_account_id == account.id]
+        primary_workspace_id = (
+            owned[0].id if owned else (primary_membership.workspace_id if primary_membership else (active[0].workspace_id if active else None))
+        )
         primary_binding = binding_rows[0] if binding_rows else None
         items.append(
             {
@@ -262,6 +356,9 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
                 "official_user_id": account.official_user_id,
                 "official_account_id": account.official_account_id,
                 "workspace": workspace_names[0] if workspace_names else None,
+                "workspace_id": primary_workspace_id,
+                "primary_workspace_id": primary_workspace_id,
+                "memberships": membership_payload,
                 "official_role": primary_membership.official_role if primary_membership else None,
                 "membership_state": primary_membership.membership_state if primary_membership else None,
                 "quota_7d": None,

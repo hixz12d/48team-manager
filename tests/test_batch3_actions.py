@@ -102,7 +102,7 @@ class Batch3ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 404)
 
             with patch(
-                "app.application.console_actions.rotate_service.kick_and_refill",
+                "app.application.console_actions.rotate_service.run_rotate_saga",
                 new=AsyncMock(return_value={"success": True, "status": "success"}),
             ):
                 response = client.post(

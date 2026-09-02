@@ -16,7 +16,9 @@ from curl_cffi.requests import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession as DBAsyncSession
 
-from app.core.proxy import build_curl_cffi_proxies
+from app.core.config import load_settings
+from app.core.proxy import build_curl_cffi_proxies, mask_proxy_url, normalize_proxy_url
+from app.integrations.openai.member_adapter import extract_item_list, extract_reported_total, extract_seat_metadata
 from app.persistence.models.identity import Account
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,9 @@ class ChatGPTClient:
     IMPERSONATE = "chrome136"
     MAX_RETRIES = 3
     RETRY_DELAYS = [1, 2, 4]
+    MAX_PAGES = 20
+    MAX_ITEMS = 1000
+    PAGE_LIMIT = 50
     TRANSIENT_ERROR_MARKERS = (
         "timed out",
         "timeout",
@@ -72,6 +77,7 @@ class ChatGPTClient:
 
     def __init__(self):
         self._sessions: dict[str, AsyncSession] = {}
+        self._session_keys: dict[str, str] = {}
         self._device_ids: dict[str, str] = {}
 
     async def _proxy_for(self, db_session: DBAsyncSession | None, identifier: str) -> str | None:
@@ -92,6 +98,14 @@ class ChatGPTClient:
             return account.proxy
         return None
 
+    def _tls_verify(self):
+        bundle = str(load_settings().openai_ca_bundle or "").strip()
+        return bundle or True
+
+    def _cache_key(self, identifier: str, proxy: str | None) -> str:
+        fingerprint = mask_proxy_url(proxy) if proxy else "direct"
+        return f"{identifier}|{fingerprint}"
+
     async def _create_session(self, db_session: DBAsyncSession | None, identifier: str) -> AsyncSession:
         proxy = await self._proxy_for(db_session, identifier)
         proxies = build_curl_cffi_proxies(proxy)
@@ -103,7 +117,7 @@ class ChatGPTClient:
                 parsed.hostname,
                 parsed.port,
             )
-        return AsyncSession(impersonate=self.IMPERSONATE, proxies=proxies, timeout=30, verify=False)
+        return AsyncSession(impersonate=self.IMPERSONATE, proxies=proxies, timeout=30, verify=self._tls_verify())
 
     def _device_id_for(self, identifier: str) -> str:
         if identifier not in self._device_ids:
@@ -111,12 +125,19 @@ class ChatGPTClient:
         return self._device_ids[identifier]
 
     async def _get_session(self, db_session: DBAsyncSession | None, identifier: str) -> AsyncSession:
+        proxy = await self._proxy_for(db_session, identifier)
+        cache_key = self._cache_key(identifier, proxy)
+        existing_key = self._session_keys.get(identifier)
+        if existing_key and existing_key != cache_key:
+            await self.clear_session(identifier)
         if identifier not in self._sessions:
             self._sessions[identifier] = await self._create_session(db_session, identifier)
+            self._session_keys[identifier] = cache_key
         return self._sessions[identifier]
 
     async def clear_session(self, identifier: str) -> None:
         session = self._sessions.pop(identifier, None)
+        self._session_keys.pop(identifier, None)
         if session is not None:
             try:
                 await session.close()
@@ -128,6 +149,123 @@ class ChatGPTClient:
         if db_session is None:
             return None
         return await self._get_session(db_session, identifier)
+
+    def _page_fingerprint(self, items: list[Any]) -> str:
+        return hashlib.sha256(repr(items).encode("utf-8")).hexdigest()
+
+    async def _paginate(
+        self,
+        *,
+        access_token: str,
+        account_id: str,
+        path: str,
+        db_session: DBAsyncSession | None,
+        identifier: str,
+        item_key: str,
+    ) -> dict[str, Any]:
+        collected: list[Any] = []
+        seen_ids: set[str] = set()
+        fingerprints: set[str] = set()
+        offset = 0
+        reported_total: int | None = None
+        seat_meta: dict[str, Any] = {}
+        pages = 0
+        incomplete = False
+        error_code = ""
+        error = None
+        while pages < self.MAX_PAGES and len(collected) < self.MAX_ITEMS:
+            url = f"{self.BASE_URL}/accounts/{account_id}/{path}?offset={offset}&limit={self.PAGE_LIMIT}&query="
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "chatgpt-account-id": account_id,
+            }
+            result = await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
+            if not result.get("success"):
+                return {
+                    "success": False,
+                    item_key: [],
+                    "items": [],
+                    "members": [],
+                    "total": 0,
+                    "reported_total": reported_total,
+                    "raw_item_count": len(collected),
+                    "incomplete": True,
+                    "error": result.get("error"),
+                    "error_code": result.get("error_code") or "fetch_failed",
+                    "status_code": result.get("status_code"),
+                    "seat_metadata": seat_meta,
+                }
+            data = result.get("data") or {}
+            page_items = extract_item_list(data)
+            page_total = extract_reported_total(data)
+            if page_total is not None:
+                reported_total = page_total
+            seat_meta.update(extract_seat_metadata(data))
+            if not page_items:
+                if pages == 0 and (reported_total or 0) > 0:
+                    incomplete = True
+                    error_code = "schema_mismatch"
+                    error = "official response reported items but the page envelope was empty"
+                break
+            fingerprint = self._page_fingerprint(page_items)
+            if fingerprint in fingerprints:
+                return {
+                    "success": False,
+                    item_key: collected,
+                    "items": collected,
+                    "members": collected,
+                    "total": reported_total if reported_total is not None else len(collected),
+                    "reported_total": reported_total,
+                    "raw_item_count": len(collected),
+                    "incomplete": True,
+                    "error": "official pagination repeated a page",
+                    "error_code": "incomplete",
+                    "seat_metadata": seat_meta,
+                }
+            fingerprints.add(fingerprint)
+            for item in page_items:
+                if not isinstance(item, dict):
+                    collected.append(item)
+                    continue
+                identity = str(item.get("id") or item.get("user_id") or item.get("email") or item.get("email_address") or "")
+                nested = item.get("user") if isinstance(item.get("user"), dict) else {}
+                if not identity:
+                    identity = str(nested.get("id") or nested.get("email") or "")
+                if identity and identity in seen_ids:
+                    continue
+                if identity:
+                    seen_ids.add(identity)
+                collected.append(item)
+            pages += 1
+            if len(page_items) < self.PAGE_LIMIT:
+                break
+            if reported_total is not None and len(collected) >= reported_total:
+                break
+            offset += self.PAGE_LIMIT
+        else:
+            if pages >= self.MAX_PAGES or len(collected) >= self.MAX_ITEMS:
+                incomplete = True
+                error_code = "incomplete"
+                error = "official pagination exceeded safety limits"
+        if reported_total is not None and reported_total > 0 and len(collected) < reported_total and not incomplete:
+            incomplete = True
+            error_code = "incomplete"
+            error = "fetched fewer official items than reported_total"
+        success = not incomplete
+        payload = {
+            "success": success,
+            item_key: collected,
+            "items": collected,
+            "members": collected,
+            "total": reported_total if reported_total is not None else len(collected),
+            "reported_total": reported_total,
+            "raw_item_count": len(collected),
+            "incomplete": incomplete,
+            "error": error,
+            "error_code": error_code or None,
+            "seat_metadata": seat_meta,
+        }
+        return payload
 
     def _is_transient(self, error: Any) -> bool:
         message = str(error or "").lower()
@@ -382,33 +520,14 @@ class ChatGPTClient:
         db_session: DBAsyncSession | None,
         identifier: str = "default",
     ) -> dict[str, Any]:
-        all_members: list[dict[str, Any]] = []
-        offset = 0
-        limit = 50
-        while True:
-            url = f"{self.BASE_URL}/accounts/{account_id}/users?offset={offset}&limit={limit}&query="
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "chatgpt-account-id": account_id,
-            }
-            result = await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
-            if not result.get("success"):
-                return {
-                    "success": False,
-                    "members": [],
-                    "total": 0,
-                    "error": result.get("error"),
-                    "error_code": result.get("error_code"),
-                    "status_code": result.get("status_code"),
-                }
-            data = result.get("data") or {}
-            items = data.get("items", []) if isinstance(data, dict) else []
-            total = data.get("total", 0) if isinstance(data, dict) else 0
-            all_members.extend(item for item in items if isinstance(item, dict))
-            if len(all_members) >= int(total or 0):
-                break
-            offset += limit
-        return {"success": True, "members": all_members, "total": len(all_members), "error": None}
+        return await self._paginate(
+            access_token=access_token,
+            account_id=account_id,
+            path="users",
+            db_session=db_session,
+            identifier=identifier,
+            item_key="members",
+        )
 
     async def get_invites(
         self,
@@ -417,24 +536,14 @@ class ChatGPTClient:
         db_session: DBAsyncSession | None,
         identifier: str = "default",
     ) -> dict[str, Any]:
-        url = f"{self.BASE_URL}/accounts/{account_id}/invites?offset=0&limit=50&query="
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "chatgpt-account-id": account_id,
-        }
-        result = await self._make_request("GET", url, headers, db_session=db_session, identifier=identifier)
-        if not result.get("success"):
-            return {
-                "success": False,
-                "items": [],
-                "total": 0,
-                "error": result.get("error"),
-                "error_code": result.get("error_code"),
-                "status_code": result.get("status_code"),
-            }
-        data = result.get("data") or {}
-        items = data.get("items", []) if isinstance(data, dict) else []
-        return {"success": True, "items": items, "total": len(items), "error": None}
+        return await self._paginate(
+            access_token=access_token,
+            account_id=account_id,
+            path="invites",
+            db_session=db_session,
+            identifier=identifier,
+            item_key="items",
+        )
 
     async def send_invite(
         self,

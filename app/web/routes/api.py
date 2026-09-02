@@ -71,7 +71,7 @@ def build_api_router(get_db) -> APIRouter:
         except RegisterWorkspaceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    @router.post("/workspaces/{workspace_id}/sync", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/workspaces/{workspace_id}/sync")
     async def sync_workspace(
         workspace_id: int,
         _: dict = Depends(require_admin),
@@ -165,7 +165,7 @@ def build_api_router(get_db) -> APIRouter:
     ) -> dict:
         return await console_query.accounts(db, purpose=purpose, include_archived=include_archived)
 
-    @router.post("/accounts/{account_id}/refresh", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/accounts/{account_id}/refresh")
     async def refresh_account(
         account_id: int,
         _: dict = Depends(require_admin),
@@ -176,7 +176,7 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
-    @router.post("/accounts/{account_id}/auth/probe", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/accounts/{account_id}/auth/probe")
     async def probe_account_auth(
         account_id: int,
         _: dict = Depends(require_admin),
@@ -187,7 +187,7 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
-    @router.post("/accounts/{account_id}/quota/probe", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/accounts/{account_id}/quota/probe")
     async def probe_account_quota(
         account_id: int,
         _: dict = Depends(require_admin),
@@ -209,7 +209,7 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
-    @router.post("/accounts/{account_id}/sub2api/sync", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/accounts/{account_id}/sub2api/sync")
     async def sync_account_sub2api(
         account_id: int,
         _: dict = Depends(require_admin),
@@ -329,11 +329,11 @@ def build_api_router(get_db) -> APIRouter:
     async def hme(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.hme(db)
 
-    @router.post("/resources/hme/reconcile", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/resources/hme/reconcile")
     async def hme_reconcile(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return _accepted(await console_actions.run_hme_reconcile(db))
 
-    @router.post("/resources/hme/{lease_id}/retry-label", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/resources/hme/{lease_id}/retry-label")
     async def hme_retry_label(
         lease_id: int,
         _: dict = Depends(require_admin),
@@ -408,7 +408,7 @@ def build_api_router(get_db) -> APIRouter:
         await db.commit()
         return {"ok": True, "item": proxy_profile_service.serialize(profile)}
 
-    @router.post("/resources/proxies/{proxy_id}/probe", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/resources/proxies/{proxy_id}/probe")
     async def probe_proxy(
         proxy_id: int,
         _: dict = Depends(require_admin),
@@ -419,7 +419,7 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
-    @router.post("/resources/proxies/probe-all", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/resources/proxies/probe-all")
     async def probe_all_proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return _accepted(await proxy_probe_service.probe_all(db))
 

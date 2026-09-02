@@ -52,6 +52,7 @@
     failed: "失败",
     cancelled: "已取消",
     manual_required: "需人工",
+    partial: "部分完成",
     pending: "待确认",
     verified: "已验证",
     missing: "缺失",
@@ -78,6 +79,11 @@
     reauth: "重新授权",
     onboard: "拉人",
     rotate: "轮转",
+    workspace_sync: "同步官方成员",
+    kick_member: "踢出成员",
+    revoke_invite: "撤回邀请",
+    hme_reconcile: "HME 对账",
+    hme_label_retry: "HME 标签重试",
     auth_probe: "授权探测",
     reconcile: "对账",
     sub2api_sync: "Sub2API 同步",
@@ -234,6 +240,42 @@
     window.setTimeout(() => item.remove(), 6500);
   }
 
+  function operationTone(result) {
+    if (result?.partial || result?.status === "partial" || result?.status === "manual_required") return "warning";
+    if (result?.ok || result?.success) return "success";
+    return "error";
+  }
+
+  function syncToastMessage(result) {
+    if (result?.message) return result.message;
+    if (result?.ok || result?.success) {
+      return `同步完成：官方已加入 ${result.joined ?? 0}、待邀请 ${result.invited ?? 0}；本地受管 ${result.managed ?? 0}；仅官方 ${result.remote_only ?? 0}`;
+    }
+    return result?.error || "同步失败";
+  }
+
+  function chooseWorkspaceId(item) {
+    const memberships = item.memberships || [];
+    if (memberships.length > 1) {
+      const options = memberships.map((row) => String(row.workspace_id) + ":" + (row.workspace || row.workspace_id)).join("\n");
+      const picked = window.prompt("该账号属于多个 Workspace，请输入要操作的 Workspace ID:\n" + options, String(item.primary_workspace_id || item.workspace_id || ""));
+      const chosen = Number(picked || 0);
+      return chosen || null;
+    }
+    return item.primary_workspace_id || item.workspace_id || (memberships[0] && memberships[0].workspace_id) || null;
+  }
+
+  async function handleActionResult(result, { successMessage, refresh = true, longRunning = false } = {}) {
+    const failed = !(result?.ok || result?.success) || result?.partial || ["partial", "failed", "manual_required"].includes(result?.status);
+    const message = result?.message || (failed ? (result?.error || "操作失败") : (successMessage || "已完成"));
+    const action = failed && result?.operation_id
+      ? { label: "查看详情", onClick: () => openOperationById(result.operation_id) }
+      : (longRunning && result?.operation_id ? { label: "查看任务", onClick: () => openOperationById(result.operation_id) } : null);
+    toast(message, operationTone(result), action || undefined);
+    if (refresh) await bootPage();
+    return result;
+  }
+
   function confirmDanger(message) {
     return window.confirm(message);
   }
@@ -369,9 +411,7 @@
       sync.disabled = true;
       try {
         const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
-        toast(result.ok ? "官方成员同步已完成" : (result.error || "同步失败"), result.ok ? "success" : "error");
-        if (result.operation_id) await openOperationById(result.operation_id);
-        await bootPage();
+        await handleActionResult(result, { successMessage: syncToastMessage(result) });
       } catch (error) {
         toast(friendlyError(error), "error");
       } finally {
@@ -437,9 +477,7 @@
       button.disabled = true;
       try {
         const result = await postAction(`${primary.id}-${item.id}`, primary.url);
-        toast(result.ok || result.success ? `${primary.label}已提交` : (result.error || "操作失败"), result.ok || result.success ? "success" : "error");
-        if (result.operation_id) await openOperationById(result.operation_id);
-        await bootPage();
+        await handleActionResult(result, { successMessage: result.message || (primary.label + "已完成") });
       } catch (error) {
         toast(friendlyError(error), "error");
       } finally {
@@ -534,9 +572,7 @@ function hmeRow(item) {
         retry.disabled = true;
         try {
           const result = await postAction(`hme-retry-${item.id}`, `/api/resources/hme/${item.id}/retry-label`);
-          toast(result.ok ? "标签重试已提交" : (result.error || "重试失败"), result.ok ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "标签已同步" });
         } catch (error) {
           toast(friendlyError(error), "error");
         } finally {
@@ -572,9 +608,7 @@ function hmeRow(item) {
       probe.disabled = true;
       try {
         const result = await postAction(`proxy-probe-${item.id}`, `/api/resources/proxies/${item.id}/probe`);
-        toast(result.ok ? `检测成功 ${result.last_exit_ip || ""}`.trim() : (result.error || "检测失败"), result.ok ? "success" : "error");
-        if (result.operation_id) await openOperationById(result.operation_id);
-        await bootPage();
+        await handleActionResult(result, { successMessage: result.message || (result.last_exit_ip ? ("检测成功 " + result.last_exit_ip) : "检测完成") });
       } catch (error) {
         toast(friendlyError(error), "error");
       } finally {
@@ -803,48 +837,74 @@ function hmeRow(item) {
     } else if (kind === "workspace") {
       title.textContent = item.name;
       subtitle.textContent = item.owner_email || "";
-      const members = item.member_accounts || [];
-      const memberLines = members.length
-        ? members.map((member) => {
-            const role = member.official_role || labelOf(purposeLabels, member.purpose) || "member";
-            const state = labelOf(stateLabels, member.state) || member.state || "";
-            const auth = labelOf(statusLabels, member.auth) || member.auth || "";
-            return [member.email, [role, state, auth].filter(Boolean).join(" · ")];
+      const officialMembers = item.official_members || item.official?.members || [];
+      const managed = item.member_accounts || item.managed?.accounts || [];
+      const diffs = item.reconciliation?.items || [];
+      const officialLines = officialMembers.length
+        ? officialMembers.map((member) => {
+            const bits = [member.role, member.state, member.is_owner ? "Owner" : ""].filter(Boolean).join(" · ");
+            return [member.name || member.email, bits || member.email];
           })
-        : [["子号", "还没有子号。拉人或同步 membership 后会出现在这里。"]];
+        : [["官方成员", item.last_sync ? "官方列表为空" : "尚未同步"]];
+      const managedLines = managed.length
+        ? managed.map((member) => [member.email, [labelOf(purposeLabels, member.purpose), labelOf(statusLabels, member.auth)].filter(Boolean).join(" · ")])
+        : [["本地受管账号", "尚未纳入本地管理"]];
+      const diffLines = diffs.length
+        ? diffs.map((row) => [row.email, row.status === "remote_only" ? "仅官方" : (row.status === "local_only" ? "仅本地" : (row.status === "managed" ? "已托管" : (row.status === "invited" ? "待邀请" : row.status)))])
+        : [["差异", "暂无差异"]];
+      const seatText = item.last_sync == null && item.members == null ? "尚未同步" : (item.seat_limit ? `${item.members ?? 0} / ${item.seat_limit}` : String(item.members ?? "尚未同步"));
       body.append(
         kvSection("运行摘要", [
           ["健康", labelOf(statusLabels, item.health || item.status)],
-          ["席位", item.seat_limit ? `${item.members} / ${item.seat_limit}` : item.members],
+          ["官方成员/席位", seatText],
+          ["本地受管", item.managed_count ?? managed.length],
           ["官方 Workspace ID", item.official_workspace_id],
-          ["最近同步", item.last_sync || "未同步"],
-          ["自动化", item.automation_available ? labelOf(statusLabels, item.automation) : "未接入"],
-          ["官方 7d", item.quota_available ? (item.quota || "—") : "未接入"],
+          ["最近同步", item.last_sync || "尚未同步"],
         ]),
         kvSection("母号", [
           ["邮箱", item.owner_email],
           ["用途", labelOf(purposeLabels, item.owner_purpose)],
           ["授权", labelOf(statusLabels, item.owner_auth)],
           ["代理", item.owner_proxy || (item.owner_proxy_set ? "已设" : "未绑定")],
-          ["代理档案", item.proxy_profile_id || "—"],
         ]),
-        kvSection(members.length ? `子号（${members.length}）` : "子号", memberLines)
+        kvSection(officialMembers.length ? `官方成员（${officialMembers.length}）` : "官方成员", officialLines),
+        kvSection(managed.length ? `本地受管账号（${managed.length}）` : "本地受管账号", managedLines),
+        kvSection("差异/待处理", diffLines)
       );
     } else if (kind === "operation") {
       title.textContent = labelOf(statusLabels, item.operation);
       subtitle.textContent = item.target || item.email || item.id;
+      const result = item.result || {};
+      const steps = item.steps || [];
+      const logs = item.log || [];
       body.append(
         kvSection("任务", [
           ["状态", labelOf(statusLabels, item.state || item.status)],
-          ["当前步骤", item.current_step],
+          ["摘要", result.message || item.error || "—"],
           ["对象", item.target || item.email],
-          ["错误码", item.error_code],
-          ["说明", item.error],
-          ["开始", item.started],
-          ["更新", item.updated],
-          ["Operation ID", item.id],
+          ["开始", relativeTime(item.started) + (item.started ? ` · ${item.started}` : "")],
+          ["更新", relativeTime(item.updated) + (item.updated ? ` · ${item.updated}` : "")],
         ])
       );
+      if (result.joined != null || result.remote_only != null) {
+        body.append(
+          kvSection("同步结果", [
+            ["官方已加入", result.joined],
+            ["待邀请", result.invited],
+            ["本地受管", result.managed],
+            ["仅官方", result.remote_only],
+            ["仅本地", result.local_only],
+            ["原始条数", result.raw_item_count],
+            ["解析条数", result.parsed_item_count],
+          ])
+        );
+      }
+      if (steps.length) {
+        body.append(kvSection("步骤", steps.map((step) => [step.step_name, `${labelOf(statusLabels, step.state)}${step.error_message ? " · " + step.error_message : ""}`])));
+      }
+      if (logs.length) {
+        body.append(kvSection("日志", logs.slice(-8).map((row) => [row.ts || "", row.message || row.stage || ""])));
+      }
     } else if (kind === "phone") {
       title.textContent = item.number;
       body.append(
@@ -916,9 +976,7 @@ function hmeRow(item) {
         label: "同步官方成员",
         run: async (item) => {
           const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
-          toast(result.ok ? "官方成员同步已完成" : (result.error || "同步失败"), result.ok ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: syncToastMessage(result) });
         },
       },
       {
@@ -948,9 +1006,7 @@ function hmeRow(item) {
         label: "刷新状态",
         run: async (item) => {
           const result = await postAction(`account-refresh-${item.id}`, `/api/accounts/${item.id}/refresh`);
-          toast(result.ok || result.success ? "刷新已提交" : (result.error || "刷新失败"), result.ok || result.success ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "刷新完成" });
         },
       },
       {
@@ -958,9 +1014,7 @@ function hmeRow(item) {
         label: "检查授权",
         run: async (item) => {
           const result = await postAction(`account-auth-${item.id}`, `/api/accounts/${item.id}/auth/probe`);
-          toast(result.ok || result.success ? "授权探测已提交" : (result.error || "探测失败"), result.ok || result.success ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "授权探测完成" });
         },
       },
       {
@@ -968,9 +1022,7 @@ function hmeRow(item) {
         label: "刷新额度",
         run: async (item) => {
           const result = await postAction(`account-quota-${item.id}`, `/api/accounts/${item.id}/quota/probe`);
-          toast(result.ok || result.success ? "额度刷新已提交" : (result.error || "刷新失败"), result.ok || result.success ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "额度刷新完成" });
         },
       },
       {
@@ -978,9 +1030,7 @@ function hmeRow(item) {
         label: "同步 Sub2API",
         run: async (item) => {
           const result = await postAction(`account-sub2api-${item.id}`, `/api/accounts/${item.id}/sub2api/sync`);
-          toast(result.ok || result.success ? "Sub2API 同步已提交" : (result.error || "同步失败"), result.ok || result.success ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "Sub2API 同步完成" });
         },
       },
       {
@@ -996,27 +1046,27 @@ function hmeRow(item) {
         id: "account.onboard",
         label: "创建子号",
         visible: (item) => Boolean(item.workspace_id) || item.purpose === "mother",
-        run: (item, trigger) => openOnboard(trigger, { id: item.workspace_id, name: item.workspace }),
+        run: (item, trigger) => { const workspaceId = chooseWorkspaceId(item); if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; } openOnboard(trigger, { id: workspaceId, name: item.workspace }); },
       },
       {
         id: "account.rotate",
         label: "受控轮转",
         visible: (item) => item.purpose === "child" && Boolean(item.workspace_id),
-        run: (item, trigger) => openRotate(trigger, { id: item.workspace_id, name: item.workspace }, item),
+        run: (item, trigger) => { const workspaceId = chooseWorkspaceId(item); if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; } openRotate(trigger, { id: workspaceId, name: item.workspace }, item); },
       },
       {
         id: "account.kick",
         label: "踢出待命",
         visible: (item) => item.purpose === "child" && Boolean(item.workspace_id),
         run: async (item) => {
+          const workspaceId = chooseWorkspaceId(item);
+          if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; }
           if (!confirmDanger(`确认把 ${item.email} 踢出并转入待命？这会改官方成员。`)) return;
-          const result = await postAction(`account-kick-${item.id}`, `/api/workspaces/${item.workspace_id}/kick`, {
+          const result = await postAction(`account-kick-${item.id}`, `/api/workspaces/${workspaceId}/kick`, {
             email: item.email,
             reason: "console_kick",
           });
-          toast(result.ok || result.success ? "踢人任务已提交" : (result.error || "踢人失败"), result.ok || result.success ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "踢人完成", longRunning: true });
         },
       },
       {
@@ -1024,13 +1074,13 @@ function hmeRow(item) {
         label: "撤回邀请",
         visible: (item) => item.purpose === "child" && Boolean(item.workspace_id) && item.membership_state === "invited",
         run: async (item) => {
+          const workspaceId = chooseWorkspaceId(item);
+          if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; }
           if (!confirmDanger(`确认撤回 ${item.email} 的邀请？`)) return;
-          const result = await postAction(`account-revoke-${item.id}`, `/api/workspaces/${item.workspace_id}/revoke-invite`, {
+          const result = await postAction(`account-revoke-${item.id}`, `/api/workspaces/${workspaceId}/revoke-invite`, {
             email: item.email,
           });
-          toast(result.ok || result.success ? "撤回已提交" : (result.error || "撤回失败"), result.ok || result.success ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "邀请已撤回" });
         },
       },
       {
@@ -1046,7 +1096,7 @@ function hmeRow(item) {
       {
         id: "operation.cancel",
         label: "请求取消",
-        visible: (item) => ["queued", "running", "waiting"].includes(item.state || item.status) && !item.cancel_requested,
+        visible: (item) => Boolean(item.can_cancel),
         run: async (item) => {
           const result = await postAction(`operation-cancel-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/cancel`);
           toast(result.ok ? "已请求取消" : (result.error || "取消失败"), result.ok ? "success" : "error");
@@ -1057,12 +1107,10 @@ function hmeRow(item) {
       {
         id: "operation.retry",
         label: "安全重试",
-        visible: (item) => ["failed", "cancelled"].includes(item.state || item.status),
+        visible: (item) => Boolean(item.can_retry),
         run: async (item) => {
           const result = await postAction(`operation-retry-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/retry`);
-          toast(result.ok ? "已创建重试任务" : (result.error || "不可重试"), result.ok ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "重试完成" });
         },
       },
     ],
@@ -1110,9 +1158,7 @@ function hmeRow(item) {
         visible: (item) => Boolean(item.pending),
         run: async (item) => {
           const result = await postAction(`hme-retry-${item.id}`, `/api/resources/hme/${item.id}/retry-label`);
-          toast(result.ok ? "标签重试已提交" : (result.error || "重试失败"), result.ok ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || "标签已同步" });
         },
       },
       {
@@ -1134,9 +1180,7 @@ function hmeRow(item) {
         label: "检测",
         run: async (item) => {
           const result = await postAction(`proxy-probe-${item.id}`, `/api/resources/proxies/${item.id}/probe`);
-          toast(result.ok ? `检测成功 ${result.last_exit_ip || ""}`.trim() : (result.error || "检测失败"), result.ok ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || (result.last_exit_ip ? ("检测成功 " + result.last_exit_ip) : "检测完成") });
         },
       },
       {
@@ -1401,13 +1445,8 @@ function hmeRow(item) {
         force: Boolean(form.force.checked),
         skip_invite: Boolean(form.skip_invite.checked),
       });
-      setFormStatus("onboard-status", result.ok || result.success ? "已提交" : (result.error || "失败"), result.ok || result.success ? "muted" : "error");
-      toast(result.ok || result.success ? "创建子号任务已提交" : (result.error || "创建失败"), result.ok || result.success ? "success" : "error");
-      if (result.operation_id) {
-        closeOnboard();
-        await openOperationById(result.operation_id);
-      }
-      await bootPage();
+      closeOnboard();
+      await handleActionResult(result, { successMessage: result.message || "创建子号完成", longRunning: true });
     } catch (error) {
       setFormStatus("onboard-status", friendlyError(error), "error");
       toast(friendlyError(error), "error");
@@ -1438,13 +1477,8 @@ function hmeRow(item) {
         force_refill: Boolean(form.force_refill.checked),
         reason: "console",
       });
-      setFormStatus("rotate-status", result.ok || result.success ? "已提交" : (result.error || "失败"), result.ok || result.success ? "muted" : "error");
-      toast(result.ok || result.success ? "轮转任务已提交" : (result.error || "轮转失败"), result.ok || result.success ? "success" : "error");
-      if (result.operation_id) {
-        closeRotate();
-        await openOperationById(result.operation_id);
-      }
-      await bootPage();
+      closeRotate();
+      await handleActionResult(result, { successMessage: result.message || "轮转完成", longRunning: true });
     } catch (error) {
       setFormStatus("rotate-status", friendlyError(error), "error");
       toast(friendlyError(error), "error");
@@ -2032,7 +2066,7 @@ function openRegister(trigger) {
     renderRows(
       "phones-body",
       items,
-      7,
+      8,
       phoneRow,
       emptyState("还没有手机号", "点「导入号码」，按 号码----接码链接 批量入库。")
     );
@@ -2173,9 +2207,7 @@ function openRegister(trigger) {
       try {
         if (action === "hme-reconcile") {
           const result = await postAction("hme-reconcile", "/api/resources/hme/reconcile");
-          toast(result.ok ? `HME 对账完成，差异 ${result.conflicts ?? 0}` : (result.error || "对账失败"), result.ok ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || ("HME 对账完成，差异 " + (result.conflicts ?? 0)) });
         } else if (action === "hme-retry-pending") {
           const payload = await fetchEntity("hme-list", "/api/resources/hme");
           const pending = (payload.items || []).filter((item) => item.pending);
@@ -2188,9 +2220,7 @@ function openRegister(trigger) {
           await bootPage();
         } else if (action === "proxy-probe-all") {
           const result = await postAction("proxy-probe-all", "/api/resources/proxies/probe-all");
-          toast(result.ok ? `全部检测完成：健康 ${result.healthy}/${result.total}` : `检测完成：失败 ${result.failed}/${result.total}`, result.ok ? "success" : "error");
-          if (result.operation_id) await openOperationById(result.operation_id);
-          await bootPage();
+          await handleActionResult(result, { successMessage: result.message || ("检测完成：健康 " + (result.healthy ?? 0) + "/" + (result.total ?? 0)) });
         } else if (action === "workspace-sync-all") {
           const payload = await fetchEntity("workspace-list", "/api/workspaces");
           const items = payload.items || [];
