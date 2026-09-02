@@ -28,6 +28,7 @@ PROXY_PROFILE_COLUMNS = (
     ("last_success_at", "DATETIME"),
     ("latency_ms", "INTEGER"),
     ("last_error", "TEXT"),
+    ("name_source", "VARCHAR(20) DEFAULT 'auto' NOT NULL"),
 )
 
 SNAPSHOT_COLUMNS = (
@@ -38,6 +39,17 @@ SNAPSHOT_COLUMNS = (
 
 OPERATION_COLUMNS = (
     ("source", "VARCHAR(20) DEFAULT 'manual' NOT NULL"),
+    ("archived_at", "DATETIME"),
+    ("archive_reason", "VARCHAR(120)"),
+)
+
+WORKSPACE_COLUMNS = (
+    ("official_name", "VARCHAR(255)"),
+    ("custom_name", "VARCHAR(255)"),
+    ("name_source", "VARCHAR(20) DEFAULT 'placeholder' NOT NULL"),
+    ("official_name_synced_at", "DATETIME"),
+    ("occupied_seats", "INTEGER"),
+    ("last_official_sync_state", "VARCHAR(20)"),
 )
 
 
@@ -60,3 +72,4 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
         await _ensure_sqlite_columns(conn, "proxy_profiles", PROXY_PROFILE_COLUMNS)
         await _ensure_sqlite_columns(conn, "workspace_official_member_snapshots", SNAPSHOT_COLUMNS)
         await _ensure_sqlite_columns(conn, "operations", OPERATION_COLUMNS)
+        await _ensure_sqlite_columns(conn, "workspaces", WORKSPACE_COLUMNS)

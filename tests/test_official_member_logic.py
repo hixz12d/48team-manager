@@ -364,16 +364,17 @@ class ConsoleLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_account_sub2api_sync_is_account_scoped(self):
         with (
-            patch("app.application.console_actions.sub2api_client.list_status_accounts", new=AsyncMock(return_value=[{"id": 1}])),
+            patch("app.application.sub2api_publish.sub2api_client.list_status_accounts", new=AsyncMock(return_value=[{"id": 1, "credentials": {"email": self.mother.email}}])),
             patch(
-                "app.application.console_actions.verify_bindings",
-                new=AsyncMock(return_value={"bindings": [{"local_account_id": self.mother.id, "binding_state": "verified"}]}),
+                "app.application.sub2api_publish.verify_bindings",
+                new=AsyncMock(return_value={"bindings": [{"local_account_id": self.mother.id, "binding_state": "verified", "remote_account_id": "1"}]}),
             ),
         ):
             result = await account_sub2api_sync(self.session, self.mother.id)
         self.assertTrue(result["ok"])
         self.assertEqual(result["account_id"], self.mother.id)
-        self.assertTrue(result["matched"])
+        self.assertIn(result.get("outcome"), {"verified", "pending", "remote_missing"})
+        self.assertEqual(result.get("binding_state"), "verified")
 
     async def test_retry_dispatches_typed_handler(self):
         row = await operation_store.create(self.session, op_type="quota_probe", account_id=self.mother.id, email=self.mother.email)

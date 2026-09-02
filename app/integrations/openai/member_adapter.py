@@ -17,6 +17,7 @@ NESTED_OBJECT_KEYS = ("user", "account", "profile", "invite", "member", "invited
 COLLECTION_KEYS = ("items", "users", "members", "invites", "results", "data")
 TOTAL_KEYS = ("total", "count", "reported_total", "total_count", "totalCount")
 SEAT_LIMIT_KEYS = ("seat_limit", "seats_limit", "max_seats", "seatLimit", "capacity", "seats")
+OCCUPIED_SEAT_KEYS = ("occupied_seats", "used_seats", "seats_used", "occupiedSeats", "usedSeats", "seat_used")
 OWNER_ROLES = {"owner", "account-owner", "account_owner", "workspace-owner", "workspace_owner", "admin-owner"}
 JOINED_STATES = {"joined", "active", "member", "accepted"}
 INVITED_STATES = {"invited", "pending", "invite", "invitation"}
@@ -124,14 +125,27 @@ def extract_seat_metadata(payload: Any) -> dict[str, Any]:
         if number > 0:
             meta["seat_limit"] = number
             break
+    for key in OCCUPIED_SEAT_KEYS:
+        value = body.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number >= 0:
+            meta["occupied_seats"] = number
+            break
     billing = body.get("billing") if isinstance(body.get("billing"), dict) else None
-    if billing and "seat_limit" not in meta:
+    if billing:
         nested = extract_seat_metadata(billing)
-        meta.update(nested)
+        for key, value in nested.items():
+            meta.setdefault(key, value)
     account = body.get("account") if isinstance(body.get("account"), dict) else None
-    if account and "seat_limit" not in meta:
+    if account:
         nested = extract_seat_metadata(account)
-        meta.update(nested)
+        for key, value in nested.items():
+            meta.setdefault(key, value)
     return meta
 
 

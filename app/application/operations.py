@@ -136,37 +136,77 @@ def duration_text(row: Operation) -> str | None:
     return f"{hours}h {minutes}m"
 
 
-def serialize_operation(row: Operation, *, steps: list[OperationStep] | None = None) -> dict[str, Any]:
+def serialize_operation(
+    row: Operation,
+    *,
+    steps: list[OperationStep] | None = None,
+    workspace_name: str | None = None,
+    account_email: str | None = None,
+    proxy_label: str | None = None,
+) -> dict[str, Any]:
+    from app.application.presenters import business_step_label, operation_type_label
+
     log_items = _loads(row.log_json, [])
     if not isinstance(log_items, list):
         log_items = []
     result = _loads(row.result_json, None)
+    result_dict = result if isinstance(result, dict) else {}
+    outcome = str(result_dict.get("outcome") or "").strip() or None
+    target_type = "account" if row.email or row.account_id else ("workspace" if row.workspace_id else "system")
+    if row.op_type == "proxy_check":
+        target_type = "proxy"
+    if row.op_type.startswith("hme"):
+        target_type = "hme"
+    target_label = (
+        proxy_label
+        or account_email
+        or row.email
+        or workspace_name
+        or (f"workspace:{row.workspace_id}" if row.workspace_id else None)
+        or row.public_id
+    )
+    business_step = business_step_label(row.current_step, state=row.state)
     payload = {
         "id": row.public_id,
         "operation_id": row.id,
         "status": "running" if row.state in ACTIVE_STATES else row.state,
         "state": row.state,
+        "terminal_state": row.state if row.state in TERMINAL_STATES else None,
         "operation": row.op_type,
-        "target": row.email or (f"workspace:{row.workspace_id}" if row.workspace_id else None),
+        "operation_label": operation_type_label(row.op_type),
+        "target": target_label,
+        "target_type": target_type,
+        "target_label": target_label,
+        "workspace": workspace_name,
+        "workspace_name": workspace_name,
         "current_step": row.current_step or "",
+        "business_step": business_step,
         "started": isoformat(row.started_at or row.created_at),
         "duration": duration_text(row),
-        "email": row.email or "",
+        "email": row.email or account_email or "",
         "error": row.error_message or "",
         "error_code": row.error_code or "",
         "log": log_items,
         "cancel_requested": bool(row.cancel_requested),
         "result": result,
+        "outcome": outcome,
         "locked_by": row.locked_by or "",
         "lease_expires_at": isoformat(row.lease_expires_at),
         "updated": isoformat(row.updated_at or row.finished_at or row.started_at or row.created_at),
+        "created": isoformat(row.created_at),
+        "finished": isoformat(row.finished_at),
         "workspace_id": row.workspace_id,
+        "account_id": row.account_id,
         "source": getattr(row, "source", None) or "manual",
+        "archived_at": isoformat(getattr(row, "archived_at", None)),
+        "archive_reason": getattr(row, "archive_reason", None),
+        "archived": bool(getattr(row, "archived_at", None)),
     }
     if steps is not None:
         payload["steps"] = [
             {
                 "step_name": item.step_name,
+                "step_label": business_step_label(item.step_name, state=item.state),
                 "state": item.state,
                 "attempt": item.attempt,
                 "error_code": item.error_code,
@@ -231,8 +271,107 @@ class OperationStore:
         return row
 
     async def list_recent(self, session: AsyncSession, *, limit: int = 100) -> list[Operation]:
-        result = await session.execute(select(Operation).order_by(Operation.created_at.desc(), Operation.id.desc()).limit(limit))
+        result = await session.execute(
+            select(Operation)
+            .where(Operation.archived_at.is_(None))
+            .order_by(Operation.created_at.desc(), Operation.id.desc())
+            .limit(limit)
+        )
         return list(result.scalars().all())
+
+    async def list_filtered(
+        self,
+        session: AsyncSession,
+        *,
+        q: str = "",
+        state: str = "",
+        op_type: str = "",
+        source: str = "",
+        workspace_id: int | None = None,
+        account_id: int | None = None,
+        date_from=None,
+        date_to=None,
+        include_archived: bool = False,
+        archived_only: bool = False,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        from sqlalchemy import and_, func
+
+        page = max(1, int(page or 1))
+        page_size = max(1, min(100, int(page_size or 50)))
+        filters = []
+        if archived_only:
+            filters.append(Operation.archived_at.is_not(None))
+        elif not include_archived:
+            filters.append(Operation.archived_at.is_(None))
+        if state:
+            wanted = [item.strip() for item in str(state).split(",") if item.strip()]
+            if wanted:
+                filters.append(Operation.state.in_(wanted))
+        if op_type:
+            wanted = [item.strip() for item in str(op_type).split(",") if item.strip()]
+            if wanted:
+                filters.append(Operation.op_type.in_(wanted))
+        if source:
+            filters.append(Operation.source == str(source).strip())
+        if workspace_id:
+            filters.append(Operation.workspace_id == int(workspace_id))
+        if account_id:
+            filters.append(Operation.account_id == int(account_id))
+        if date_from is not None:
+            filters.append(Operation.created_at >= date_from)
+        if date_to is not None:
+            filters.append(Operation.created_at <= date_to)
+        query_text = str(q or "").strip()
+        if query_text:
+            like = f"%{query_text.lower()}%"
+            filters.append(
+                or_(
+                    func.lower(Operation.public_id).like(like),
+                    func.lower(Operation.email).like(like),
+                    func.lower(Operation.op_type).like(like),
+                    func.lower(Operation.error_message).like(like),
+                )
+            )
+        where_clause = and_(*filters) if filters else True
+        total = int((await session.execute(select(func.count()).select_from(Operation).where(where_clause))).scalar_one() or 0)
+        rows = list(
+            (
+                await session.execute(
+                    select(Operation)
+                    .where(where_clause)
+                    .order_by(Operation.created_at.desc(), Operation.id.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+            ).scalars()
+        )
+        state_rows = (
+            await session.execute(
+                select(Operation.state, func.count())
+                .where(where_clause)
+                .group_by(Operation.state)
+            )
+        ).all()
+        type_rows = (
+            await session.execute(
+                select(Operation.op_type, func.count())
+                .where(where_clause)
+                .group_by(Operation.op_type)
+            )
+        ).all()
+        return {
+            "items": rows,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_more": page * page_size < total,
+            "facets": {
+                "states": {str(name): int(count) for name, count in state_rows if name},
+                "types": {str(name): int(count) for name, count in type_rows if name},
+            },
+        }
 
     async def active_for_email(self, session: AsyncSession, email: str, *, actions: tuple[str, ...] | None = None) -> Operation | None:
         target = (email or "").strip().lower()

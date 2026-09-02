@@ -220,9 +220,150 @@ async def accounts(db: AsyncSession, purpose: str = "all", include_archived: boo
     return payload
 
 
-async def operations(db: AsyncSession) -> dict[str, Any]:
-    rows = await operation_store.list_recent(db)
-    return {"items": [serialize_operation(row) for row in rows], "next_cursor": None}
+async def operations(
+    db: AsyncSession,
+    *,
+    q: str = "",
+    state: str = "",
+    op_type: str = "",
+    source: str = "",
+    workspace_id: int | None = None,
+    account_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    include_archived: bool = False,
+    archived_only: bool = False,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.domain.workspaces.names import resolve_display_name
+    from app.persistence.models.identity import Account, Workspace
+    from app.persistence.models.resources import ProxyProfile
+
+    def _parse_dt(raw: str | None, *, end: bool = False):
+        text_value = str(raw or "").strip()
+        if not text_value:
+            return None
+        # shortcuts
+        now = datetime.now(timezone.utc)
+        if text_value in {"today"}:
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            return start if not end else now
+        if text_value in {"7d", "last_7_days"}:
+            return now - timedelta(days=7)
+        if text_value in {"30d", "last_30_days"}:
+            return now - timedelta(days=30)
+        if text_value.endswith("Z"):
+            text_value = text_value[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text_value)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if end and len(text_value) <= 10:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
+
+    # default window: last 7 days when no explicit filters
+    parsed_from = _parse_dt(date_from)
+    parsed_to = _parse_dt(date_to, end=True)
+    if not any([q, state, op_type, source, workspace_id, account_id, date_from, date_to, include_archived, archived_only]):
+        parsed_from = datetime.now(timezone.utc) - timedelta(days=7)
+
+    filtered = await operation_store.list_filtered(
+        db,
+        q=q,
+        state=state,
+        op_type=op_type,
+        source=source,
+        workspace_id=workspace_id,
+        account_id=account_id,
+        date_from=parsed_from,
+        date_to=parsed_to,
+        include_archived=include_archived,
+        archived_only=archived_only,
+        page=page,
+        page_size=page_size,
+    )
+    rows = filtered["items"]
+    workspace_ids = {int(row.workspace_id) for row in rows if row.workspace_id}
+    account_ids = {int(row.account_id) for row in rows if row.account_id}
+    proxy_ids = {
+        int(row.resolved_proxy_profile_id)
+        for row in rows
+        if getattr(row, "resolved_proxy_profile_id", None)
+    }
+    workspaces = {}
+    if workspace_ids:
+        workspaces = {
+            row.id: row
+            for row in (
+                await db.execute(select(Workspace).where(Workspace.id.in_(workspace_ids)))
+            ).scalars()
+        }
+    accounts = {}
+    if account_ids:
+        accounts = {
+            row.id: row
+            for row in (
+                await db.execute(select(Account).where(Account.id.in_(account_ids)))
+            ).scalars()
+        }
+    proxies = {}
+    if proxy_ids:
+        proxies = {
+            row.id: row
+            for row in (
+                await db.execute(select(ProxyProfile).where(ProxyProfile.id.in_(proxy_ids)))
+            ).scalars()
+        }
+    owners = {}
+    owner_ids = {ws.owner_account_id for ws in workspaces.values() if ws.owner_account_id}
+    missing_owner_ids = [oid for oid in owner_ids if oid not in accounts]
+    if missing_owner_ids:
+        for row in (await db.execute(select(Account).where(Account.id.in_(missing_owner_ids)))).scalars():
+            owners[row.id] = row
+    items = []
+    for row in rows:
+        workspace = workspaces.get(row.workspace_id) if row.workspace_id else None
+        account = accounts.get(row.account_id) if row.account_id else None
+        proxy = proxies.get(row.resolved_proxy_profile_id) if row.resolved_proxy_profile_id else None
+        owner = None
+        if workspace and workspace.owner_account_id:
+            owner = accounts.get(workspace.owner_account_id) or owners.get(workspace.owner_account_id)
+        workspace_name = None
+        if workspace is not None:
+            workspace_name = resolve_display_name(workspace, owner_email=owner.email if owner else None)["display_name"]
+        proxy_label = None
+        if proxy is not None:
+            proxy_label = proxy.name or f"{proxy.host}:{proxy.port}"
+        items.append(
+            serialize_operation(
+                row,
+                workspace_name=workspace_name,
+                account_email=account.email if account else None,
+                proxy_label=proxy_label,
+            )
+        )
+    return {
+        "items": items,
+        "page": filtered["page"],
+        "page_size": filtered["page_size"],
+        "total": filtered["total"],
+        "has_more": filtered["has_more"],
+        "facets": filtered["facets"],
+        "next_cursor": None,
+        "range": {
+            "date_from": isoformat(parsed_from) if parsed_from else None,
+            "date_to": isoformat(parsed_to) if parsed_to else None,
+            "defaulted_to_last_7_days": not any([q, state, op_type, source, workspace_id, account_id, date_from, date_to, include_archived, archived_only]),
+        },
+    }
 
 
 async def phones(db: AsyncSession) -> dict[str, Any]:
@@ -253,8 +394,22 @@ async def hme(db: AsyncSession) -> dict[str, Any]:
 
 async def proxies(db: AsyncSession) -> dict[str, Any]:
     # GET stays read-only. Use POST /api/resources/proxies/repair for backfill.
+    from collections import Counter
+
+    from sqlalchemy import select
+
+    from app.persistence.models.identity import Account
+
     rows = await proxy_profile_service.list_profiles(db)
-    return {"items": [proxy_profile_service.serialize(row) for row in rows], "next_cursor": None}
+    counts = Counter()
+    bound = list((await db.execute(select(Account.proxy_profile_id).where(Account.proxy_profile_id.is_not(None)))).all())
+    for (profile_id,) in bound:
+        if profile_id:
+            counts[int(profile_id)] += 1
+    return {
+        "items": [proxy_profile_service.serialize(row, binding_count=int(counts.get(row.id, 0))) for row in rows],
+        "next_cursor": None,
+    }
 
 
 async def settings_view(db: AsyncSession) -> dict[str, Any]:

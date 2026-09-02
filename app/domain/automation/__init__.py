@@ -14,6 +14,8 @@ OPERATION_TYPES = (
     "hme_label_retry",
     "workspace_sync",
     "sub2api_sync",
+    "sub2api_reconcile",
+    "sub2api_push",
     "proxy_check",
     "free_register",
     "reregister",

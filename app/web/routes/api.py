@@ -23,12 +23,17 @@ from app.web.schemas.resources import (
     AccountProxyPatch,
     KickRequest,
     OnboardRequest,
+    OperationArchiveRequest,
+    OperationBulkArchiveRequest,
     PhoneImportRequest,
     PhoneStatusPatch,
     ProxyCreateRequest,
     ProxyPatchRequest,
     RevokeInviteRequest,
     RotateRequest,
+    Sub2ApiPushRequest,
+    WorkspaceLinkMemberRequest,
+    WorkspaceNamePatch,
 )
 from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
 from app.web.schemas.workspaces import CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
@@ -156,6 +161,46 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
+    @router.patch("/workspaces/{workspace_id}/name")
+    async def patch_workspace_name(
+        workspace_id: int,
+        payload: WorkspaceNamePatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.update_workspace_display_name(db, workspace_id, payload.custom_name)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "name update failed")
+        return result
+
+    @router.post("/workspaces/{workspace_id}/members/link")
+    async def link_workspace_member(
+        workspace_id: int,
+        payload: WorkspaceLinkMemberRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.link_remote_only_member(
+            db,
+            workspace_id,
+            email=payload.email,
+            account_id=payload.account_id,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "link failed")
+        return result
+
+    @router.post("/workspaces/repair-names")
+    async def repair_workspace_names_route(
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        return await console_actions.repair_workspace_names(db)
+
     @router.get("/accounts")
     async def accounts(
         _: dict = Depends(require_admin),
@@ -215,9 +260,41 @@ def build_api_router(get_db) -> APIRouter:
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
-        result = await console_actions.account_sub2api_sync(db, account_id)
+        # Compatibility alias: old sync is reconcile-only.
+        result = await console_actions.account_sub2api_reconcile(db, account_id)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+    @router.post("/accounts/{account_id}/sub2api/reconcile")
+    async def reconcile_account_sub2api(
+        account_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.account_sub2api_reconcile(db, account_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+    @router.post("/accounts/{account_id}/sub2api/push")
+    async def push_account_sub2api(
+        account_id: int,
+        payload: Sub2ApiPushRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.account_sub2api_push(
+            db,
+            account_id,
+            group_ids=payload.group_ids,
+            name=payload.name,
+            schedulable=payload.schedulable,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") == "not_eligible":
+            raise HTTPException(status_code=400, detail=result.get("error") or "not eligible")
         return _accepted(result)
 
 
@@ -246,8 +323,37 @@ def build_api_router(get_db) -> APIRouter:
         return await identity_audit_query(db)
 
     @router.get("/operations")
-    async def operations(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-        return await console_query.operations(db)
+    async def operations(
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+        q: str = Query(""),
+        state: str = Query(""),
+        type: str = Query(""),
+        source: str = Query(""),
+        workspace_id: int | None = Query(None),
+        account_id: int | None = Query(None),
+        date_from: str | None = Query(None),
+        date_to: str | None = Query(None),
+        include_archived: bool = Query(False),
+        archived_only: bool = Query(False),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=100),
+    ) -> dict:
+        return await console_query.operations(
+            db,
+            q=q,
+            state=state,
+            op_type=type,
+            source=source,
+            workspace_id=workspace_id,
+            account_id=account_id,
+            date_from=date_from,
+            date_to=date_to,
+            include_archived=include_archived,
+            archived_only=archived_only,
+            page=page,
+            page_size=page_size,
+        )
 
     @router.get("/operations/{public_id}")
     async def operation_detail(
@@ -285,6 +391,44 @@ def build_api_router(get_db) -> APIRouter:
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result.get("error") or "retry forbidden")
         return _accepted(result)
+
+    @router.patch("/operations/{public_id}/archive")
+    async def operation_archive(
+        public_id: str,
+        payload: OperationArchiveRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.archive_operation(db, public_id, reason=payload.reason)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "archive failed")
+        return result
+
+    @router.patch("/operations/{public_id}/restore")
+    async def operation_restore(
+        public_id: str,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.restore_operation(db, public_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return result
+
+    @router.post("/operations/bulk-archive")
+    async def operation_bulk_archive(
+        payload: OperationBulkArchiveRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        return await console_actions.bulk_archive_operations(
+            db,
+            payload.public_ids,
+            reason=payload.reason,
+            only_terminal=payload.only_terminal,
+        )
 
     @router.get("/resources/phones")
     async def phones(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
@@ -386,7 +530,12 @@ def build_api_router(get_db) -> APIRouter:
         if not url:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="代理地址不能为空")
         name = str(payload.name or "").strip()
-        profile = await proxy_profile_service.upsert_from_url(db, url, name=name)
+        profile = await proxy_profile_service.upsert_from_url(
+            db,
+            url,
+            name=name,
+            name_source="user" if name else "auto",
+        )
         await db.commit()
         return {"ok": True, "item": proxy_profile_service.serialize(profile)}
 
@@ -401,7 +550,10 @@ def build_api_router(get_db) -> APIRouter:
         if profile is None:
             raise HTTPException(status_code=404, detail="proxy not found")
         if payload.name is not None:
-            profile.name = str(payload.name).strip() or profile.name
+            cleaned = str(payload.name).strip()
+            if cleaned:
+                profile.name = cleaned
+                profile.name_source = "user"
         if payload.status is not None:
             profile.status = payload.status
         profile.updated_at = utcnow()
@@ -425,7 +577,15 @@ def build_api_router(get_db) -> APIRouter:
 
     @router.post("/resources/proxies/repair")
     async def repair_proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-        return await console_actions.repair_proxy_profiles_from_accounts(db)
+        linked = await console_actions.repair_proxy_profiles_from_accounts(db)
+        names = await proxy_profile_service.repair_legacy_names(db)
+        await db.commit()
+        return {
+            "ok": True,
+            "linked": linked.get("linked", 0),
+            "renamed": names.get("changed", 0),
+            "skipped": names.get("skipped", 0),
+        }
 
     @router.get("/settings")
     async def settings_view(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:

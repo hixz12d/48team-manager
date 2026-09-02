@@ -36,6 +36,8 @@ class Operation(Base):
     log_json: Mapped[str | None] = mapped_column(Text)
     resolved_proxy: Mapped[str | None] = mapped_column(String(500))
     resolved_proxy_profile_id: Mapped[int | None] = mapped_column(Integer)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_reason: Mapped[str | None] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -55,6 +57,8 @@ class Operation(Base):
         Index("idx_operations_state_lease", "state", "lease_expires_at"),
         Index("idx_operations_email_created", "email", "created_at"),
         Index("idx_operations_type_state", "type", "state"),
+        Index("idx_operations_archived_created", "archived_at", "created_at"),
+        Index("idx_operations_workspace_created", "workspace_id", "created_at"),
     )
 
 

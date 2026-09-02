@@ -223,17 +223,26 @@ async def register_workspace(
     if not access_token:
         account.auth_state = AUTH_STATE_UNKNOWN
 
+    from app.domain.workspaces.names import apply_official_name, placeholder_name
+
     workspace = Workspace(
         official_workspace_id=workspace_id,
-        name=team_name or email_n,
+        name=None,
+        official_name=None,
+        custom_name=None,
+        name_source="placeholder",
         subscription_plan=None,
         owner_account_id=account.id,
         status=normalize_workspace_status("active"),
         seat_limit=None,
+        occupied_seats=None,
         source_team_id=None,
     )
     db.add(workspace)
     await db.flush()
+    apply_official_name(workspace, team_name, owner_email=email_n)
+    if not workspace.name:
+        workspace.name = placeholder_name(workspace)
 
     await ensure_membership(
         db,

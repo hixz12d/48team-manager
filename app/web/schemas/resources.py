@@ -58,3 +58,29 @@ class AccountProxyPatch(BaseModel):
 
 class PhoneStatusPatch(BaseModel):
     status: Literal["active", "disabled"]
+
+
+class Sub2ApiPushRequest(BaseModel):
+    group_ids: list[int] = Field(default_factory=list)
+    name: str | None = Field(default=None, max_length=255)
+    schedulable: bool | None = True
+    confirm_mixed_channel_risk: bool = False
+
+
+class OperationArchiveRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=120)
+
+
+class OperationBulkArchiveRequest(BaseModel):
+    public_ids: list[str] = Field(default_factory=list)
+    reason: str | None = Field(default=None, max_length=120)
+    only_terminal: bool = True
+
+
+class WorkspaceNamePatch(BaseModel):
+    custom_name: str | None = Field(default=None, max_length=255)
+
+
+class WorkspaceLinkMemberRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    account_id: int | None = None

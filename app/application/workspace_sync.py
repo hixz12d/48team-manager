@@ -196,6 +196,10 @@ class WorkspaceSyncService:
                     "invalid_item_count": members.get("invalid_item_count"),
                 },
             )
+            workspace.last_official_sync_state = "failed"
+            workspace.updated_at = __import__('app.core.time', fromlist=['utcnow']).utcnow()
+            if hasattr(workspace, 'last_official_sync_state'):
+                workspace.last_official_sync_state = "failed"
             await operation_store.finish(db, operation, result)
             await db.commit()
             return {"ok": False, "operation_id": operation.public_id, **result}
@@ -240,6 +244,8 @@ class WorkspaceSyncService:
                     "invalid_item_count": invites.get("invalid_item_count"),
                 },
             )
+            if hasattr(workspace, 'last_official_sync_state'):
+                workspace.last_official_sync_state = "failed"
             await operation_store.finish(db, operation, result)
             await db.commit()
             return {"ok": False, "operation_id": operation.public_id, **result}
@@ -285,32 +291,69 @@ class WorkspaceSyncService:
                 )
             )
 
-        seat_limit = (members.get("seat_metadata") or {}).get("seat_limit") or (invites.get("seat_metadata") or {}).get("seat_limit")
+        seat_meta = dict(members.get("seat_metadata") or {})
+        invite_meta = dict(invites.get("seat_metadata") or {})
+        seat_limit = seat_meta.get("seat_limit") if seat_meta.get("seat_limit") is not None else invite_meta.get("seat_limit")
+        occupied_seats = seat_meta.get("occupied_seats") if seat_meta.get("occupied_seats") is not None else invite_meta.get("occupied_seats")
         if seat_limit is not None:
             workspace.seat_limit = seat_limit
+        if occupied_seats is not None:
+            workspace.occupied_seats = occupied_seats
         workspace.last_official_sync_at = stamp
+        workspace.last_official_sync_state = "fresh"
         workspace.updated_at = stamp
         workspace.version = int(workspace.version or 1) + 1
 
-        joined = sum(1 for row in remote_rows.values() if row.get("state") == "joined")
+        # Best-effort official name refresh; never fail member sync for name misses.
+        try:
+            from app.domain.workspaces.names import apply_official_name, extract_official_title
+
+            title = None
+            for source in (members_raw, invites_raw):
+                if isinstance(source, dict):
+                    title = extract_official_title(source) or extract_official_title(source.get("seat_metadata") or {})
+                    if title:
+                        break
+            if title:
+                apply_official_name(workspace, title, owner_email=owner.email if owner else None, synced_at=stamp)
+        except Exception:
+            pass
+
+        joined_people_total = sum(1 for row in remote_rows.values() if row.get("state") == "joined")
+        owner_count = sum(
+            1
+            for row in remote_rows.values()
+            if row.get("state") == "joined"
+            and (is_owner_role(row.get("role")) or row.get("email") in self._owner_emails(workspace, owner))
+        )
+        joined_member_count = max(0, joined_people_total - owner_count)
         invited = sum(1 for row in remote_rows.values() if row.get("state") == "invited")
         result = {
             "success": True,
             "ok": True,
             "status": "success",
-            "message": f"同步完成：官方已加入 {joined}、待邀请 {invited}；本地受管 {reconciliation['managed']}；仅官方 {reconciliation['remote_only']}",
+            "outcome": "snapshot_updated",
+            "message": (
+                f"同步完成：官方已加入 {joined_people_total} 人（Owner {owner_count} / 子成员 {joined_member_count}），"
+                f"待邀请 {invited}；本地受管 {reconciliation['managed']}；"
+                f"官方未纳入本地管理 {reconciliation['remote_only']}"
+            ),
             "workspace_id": workspace.id,
             "reported_total": members.get("reported_total"),
             "raw_item_count": int(members.get("raw_item_count") or 0) + int(invites.get("raw_item_count") or 0),
             "parsed_item_count": len(remote_rows),
             "invalid_item_count": int(members.get("invalid_item_count") or 0) + int(invites.get("invalid_item_count") or 0),
-            "joined": joined,
+            "joined": joined_people_total,
+            "joined_people_total": joined_people_total,
+            "owner_count": owner_count,
+            "joined_member_count": joined_member_count,
             "invited": invited,
             "managed": reconciliation["managed"],
             "matched": reconciliation["matched"],
             "remote_only": reconciliation["remote_only"],
             "local_only": reconciliation["local_only"],
             "seat_limit": workspace.seat_limit,
+            "occupied_seats": getattr(workspace, "occupied_seats", None),
             "last_official_sync_at": stamp.isoformat(),
             "sync_timestamp": stamp.isoformat(),
             "reconciliation": reconciliation["items"],

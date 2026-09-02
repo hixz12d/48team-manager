@@ -86,7 +86,18 @@
     hme_label_retry: "HME 标签重试",
     auth_probe: "授权探测",
     reconcile: "对账",
-    sub2api_sync: "Sub2API 同步",
+    sub2api_sync: "Sub2API 对账",
+    sub2api_reconcile: "Sub2API 对账",
+    sub2api_push: "Sub2API 推送",
+    remote_missing: "远端未找到",
+    not_eligible: "不适用",
+    not_synced: "尚未同步",
+    sync_failed: "同步失败",
+    needs_management: "待纳管",
+    membership_drift: "成员漂移",
+    full: "已满席",
+    snapshot_updated: "快照已更新",
+    verification_failed: "复读失败",
     proxy_check: "代理检测",
     free_register: "空闲号注册",
     reregister: "重注册",
@@ -241,8 +252,11 @@
   }
 
   function operationTone(result) {
+    if (result?.tone) return result.tone;
+    const outcome = result?.outcome || "";
     if (result?.partial || result?.status === "partial" || result?.status === "manual_required") return "warning";
-    if (result?.ok || result?.success) return "success";
+    if (["remote_missing", "not_eligible", "schema_mismatch", "verification_failed", "conflict"].includes(outcome)) return "warning";
+    if (result?.ok || result?.success) return outcome === "remote_missing" ? "warning" : "success";
     return "error";
   }
 
@@ -390,13 +404,47 @@
     return `${text.slice(0, 8)}…`;
   }
 
+
+  function membershipStatusLabel(status) {
+    const map = {
+      owner: "母号 / Owner",
+      managed: "已纳入本地管理",
+      remote_only: "官方已加入 · 未纳入本地管理",
+      local_only: "本地有记录 · 官方未找到",
+      invited: "已邀请 · 等待加入",
+      conflict: "身份冲突 · 需人工核对",
+    };
+    return map[status] || status || "—";
+  }
+
+  function workspaceOfficialSummary(item) {
+    const official = item.official || {};
+    if ((official.sync_state || item.last_sync == null) === "never" || (item.last_sync == null && official.joined_people_total == null && item.members == null)) {
+      return { main: "尚未同步", sub: "本地 " + String(item.managed?.count ?? item.managed_count ?? 0) };
+    }
+    if (official.sync_state === "failed" || item.health === "sync_failed") {
+      return { main: "同步失败", sub: "数据可能过期" };
+    }
+    const people = official.joined_people_total ?? item.members;
+    const children = official.joined_member_count;
+    let main = people == null ? "—" : `${people} 人`;
+    if (children != null) main += ` · ${children} 子成员`;
+    if (official.occupied_seats != null && official.seat_limit != null) {
+      main += ` · 席位 ${official.occupied_seats}/${official.seat_limit}`;
+    }
+    const managed = item.managed?.count ?? item.managed_count ?? 0;
+    const pending = item.reconciliation?.actionable_count ?? item.reconciliation?.remote_only ?? 0;
+    const sub = pending ? `本地 ${managed} · ${pending} 位待纳管` : `本地 ${managed}`;
+    return { main, sub };
+  }
+
   function workspaceRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "workspace", item);
-    const seats = item.seat_limit ? `${item.members} / ${item.seat_limit}` : String(item.members ?? "—");
-    cell(row, twoLine(item.name, shortId(item.official_workspace_id)));
+    const summary = workspaceOfficialSummary(item);
+    cell(row, twoLine(item.display_name || item.name, shortId(item.official_workspace_id)));
     cell(row, item.owner_email);
-    cell(row, seats, "num");
+    cell(row, twoLine(summary.main, summary.sub), "num");
     cell(row, statusNode(item.health || item.status, labelOf(statusLabels, item.health || item.status)));
     cell(row, timeNode(item.last_sync));
     const actions = document.createElement("div");
@@ -447,8 +495,17 @@
     if (item.quota?.seven_day_used_percent == null || item.quota?.success === false) {
       return { id: "account.quota", label: "刷新额度", url: `/api/accounts/${item.id}/quota/probe` };
     }
-    if (["missing", "unbound", "none"].includes(item.sub2api)) {
-      return { id: "account.sub2api", label: "同步 Sub2API", url: `/api/accounts/${item.id}/sub2api/sync` };
+    const publish = item.sub2api_publish || {};
+    if (publish.eligible !== false) {
+      if (["missing", "unbound", "none", "pending"].includes(item.sub2api)) {
+        return { id: "account.sub2api.push", label: "推送到 Sub2API", url: `/api/accounts/${item.id}/sub2api/push`, body: {} };
+      }
+      if (item.sub2api === "verified") {
+        return { id: "account.sub2api.push", label: "更新 Sub2API", url: `/api/accounts/${item.id}/sub2api/push`, body: {} };
+      }
+      if (item.sub2api === "conflict") {
+        return { id: "account.sub2api.reconcile", label: "处理冲突", url: `/api/accounts/${item.id}/sub2api/reconcile` };
+      }
     }
     return { id: "account.refresh", label: "刷新状态", url: `/api/accounts/${item.id}/refresh` };
   }
@@ -476,7 +533,7 @@
       event.stopPropagation();
       button.disabled = true;
       try {
-        const result = await postAction(`${primary.id}-${item.id}`, primary.url);
+        const result = await postAction(`${primary.id}-${item.id}`, primary.url, primary.body);
         await handleActionResult(result, { successMessage: result.message || (primary.label + "已完成") });
       } catch (error) {
         toast(friendlyError(error), "error");
@@ -492,11 +549,21 @@
   function operationRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "operation", item);
+    const checkWrap = document.createElement("div");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "operation-select";
+    check.dataset.publicId = item.id;
+    check.disabled = !["success", "partial", "failed", "cancelled", "manual_required"].includes(item.state || item.status) || Boolean(item.archived);
+    check.addEventListener("click", (event) => event.stopPropagation());
+    check.addEventListener("change", updateOperationsBulkButton);
+    checkWrap.append(check);
+    cell(row, checkWrap, "num");
     cell(row, statusNode(item.state || item.status, labelOf(statusLabels, item.state || item.status)));
-    cell(row, labelOf(statusLabels, item.operation));
-    cell(row, item.target || item.email);
-    cell(row, item.workspace || "—");
-    cell(row, item.current_step || "—");
+    cell(row, item.operation_label || labelOf(statusLabels, item.operation));
+    cell(row, twoLine(item.target_label || item.target || item.email || "—", item.outcome ? labelOf(statusLabels, item.outcome) : null));
+    cell(row, item.workspace_name || item.workspace || "—");
+    cell(row, item.business_step || (["success", "done"].includes(item.current_step) ? "已完成" : (item.current_step || "—")));
     cell(row, timeNode(item.updated || item.started));
     cell(row, menuButton("operation", item), "actions");
     return row;
@@ -757,7 +824,7 @@ function hmeRow(item) {
       health.forEach((item) => {
         const row = document.createElement("div");
         row.className = "list-row";
-        const seats = item.seat_limit ? `${item.members}/${item.seat_limit} 席` : `${item.members} 席`;
+        const seats = item.joined_people_total != null ? `${item.joined_people_total} 人 · ${item.joined_member_count ?? item.members ?? 0} 子成员` : (item.sync_state === "never" ? "尚未同步" : (item.members == null ? "尚未同步" : `${item.members} 子成员`));
         row.append(twoLine(item.name, seats), statusNode(item.health, labelOf(statusLabels, item.health)));
         list.append(row);
       });
@@ -849,15 +916,25 @@ function hmeRow(item) {
       const managedLines = managed.length
         ? managed.map((member) => [member.email, [labelOf(purposeLabels, member.purpose), labelOf(statusLabels, member.auth)].filter(Boolean).join(" · ")])
         : [["本地受管账号", "尚未纳入本地管理"]];
-      const diffLines = diffs.length
-        ? diffs.map((row) => [row.email, row.status === "remote_only" ? "仅官方" : (row.status === "local_only" ? "仅本地" : (row.status === "managed" ? "已托管" : (row.status === "invited" ? "待邀请" : row.status)))])
-        : [["差异", "暂无差异"]];
-      const seatText = item.last_sync == null && item.members == null ? "尚未同步" : (item.seat_limit ? `${item.members ?? 0} / ${item.seat_limit}` : String(item.members ?? "尚未同步"));
+      const actionable = (item.reconciliation?.actionable_items || diffs.filter((row) => ["remote_only", "local_only", "conflict"].includes(row.status)));
+      const diffLines = actionable.length
+        ? actionable.map((row) => [row.name || row.email, (row.status_label || membershipStatusLabel(row.status)) + (row.note ? ` · ${row.note}` : "")])
+        : [["差异", "官方与本地记录一致"]];
+      const official = item.official || {};
+      const peopleText = official.sync_state === "never" || (item.last_sync == null && official.joined_people_total == null)
+        ? "尚未同步"
+        : (official.joined_people_total == null ? "—" : `已加入 ${official.joined_people_total} 人（Owner ${official.owner_count ?? "—"} / 子成员 ${official.joined_member_count ?? "—"}）`);
+      const seatText = official.occupied_seats != null && official.seat_limit != null
+        ? `${official.occupied_seats} / ${official.seat_limit}`
+        : "无官方席位元数据";
       body.append(
         kvSection("运行摘要", [
           ["健康", labelOf(statusLabels, item.health || item.status)],
-          ["官方成员/席位", seatText],
-          ["本地受管", item.managed_count ?? managed.length],
+          ["显示名称", item.display_name || item.name],
+          ["名称来源", item.name_source || "—"],
+          ["官方已加入", peopleText],
+          ["席位", seatText],
+          ["本地受管", item.managed?.count ?? item.managed_count ?? managed.length],
           ["官方 Workspace ID", item.official_workspace_id],
           ["最近同步", item.last_sync || "尚未同步"],
         ]),
@@ -970,6 +1047,17 @@ function hmeRow(item) {
 
   const entityActions = {
     workspace: [
+      {
+        id: "workspace.rename",
+        label: "编辑显示名称",
+        run: async (item) => {
+          const next = window.prompt("工作区显示名称（留空清除自定义名）", item.custom_name || item.display_name || item.name || "");
+          if (next == null) return;
+          const result = await patchAction(`workspace-name-${item.id}`, `/api/workspaces/${item.id}/name`, { custom_name: next });
+          await handleActionResult(result, { successMessage: result.display_name ? `已更新为 ${result.display_name}` : "名称已更新" });
+        },
+      },
+
       { id: "workspace.view", label: "查看详情", run: (item, trigger) => openSheet("workspace", item, trigger) },
       {
         id: "workspace.sync",
@@ -1027,10 +1115,35 @@ function hmeRow(item) {
       },
       {
         id: "account.sub2api",
-        label: "同步 Sub2API",
+        label: "Sub2API",
+        visible: () => false,
+        run: async () => {},
+      },
+      {
+        id: "account.sub2api.push",
+        label: "推送到 Sub2API",
+        visible: (item) => (item.sub2api_publish?.eligible !== false) && ["missing", "unbound", "none", "pending"].includes(item.sub2api),
         run: async (item) => {
-          const result = await postAction(`account-sub2api-${item.id}`, `/api/accounts/${item.id}/sub2api/sync`);
-          await handleActionResult(result, { successMessage: result.message || "Sub2API 同步完成" });
+          const result = await postAction(`account-sub2api-push-${item.id}`, `/api/accounts/${item.id}/sub2api/push`, {});
+          await handleActionResult(result, { successMessage: result.message || "Sub2API 推送完成" });
+        },
+      },
+      {
+        id: "account.sub2api.update",
+        label: "更新 Sub2API",
+        visible: (item) => (item.sub2api_publish?.eligible !== false) && item.sub2api === "verified",
+        run: async (item) => {
+          const result = await postAction(`account-sub2api-push-${item.id}`, `/api/accounts/${item.id}/sub2api/push`, {});
+          await handleActionResult(result, { successMessage: result.message || "Sub2API 更新完成" });
+        },
+      },
+      {
+        id: "account.sub2api.reconcile",
+        label: "重新对账 Sub2API",
+        visible: (item) => item.sub2api_publish?.eligible !== false,
+        run: async (item) => {
+          const result = await postAction(`account-sub2api-reconcile-${item.id}`, `/api/accounts/${item.id}/sub2api/reconcile`);
+          await handleActionResult(result, { successMessage: result.message || "Sub2API 对账完成" });
         },
       },
       {
@@ -1111,6 +1224,27 @@ function hmeRow(item) {
         run: async (item) => {
           const result = await postAction(`operation-retry-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/retry`);
           await handleActionResult(result, { successMessage: result.message || "重试完成" });
+        },
+      },
+      {
+        id: "operation.archive",
+        label: "清除记录",
+        visible: (item) => !item.archived && ["success", "partial", "failed", "cancelled", "manual_required"].includes(item.state || item.status),
+        run: async (item) => {
+          if (!confirmDanger(`确认清除任务 ${item.id}？记录会软归档，可在“已清除”恢复。`)) return;
+          const result = await patchAction(`operation-archive-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/archive`, { reason: "manual_clear" });
+          toast(result.ok ? "已清除记录" : (result.error || "清除失败"), result.ok ? "success" : "error");
+          await bootPage();
+        },
+      },
+      {
+        id: "operation.restore",
+        label: "恢复记录",
+        visible: (item) => Boolean(item.archived),
+        run: async (item) => {
+          const result = await patchAction(`operation-restore-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/restore`, {});
+          toast(result.ok ? "已恢复记录" : (result.error || "恢复失败"), result.ok ? "success" : "error");
+          await bootPage();
         },
       },
     ],
@@ -2047,15 +2181,175 @@ function openRegister(trigger) {
     paintList("account");
   }
 
+  function operationsQueryFromUI() {
+    const params = currentQuery();
+    const q = document.getElementById("operations-search")?.value || params.get("q") || "";
+    const state = document.getElementById("operations-state")?.value || params.get("state") || "";
+    const type = document.getElementById("operations-type")?.value || params.get("type") || "";
+    const source = document.getElementById("operations-source")?.value || params.get("source") || "";
+    const range = document.getElementById("operations-range")?.value || params.get("range") || "7d";
+    const archivedOnly = document.getElementById("operations-archived-only")?.checked || params.get("archived_only") === "1";
+    const page = Number(params.get("page") || 1);
+    const pageSize = Number(document.getElementById("operations-page-size")?.value || params.get("page_size") || 50);
+    const query = new URLSearchParams();
+    if (q) query.set("q", q);
+    if (state) query.set("state", state);
+    if (type) query.set("type", type);
+    if (source) query.set("source", source);
+    if (range === "today") query.set("date_from", "today");
+    else if (range === "30d") query.set("date_from", "30d");
+    else if (range === "all") query.delete("date_from");
+    else query.set("date_from", "7d");
+    if (archivedOnly) {
+      query.set("archived_only", "true");
+      query.set("include_archived", "true");
+    }
+    query.set("page", String(page || 1));
+    query.set("page_size", String(pageSize || 50));
+    return query;
+  }
+
+  function syncOperationsUrl(query) {
+    const next = currentQuery();
+    ["q", "state", "type", "source", "date_from", "date_to", "archived_only", "include_archived", "page", "page_size", "range"].forEach((key) => next.delete(key));
+    query.forEach((value, key) => next.set(key, value));
+    const range = document.getElementById("operations-range")?.value;
+    if (range) next.set("range", range);
+    writeQuery(next);
+  }
+
+  function updateOperationsBulkButton() {
+    const button = document.getElementById("operations-bulk-archive");
+    if (!button) return;
+    const selected = Array.from(document.querySelectorAll(".operation-select:checked"));
+    button.hidden = selected.length === 0;
+    button.textContent = selected.length ? `清除所选（${selected.length}）` : "清除所选";
+  }
+
   async function bootOperations() {
-    const payload = await fetchEntity("operation-list", "/api/operations");
+    const search = document.getElementById("operations-search");
+    const state = document.getElementById("operations-state");
+    const type = document.getElementById("operations-type");
+    const source = document.getElementById("operations-source");
+    const range = document.getElementById("operations-range");
+    const archivedOnly = document.getElementById("operations-archived-only");
+    const pageSize = document.getElementById("operations-page-size");
+    const params = currentQuery();
+    if (search && params.get("q")) search.value = params.get("q");
+    if (state && params.get("state")) state.value = params.get("state");
+    if (type && params.get("type")) type.value = params.get("type");
+    if (source && params.get("source")) source.value = params.get("source");
+    if (range && params.get("range")) range.value = params.get("range");
+    if (archivedOnly) archivedOnly.checked = params.get("archived_only") === "1" || params.get("archived_only") === "true";
+    if (pageSize && params.get("page_size")) pageSize.value = params.get("page_size");
+
+    if (search && !search.dataset.bound) {
+      search.dataset.bound = "1";
+      let timer = null;
+      search.addEventListener("input", () => {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          const next = currentQuery();
+          next.set("page", "1");
+          writeQuery(next);
+          bootOperations();
+        }, 250);
+      });
+    }
+    [state, type, source, range, archivedOnly, pageSize].forEach((node) => {
+      if (!node || node.dataset.bound) return;
+      node.dataset.bound = "1";
+      node.addEventListener("change", () => {
+        const next = currentQuery();
+        next.set("page", "1");
+        writeQuery(next);
+        bootOperations();
+      });
+    });
+    const clearBtn = document.getElementById("operations-clear-filters");
+    if (clearBtn && !clearBtn.dataset.bound) {
+      clearBtn.dataset.bound = "1";
+      clearBtn.addEventListener("click", () => {
+        if (search) search.value = "";
+        if (state) state.value = "";
+        if (type) type.value = "";
+        if (source) source.value = "";
+        if (range) range.value = "7d";
+        if (archivedOnly) archivedOnly.checked = false;
+        const next = currentQuery();
+        ["q", "state", "type", "source", "date_from", "date_to", "archived_only", "include_archived", "page"].forEach((k) => next.delete(k));
+        next.set("range", "7d");
+        next.set("page", "1");
+        writeQuery(next);
+        bootOperations();
+      });
+    }
+    const bulk = document.getElementById("operations-bulk-archive");
+    if (bulk && !bulk.dataset.bound) {
+      bulk.dataset.bound = "1";
+      bulk.addEventListener("click", async () => {
+        const ids = Array.from(document.querySelectorAll(".operation-select:checked")).map((node) => node.dataset.publicId).filter(Boolean);
+        if (!ids.length) return;
+        if (!confirmDanger(`确认清除当前选中的 ${ids.length} 条已完成任务？`)) return;
+        const result = await postAction("operations-bulk-archive", "/api/operations/bulk-archive", { public_ids: ids, reason: "bulk_clear" });
+        toast(result.ok ? `已清除 ${result.count || ids.length} 条` : (result.error || "清除失败"), result.ok ? "success" : "error");
+        await bootOperations();
+      });
+    }
+    const selectPage = document.getElementById("operations-select-page");
+    if (selectPage && !selectPage.dataset.bound) {
+      selectPage.dataset.bound = "1";
+      selectPage.addEventListener("change", () => {
+        document.querySelectorAll(".operation-select").forEach((node) => {
+          if (!node.disabled) node.checked = selectPage.checked;
+        });
+        updateOperationsBulkButton();
+      });
+    }
+    const prev = document.getElementById("operations-prev");
+    const nextBtn = document.getElementById("operations-next");
+    if (prev && !prev.dataset.bound) {
+      prev.dataset.bound = "1";
+      prev.addEventListener("click", () => {
+        const next = currentQuery();
+        const page = Math.max(1, Number(next.get("page") || 1) - 1);
+        next.set("page", String(page));
+        writeQuery(next);
+        bootOperations();
+      });
+    }
+    if (nextBtn && !nextBtn.dataset.bound) {
+      nextBtn.dataset.bound = "1";
+      nextBtn.addEventListener("click", () => {
+        const next = currentQuery();
+        const page = Math.max(1, Number(next.get("page") || 1) + 1);
+        next.set("page", String(page));
+        writeQuery(next);
+        bootOperations();
+      });
+    }
+
+    const query = operationsQueryFromUI();
+    syncOperationsUrl(query);
+    const payload = await fetchEntity("operation-list", `/api/operations?${query.toString()}`);
     renderRows(
       "operations-body",
       payload.items || [],
-      7,
+      8,
       operationRow,
-      emptyState("还没有任务", "创建额度刷新、重新授权或拉人后会显示在这里。")
+      emptyState("没有符合筛选的任务", "调整筛选，或先创建额度刷新、同步、推送任务。")
     );
+    const count = document.getElementById("operations-count");
+    if (count) {
+      const total = payload.total ?? (payload.items || []).length;
+      count.textContent = `共 ${total} 条` + (payload.range?.defaulted_to_last_7_days ? " · 默认最近 7 天" : "");
+    }
+    const pageLabel = document.getElementById("operations-page-label");
+    if (pageLabel) pageLabel.textContent = `第 ${payload.page || 1} 页` + (payload.has_more ? " · 还有更多" : "");
+    if (prev) prev.disabled = Number(payload.page || 1) <= 1;
+    if (nextBtn) nextBtn.disabled = !payload.has_more;
+    if (selectPage) selectPage.checked = false;
+    updateOperationsBulkButton();
     const op = currentQuery().get("op");
     if (op) await openOperationById(op);
   }

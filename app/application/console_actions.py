@@ -34,7 +34,7 @@ from app.persistence.models.identity import Account, Workspace
 from app.persistence.models.operations import OperationStep
 from app.persistence.models.resources import HmeAliasLease, ProxyProfile
 
-SAFE_RETRY_TYPES = {"quota_probe", "auth_probe", "proxy_check", "workspace_sync", "hme_reconcile", "sub2api_sync"}
+SAFE_RETRY_TYPES = {"quota_probe", "auth_probe", "proxy_check", "workspace_sync", "hme_reconcile", "sub2api_sync", "sub2api_reconcile", "sub2api_push"}
 UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free", "kick_member", "revoke_invite"}
 
 
@@ -144,8 +144,14 @@ async def _dispatch_retry(db: AsyncSession, row) -> dict[str, Any]:
         return await account_auth_probe(db, int(row.account_id))
     if op_type == "quota_probe" and row.account_id:
         return await account_quota_probe(db, int(row.account_id))
-    if op_type == "sub2api_sync" and row.account_id:
-        return await account_sub2api_sync(db, int(row.account_id))
+    if op_type in {"sub2api_sync", "sub2api_reconcile"} and row.account_id:
+        from app.application.sub2api_publish import account_sub2api_reconcile
+
+        return await account_sub2api_reconcile(db, int(row.account_id))
+    if op_type == "sub2api_push" and row.account_id:
+        from app.application.sub2api_publish import account_sub2api_push
+
+        return await account_sub2api_push(db, int(row.account_id))
     if op_type == "proxy_check" and row.resolved_proxy_profile_id:
         from app.application.resources.proxy_probe import proxy_probe_service
 
@@ -255,7 +261,9 @@ async def repair_proxy_profiles_from_accounts(db: AsyncSession) -> dict[str, Any
             profile = await proxy_profile_service.upsert_from_url(
                 db,
                 str(account.proxy),
-                name=f"母号 {account.email}" if account.email else "",
+                name="",
+                name_source="auto",
+                bound_account=account,
             )
         except ValueError:
             continue
@@ -346,34 +354,28 @@ async def account_reauth(db: AsyncSession, account_id: int) -> dict[str, Any]:
 
 
 async def account_sub2api_sync(db: AsyncSession, account_id: int) -> dict[str, Any]:
-    account = await db.get(Account, int(account_id))
-    if account is None:
-        return {"ok": False, "error": "account not found", "error_code": "not_found"}
-    operation = await operation_store.create(
-        db,
-        op_type="sub2api_sync",
-        account_id=account.id,
-        email=account.email,
-        input_payload={"account_id": account.id},
-    )
-    remotes = await sub2api_client.list_status_accounts(db)
-    report = await verify_bindings(db, remotes)
-    bindings = report.get("bindings") or []
-    own = next((item for item in bindings if item.get("local_account_id") == account.id), None)
-    payload = {
-        "success": True,
-        "status": "success",
-        "account_id": account.id,
-        "email": account.email,
-        "binding": own,
-        "binding_state": (own or {}).get("binding_state") or (own or {}).get("state"),
-        "remote_count": len(remotes or []),
-        "matched": own is not None,
-    }
-    await operation_store.mark_step(db, operation, "sub2api_sync", state="success", result=payload)
-    await operation_store.finish(db, operation, payload)
-    await db.commit()
-    return {"ok": True, "operation_id": operation.public_id, **payload}
+    from app.application.sub2api_publish import account_sub2api_reconcile
+
+    return await account_sub2api_reconcile(db, account_id)
+
+
+async def account_sub2api_reconcile(db: AsyncSession, account_id: int) -> dict[str, Any]:
+    from app.application.sub2api_publish import account_sub2api_reconcile as _reconcile
+
+    return await _reconcile(db, account_id)
+
+
+async def account_sub2api_push(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    group_ids: list[int] | None = None,
+    name: str | None = None,
+    schedulable: bool | None = True,
+) -> dict[str, Any]:
+    from app.application.sub2api_publish import account_sub2api_push as _push
+
+    return await _push(db, account_id, group_ids=group_ids, name=name, schedulable=schedulable)
 
 
 async def account_refresh(db: AsyncSession, account_id: int) -> dict[str, Any]:
@@ -681,7 +683,16 @@ async def update_account_proxy(
             return {"ok": False, "error": str(exc), "error_code": "invalid_proxy"}
         if not url:
             return {"ok": False, "error": "proxy required", "error_code": "proxy_required"}
-        profile = await proxy_profile_service.upsert_from_url(db, url, name=f"mother-{account.id}")
+        from app.domain.resources.proxy_names import default_name_for_account, NAME_SOURCE_AUTO
+
+        auto_name = default_name_for_account(purpose=account.local_purpose, email=account.email)
+        profile = await proxy_profile_service.upsert_from_url(
+            db,
+            url,
+            name=auto_name,
+            name_source=NAME_SOURCE_AUTO,
+            bound_account=account,
+        )
         account.proxy = url
         account.proxy_profile_id = profile.id
 
@@ -709,3 +720,14 @@ async def reset_phone_cooldown(db: AsyncSession, phone_id: int) -> dict[str, Any
 
 async def proxy_bindings(db: AsyncSession, proxy_id: int) -> dict[str, Any]:
     return await proxy_profile_service.list_bindings(db, proxy_id)
+
+
+# Re-export maintenance helpers so routes can keep importing console_actions.
+from app.application.console_maintenance import (  # noqa: E402
+    archive_operation,
+    bulk_archive_operations,
+    link_remote_only_member,
+    repair_workspace_names,
+    restore_operation,
+    update_workspace_display_name,
+)

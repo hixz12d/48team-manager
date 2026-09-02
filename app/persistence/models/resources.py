@@ -102,6 +102,7 @@ class ProxyProfile(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str | None] = mapped_column(String(120))
+    name_source: Mapped[str] = mapped_column(String(20), default="auto", nullable=False)
     scheme: Mapped[str] = mapped_column(String(20), nullable=False)
     host: Mapped[str] = mapped_column(String(255), nullable=False)
     port: Mapped[int] = mapped_column(Integer, nullable=False)

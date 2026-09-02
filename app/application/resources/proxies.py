@@ -22,10 +22,11 @@ def proxy_fingerprint(url: str) -> str:
 
 
 class ProxyProfileService:
-    def serialize(self, row: ProxyProfile) -> dict[str, Any]:
+    def serialize(self, row: ProxyProfile, *, binding_count: int | None = None) -> dict[str, Any]:
         return {
             "id": row.id,
             "name": row.name or "",
+            "name_source": getattr(row, "name_source", None) or "auto",
             "scheme": row.scheme,
             "host": row.host,
             "port": row.port,
@@ -38,6 +39,7 @@ class ProxyProfileService:
             "latency_ms": getattr(row, "latency_ms", None),
             "last_error": getattr(row, "last_error", None) or "",
             "failure_count": int(row.failure_count or 0),
+            "binding_count": binding_count,
             "url": mask_proxy_url(self.compose(row)),
         }
 
@@ -63,16 +65,68 @@ class ProxyProfileService:
             password=password,
         )
 
-    async def upsert_from_url(self, session: AsyncSession, url: str, *, name: str = "") -> ProxyProfile:
+    async def upsert_from_url(
+        self,
+        session: AsyncSession,
+        url: str,
+        *,
+        name: str = "",
+        name_source: str = "auto",
+        bound_account: Account | None = None,
+    ) -> ProxyProfile:
+        from app.domain.resources.proxy_names import (
+            NAME_SOURCE_AUTO,
+            NAME_SOURCE_USER,
+            default_name_for_account,
+            host_port_label,
+            is_legacy_auto_name,
+            name_for_bindings,
+        )
+
         parts = split_proxy_url(url)
         fingerprint = proxy_fingerprint(parts["url"])
         existing = await session.scalar(select(ProxyProfile).where(ProxyProfile.url_fingerprint == fingerprint))
+        wanted_source = str(name_source or NAME_SOURCE_AUTO).strip().lower() or NAME_SOURCE_AUTO
+        if wanted_source not in {NAME_SOURCE_AUTO, NAME_SOURCE_USER}:
+            wanted_source = NAME_SOURCE_AUTO
         if existing:
+            current_source = str(getattr(existing, "name_source", None) or NAME_SOURCE_AUTO).strip().lower() or NAME_SOURCE_AUTO
+            if wanted_source == NAME_SOURCE_USER and name:
+                existing.name = name
+                existing.name_source = NAME_SOURCE_USER
+                existing.updated_at = utcnow()
+            elif current_source != NAME_SOURCE_USER:
+                # Refresh auto name from current bindings / provided account.
+                bindings = list(
+                    (
+                        await session.execute(
+                            select(Account).where(Account.proxy_profile_id == existing.id).order_by(Account.id.asc())
+                        )
+                    ).scalars()
+                )
+                if bound_account is not None and all(row.id != bound_account.id for row in bindings):
+                    bindings = [*bindings, bound_account]
+                if bindings:
+                    existing.name = name_for_bindings(host=existing.host, port=existing.port, bindings=bindings)
+                elif name:
+                    existing.name = name
+                elif is_legacy_auto_name(existing.name):
+                    existing.name = host_port_label(existing.host, existing.port)
+                existing.name_source = NAME_SOURCE_AUTO
+                existing.updated_at = utcnow()
             return existing
         cipher = token_cipher()
         now = utcnow()
+        if not name and bound_account is not None:
+            name = default_name_for_account(
+                purpose=bound_account.local_purpose,
+                email=bound_account.email,
+                host=parts["host"],
+                port=parts["port"],
+            )
         row = ProxyProfile(
             name=name or f"{parts['host']}:{parts['port']}",
+            name_source=wanted_source if name else NAME_SOURCE_AUTO,
             scheme=parts["scheme"],
             host=parts["host"],
             port=parts["port"],
@@ -161,10 +215,39 @@ class ProxyProfileService:
         ]
         return {
             "ok": True,
-            "proxy": self.serialize(profile),
+            "proxy": self.serialize(profile, binding_count=len(items)),
             "items": items,
             "count": len(items),
         }
+
+    async def repair_legacy_names(self, session: AsyncSession) -> dict[str, Any]:
+        from app.domain.resources.proxy_names import NAME_SOURCE_AUTO, is_legacy_auto_name, name_for_bindings
+
+        rows = await self.list_profiles(session)
+        changed = 0
+        skipped = 0
+        for profile in rows:
+            source = str(getattr(profile, "name_source", None) or NAME_SOURCE_AUTO).strip().lower()
+            if source == "user":
+                skipped += 1
+                continue
+            if not is_legacy_auto_name(profile.name):
+                skipped += 1
+                continue
+            bindings = list(
+                (
+                    await session.execute(
+                        select(Account).where(Account.proxy_profile_id == profile.id).order_by(Account.id.asc())
+                    )
+                ).scalars()
+            )
+            profile.name = name_for_bindings(host=profile.host, port=profile.port, bindings=bindings)
+            profile.name_source = NAME_SOURCE_AUTO
+            profile.updated_at = utcnow()
+            changed += 1
+        if changed:
+            await session.flush()
+        return {"ok": True, "changed": changed, "skipped": skipped}
 
 
 

@@ -414,5 +414,40 @@ class Sub2ApiClient:
             await client.aclose()
         return {"deleted": deleted, "failed": failed}
 
+    async def find_account_by_email(self, db: AsyncSession, email: str, cfg: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        target = normalize_email(email)
+        if not target:
+            return None
+        accounts = await self.list_status_accounts(db, cfg)
+        for item in accounts:
+            if self.account_email(item) == target:
+                return item
+        return None
+
+    async def create_account(self, db: AsyncSession, payload: dict[str, Any]) -> dict[str, Any]:
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            response = await client.post("/api/v1/admin/accounts", headers=headers, json=payload)
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+        finally:
+            await client.aclose()
+        return data if isinstance(data, dict) else {}
+
+    async def update_account(self, db: AsyncSession, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        if not account_id:
+            return {}
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            response = await client.put(f"/api/v1/admin/accounts/{int(account_id)}", headers=headers, json=payload)
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+        finally:
+            await client.aclose()
+        return data if isinstance(data, dict) else {}
+
+    async def read_after_write(self, db: AsyncSession, account_id: int) -> dict[str, Any]:
+        return await self.get_account(db, account_id)
+
 
 sub2api_client = Sub2ApiClient()

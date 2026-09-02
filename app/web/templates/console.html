@@ -97,7 +97,7 @@
                 <tr>
                   <th scope="col">工作区</th>
                   <th scope="col">母号</th>
-                  <th scope="col" class="num">席位</th>
+                  <th scope="col" class="num">官方 / 本地</th>
                   <th scope="col">健康</th>
                   <th scope="col">最近同步</th>
                   <th scope="col" class="actions">操作</th>
@@ -143,21 +143,72 @@
         </section>
         {% elif page == 'operations' %}
         <section class="panel table-shell">
+          <div class="toolbar" id="operations-toolbar">
+            <input class="search" id="operations-search" placeholder="搜邮箱、任务 ID、类型" autocomplete="off">
+            <select class="filter" id="operations-state">
+              <option value="">全部状态</option>
+              <option value="running,queued,waiting">运行中</option>
+              <option value="success">完成</option>
+              <option value="partial">部分完成</option>
+              <option value="failed">失败</option>
+              <option value="manual_required">需人工</option>
+              <option value="cancelled">已取消</option>
+            </select>
+            <select class="filter" id="operations-type">
+              <option value="">全部类型</option>
+              <option value="workspace_sync">同步官方成员</option>
+              <option value="quota_probe">额度刷新</option>
+              <option value="auth_probe">授权探测</option>
+              <option value="sub2api_reconcile,sub2api_sync">Sub2API 对账</option>
+              <option value="sub2api_push">Sub2API 推送</option>
+              <option value="proxy_check">代理检测</option>
+              <option value="hme_reconcile">HME</option>
+              <option value="onboard">拉人</option>
+              <option value="rotate">轮转</option>
+            </select>
+            <select class="filter" id="operations-source">
+              <option value="">全部来源</option>
+              <option value="manual">手动</option>
+              <option value="scheduled">定时</option>
+              <option value="retry">重试</option>
+            </select>
+            <select class="filter" id="operations-range">
+              <option value="7d">最近 7 天</option>
+              <option value="today">今天</option>
+              <option value="30d">最近 30 天</option>
+              <option value="all">全部时间</option>
+            </select>
+            <label class="muted"><input type="checkbox" id="operations-archived-only"> 已清除</label>
+            <button type="button" class="button ghost" id="operations-clear-filters">清除筛选</button>
+            <button type="button" class="button ghost" id="operations-bulk-archive" hidden>清除所选</button>
+            <span class="toolbar-count muted" id="operations-count"></span>
+          </div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
                 <tr>
+                  <th scope="col" class="num"><input type="checkbox" id="operations-select-page" aria-label="全选当前页"></th>
                   <th scope="col">状态</th>
                   <th scope="col">类型</th>
                   <th scope="col">对象</th>
                   <th scope="col">工作区</th>
-                  <th scope="col">当前步骤</th>
+                  <th scope="col">业务步骤</th>
                   <th scope="col">更新时间</th>
                   <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="operations-body"><tr><td colspan="7" class="muted">正在加载任务…</td></tr></tbody>
+              <tbody id="operations-body"><tr><td colspan="8" class="muted">正在加载任务…</td></tr></tbody>
             </table>
+          </div>
+          <div class="toolbar" id="operations-pager">
+            <button type="button" class="button ghost" id="operations-prev">上一页</button>
+            <span class="muted" id="operations-page-label">第 1 页</span>
+            <button type="button" class="button ghost" id="operations-next">下一页</button>
+            <select class="filter" id="operations-page-size">
+              <option value="25">25 / 页</option>
+              <option value="50" selected>50 / 页</option>
+              <option value="100">100 / 页</option>
+            </select>
           </div>
         </section>
         {% elif page == 'phones' %}
