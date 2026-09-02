@@ -106,6 +106,15 @@ class RegisterWorkspaceTests(unittest.TestCase):
             accounts = {row["email"]: row for row in client.get("/api/accounts").json()["items"]}
             self.assertEqual(accounts["owner@icloud.com"]["purpose"], "mother")
             self.assertTrue(accounts["owner@icloud.com"]["has_access_token"])
+            self.assertEqual(accounts["owner@icloud.com"]["proxy"], "set")
+            self.assertIsNotNone(accounts["owner@icloud.com"]["proxy_profile_id"])
+            self.assertTrue(str(accounts["owner@icloud.com"].get("proxy_url") or "").startswith("socks5"))
+            proxies = client.get("/api/resources/proxies").json()["items"]
+            self.assertEqual(len(proxies), 1)
+            self.assertEqual(proxies[0]["host"], "127.0.0.1")
+            self.assertEqual(proxies[0]["port"], 1080)
+            self.assertEqual(workspaces[0].get("owner_proxy_set"), True)
+            self.assertEqual(workspaces[0].get("member_accounts"), [])
             audit = client.get("/api/identity/audit").json()
             self.assertEqual(audit["counts"]["conflict"], 0)
 

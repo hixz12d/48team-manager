@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat
 from app.domain.identity import (
     AUDIT_CONFLICT,
@@ -163,6 +164,23 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             seat_limit=workspace.seat_limit,
             status=workspace.status,
         )
+        member_items = []
+        for row in seated:
+            account = accounts_by_id.get(row.account_id)
+            if account is None:
+                continue
+            member_items.append(
+                {
+                    "id": account.id,
+                    "email": account.email,
+                    "purpose": account.local_purpose,
+                    "official_role": row.official_role,
+                    "membership_state": row.membership_state,
+                    "auth": account.auth_state,
+                    "state": _account_state(account, findings_by_id.get(account.id)),
+                }
+            )
+        member_items.sort(key=lambda item: ((item.get("email") or "").lower(), item.get("id") or 0))
         items.append(
             {
                 "id": workspace.id,
@@ -170,7 +188,12 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "official_workspace_id": workspace.official_workspace_id,
                 "owner_email": owner.email if owner else None,
                 "owner_purpose": owner.local_purpose if owner else None,
+                "owner_auth": owner.auth_state if owner else None,
+                "owner_proxy": mask_proxy_url(owner.proxy) if owner and owner.proxy else None,
+                "owner_proxy_set": bool(owner and owner.proxy),
+                "proxy_profile_id": owner.proxy_profile_id if owner else None,
                 "members": len(seated),
+                "member_accounts": member_items,
                 "seat_limit": workspace.seat_limit,
                 "quota": None,
                 "rotation": "off",
@@ -243,6 +266,7 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
                 "auth": account.auth_state,
                 "sub2api": _binding_label(binding_rows),
                 "proxy": "set" if account.proxy else "none",
+                "proxy_url": mask_proxy_url(account.proxy) if account.proxy else None,
                 "proxy_profile_id": account.proxy_profile_id,
                 "state": state,
                 "identity": finding["result"] if finding else "unbound",

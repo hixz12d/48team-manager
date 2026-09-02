@@ -265,3 +265,37 @@ class ProxyFreezeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(again_id, profile_id)
         refreshed = await self.session.get(Operation, op.id)
         self.assertEqual(refreshed.resolved_proxy, "socks5h://127.0.0.1:1080")
+
+
+class ResourceApiTests(unittest.TestCase):
+    def test_phone_import_and_proxy_create_via_api(self):
+        import tempfile
+        from pathlib import Path
+
+        from tests.helpers import make_client
+
+        with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
+            client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
+            imported = client.post(
+                "/api/resources/phones/import",
+                json={"text": "+15551234567----https://api668.com/sms/by_key?key=abc\n# skip\nbad-line"},
+            )
+            self.assertEqual(imported.status_code, 200, imported.text)
+            body = imported.json()
+            self.assertEqual(body["imported"], 1)
+            self.assertGreaterEqual(body["skipped"], 1)
+            phones = client.get("/api/resources/phones").json()["items"]
+            self.assertEqual(len(phones), 1)
+            self.assertEqual(phones[0]["number"], "+15551234567")
+
+            created = client.post(
+                "/api/resources/proxies",
+                json={"url": "socks5://127.0.0.1:1080", "name": "lab"},
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            item = created.json()["item"]
+            self.assertEqual(item["name"], "lab")
+            self.assertEqual(item["host"], "127.0.0.1")
+            self.assertEqual(item["port"], 1080)
+            proxies = client.get("/api/resources/proxies").json()["items"]
+            self.assertEqual(len(proxies), 1)

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import ensure_membership
+from app.application.resources.proxies import proxy_profile_service
 from app.application.tokens import auth_service
 from app.core.jwt import jwt_parser
 from app.core.proxy import normalize_proxy_url
@@ -186,6 +187,15 @@ async def register_workspace(
     if existing_workspace is not None:
         raise RegisterWorkspaceError("这个 Workspace ID 已经登记过了", status_code=409)
 
+    proxy_profile_id = None
+    if proxy_value:
+        profile = await proxy_profile_service.upsert_from_url(
+            db,
+            proxy_value,
+            name=f"母号 {email_n}",
+        )
+        proxy_profile_id = profile.id
+
     account = Account(
         email=email_n,
         official_plan=normalize_official_plan(official_plan),
@@ -195,6 +205,7 @@ async def register_workspace(
         operational_state=normalize_operational_state("active"),
         local_purpose=LOCAL_PURPOSE_MOTHER,
         proxy=proxy_value,
+        proxy_profile_id=proxy_profile_id,
         password_encrypted=None,
         client_id=client,
     )

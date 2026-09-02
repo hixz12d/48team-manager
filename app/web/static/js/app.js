@@ -7,6 +7,8 @@
   const sheet = document.getElementById("entity-sheet");
   const menu = document.getElementById("action-menu");
   const registerSheet = document.getElementById("register-sheet");
+  const phoneImportSheet = document.getElementById("phone-import-sheet");
+  const proxyAddSheet = document.getElementById("proxy-add-sheet");
   const SECRET_MASK = "••••••";
   const pageCache = { items: [], kind: "" };
   let settingsBaseline = "";
@@ -541,7 +543,7 @@
           ["Official account ID", item.official_account_id],
           ["AT", item.has_access_token ? "已保存" : "未设置"],
           ["RT", item.has_refresh_token ? "已保存" : "未设置"],
-          ["代理", labelOf(statusLabels, item.proxy)],
+          ["代理", item.proxy_url || labelOf(statusLabels, item.proxy)],
           ["身份审计", item.identity],
           ["原因", (item.reasons || []).join("；")],
         ])
@@ -549,6 +551,15 @@
     } else if (kind === "workspace") {
       title.textContent = item.name;
       subtitle.textContent = item.owner_email || "";
+      const members = item.member_accounts || [];
+      const memberLines = members.length
+        ? members.map((member) => {
+            const role = member.official_role || labelOf(purposeLabels, member.purpose) || "member";
+            const state = labelOf(stateLabels, member.state) || member.state || "";
+            const auth = labelOf(statusLabels, member.auth) || member.auth || "";
+            return [member.email, [role, state, auth].filter(Boolean).join(" · ")];
+          })
+        : [["子号", "还没有子号。拉人或同步 membership 后会出现在这里。"]];
       body.append(
         kvSection("运行摘要", [
           ["健康", labelOf(statusLabels, item.health || item.status)],
@@ -556,7 +567,15 @@
           ["席位", item.seat_limit ? `${item.members} / ${item.seat_limit}` : item.members],
           ["官方 Workspace ID", item.official_workspace_id],
           ["最近同步", item.last_sync],
-        ])
+        ]),
+        kvSection("母号", [
+          ["邮箱", item.owner_email],
+          ["用途", labelOf(purposeLabels, item.owner_purpose)],
+          ["授权", labelOf(statusLabels, item.owner_auth)],
+          ["代理", item.owner_proxy || (item.owner_proxy_set ? "已设" : "未绑定")],
+          ["代理档案", item.proxy_profile_id || "—"],
+        ]),
+        kvSection(members.length ? `子号（${members.length}）` : "子号", memberLines)
       );
     } else if (kind === "operation") {
       title.textContent = labelOf(statusLabels, item.operation);
@@ -753,6 +772,102 @@
     registerSheet.hidden = true;
     overlayReturn?.focus?.();
     overlayReturn = null;
+  }
+
+  function setFormStatus(id, text, tone) {
+    const statusEl = document.getElementById(id);
+    if (!statusEl) return;
+    statusEl.hidden = !text;
+    statusEl.className = tone || "muted";
+    statusEl.textContent = text || "";
+  }
+
+  function openPhoneImport(trigger) {
+    if (!phoneImportSheet) return;
+    overlayReturn = trigger || document.querySelector("[data-open-phone-import]");
+    const form = document.getElementById("phone-import-form");
+    if (form) form.reset();
+    setFormStatus("phone-import-status", "", "muted");
+    phoneImportSheet.hidden = false;
+    form?.querySelector("[name='text']")?.focus();
+  }
+
+  function closePhoneImport() {
+    if (!phoneImportSheet || phoneImportSheet.hidden) return;
+    phoneImportSheet.hidden = true;
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  function openProxyAdd(trigger) {
+    if (!proxyAddSheet) return;
+    overlayReturn = trigger || document.querySelector("[data-open-proxy-add]");
+    const form = document.getElementById("proxy-add-form");
+    if (form) form.reset();
+    setFormStatus("proxy-add-status", "", "muted");
+    proxyAddSheet.hidden = false;
+    form?.querySelector("[name='url']")?.focus();
+  }
+
+  function closeProxyAdd() {
+    if (!proxyAddSheet || proxyAddSheet.hidden) return;
+    proxyAddSheet.hidden = true;
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  async function submitPhoneImport(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("#phone-import-submit");
+    if (button) button.disabled = true;
+    setFormStatus("phone-import-status", "正在导入…", "muted");
+    try {
+      const data = new FormData(form);
+      const result = await fetchEntity("phone-import", "/api/resources/phones/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ text: String(data.get("text") || "") }),
+      });
+      const imported = result.imported ?? 0;
+      const skipped = result.skipped ?? 0;
+      closePhoneImport();
+      await bootPage();
+      setFormStatus(
+        "phone-import-status",
+        `导入 ${imported} 条，跳过 ${skipped} 条。`,
+        "muted"
+      );
+    } catch (error) {
+      setFormStatus("phone-import-status", friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function submitProxyAdd(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("#proxy-add-submit");
+    if (button) button.disabled = true;
+    setFormStatus("proxy-add-status", "正在添加…", "muted");
+    try {
+      const data = new FormData(form);
+      await fetchEntity("proxy-add", "/api/resources/proxies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          url: String(data.get("url") || "").trim(),
+          name: String(data.get("name") || "").trim() || null,
+        }),
+      });
+      closeProxyAdd();
+      await bootPage();
+    } catch (error) {
+      setFormStatus("proxy-add-status", friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   async function copyText(value) {
@@ -1181,13 +1296,15 @@
         );
       } else if (page === "phones") {
         const payload = await fetchEntity("phone-list", "/api/resources/phones");
+        const items = payload.items || [];
         renderRows(
           "phones-body",
-          payload.items || [],
+          items,
           7,
           phoneRow,
-          emptyState("还没有手机号", "导入号码后会显示余量、冷却和租约。")
+          emptyState("还没有手机号", "点「导入号码」，按 号码----接码链接 批量入库。")
         );
+        setCount("phones-count", items.length, items.length);
       } else if (page === "hme") {
         const payload = await fetchEntity("hme-list", "/api/resources/hme");
         renderRows(
@@ -1199,13 +1316,16 @@
         );
       } else if (page === "proxies") {
         const payload = await fetchEntity("proxy-list", "/api/resources/proxies");
+        const items = payload.items || [];
         renderRows(
           "proxies-body",
-          payload.items || [],
+          items,
           6,
           proxyRow,
-          emptyState("还没有代理", "添加代理后会显示地区、出口和最近检测。")
+          emptyState("还没有代理", "点「添加代理」，或在登记母号时填写代理自动入库。")
         );
+        setCount("proxies-count", items.length, items.length);
+      } else if (page === "settings") {
       } else if (page === "settings") {
         const form = document.getElementById("settings-form");
         const passwordForm = document.getElementById("password-form");
@@ -1263,6 +1383,16 @@
   });
   document.querySelector("[data-close-register]")?.addEventListener("click", closeRegister);
   document.getElementById("register-form")?.addEventListener("submit", submitRegister);
+  document.querySelectorAll("[data-open-phone-import]").forEach((button) => {
+    button.addEventListener("click", () => openPhoneImport(button));
+  });
+  document.querySelector("[data-close-phone-import]")?.addEventListener("click", closePhoneImport);
+  document.getElementById("phone-import-form")?.addEventListener("submit", submitPhoneImport);
+  document.querySelectorAll("[data-open-proxy-add]").forEach((button) => {
+    button.addEventListener("click", () => openProxyAdd(button));
+  });
+  document.querySelector("[data-close-proxy-add]")?.addEventListener("click", closeProxyAdd);
+  document.getElementById("proxy-add-form")?.addEventListener("submit", submitProxyAdd);
 
   document.getElementById("register-copy-link")?.addEventListener("click", async () => {
     const authorize = document.getElementById("register-authorize-url");
@@ -1282,6 +1412,12 @@
   registerSheet?.addEventListener("click", (event) => {
     if (event.target === registerSheet) closeRegister();
   });
+  phoneImportSheet?.addEventListener("click", (event) => {
+    if (event.target === phoneImportSheet) closePhoneImport();
+  });
+  proxyAddSheet?.addEventListener("click", (event) => {
+    if (event.target === proxyAddSheet) closeProxyAdd();
+  });
   document.addEventListener("click", (event) => {
     if (menu && !menu.hidden && !event.target.closest("#action-menu, .actions")) closeMenu();
   });
@@ -1295,6 +1431,8 @@
     }
     if (event.key === "Escape") {
       if (!menu.hidden) closeMenu();
+      else if (phoneImportSheet && !phoneImportSheet.hidden) closePhoneImport();
+      else if (proxyAddSheet && !proxyAddSheet.hidden) closeProxyAdd();
       else if (registerSheet && !registerSheet.hidden) closeRegister();
       else if (sheet && !sheet.hidden) closeSheet();
       else closeDrawer();

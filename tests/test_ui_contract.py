@@ -67,6 +67,14 @@ class UIContractTests(unittest.TestCase):
             self.assertNotIn("official_workspace_id", workspaces)
             self.assertNotIn("Access Token", workspaces)
 
+            phones = client.get("/resources/phones").text
+            self.assertIn('data-open-phone-import', phones)
+            self.assertIn('id="phone-import-form"', phones)
+            self.assertIn("号码----", phones)
+            proxies = client.get("/resources/proxies").text
+            self.assertIn('data-open-proxy-add', proxies)
+            self.assertIn('id="proxy-add-form"', proxies)
+
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})

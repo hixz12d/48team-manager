@@ -9,8 +9,12 @@ from app.application.commands.workspaces import RegisterWorkspaceError, complete
 from app.application.connection_probe import probe_hme, probe_mail, probe_sub2api
 from app.application.queries import console as console_query
 from app.application.queries.identity import identity_audit_query
+from app.application.resources.phones import phone_pool_service
+from app.application.resources.proxies import proxy_profile_service
 from app.application.settings import save_console_settings
+from app.core.proxy import normalize_proxy_url
 from app.web.deps import require_admin
+from app.web.schemas.resources import PhoneImportRequest, ProxyCreateRequest
 from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
 from app.web.schemas.workspaces import CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
 
@@ -69,6 +73,15 @@ def build_api_router(get_db) -> APIRouter:
     async def phones(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.phones(db)
 
+    @router.post("/resources/phones/import")
+    async def import_phones(
+        payload: PhoneImportRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await phone_pool_service.import_lines(db, payload.text)
+        return {"ok": True, **result}
+
     @router.get("/resources/hme")
     async def hme(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.hme(db)
@@ -76,6 +89,23 @@ def build_api_router(get_db) -> APIRouter:
     @router.get("/resources/proxies")
     async def proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.proxies(db)
+
+    @router.post("/resources/proxies")
+    async def create_proxy(
+        payload: ProxyCreateRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        try:
+            url = normalize_proxy_url(payload.url)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if not url:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="代理地址不能为空")
+        name = str(payload.name or "").strip()
+        profile = await proxy_profile_service.upsert_from_url(db, url, name=name)
+        await db.commit()
+        return {"ok": True, "item": proxy_profile_service.serialize(profile)}
 
     @router.get("/settings")
     async def settings_view(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:

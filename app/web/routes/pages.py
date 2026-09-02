@@ -32,7 +32,7 @@ PAGES = {
     "phones": {
         "title": "手机号",
         "path": "/resources/phones",
-        "subtitle": "查看号码余量、冷却、租约和尝试历史。",
+        "subtitle": "导入号码池，查看余量、冷却、租约和尝试历史。",
     },
     "hme": {
         "title": "HME",
@@ -42,7 +42,7 @@ PAGES = {
     "proxies": {
         "title": "代理",
         "path": "/resources/proxies",
-        "subtitle": "查看代理地区、出口、绑定和最近检测。",
+        "subtitle": "添加代理档案；登记母号时填的代理也会自动入库。",
     },
     "settings": {
         "title": "设置",

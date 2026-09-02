@@ -158,6 +158,10 @@
         </section>
         {% elif page == 'phones' %}
         <section class="panel table-shell">
+          <div class="toolbar">
+            <button type="button" class="button primary" data-open-phone-import>导入号码</button>
+            <span class="toolbar-count muted" id="phones-count"></span>
+          </div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
@@ -196,6 +200,10 @@
         </section>
         {% elif page == 'proxies' %}
         <section class="panel table-shell">
+          <div class="toolbar">
+            <button type="button" class="button primary" data-open-proxy-add>添加代理</button>
+            <span class="toolbar-count muted" id="proxies-count"></span>
+          </div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
@@ -403,6 +411,49 @@
         <p id="register-status" class="muted" hidden></p>
         <div class="settings-probe-actions">
           <button class="button primary" type="submit" id="register-submit">生成授权链接</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="sheet" id="phone-import-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="phone-import-title">
+      <header>
+        <div>
+          <strong id="phone-import-title">导入手机号</strong>
+          <p class="muted">每行一条：号码----接码链接。HME 邮箱别名仍由系统自动领取，这里只管短信号池。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-phone-import>关掉</button>
+      </header>
+      <form id="phone-import-form" class="sheet-body">
+        <div class="sheet-section">
+          <label>号码列表<textarea name="text" rows="12" placeholder="+15551234567----https://sms.example/by_key?key=abc" required></textarea></label>
+          <p class="hint">空行和 # 开头行会跳过。重复号码不会重复导入。</p>
+        </div>
+        <p id="phone-import-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button class="button primary" type="submit" id="phone-import-submit">导入</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="sheet" id="proxy-add-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="proxy-add-title">
+      <header>
+        <div>
+          <strong id="proxy-add-title">添加代理</strong>
+          <p class="muted">写入代理档案。登记母号时填的代理也会自动进这里。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-proxy-add>关掉</button>
+      </header>
+      <form id="proxy-add-form" class="sheet-body">
+        <div class="sheet-section">
+          <label>名称<input name="name" autocomplete="off" placeholder="可选，例如 美西母号"></label>
+          <label>代理地址<input name="url" autocomplete="off" placeholder="socks5://host:port 或 host:port:user:pass" required></label>
+          <p class="hint">支持 http / https / socks5 / socks5h。账号密码会加密保存，列表里只显示脱敏地址。</p>
+        </div>
+        <p id="proxy-add-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button class="button primary" type="submit" id="proxy-add-submit">添加</button>
         </div>
       </form>
     </div>
