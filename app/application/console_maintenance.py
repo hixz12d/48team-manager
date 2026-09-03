@@ -19,6 +19,7 @@ from app.domain.workspaces.names import apply_custom_name, apply_official_name, 
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 from app.persistence.models.quota import QuotaSnapshot
 from app.persistence.models.resources import HmeAliasLease
+from app.persistence.models.vacancy import SeatVacancyEvent
 
 
 async def archive_operation(db: AsyncSession, public_id: str, *, reason: str | None = None) -> dict[str, Any]:
@@ -444,3 +445,179 @@ async def purge_local_child_record(db: AsyncSession, workspace: Workspace, accou
     await db.delete(account)
     await db.flush()
     return {"ok": True, "purged_account_id": account_id, "email": email}
+
+
+async def update_workspace_member_role(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email: str,
+    role: str = "owner",
+    user_id: str | None = None,
+    workspaces=None,
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    target = normalize_email(email)
+    if not target or "@" not in target:
+        return {"ok": False, "error": "email required", "error_code": "email_required"}
+    try:
+        requested_role = parse_invite_role(role)
+    except ValueError:
+        return {"ok": False, "error": "官方角色只能是 Owner 或 Member", "error_code": "invalid_invite_role"}
+    from app.application.workspaces import workspace_service as default_workspaces
+
+    service = workspaces or default_workspaces
+    result = await service.update_member_role(db, workspace.id, target, requested_role, user_id=user_id)
+    if not result.get("success"):
+        return {
+            "ok": False,
+            "error": result.get("error") or "改官方角色失败",
+            "error_code": result.get("error_code") or "role_update_failed",
+            "existing_role": result.get("existing_role"),
+            "requested_role": requested_role,
+        }
+    account = (await db.execute(select(Account).where(Account.email == target))).scalar_one_or_none()
+    if account is not None:
+        membership = (
+            await db.execute(
+                select(WorkspaceMembership).where(
+                    WorkspaceMembership.workspace_id == workspace.id,
+                    WorkspaceMembership.account_id == account.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if membership is not None:
+            membership.official_role = requested_role
+            membership.updated_at = utcnow()
+    snap = (
+        await db.execute(
+            select(WorkspaceOfficialMemberSnapshot).where(
+                WorkspaceOfficialMemberSnapshot.workspace_id == workspace.id,
+                WorkspaceOfficialMemberSnapshot.normalized_email == target,
+            )
+        )
+    ).scalar_one_or_none()
+    if snap is not None:
+        snap.official_role = requested_role
+        snap.updated_at = utcnow()
+    await db.commit()
+    payload = dict(result)
+    payload["ok"] = True
+    payload["workspace_id"] = workspace.id
+    payload["role"] = requested_role
+    if account is not None:
+        payload["account_id"] = account.id
+        payload["local_purpose"] = account.local_purpose
+    return payload
+
+
+async def delete_local_workspace(db: AsyncSession, workspace_id: int) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    busy = await operation_store.active_for_workspace(
+        db,
+        workspace.id,
+        actions=WORKSPACE_LOCK_ACTIONS,
+    )
+    if busy is not None:
+        return {
+            "ok": False,
+            "error": f"Workspace {workspace.id} 已有 {busy.op_type} 任务 {busy.public_id} 在跑，先等它结束再删",
+            "error_code": "operation_conflict",
+            "operation_id": busy.public_id,
+        }
+    from app.persistence.models.operations import Operation
+
+    memberships = list(
+        (await db.execute(select(WorkspaceMembership).where(WorkspaceMembership.workspace_id == workspace.id))).scalars()
+    )
+    child_ids = [row.account_id for row in memberships if not is_workspace_owner(workspace, row.account_id)]
+    owner_id = workspace.owner_account_id
+    resolved = resolve_display_name(workspace)
+    display = resolved.get("display_name") or workspace.name or f"Workspace #{workspace.id}"
+    purged_children = 0
+    kept_children = 0
+    for account_id in child_ids:
+        child = await db.get(Account, account_id)
+        if child is None:
+            continue
+        other_memberships = list(
+            (
+                await db.execute(
+                    select(WorkspaceMembership.id).where(
+                        WorkspaceMembership.account_id == account_id,
+                        WorkspaceMembership.workspace_id != workspace.id,
+                    )
+                )
+            ).scalars()
+        )
+        other_owned = list(
+            (
+                await db.execute(
+                    select(Workspace.id).where(
+                        Workspace.owner_account_id == account_id,
+                        Workspace.id != workspace.id,
+                    )
+                )
+            ).scalars()
+        )
+        if other_memberships or other_owned:
+            await db.execute(
+                delete(WorkspaceMembership).where(
+                    WorkspaceMembership.workspace_id == workspace.id,
+                    WorkspaceMembership.account_id == account_id,
+                )
+            )
+            await db.execute(
+                delete(ExternalBinding).where(
+                    ExternalBinding.workspace_id == workspace.id,
+                    ExternalBinding.local_account_id == account_id,
+                )
+            )
+            await db.execute(
+                delete(QuotaSnapshot).where(
+                    QuotaSnapshot.workspace_id == workspace.id,
+                    QuotaSnapshot.account_id == account_id,
+                )
+            )
+            kept_children += 1
+            continue
+        result = await purge_local_child_record(db, workspace, child)
+        if result.get("ok"):
+            purged_children += 1
+    await db.execute(delete(WorkspaceOfficialMemberSnapshot).where(WorkspaceOfficialMemberSnapshot.workspace_id == workspace.id))
+    await db.execute(delete(WorkspaceMembership).where(WorkspaceMembership.workspace_id == workspace.id))
+    await db.execute(delete(ExternalBinding).where(ExternalBinding.workspace_id == workspace.id))
+    await db.execute(delete(QuotaSnapshot).where(QuotaSnapshot.workspace_id == workspace.id))
+    await db.execute(delete(SeatVacancyEvent).where(SeatVacancyEvent.workspace_id == workspace.id))
+    await db.execute(update(HmeAliasLease).where(HmeAliasLease.workspace_id == workspace.id).values(workspace_id=None))
+    await db.execute(update(Operation).where(Operation.workspace_id == workspace.id).values(workspace_id=None))
+    await db.delete(workspace)
+    await db.flush()
+    if owner_id:
+        still_owns = (
+            await db.execute(select(Workspace.id).where(Workspace.owner_account_id == owner_id))
+        ).scalars().all()
+        still_member = (
+            await db.execute(select(WorkspaceMembership.id).where(WorkspaceMembership.account_id == owner_id))
+        ).scalars().all()
+        if not still_owns and not still_member:
+            owner = await db.get(Account, owner_id)
+            if owner is not None and owner.local_purpose == LOCAL_PURPOSE_MOTHER:
+                await db.execute(delete(QuotaSnapshot).where(QuotaSnapshot.account_id == owner_id))
+                await db.execute(delete(ExternalBinding).where(ExternalBinding.local_account_id == owner_id))
+                await db.execute(update(Operation).where(Operation.account_id == owner_id).values(account_id=None))
+                await db.delete(owner)
+                await db.flush()
+    await db.commit()
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "purged_children": purged_children,
+        "kept_children": kept_children,
+        "status": "deleted",
+        "message": f"已从本地删除 {display}，未改官方 Team",
+    }

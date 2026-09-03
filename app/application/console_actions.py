@@ -37,7 +37,7 @@ from app.persistence.models.operations import OperationStep
 from app.persistence.models.resources import HmeAliasLease, ProxyProfile
 
 SAFE_RETRY_TYPES = {"quota_probe", "auth_probe", "proxy_check", "workspace_sync", "hme_reconcile", "sub2api_sync", "sub2api_reconcile", "sub2api_push"}
-UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free", "kick_member", "purge_child", "revoke_invite", "invite_child"}
+UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free", "kick_member", "purge_child", "revoke_invite", "invite_child", "update_member_role"}
 
 
 def _mask_log_items(items: list[Any]) -> list[Any]:
@@ -843,6 +843,8 @@ from app.application.console_maintenance import (  # noqa: E402
     sync_workspace_official_name,
     restore_operation,
     update_workspace_display_name,
+    update_workspace_member_role,
+    delete_local_workspace,
 )
 
 

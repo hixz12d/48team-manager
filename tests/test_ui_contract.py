@@ -127,6 +127,12 @@ class UIContractTests(unittest.TestCase):
             self.assertIn('textContent = kind === "unmanaged" || kind === "invited" ? "踢出" : "删除"', js)
             self.assertNotIn("删除子号稍后补上", js)
             self.assertNotIn("删除子号会在下一步加上", accounts)
+            self.assertIn("删除本地团队", js)
+            self.assertIn("`/api/workspaces/${item.id}`", js)
+            self.assertIn("method: \"DELETE\"", js)
+            self.assertIn("改成 Owner", js)
+            self.assertIn("/api/workspaces/${workspaceId}/members/role", js)
+            self.assertIn("已加入成员的 Owner/Member", accounts)
 
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

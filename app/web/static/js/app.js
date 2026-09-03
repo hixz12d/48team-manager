@@ -413,6 +413,13 @@
     return fetchEntity(key, url, options);
   }
 
+  async function deleteAction(key, url) {
+    return fetchEntity(key, url, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+    });
+  }
+
   async function openOperationById(operationId) {
     if (!operationId) return;
     try {
@@ -548,7 +555,17 @@
       event.stopPropagation();
       openManageChildren(manage, item);
     });
-    actions.append(sync, manage, menuButton("workspace", item));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button ghost danger";
+    remove.textContent = "删除";
+    remove.dataset.action = "workspace.delete";
+    remove.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const action = (entityActions.workspace || []).find((entry) => entry.id === "workspace.delete");
+      if (action) await action.run(item, remove);
+    });
+    actions.append(sync, manage, remove, menuButton("workspace", item));
     cell(row, actions, "actions");
     return row;
   }
@@ -1243,6 +1260,16 @@ function hmeRow(item) {
         label: "受控轮转",
         run: (item, trigger) => openRotate(trigger, item),
       },
+      {
+        id: "workspace.delete",
+        label: "删除本地团队",
+        run: async (item) => {
+          const name = item.display_name || item.name || item.owner_email || `#${item.id}`;
+          if (!confirmDanger(`确认从本地删除团队「${name}」？只清本地档案，不会改官方 Team。`)) return;
+          const result = await deleteAction(`workspace-delete-${item.id}`, `/api/workspaces/${item.id}`);
+          await handleActionResult(result, { successMessage: result.message || "已从本地删除团队" });
+        },
+      },
 
     ],
     account: [
@@ -1723,9 +1750,11 @@ function hmeRow(item) {
       const item = document.createElement("div");
       item.className = "manage-child-row";
       const kind = row.kind || (row.membership_state === "invited" || row.status === "invited" ? "invited" : (row.status === "remote_only" ? "unmanaged" : (row.status === "local_only" ? "local_only" : "child")));
+      const currentRole = String(row.role || row.official_role || "").trim().toLowerCase();
+      const joined = kind === "unmanaged" || kind === "child" || row.membership_state === "joined" || row.status === "managed" || row.status === "remote_only";
       const statusText = kind === "unmanaged"
         ? "官方已加入 · 未接入"
-        : (kind === "invited" ? "已邀请 · 等待加入" : (kind === "local_only" ? "仅本地" : membershipStatusLabel(row.status) || membershipStatusLabel(row.membership_state) || labelOf(statusLabels, row.auth) || "已接入"));
+        : (kind === "invited" ? "已邀请 · 等待加入" : (kind === "local_only" ? "仅本地" : [membershipStatusLabel(row.status) || membershipStatusLabel(row.membership_state) || labelOf(statusLabels, row.auth) || "已接入", roleLabel(currentRole)].filter(Boolean).join(" · ")));
       item.append(twoLine(row.email || "—", statusText));
       const actions = document.createElement("div");
       actions.className = "row-actions";
@@ -1748,6 +1777,14 @@ function hmeRow(item) {
           });
           actions.append(authBtn);
         }
+      }
+      if (joined && (row.email || "").trim()) {
+        const roleBtn = document.createElement("button");
+        roleBtn.type = "button";
+        roleBtn.className = "button ghost compact";
+        roleBtn.textContent = currentRole === "owner" ? "改成 Member" : "改成 Owner";
+        roleBtn.addEventListener("click", () => manageChildRole(row, roleBtn, currentRole === "owner" ? "member" : "owner"));
+        actions.append(roleBtn);
       }
       if (kind === "unmanaged" || kind === "invited" || row.id || row.local_account_id) {
         const removeBtn = document.createElement("button");
@@ -1803,6 +1840,30 @@ function hmeRow(item) {
     clearFocusTrap();
     overlayReturn?.focus?.();
     overlayReturn = null;
+  }
+
+  async function manageChildRole(row, button, role) {
+    const workspace = manageChildrenWorkspace();
+    const workspaceId = workspace?.id;
+    const email = (row?.email || "").trim();
+    if (!workspaceId || !email) {
+      toast("缺少官方邮箱，无法改角色", "error");
+      return;
+    }
+    const nextLabel = role === "owner" ? "Owner" : "Member";
+    if (!confirmDanger(`确认把 ${email} 的官方角色改成 ${nextLabel}？这会改 Team 成员。`)) return;
+    if (button) button.disabled = true;
+    try {
+      const body = { email, role };
+      if (row.user_id || row.official_user_id) body.user_id = row.user_id || row.official_user_id;
+      const result = await patchAction(`workspace-role-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/role`, body);
+      toast(result.message || `已改成 ${nextLabel}`, operationTone(result));
+      await reloadManageChildren();
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   async function manageChildLink(row, button) {
@@ -2982,7 +3043,16 @@ function openRegister(trigger) {
         event.stopPropagation();
         openManageChildren(manage, group);
       });
-      actions.append(sync, manage);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button ghost compact danger";
+      remove.textContent = "删除";
+      remove.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const action = (entityActions.workspace || []).find((entry) => entry.id === "workspace.delete");
+        if (action) await action.run(group, remove);
+      });
+      actions.append(sync, manage, remove);
       head.append(toggle, meta, ownerCol, healthCol, syncCol, actions);
 
       if (mother) body.append(portfolioAccountRow(mother, "mother"));

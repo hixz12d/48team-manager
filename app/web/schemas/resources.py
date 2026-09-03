@@ -103,3 +103,9 @@ class WorkspacePurgeChildRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     user_id: str | None = Field(default=None, max_length=120)
     reason: str = Field(default="console_purge", max_length=120)
+
+
+class WorkspaceMemberRolePatch(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: Literal["owner", "member"] = "owner"
+    user_id: str | None = Field(default=None, max_length=120)

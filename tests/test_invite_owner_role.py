@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.application.console_maintenance import add_local_child
+from app.application.console_maintenance import add_local_child, delete_local_workspace, update_workspace_member_role
 from app.application.identity import upsert_mother_account, upsert_workspace
 from app.application.rotate import RotateService
 from app.application.tokens import encrypt_secret
@@ -24,6 +24,7 @@ class _InviteWS:
         self.live_item = live_item
         self.invite_ok = invite_ok
         self.invites = []
+        self.role_updates = []
 
     async def load_workspace(self, db, workspace_id: int):
         return await db.get(Workspace, int(workspace_id))
@@ -43,6 +44,17 @@ class _InviteWS:
         if not self.invite_ok:
             return {"success": False, "error": "invite rejected", "error_code": "invite_failed"}
         return {"success": True, "message": f"已邀请 {email}", "requested_role": role}
+
+    async def update_member_role(self, db, workspace_id, email, role="owner", *, user_id=None):
+        self.role_updates.append({"email": email, "role": role, "user_id": user_id})
+        live = self.live_item or {}
+        if live.get("email") == email and live.get("status") == "joined":
+            existing = live.get("role") or "member"
+            if existing == role:
+                return {"success": True, "already": True, "email": email, "role": role, "existing_role": existing, "message": f"{email} 官方角色已经是 {role}"}
+            live["role"] = role
+            return {"success": True, "email": email, "role": role, "existing_role": existing, "user_id": user_id or live.get("user_id"), "message": f"已把 {email} 改成官方 {role}"}
+        return {"success": False, "error": f"{email} 还没加入官方席位，不能改已加入成员的角色", "error_code": "not_joined"}
 
     def _last_owner_guard(self, workspace, owner, live, live_item, *, email):
         from app.application.workspaces import WorkspaceService
@@ -143,6 +155,51 @@ class InviteOwnerRoleTests(unittest.IsolatedAsyncioTestCase):
         result = await service.kick_to_standby(self.session, workspace_id=self.workspace.id, email=mother.email)
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "primary_mother_protected")
+
+    async def test_joined_member_can_be_promoted_to_owner(self):
+        workspaces = _InviteWS(live_item={"email": "kid@example.com", "status": "joined", "role": "member", "user_id": "u-kid"})
+        added = await add_local_child(
+            self.session,
+            self.workspace.id,
+            email="kid@example.com",
+            workspaces=workspaces,
+            role="member",
+        )
+        self.assertTrue(added["ok"])
+        updated = await update_workspace_member_role(
+            self.session,
+            self.workspace.id,
+            email="kid@example.com",
+            role="owner",
+            workspaces=workspaces,
+        )
+        self.assertTrue(updated["ok"])
+        self.assertEqual(workspaces.role_updates, [{"email": "kid@example.com", "role": "owner", "user_id": None}])
+        membership = (
+            await self.session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.account_id == added["account_id"])
+            )
+        ).scalar_one()
+        self.assertEqual(membership.official_role, "owner")
+        child = await self.session.get(Account, added["account_id"])
+        self.assertEqual(child.local_purpose, "child")
+
+    async def test_delete_local_workspace_keeps_official_team(self):
+        workspaces = _InviteWS(live_item={"email": "kid@example.com", "status": "joined", "role": "member", "user_id": "u-kid"})
+        added = await add_local_child(
+            self.session,
+            self.workspace.id,
+            email="kid@example.com",
+            workspaces=workspaces,
+            role="member",
+        )
+        workspace_id = self.workspace.id
+        owner_id = self.workspace.owner_account_id
+        deleted = await delete_local_workspace(self.session, workspace_id)
+        self.assertTrue(deleted["ok"])
+        self.assertIsNone(await self.session.get(Workspace, workspace_id))
+        self.assertIsNone(await self.session.get(Account, added["account_id"]))
+        self.assertIsNone(await self.session.get(Account, owner_id))
 
 
 if __name__ == "__main__":

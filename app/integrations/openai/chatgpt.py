@@ -319,6 +319,8 @@ class ChatGPTClient:
                         response = await session.post(url, headers=request_headers, json=json_data or {})
                 elif method == "DELETE":
                     response = await session.delete(url, headers=request_headers, json=json_data)
+                elif method == "PATCH":
+                    response = await session.patch(url, headers=request_headers, json=json_data or {})
                 else:
                     raise ValueError(f"unsupported method {method}")
                 status_code = response.status_code
@@ -657,6 +659,31 @@ class ChatGPTClient:
         if vacancy is not None:
             result["vacancy"] = vacancy
         return result
+
+    async def update_member_role(
+        self,
+        access_token: str,
+        account_id: str,
+        user_id: str,
+        role: str,
+        db_session: DBAsyncSession | None,
+        identifier: str = "default",
+    ) -> dict[str, Any]:
+        url = f"{self.BASE_URL}/accounts/{account_id}/users/{user_id}"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": account_id,
+        }
+        payload_role = invite_role_payload(role)
+        return await self._make_request(
+            "PATCH",
+            url,
+            headers,
+            db_session=db_session,
+            identifier=identifier,
+            json_data={"role": payload_role},
+        )
 
     async def delete_invite(
         self,

@@ -19,7 +19,14 @@ from app.domain.identity import (
 from app.domain.identity.ids import normalize_email
 from app.domain.vacancy import parse_policy_notice, present_vacancy, summarize_for_message
 from app.integrations.openai.chatgpt import chatgpt_client
-from app.integrations.openai.member_adapter import adapt_collection, is_owner_role, parse_invite_role, validate_fetch_counts
+from app.integrations.openai.member_adapter import (
+    adapt_collection,
+    is_owner_role,
+    normalize_official_role,
+    official_roles_equivalent,
+    parse_invite_role,
+    validate_fetch_counts,
+)
 from app.persistence.models.identity import Account, Workspace, WorkspaceMembership
 
 logger = logging.getLogger(__name__)
@@ -366,6 +373,100 @@ class WorkspaceService:
             await self.mark_membership_removed(db, workspace.id, email)
         await db.flush()
         return _delete_member_success("成员已删除", vacancy, already_removed=bool(delete_result.get("already_removed")))
+
+    async def update_member_role(
+        self,
+        db: AsyncSession,
+        workspace_id: int,
+        email: str,
+        role: str = "owner",
+        *,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        workspace = await self.load_workspace(db, workspace_id)
+        if workspace is None:
+            return {"success": False, "error": f"未找到 Workspace {workspace_id}", "error_code": "workspace_not_found"}
+        try:
+            requested_role = parse_invite_role(role)
+        except ValueError:
+            return {"success": False, "error": "官方角色只能是 Owner 或 Member", "error_code": "invalid_invite_role"}
+        owner = await self.owner_account(db, workspace)
+        account_id = self._workspace_account_id(workspace)
+        access_token = await self.ensure_access_token(db, workspace)
+        target = normalize_email(email)
+        if not access_token or not account_id:
+            return {"success": False, "error": "该 Workspace 的登录凭证已过期，且自动刷新失败", "error_code": "token_refresh_failed"}
+        live, live_item = await self.lookup_live_member(db, workspace, target)
+        if owner is not None and normalize_email(owner.email) == target:
+            return {"success": False, "error": "不能改当前工作区的主控母号角色", "error_code": "primary_mother_protected"}
+        if not live_item or live_item.get("status") != "joined":
+            if live.get("lookup_state") == "unknown_due_to_error" or live.get("success") is False:
+                return {
+                    "success": False,
+                    "error": live.get("error") or "官方成员列表读取失败，未改角色",
+                    "error_code": live.get("error_code") or "kick_lookup_unknown",
+                }
+            return {
+                "success": False,
+                "error": f"{target} 还没加入官方席位，不能改已加入成员的角色",
+                "error_code": "not_joined",
+            }
+        current_role = normalize_official_role(live_item.get("role"))
+        if official_roles_equivalent(current_role, requested_role):
+            return {
+                "success": True,
+                "already": True,
+                "email": target,
+                "role": requested_role,
+                "existing_role": current_role,
+                "message": f"{target} 官方角色已经是 {requested_role}",
+            }
+        if is_owner_role(current_role) and requested_role != "owner":
+            guard = self._last_owner_guard(workspace, owner, live, live_item, email=target)
+            if guard is not None:
+                return {
+                    "success": False,
+                    "error": "不能把最后一个官方 Owner 改成 Member",
+                    "error_code": "last_official_owner",
+                }
+        candidate = str(user_id or live_item.get("user_id") or "").strip()
+        if not candidate:
+            return {"success": False, "error": "官方成员缺少 user id，未改角色", "error_code": "missing_user_id"}
+        result = await self.client.update_member_role(
+            access_token,
+            account_id,
+            candidate,
+            requested_role,
+            db,
+            identifier=owner.email if owner else "default",
+        )
+        if not result.get("success") and is_access_token_error(result):
+            refreshed = await self.ensure_access_token(db, workspace, force_refresh=True)
+            if refreshed:
+                result = await self.client.update_member_role(
+                    refreshed,
+                    account_id,
+                    candidate,
+                    requested_role,
+                    db,
+                    identifier=owner.email if owner else "default",
+                )
+        if not result.get("success"):
+            return {
+                "success": False,
+                "error": result.get("error") or "改官方角色失败",
+                "error_code": result.get("error_code") or "role_update_failed",
+                "status_code": result.get("status_code"),
+            }
+        return {
+            "success": True,
+            "email": target,
+            "role": requested_role,
+            "existing_role": current_role,
+            "user_id": candidate,
+            "message": f"已把 {target} 改成官方 {requested_role}",
+            "data": result.get("data"),
+        }
 
     async def invite_member(
         self,

@@ -34,6 +34,7 @@ from app.web.schemas.resources import (
     Sub2ApiPushRequest,
     WorkspaceAddChildRequest,
     WorkspaceLinkMemberRequest,
+    WorkspaceMemberRolePatch,
     WorkspaceNamePatch,
     WorkspacePurgeChildRequest,
     WorkspaceRemoveChildRequest,
@@ -261,6 +262,39 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result.get("error") or "remove failed")
+        return result
+
+    @router.patch("/workspaces/{workspace_id}/members/role")
+    async def patch_workspace_member_role(
+        workspace_id: int,
+        payload: WorkspaceMemberRolePatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.update_workspace_member_role(
+            db,
+            workspace_id,
+            email=payload.email,
+            role=payload.role,
+            user_id=payload.user_id,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "role update failed")
+        return result
+
+    @router.delete("/workspaces/{workspace_id}")
+    async def delete_workspace(
+        workspace_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.delete_local_workspace(db, workspace_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "delete failed")
         return result
 
     @router.post("/workspaces/repair-names")
