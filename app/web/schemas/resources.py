@@ -29,6 +29,7 @@ class OnboardRequest(BaseModel):
     password: str = Field(default="", max_length=200)
     force: bool = False
     skip_invite: bool = False
+    role: Literal["owner", "member"] = "owner"
 
 
 class RotateRequest(BaseModel):
@@ -38,6 +39,7 @@ class RotateRequest(BaseModel):
     proxy: str = Field(default="", max_length=500)
     force_refill: bool = False
     reason: str = Field(default="console", max_length=120)
+    role: Literal["owner", "member"] = "owner"
 
 
 class KickRequest(BaseModel):
@@ -89,6 +91,7 @@ class WorkspaceLinkMemberRequest(BaseModel):
 
 class WorkspaceAddChildRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
+    role: Literal["owner", "member"] = "owner"
 
 
 class WorkspaceRemoveChildRequest(BaseModel):

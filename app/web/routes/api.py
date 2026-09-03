@@ -107,6 +107,7 @@ def build_api_router(get_db) -> APIRouter:
             password=payload.password,
             force=payload.force,
             skip_invite=payload.skip_invite,
+            role=payload.role,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
@@ -128,6 +129,7 @@ def build_api_router(get_db) -> APIRouter:
             proxy=payload.proxy,
             force_refill=payload.force_refill,
             reason=payload.reason,
+            role=payload.role,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
@@ -235,7 +237,7 @@ def build_api_router(get_db) -> APIRouter:
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
-        result = await console_actions.invite_workspace_child(db, workspace_id, email=payload.email)
+        result = await console_actions.invite_workspace_child(db, workspace_id, email=payload.email, role=payload.role)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         if not result.get("ok"):

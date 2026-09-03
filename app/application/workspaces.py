@@ -19,7 +19,7 @@ from app.domain.identity import (
 from app.domain.identity.ids import normalize_email
 from app.domain.vacancy import parse_policy_notice, present_vacancy, summarize_for_message
 from app.integrations.openai.chatgpt import chatgpt_client
-from app.integrations.openai.member_adapter import adapt_collection, validate_fetch_counts
+from app.integrations.openai.member_adapter import adapt_collection, is_owner_role, parse_invite_role, validate_fetch_counts
 from app.persistence.models.identity import Account, Workspace, WorkspaceMembership
 
 logger = logging.getLogger(__name__)
@@ -131,6 +131,47 @@ class WorkspaceService:
 
     def _workspace_account_id(self, workspace: Workspace) -> str:
         return str(workspace.official_workspace_id or "").strip()
+
+    def _last_owner_guard(
+        self,
+        workspace: Workspace,
+        owner: Account | None,
+        live: dict[str, Any],
+        live_item: dict[str, Any] | None,
+        *,
+        email: str,
+    ) -> dict[str, Any] | None:
+        target = normalize_email(email)
+        if owner is not None and normalize_email(owner.email) == target:
+            return {
+                "success": False,
+                "error": "不能踢出当前工作区的主控母号",
+                "error_code": "primary_mother_protected",
+            }
+        lookup_state = live.get("lookup_state") or ("found" if live_item else ("absent_confirmed" if live.get("success") else "unknown_due_to_error"))
+        if lookup_state == "unknown_due_to_error" or live.get("success") is False:
+            return {
+                "success": False,
+                "error": live.get("error") or "官方成员列表读取失败，未执行删除",
+                "error_code": live.get("error_code") or "kick_lookup_unknown",
+            }
+        if not live_item or live_item.get("status") == "invited":
+            return None
+        if not is_owner_role(live_item.get("role")):
+            return None
+        adapted = adapt_collection(live.get("members") or live.get("items") or [], default_state="joined")
+        other_owners = [
+            item
+            for item in adapted["members"]
+            if is_owner_role(item.get("role")) and item.get("email") != target and item.get("state") != "invited"
+        ]
+        if other_owners:
+            return None
+        return {
+            "success": False,
+            "error": "不能踢出最后一个官方 Owner",
+            "error_code": "last_official_owner",
+        }
 
     async def get_members(self, db: AsyncSession, workspace: Workspace) -> dict[str, Any]:
         token = await self.ensure_access_token(db, workspace)
@@ -326,10 +367,20 @@ class WorkspaceService:
         await db.flush()
         return _delete_member_success("成员已删除", vacancy, already_removed=bool(delete_result.get("already_removed")))
 
-    async def invite_member(self, db: AsyncSession, workspace_id: int, email: str) -> dict[str, Any]:
+    async def invite_member(
+        self,
+        db: AsyncSession,
+        workspace_id: int,
+        email: str,
+        role: str = "owner",
+    ) -> dict[str, Any]:
         workspace = await self.load_workspace(db, workspace_id)
         if workspace is None:
             return {"success": False, "error": f"未找到 Workspace {workspace_id}", "error_code": "workspace_not_found"}
+        try:
+            requested_role = parse_invite_role(role)
+        except ValueError:
+            return {"success": False, "error": "邀请角色只能是 Owner 或 Member", "error_code": "invalid_invite_role"}
         owner = await self.owner_account(db, workspace)
         account_id = self._workspace_account_id(workspace)
         access_token = await self.ensure_access_token(db, workspace)
@@ -342,6 +393,7 @@ class WorkspaceService:
             target,
             db,
             identifier=owner.email if owner else "default",
+            role=requested_role,
         )
         if not result.get("success") and is_access_token_error(result):
             refreshed = await self.ensure_access_token(db, workspace, force_refresh=True)
@@ -352,6 +404,7 @@ class WorkspaceService:
                     target,
                     db,
                     identifier=owner.email if owner else "default",
+                    role=requested_role,
                 )
         if not result.get("success"):
             return {
@@ -359,8 +412,14 @@ class WorkspaceService:
                 "error": result.get("error") or "邀请失败",
                 "error_code": result.get("error_code") or "invite_failed",
                 "status_code": result.get("status_code"),
+                "requested_role": requested_role,
             }
-        return {"success": True, "message": f"已邀请 {target}", "data": result.get("data")}
+        return {
+            "success": True,
+            "message": f"已邀请 {target}",
+            "data": result.get("data"),
+            "requested_role": requested_role,
+        }
 
     async def revoke_invite(self, db: AsyncSession, workspace_id: int, email: str) -> dict[str, Any]:
         workspace = await self.load_workspace(db, workspace_id)

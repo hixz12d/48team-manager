@@ -28,7 +28,7 @@ from app.application.workspaces import WorkspaceService
 from app.core.time import utcnow
 from app.domain.identity import PROVIDER_SUB2API
 from app.integrations.openai.chatgpt import ChatGPTClient
-from app.integrations.openai.member_adapter import adapt_collection, normalize_official_member, validate_fetch_counts
+from app.integrations.openai.member_adapter import adapt_collection, invite_role_payload, normalize_official_member, normalize_official_role, parse_invite_role, validate_fetch_counts
 from app.persistence.database import Base
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceOfficialMemberSnapshot
 from app.persistence.models.resources import HmeAliasLease, PhonePool
@@ -75,7 +75,12 @@ class MemberAdapterTests(unittest.TestCase):
         self.assertEqual(nested["name"], "James Smith")
         top = normalize_official_member({"email_address": "a@x.com", "official_role": "account-owner", "id": "user-a"})
         self.assertEqual(top["email"], "a@x.com")
-        self.assertEqual(top["role"], "account-owner")
+        self.assertEqual(top["role"], "owner")
+        self.assertEqual(normalize_official_role("account-owner"), "owner")
+        self.assertEqual(normalize_official_role("standard-user"), "member")
+        self.assertEqual(parse_invite_role(None), "owner")
+        self.assertEqual(invite_role_payload("owner"), "account-owner")
+        self.assertEqual(invite_role_payload("member"), "standard-user")
 
     def test_schema_mismatch_when_reported_but_unparsed(self):
         adapted = adapt_collection([{"id": "user-x", "profile": {"display": "no email"}}], default_state="joined")

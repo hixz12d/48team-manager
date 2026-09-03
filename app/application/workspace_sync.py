@@ -15,6 +15,9 @@ from app.core.time import utcnow
 from app.domain.identity.ids import normalize_email
 from app.integrations.openai.member_adapter import (
     adapt_collection,
+    is_admin_role,
+    is_owner_role,
+    normalize_official_role,
     validate_fetch_counts,
 )
 from app.persistence.models.identity import Account, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
@@ -283,7 +286,7 @@ class WorkspaceSyncService:
                     workspace_id=workspace.id,
                     normalized_email=row["email"],
                     official_user_id=row.get("user_id"),
-                    official_role=row.get("role") or "unknown",
+                    official_role=normalize_official_role(row.get("role")),
                     remote_state=row.get("state") or "joined",
                     display_name=row.get("name"),
                     seat_type=row.get("seat_type"),
@@ -293,6 +296,16 @@ class WorkspaceSyncService:
                     updated_at=stamp,
                 )
             )
+        for membership in (
+            await db.execute(select(WorkspaceMembership).where(WorkspaceMembership.workspace_id == workspace.id))
+        ).scalars():
+            account = await db.get(Account, membership.account_id)
+            if account is None:
+                continue
+            remote = remote_rows.get(normalize_email(account.email))
+            if remote is None:
+                continue
+            membership.official_role = normalize_official_role(remote.get("role")) or membership.official_role
 
         seat_meta = dict(members.get("seat_metadata") or {})
         invite_meta = dict(invites.get("seat_metadata") or {})
@@ -326,9 +339,16 @@ class WorkspaceSyncService:
             name_warning = f"Team 名称获取失败，已保留现有名称（{exc}"[:180] + ")" if str(exc) else "Team 名称获取失败，已保留现有名称"
 
         joined_people_total = sum(1 for row in remote_rows.values() if row.get("state") == "joined")
-        owner_emails = self._owner_emails(workspace, owner)
-        owner_count = 1 if any(row.get("state") == "joined" and row.get("email") in owner_emails for row in remote_rows.values()) else (1 if owner else 0)
-        joined_member_count = max(0, joined_people_total - (1 if owner else 0))
+        official_owner_count = sum(
+            1 for row in remote_rows.values() if row.get("state") == "joined" and is_owner_role(row.get("role"))
+        )
+        official_admin_count = sum(
+            1 for row in remote_rows.values() if row.get("state") == "joined" and is_admin_role(row.get("role"))
+        )
+        official_member_count = max(0, joined_people_total - official_owner_count - official_admin_count)
+        primary_mother_count = 1 if owner else 0
+        owner_count = official_owner_count or (1 if owner else 0)
+        joined_member_count = official_member_count
         invited = sum(1 for row in remote_rows.values() if row.get("state") == "invited")
         warnings = [name_warning] if name_warning else []
         result = {
@@ -338,9 +358,9 @@ class WorkspaceSyncService:
             "outcome": "snapshot_updated",
             "warnings": warnings,
             "message": (
-                f"同步完成：官方已加入 {joined_people_total} 人（1 母号 / {joined_member_count} 子号），"
-                f"待邀请 {invited}；本地受管 {reconciliation['managed']}；"
-                f"官方未接入 {reconciliation['remote_only']}"
+                f"同步完成：官方已加入 {joined_people_total} 人（Owner {official_owner_count} / Member {official_member_count}）；"
+                f"本地 {primary_mother_count} 母号 / {reconciliation['managed']} 子号，"
+                f"待邀请 {invited}；官方未接入 {reconciliation['remote_only']}"
                 + (f"；{name_warning}" if name_warning else "")
             ),
             "workspace_id": workspace.id,
@@ -351,6 +371,9 @@ class WorkspaceSyncService:
             "joined": joined_people_total,
             "joined_people_total": joined_people_total,
             "owner_count": owner_count,
+            "official_owner_count": official_owner_count,
+            "official_member_count": official_member_count,
+            "primary_mother_count": primary_mother_count,
             "joined_member_count": joined_member_count,
             "invited": invited,
             "managed": reconciliation["managed"],

@@ -24,12 +24,12 @@ class _FakeChatGPT:
         self.invite_error = None
         self.auto_join = auto_join
 
-    async def send_invite(self, access_token, account_id, email, db_session, identifier="default"):
-        self.invites.append(email)
+    async def send_invite(self, access_token, account_id, email, db_session, identifier="default", role="owner"):
+        self.invites.append({"email": email, "role": role})
         if self.invite_error:
             return {"success": False, "error": self.invite_error, "error_code": "invite_failed"}
         if self.auto_join:
-            self.members = [{"email": email, "id": "user-1"}]
+            self.members = [{"email": email, "id": "user-1", "role": "account-owner"}]
         return {"success": True, "data": {"ok": True}}
 
     async def get_members(self, access_token, account_id, db_session, identifier="default"):
@@ -103,7 +103,7 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["child"]["email"], "kid@icloud.com")
         self.assertFalse(result.get("pushed"))
-        self.assertEqual(client.invites, ["kid@icloud.com"])
+        self.assertEqual(client.invites, [{"email": "kid@icloud.com", "role": "owner"}])
         child = (await self.session.get(Account, result["child"]["id"]))
         self.assertEqual(child.operational_state, "active")
         membership = (
@@ -112,6 +112,7 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
             )
         ).scalar_one_or_none()
         self.assertIsNotNone(membership)
+        self.assertEqual(membership.official_role, "owner")
 
     async def test_empty_email_claims_hme_then_onboards(self):
         workspace = await self._seed_workspace()
@@ -148,7 +149,7 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
             service_hme.mark_signup_started = orig_start
         self.assertTrue(result["success"])
         self.assertEqual(result["child"]["email"], "alias@icloud.com")
-        self.assertEqual(client.invites, ["alias@icloud.com"])
+        self.assertEqual(client.invites, [{"email": "alias@icloud.com", "role": "owner"}])
 
     async def test_invite_failure_stops_before_browser(self):
         workspace = await self._seed_workspace()
@@ -237,6 +238,7 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
         onboard.refill.assert_awaited_once()
         kwargs = onboard.refill.await_args.kwargs
         self.assertEqual(kwargs["skip_email"], child.email)
+        self.assertEqual(kwargs.get("role"), "owner")
         self.assertTrue(kwargs["in_test"])
 
 

@@ -30,7 +30,12 @@ from app.domain.identity import (
     OFFICIAL_ROLE_UNKNOWN,
 )
 from app.domain.identity.ids import normalize_email
-from app.integrations.openai.member_adapter import normalize_official_member
+from app.integrations.openai.member_adapter import (
+    normalize_official_member,
+    normalize_official_role,
+    official_roles_equivalent,
+    parse_invite_role,
+)
 from app.domain.onboard import (
     JOIN_CONFIRM_ATTEMPTS,
     JOIN_CONFIRM_INTERVAL,
@@ -93,7 +98,7 @@ class OnboardService:
         owner = workspace.owner_account if workspace is not None else None
         return require_proxy(child.proxy or (owner.proxy if owner else ""), "子号浏览器/接码")
 
-    async def _confirm_joined(self, db: AsyncSession, workspace: Workspace, email: str) -> bool:
+    async def _confirm_joined(self, db: AsyncSession, workspace: Workspace, email: str) -> dict[str, Any] | None:
         members = await self.workspaces.get_members(db, workspace)
         if not members.get("success"):
             raise RuntimeError(members.get("error") or "对账成员列表失败")
@@ -101,8 +106,8 @@ class OnboardService:
         for item in members.get("members") or members.get("items") or []:
             adapted = normalize_official_member(item, default_state="joined")
             if adapted and adapted["email"] == target:
-                return True
-        return False
+                return adapted
+        return None
 
     def _bind_phone(self, phone_line: str, job_id: str | None, account_id: int | None = None):
         manual = str(phone_line or "").strip()
@@ -173,6 +178,7 @@ class OnboardService:
         force: bool = False,
         job_id: str | None = None,
         in_test: bool = False,
+        role: str = "owner",
     ) -> dict[str, Any]:
         claimed = None
         try:
@@ -198,6 +204,7 @@ class OnboardService:
                 job_id=job_id,
                 claimed=claimed,
                 in_test=in_test,
+                role=role,
             )
             label = ""
             if claimed and result.get("success"):
@@ -229,6 +236,7 @@ class OnboardService:
         job_id: str | None = None,
         claimed=None,
         in_test: bool = False,
+        role: str = "owner",
     ) -> dict[str, Any]:
         busy = await operation_store.active_for_workspace(
             db,
@@ -254,6 +262,7 @@ class OnboardService:
             return {"success": False, "error": f"未找到 Workspace {workspace_id}", "error_code": "workspace_not_found"}
         owner = workspace.owner_account
         require_proxy(owner.proxy if owner else "", "母号 Team API")
+        requested_role = parse_invite_role(role)
 
         existing = (await db.execute(select(Account).where(Account.email == email))).scalar_one_or_none()
         membership = None
@@ -324,7 +333,7 @@ class OnboardService:
                 db,
                 workspace_id=workspace.id,
                 account_id=child.id,
-                official_role=OFFICIAL_ROLE_UNKNOWN,
+                official_role=normalize_official_role((live_item or {}).get("role")) or requested_role,
                 membership_state=MEMBERSHIP_STATE_JOINED,
                 local_purpose=LOCAL_PURPOSE_CHILD,
                 joined_at=utcnow(),
@@ -358,18 +367,30 @@ class OnboardService:
         if skip_invite:
             await self._progress(db, job_id=job_id, stage="skip_invite", message="已跳过官方邀请，仅走浏览器入驻")
         elif already_invited:
+            live_role = normalize_official_role((live_item or {}).get("role"))
+            if live_role not in {"unknown", ""} and not official_roles_equivalent(live_role, requested_role):
+                error = f"{email} 已有官方邀请，但角色是 {live_role}，与本次请求的 {requested_role} 不一致"
+                await self._progress(db, job_id=job_id, stage="invite_role_mismatch", message=error, error=error, error_code="invite_role_mismatch")
+                return {
+                    "success": False,
+                    "error": error,
+                    "error_code": "invite_role_mismatch",
+                    "status": "invite_role_mismatch",
+                    "existing_role": live_role,
+                    "requested_role": requested_role,
+                }
             await ensure_membership(
                 db,
                 workspace_id=workspace.id,
                 account_id=child.id,
-                official_role=OFFICIAL_ROLE_UNKNOWN,
+                official_role=live_role if live_role not in {"unknown", ""} else requested_role,
                 membership_state=MEMBERSHIP_STATE_INVITED,
                 local_purpose=LOCAL_PURPOSE_CHILD,
             )
             await self._progress(db, job_id=job_id, stage="invited", message="邀请已存在，开始重新注册")
         else:
             await self._progress(db, job_id=job_id, stage="inviting", message="正在发送 Team 邀请")
-            invite = await self.workspaces.invite_member(db, workspace.id, email)
+            invite = await self.workspaces.invite_member(db, workspace.id, email, role=requested_role)
             if not invite.get("success"):
                 error = invite.get("error") or "邀请失败"
                 code = classify_onboard_error(error, stage="invite")
@@ -379,7 +400,7 @@ class OnboardService:
                 db,
                 workspace_id=workspace.id,
                 account_id=child.id,
-                official_role=OFFICIAL_ROLE_UNKNOWN,
+                official_role=requested_role,
                 membership_state=MEMBERSHIP_STATE_INVITED,
                 local_purpose=LOCAL_PURPOSE_CHILD,
             )
@@ -520,7 +541,7 @@ class OnboardService:
             db,
             workspace_id=workspace.id,
             account_id=child.id,
-            official_role=OFFICIAL_ROLE_UNKNOWN,
+            official_role=normalize_official_role(joined.get("role")) if isinstance(joined, dict) else requested_role,
             membership_state=MEMBERSHIP_STATE_JOINED,
             local_purpose=LOCAL_PURPOSE_CHILD,
             joined_at=utcnow(),
@@ -589,6 +610,7 @@ class OnboardService:
         job_id: str | None = None,
         skip_email: str = "",
         in_test: bool = False,
+        role: str = "owner",
     ) -> dict[str, Any]:
         replacement = await self.pick_replacement(db, skip_email=skip_email, child_id=child_id, email_line=email_line)
         if replacement is None and not str(email_line or "").strip():
@@ -607,6 +629,7 @@ class OnboardService:
             force=force_refill,
             job_id=job_id,
             in_test=in_test,
+            role=role,
         )
 
 

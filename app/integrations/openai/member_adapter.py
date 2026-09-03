@@ -19,6 +19,17 @@ TOTAL_KEYS = ("total", "count", "reported_total", "total_count", "totalCount")
 SEAT_LIMIT_KEYS = ("seat_limit", "seats_limit", "max_seats", "seatLimit", "capacity", "seats")
 OCCUPIED_SEAT_KEYS = ("occupied_seats", "used_seats", "seats_used", "occupiedSeats", "usedSeats", "seat_used")
 OWNER_ROLES = {"owner", "account-owner", "account_owner", "workspace-owner", "workspace_owner", "admin-owner"}
+ADMIN_ROLES = {"admin", "account-admin", "account_admin", "workspace-admin", "workspace_admin"}
+MEMBER_ROLES = {"member", "standard-user", "standard_user", "user", "account-member", "account_member"}
+DOMAIN_ROLE_OWNER = "owner"
+DOMAIN_ROLE_ADMIN = "admin"
+DOMAIN_ROLE_MEMBER = "member"
+DOMAIN_ROLE_UNKNOWN = "unknown"
+INVITE_DOMAIN_ROLES = (DOMAIN_ROLE_OWNER, DOMAIN_ROLE_MEMBER)
+INVITE_ROLE_PAYLOAD = {
+    DOMAIN_ROLE_OWNER: "account-owner",
+    DOMAIN_ROLE_MEMBER: "standard-user",
+}
 JOINED_STATES = {"joined", "active", "member", "accepted"}
 INVITED_STATES = {"invited", "pending", "invite", "invitation"}
 
@@ -232,7 +243,47 @@ def _state_from(item: dict[str, Any], default_state: str) -> str:
 
 
 def is_owner_role(role: str | None) -> bool:
-    return str(role or "").strip().lower() in OWNER_ROLES
+    return normalize_official_role(role) == DOMAIN_ROLE_OWNER
+
+
+def is_admin_role(role: str | None) -> bool:
+    return normalize_official_role(role) == DOMAIN_ROLE_ADMIN
+
+
+def is_member_role(role: str | None) -> bool:
+    return normalize_official_role(role) == DOMAIN_ROLE_MEMBER
+
+
+def normalize_official_role(value: str | None) -> str:
+    role = str(value or "").strip().lower().replace("_", "-")
+    if not role:
+        return DOMAIN_ROLE_UNKNOWN
+    if role in OWNER_ROLES or role.replace("-", "_") in {item.replace("-", "_") for item in OWNER_ROLES}:
+        return DOMAIN_ROLE_OWNER
+    if role in ADMIN_ROLES or role.replace("-", "_") in {item.replace("-", "_") for item in ADMIN_ROLES}:
+        return DOMAIN_ROLE_ADMIN
+    if role in MEMBER_ROLES or role.replace("-", "_") in {item.replace("-", "_") for item in MEMBER_ROLES}:
+        return DOMAIN_ROLE_MEMBER
+    return DOMAIN_ROLE_UNKNOWN
+
+
+def parse_invite_role(value: str | None, *, default: str = DOMAIN_ROLE_OWNER) -> str:
+    role = normalize_official_role(value) if value not in (None, "") else default
+    if role not in INVITE_DOMAIN_ROLES:
+        raise ValueError("invite role must be owner or member")
+    return role
+
+
+def invite_role_payload(role: str | None, *, default: str = DOMAIN_ROLE_OWNER) -> str:
+    return INVITE_ROLE_PAYLOAD[parse_invite_role(role, default=default)]
+
+
+def official_roles_equivalent(left: str | None, right: str | None) -> bool:
+    a = normalize_official_role(left)
+    b = normalize_official_role(right)
+    if a == DOMAIN_ROLE_UNKNOWN or b == DOMAIN_ROLE_UNKNOWN:
+        return False
+    return a == b
 
 
 def normalize_official_member(item: Any, *, default_state: str = "joined") -> dict[str, Any] | None:
@@ -241,12 +292,14 @@ def normalize_official_member(item: Any, *, default_state: str = "joined") -> di
     email = _email_from(item)
     if not email:
         return None
-    role = _role_from(item)
+    raw_role = _role_from(item)
+    role = normalize_official_role(raw_role) if raw_role and raw_role != "unknown" else DOMAIN_ROLE_UNKNOWN
     return {
         "email": email,
         "user_id": _user_id_from(item),
         "name": _name_from(item),
-        "role": role or "unknown",
+        "role": role,
+        "raw_role": raw_role or DOMAIN_ROLE_UNKNOWN,
         "seat_type": _seat_type_from(item),
         "state": _state_from(item, default_state),
         "added_at": _added_at_from(item),

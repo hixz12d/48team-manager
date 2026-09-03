@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from app.core.time import utcnow
+from app.core.time import as_utc, utcnow
 
 SOURCE_OFFICIAL = "official"
 SOURCE_SUB2API = "sub2api"
@@ -209,13 +210,54 @@ def failure_next_quota_probe_at(now: datetime, fail_count: int) -> datetime:
 
 def due_quota_account_ids(accounts, now: datetime, *, limit: int) -> list[int]:
     due: list[tuple[datetime, int]] = []
+    stamp = as_utc(now) or now
     for account in accounts:
-        scheduled = account.next_quota_probe_at
-        if scheduled is None or scheduled <= now:
-            due.append((scheduled or now, int(account.id)))
+        scheduled = as_utc(getattr(account, "next_quota_probe_at", None))
+        if scheduled is None or scheduled <= stamp:
+            due.append((scheduled or stamp, int(account.id)))
     due.sort()
     cap = max(0, int(limit))
     return [account_id for _, account_id in due[:cap]]
+
+
+def quota_probe_user_message(error_code: Any = None, error_message: Any = None) -> str:
+    code = str(error_code or "").strip()
+    text = str(error_message or "").strip()
+    nested_code = ""
+    nested_message = ""
+    if text.startswith("{") or text.startswith("["):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            err = payload.get("error")
+            if isinstance(err, dict):
+                nested_code = str(err.get("code") or "")
+                nested_message = str(err.get("message") or "")
+            elif isinstance(err, str):
+                nested_message = err
+            nested_code = nested_code or str(payload.get("code") or payload.get("error_code") or "")
+            nested_message = nested_message or str(payload.get("message") or "")
+    blob = " ".join(part for part in (code, nested_code, text, nested_message) if part).lower()
+    if code == "missing_token" or "local access token" in blob or "undecryptable" in blob:
+        return "这个号还没授权，无法读额度。点「授权」，用这个邮箱登录后再试。"
+    if (
+        code in {"token_revoked", "token_invalidated", "http_401"}
+        or nested_code in {"token_revoked", "token_invalidated"}
+        or "token_revoked" in blob
+        or "invalidated oauth token" in blob
+    ):
+        return "官方登录已失效，点「授权」用这个邮箱重新登录后再读额度。"
+    if code == "http_403":
+        return "官方拒绝读取额度，点「授权」重新登录后再试。"
+    if code == "http_429":
+        return "官方额度接口太频繁，稍后再试。"
+    if code == "http_5xx":
+        return "官方额度接口暂时不可用，稍后再试。"
+    if text and not text.startswith("{") and not text.startswith("[") and len(text) <= 180:
+        return text
+    return "额度刷新失败，请重试。"
 
 
 def official_overrides_sub2api_stale(official, sub2api_kind: str | None) -> bool:

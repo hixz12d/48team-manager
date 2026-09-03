@@ -267,6 +267,22 @@ class IdentitySessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(owner["allow"])
         self.assertEqual(owner["error_code"], "owner_manual")
 
+        child_owner = Account(email="owner-child@icloud.com", official_plan="unknown", local_purpose="child", operational_state="active", auth_state="unknown")
+        self.session.add(child_owner)
+        await self.session.flush()
+        self.session.add(
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                account_id=child_owner.id,
+                official_role="owner",
+                membership_state="joined",
+                local_purpose="child",
+            )
+        )
+        await self.session.commit()
+        allowed = await automation_gate(self.session, email="owner-child@icloud.com", workspace_id=workspace.id)
+        self.assertTrue(allowed["allow"])
+
 
 class IdentityImportTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

@@ -42,6 +42,7 @@ from app.domain.identity.policy import (
     child_operational_state,
     normalize_local_purpose,
     membership_local_purpose_for,
+    is_workspace_owner,
     normalize_operational_state,
     normalize_workspace_status,
 )
@@ -384,6 +385,7 @@ async def automation_gate(
     *,
     remote_account_id: Any = None,
     email: str = "",
+    workspace_id: int | None = None,
 ) -> dict[str, Any]:
     """Stop automation on conflict / owner. Never guess from Gmail or names."""
     target_email = normalize_email(email)
@@ -446,12 +448,14 @@ async def automation_gate(
                 select(WorkspaceMembership).where(WorkspaceMembership.account_id == account.id)
             )
         ).scalars().all()
-        owner_memberships = [
-            row
-            for row in memberships
-            if row.official_role == OFFICIAL_ROLE_OWNER
-            and row.membership_state in (MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_UNKNOWN)
-        ]
+        owned_workspaces = list(
+            (await db.execute(select(Workspace).where(Workspace.owner_account_id == account.id))).scalars()
+        )
+        if workspace_id is not None:
+            current_workspace = await db.get(Workspace, int(workspace_id))
+            is_primary_mother = is_workspace_owner(current_workspace, account.id)
+        else:
+            is_primary_mother = account.local_purpose == LOCAL_PURPOSE_MOTHER or bool(owned_workspaces)
         if binding_state == BINDING_CONFLICT:
             return payload(
                 allow=False,
@@ -463,12 +467,12 @@ async def automation_gate(
                 local_purpose=account.local_purpose or "",
                 binding_state=binding_state,
             )
-        if account.local_purpose == LOCAL_PURPOSE_MOTHER or owner_memberships:
+        if is_primary_mother:
             return payload(
                 allow=False,
                 decision="owner",
                 error_code="owner_manual",
-                reason="本地身份是母号 / workspace owner，不自动重授权",
+                reason="当前工作区的主控母号，不自动重授权",
                 source="identity",
                 account_id=account.id,
                 local_purpose=account.local_purpose or "",

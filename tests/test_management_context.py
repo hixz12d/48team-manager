@@ -105,8 +105,10 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         result = await service.sync_workspace(self.session, self.ws_a.id)
         self.assertTrue(result["ok"])
         self.assertEqual(result["joined_people_total"], 2)
-        self.assertEqual(result["joined_member_count"], 1)
-        self.assertNotIn("Owner 2", result["message"])
+        self.assertEqual(result["joined_member_count"], 0)
+        self.assertEqual(result["official_owner_count"], 2)
+        self.assertIn("Owner 2", result["message"])
+        self.assertIn("本地 1 母号", result["message"])
         self.assertIn("1 母号", result["message"])
 
         linked = await link_remote_only_member(self.session, self.ws_a.id, email="hixz262@gmail.com")
@@ -172,8 +174,8 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
             async def lookup_live_member(self, db, workspace, email):
                 return {"success": True, "lookup_state": "absent_confirmed"}, None
 
-            async def invite_member(self, db, workspace_id, email):
-                self.invites.append(email)
+            async def invite_member(self, db, workspace_id, email, role="owner"):
+                self.invites.append((email, role))
                 return {"success": True, "message": f"已邀请 {email}"}
 
         workspaces = _InviteWS()
@@ -187,7 +189,7 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(added["created"])
         self.assertEqual(added["status"], "invited")
         self.assertTrue(added["needs_auth"])
-        self.assertEqual(workspaces.invites, ["manual.child@example.com"])
+        self.assertEqual(workspaces.invites, [("manual.child@example.com", "owner")])
         created = await self.session.get(Account, added["account_id"])
         self.assertEqual(created.email, "manual.child@example.com")
         self.assertEqual(created.auth_state, "oauth_required")
@@ -225,7 +227,7 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
             async def lookup_live_member(self, db, workspace, email):
                 return {"success": True, "lookup_state": "absent_confirmed"}, None
 
-            async def invite_member(self, db, workspace_id, email):
+            async def invite_member(self, db, workspace_id, email, role="owner"):
                 return {"success": False, "error": "invite rejected", "error_code": "invite_failed"}
 
         failed = await add_local_child(

@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -11,9 +11,11 @@ from app.application.quota import QuotaService
 from app.core.crypto import token_cipher
 from app.domain.quota import (
     DEFAULT_QUOTA_PROBE_ENABLED,
+    due_quota_account_ids,
     failure_next_quota_probe_at,
     official_overrides_sub2api_stale,
     parse_wham_usage,
+    quota_probe_user_message,
     success_next_quota_probe_at,
 )
 from app.integrations.openai.quota import OpenAIQuotaClient
@@ -76,6 +78,32 @@ class QuotaParseTests(unittest.TestCase):
         self.assertEqual(failure_next_quota_probe_at(now, 3), now + timedelta(minutes=30))
         self.assertEqual(failure_next_quota_probe_at(now, 4), now + timedelta(minutes=60))
         self.assertEqual(failure_next_quota_probe_at(now, 9), now + timedelta(minutes=60))
+
+    def test_due_ids_compare_naive_sqlite_times_with_aware_now(self):
+        now = datetime(2026, 9, 3, 12, 20, tzinfo=timezone.utc)
+
+        class Row:
+            def __init__(self, account_id, scheduled):
+                self.id = account_id
+                self.next_quota_probe_at = scheduled
+
+        due = due_quota_account_ids(
+            [
+                Row(9, datetime(2026, 9, 3, 12, 55, 25)),
+                Row(6, datetime(2026, 9, 3, 12, 15, 59)),
+            ],
+            now,
+            limit=3,
+        )
+        self.assertEqual(due, [6])
+
+    def test_quota_probe_user_message_maps_token_revoked_json(self):
+        raw = '{\n  "error": {\n    "message": "Encountered invalidated oauth token for user, failing request",\n    "type": null,\n    "code": "token_revoked",\n    "param": null\n  },\n  "status": 401\n}'
+        self.assertEqual(
+            quota_probe_user_message("token_revoked", raw),
+            "官方登录已失效，点「授权」用这个邮箱重新登录后再读额度。",
+        )
+        self.assertIn("还没授权", quota_probe_user_message("missing_token", "local access token missing"))
 
 
 class QuotaClientTests(unittest.IsolatedAsyncioTestCase):

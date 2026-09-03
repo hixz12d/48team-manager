@@ -84,6 +84,8 @@ class UIContractTests(unittest.TestCase):
             self.assertIn('data-accounts-view="portfolio"', accounts)
             self.assertIn('id="accounts-portfolio"', accounts)
             js = client.get("/static/js/app.js").text
+            self.assertIn('"account-owner": "所有者"', js)
+            self.assertNotIn('"account-owner": "成员"', js)
             self.assertIn("quota-meter", js)
             self.assertIn("/api/accounts/portfolio", js)
             self.assertNotIn("/api/workspaces/${item.id}/sync-name", js)
@@ -103,6 +105,8 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("manage-children-list", accounts)
             self.assertIn("邀请进 Team", accounts)
             self.assertIn("会向官方 Team 发邀请", accounts)
+            self.assertIn("所有者 Owner（默认）", accounts)
+            self.assertIn('name="role"', accounts)
             self.assertNotIn("只写本地档案，不邀请官方席位", accounts)
             self.assertIn("正在发送官方邀请", js)
             self.assertIn("已邀请进官方席位", js)

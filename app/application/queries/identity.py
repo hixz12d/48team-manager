@@ -18,6 +18,7 @@ from app.domain.identity import (
 from app.domain.identity.audit import build_audit_report
 from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import is_workspace_owner
+from app.integrations.openai.member_adapter import is_admin_role, is_owner_role, normalize_official_role
 from app.domain.workspaces.names import resolve_display_name
 from app.persistence.repositories import identity as identity_repo
 
@@ -87,24 +88,33 @@ def _workspace_display(workspace, owner_email: str | None = None) -> dict[str, A
 
 def _official_counts(snaps: list, *, owner_email: str) -> dict[str, Any]:
     joined_people_total = 0
-    owner_count = 0
-    joined_member_count = 0
+    official_owner_count = 0
+    official_admin_count = 0
+    official_member_count = 0
     invited_count = 0
+    primary_mother_count = 0
     for snap in snaps:
         email = normalize_email(snap.normalized_email)
-        is_owner = bool(owner_email) and email == owner_email
+        role = normalize_official_role(snap.official_role)
         if snap.remote_state == "invited":
             invited_count += 1
             continue
         joined_people_total += 1
-        if is_owner:
-            owner_count += 1
+        if bool(owner_email) and email == owner_email:
+            primary_mother_count = 1
+        if is_owner_role(role):
+            official_owner_count += 1
+        elif is_admin_role(role):
+            official_admin_count += 1
         else:
-            joined_member_count += 1
+            official_member_count += 1
     return {
         "joined_people_total": joined_people_total,
-        "owner_count": owner_count,
-        "joined_member_count": joined_member_count,
+        "owner_count": official_owner_count,
+        "official_owner_count": official_owner_count,
+        "official_member_count": official_member_count,
+        "primary_mother_count": primary_mother_count,
+        "joined_member_count": official_member_count,
         "invited_count": invited_count,
     }
 
@@ -163,6 +173,9 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
         counts = _official_counts(snaps, owner_email=owner_email) if has_snapshot else {
             "joined_people_total": None,
             "owner_count": None,
+            "official_owner_count": None,
+            "official_member_count": None,
+            "primary_mother_count": None,
             "joined_member_count": None,
             "invited_count": None,
         }
@@ -195,6 +208,9 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
                 "owner_email": owner.email if owner else None,
                 "joined_people_total": counts["joined_people_total"],
                 "joined_member_count": counts["joined_member_count"],
+                "official_owner_count": counts.get("official_owner_count"),
+                "official_member_count": counts.get("official_member_count"),
+                "primary_mother_count": counts.get("primary_mother_count"),
                 "managed_count": len(managed),
                 "members": counts["joined_member_count"],
                 "seat_limit": workspace.seat_limit,
@@ -261,18 +277,21 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             item = {
                 "email": email,
                 "name": snap.display_name,
-                "role": snap.official_role,
+                "role": normalize_official_role(snap.official_role),
                 "user_id": snap.official_user_id,
                 "seat_type": snap.seat_type,
                 "state": snap.remote_state,
                 "added_at": isoformat(snap.added_at),
-                "is_owner": bool(owner_email) and email == owner_email,
+                "is_owner": is_owner_role(snap.official_role),
             }
             official_members.append(item)
             official_by_email[email] = item
         counts = _official_counts(snaps, owner_email=owner_email) if snaps or workspace.last_official_sync_at else {
             "joined_people_total": None,
             "owner_count": None,
+            "official_owner_count": None,
+            "official_member_count": None,
+            "primary_mother_count": None,
             "joined_member_count": None,
             "invited_count": None,
         }
@@ -380,6 +399,9 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                     "synced_at": isoformat(workspace.last_official_sync_at),
                     "joined_people_total": counts["joined_people_total"] if has_snapshot else None,
                     "owner_count": counts["owner_count"] if has_snapshot else None,
+                    "official_owner_count": counts.get("official_owner_count") if has_snapshot else None,
+                    "official_member_count": counts.get("official_member_count") if has_snapshot else None,
+                    "primary_mother_count": counts.get("primary_mother_count") if has_snapshot else None,
                     "joined_member_count": counts["joined_member_count"] if has_snapshot else None,
                     "invited_count": counts["invited_count"] if has_snapshot else None,
                     "occupied_seats": getattr(workspace, "occupied_seats", None),

@@ -14,6 +14,7 @@ from app.domain.automation import ACTIVE_STATES, TERMINAL_STATES, WORKSPACE_LOCK
 from app.domain.identity import LOCAL_PURPOSE_CHILD, LOCAL_PURPOSE_MOTHER, MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import is_workspace_owner
+from app.integrations.openai.member_adapter import normalize_official_role, official_roles_equivalent, parse_invite_role
 from app.domain.workspaces.names import apply_custom_name, apply_official_name, is_placeholder_or_email_name, resolve_display_name
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 from app.persistence.models.quota import QuotaSnapshot
@@ -155,7 +156,7 @@ async def link_remote_only_member(
         db,
         workspace_id=workspace.id,
         account_id=account.id,
-        official_role=snap.official_role or "member",
+        official_role=normalize_official_role(snap.official_role) or "member",
         membership_state=MEMBERSHIP_STATE_JOINED,
         local_purpose=LOCAL_PURPOSE_CHILD,
         joined_at=snap.added_at or utcnow(),
@@ -226,6 +227,7 @@ async def add_local_child(
     email: str,
     workspaces=None,
     job_id: str | None = None,
+    role: str = "owner",
 ) -> dict[str, Any]:
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
@@ -256,8 +258,26 @@ async def add_local_child(
     already_joined = bool(live_item and live_item.get("status") == "joined")
     already_invited = bool(live_item and live_item.get("status") == "invited")
     invited_now = False
+    requested_role = parse_invite_role(role)
+    live_role = normalize_official_role((live_item or {}).get("role"))
+    if already_joined and live_role not in {"unknown", ""} and not official_roles_equivalent(live_role, requested_role):
+        return {
+            "ok": False,
+            "error": f"{target} 已经加入，官方角色是 {live_role}，本次邀请不会改成 {requested_role}",
+            "error_code": "already_joined_role_mismatch",
+            "existing_role": live_role,
+            "requested_role": requested_role,
+        }
+    if already_invited and live_role not in {"unknown", ""} and not official_roles_equivalent(live_role, requested_role):
+        return {
+            "ok": False,
+            "error": f"{target} 已有官方邀请，但角色是 {live_role}，与本次请求的 {requested_role} 不一致",
+            "error_code": "invite_role_mismatch",
+            "existing_role": live_role,
+            "requested_role": requested_role,
+        }
     if not already_joined and not already_invited:
-        invite = await service.invite_member(db, workspace.id, target)
+        invite = await service.invite_member(db, workspace.id, target, role=requested_role)
         if not invite.get("success"):
             return {
                 "ok": False,
@@ -279,7 +299,7 @@ async def add_local_child(
         db,
         workspace_id=workspace.id,
         account_id=account.id,
-        official_role=(live_item or {}).get("role") or "member",
+        official_role=live_role if live_role not in {"unknown", ""} else requested_role,
         membership_state=membership_state,
         local_purpose=LOCAL_PURPOSE_CHILD,
         joined_at=utcnow() if already_joined else None,
@@ -298,7 +318,7 @@ async def add_local_child(
             WorkspaceOfficialMemberSnapshot(
                 workspace_id=workspace.id,
                 normalized_email=target,
-                official_role=(live_item or {}).get("role") or "member",
+                official_role=live_role if live_role not in {"unknown", ""} else requested_role,
                 official_user_id=(live_item or {}).get("user_id"),
                 remote_state=remote_state,
                 fetched_at=utcnow(),
@@ -306,7 +326,7 @@ async def add_local_child(
         )
     else:
         snap.remote_state = remote_state
-        snap.official_role = (live_item or {}).get("role") or snap.official_role or "member"
+        snap.official_role = live_role if live_role not in {"unknown", ""} else requested_role
         snap.official_user_id = (live_item or {}).get("user_id") or snap.official_user_id
         snap.fetched_at = utcnow()
         snap.updated_at = utcnow()

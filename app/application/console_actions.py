@@ -26,6 +26,8 @@ from app.application.workspaces import workspace_service
 from app.core.proxy import mask_proxy_url, normalize_proxy_url
 from app.core.time import isoformat, utcnow
 from app.domain.identity.ids import normalize_email
+from app.domain.quota import quota_probe_user_message
+from app.integrations.openai.member_adapter import parse_invite_role
 from app.domain.resources import (
     HME_STATE_RESERVED,
 )
@@ -341,9 +343,10 @@ async def account_quota_probe(db: AsyncSession, account_id: int, workspace_id: i
     ok = bool(getattr(snap, "success", False))
     error = getattr(snap, "error_message", None) or getattr(snap, "error", None)
     error_code = getattr(snap, "error_code", None)
-    if error_code == "missing_token" or (isinstance(error, str) and "local access token" in error):
-        error = "这个号还没授权，无法读额度。点「授权」，用这个邮箱登录后再试。"
-        error_code = "missing_token"
+    if not ok:
+        error = quota_probe_user_message(error_code, error)
+        if error_code == "missing_token" or "还没授权" in error:
+            error_code = error_code or "missing_token"
     payload = {
         "success": ok,
         "status": "success" if ok else "failed",
@@ -531,6 +534,7 @@ async def start_workspace_onboard(
     password: str = "",
     force: bool = False,
     skip_invite: bool = False,
+    role: str = "owner",
 ) -> dict[str, Any]:
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
@@ -548,6 +552,7 @@ async def start_workspace_onboard(
             "proxy": mask_proxy_url(proxy) if proxy else "",
             "force": bool(force),
             "skip_invite": bool(skip_invite),
+            "requested_role": parse_invite_role(role),
         },
         resolved_proxy=str(proxy or "").strip(),
     )
@@ -561,6 +566,7 @@ async def start_workspace_onboard(
         password=password,
         force=force,
         skip_invite=skip_invite,
+        role=role,
         job_id=operation.public_id,
         in_test=False,
     )
@@ -579,6 +585,7 @@ async def start_controlled_rotate(
     proxy: str = "",
     force_refill: bool = False,
     reason: str = "console",
+    role: str = "owner",
 ) -> dict[str, Any]:
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
@@ -603,6 +610,7 @@ async def start_controlled_rotate(
             "reason": reason,
             "source": "manual",
             "confirmed": True,
+            "requested_role": parse_invite_role(role),
         },
         source="manual",
     )
@@ -619,6 +627,7 @@ async def start_controlled_rotate(
         proxy=proxy,
         child_id=child.id if child else None,
         skip_confirm=True,
+        role=role,
         in_test=False,
     )
     await operation_store.finish(db, operation, result)
@@ -842,6 +851,7 @@ async def invite_workspace_child(
     workspace_id: int,
     *,
     email: str,
+    role: str = "owner",
 ) -> dict[str, Any]:
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
@@ -854,10 +864,10 @@ async def invite_workspace_child(
         op_type="invite_child",
         workspace_id=workspace.id,
         email=target,
-        input_payload={"workspace_id": workspace.id, "email": target, "mode": "invite"},
+        input_payload={"workspace_id": workspace.id, "email": target, "mode": "invite", "requested_role": parse_invite_role(role)},
     )
     await db.commit()
-    result = await add_local_child(db, workspace.id, email=target, job_id=operation.public_id)
+    result = await add_local_child(db, workspace.id, email=target, job_id=operation.public_id, role=role)
     await operation_store.finish(db, operation, result)
     await db.commit()
     return _ok_result(result, operation_id=operation.public_id)

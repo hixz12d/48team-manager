@@ -111,8 +111,10 @@
     owner: "所有者",
     member: "成员",
     admin: "管理员",
-    "account-owner": "成员",
-    account_owner: "成员",
+    "account-owner": "所有者",
+    account_owner: "所有者",
+    "workspace-owner": "所有者",
+    "standard-user": "成员",
     "account-admin": "管理员",
   };
 
@@ -134,13 +136,17 @@
 
   function roleLabel(value) {
     if (value == null || value === "") return "";
-    return roleLabels[value] || String(value);
+    const key = String(value).trim().toLowerCase().replaceAll("_", "-");
+    return roleLabels[key] || roleLabels[value] || String(value);
   }
 
   function friendlyError(error) {
     const text = String(error && error.message ? error.message : error || "请求失败");
     if (/local access token missing/i.test(text) || /undecryptable/i.test(text)) {
       return "这个号还没授权。点「授权」，用这个邮箱登录后再读额度。";
+    }
+    if (/token_revoked|token_invalidated|invalidated oauth token/i.test(text)) {
+      return "官方登录已失效，点「授权」用这个邮箱重新登录后再读额度。";
     }
     if (text.length > 180 || text.trim().startsWith("{") || text.trim().startsWith("[")) {
       return "请求失败，请重试。";
@@ -493,7 +499,9 @@
     const people = official.joined_people_total ?? item.members;
     const children = official.joined_member_count;
     let main = people == null ? "—" : `${people} 人`;
-    if (children != null) main += ` · ${children} 子号`;
+    const owners = official.official_owner_count ?? official.owner_count;
+    if (owners != null) main += ` · Owner ${owners}`;
+    if (children != null) main += ` · Member ${children}`;
     if (official.occupied_seats != null && official.seat_limit != null) {
       main += ` · 席位 ${official.occupied_seats}/${official.seat_limit}`;
     }
@@ -970,7 +978,7 @@ function hmeRow(item) {
       health.forEach((item) => {
         const row = document.createElement("div");
         row.className = "list-row";
-        const seats = item.joined_people_total != null ? `${item.joined_people_total} 人 · ${item.joined_member_count ?? item.members ?? 0} 子成员` : (item.sync_state === "never" ? "尚未同步" : (item.members == null ? "尚未同步" : `${item.members} 子成员`));
+        const seats = item.joined_people_total != null ? `${item.joined_people_total} 人 · Owner ${item.official_owner_count ?? item.owner_count ?? 0} / Member ${item.official_member_count ?? item.joined_member_count ?? item.members ?? 0}` : (item.sync_state === "never" ? "尚未同步" : (item.members == null ? "尚未同步" : `${item.members} 子成员`));
         const sub = [item.owner_email, seats, item.last_sync ? relativeTime(item.last_sync) : null].filter(Boolean).join(" · ");
         row.append(twoLine(item.display_name || item.name, sub), statusNode(item.health, labelOf(statusLabels, item.health)));
         list.append(row);
@@ -1024,7 +1032,7 @@ function hmeRow(item) {
           ["授权", labelOf(statusLabels, item.auth)],
           ["运行状态", labelOf(stateLabels, item.state)],
           ["官方计划", item.official_plan],
-          ["官方角色", item.official_role],
+          ["官方角色", roleLabel(item.official_role)],
           ["Membership", item.membership_state],
         ]),
         kvSection("官方额度", [
@@ -1070,7 +1078,7 @@ function hmeRow(item) {
       const official = item.official || {};
       const peopleText = official.sync_state === "never" || (item.last_sync == null && official.joined_people_total == null)
         ? "尚未同步"
-        : (official.joined_people_total == null ? "—" : `已加入 ${official.joined_people_total} 人（1 母号 / ${official.joined_member_count ?? "—"} 子号）`);
+        : (official.joined_people_total == null ? "—" : `已加入 ${official.joined_people_total} 人（Owner ${official.official_owner_count ?? official.owner_count ?? "—"} / Member ${official.official_member_count ?? official.joined_member_count ?? "—"}）`);
       const seatText = official.occupied_seats != null && official.seat_limit != null
         ? `${official.occupied_seats} / ${official.seat_limit}`
         : "无官方席位元数据";
@@ -1966,7 +1974,7 @@ function hmeRow(item) {
     if (button) button.disabled = true;
     setFormStatus("manage-children-status", "正在发送官方邀请…", "muted");
     try {
-      const result = await postAction(`workspace-add-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/add`, { email });
+      const result = await postAction(`workspace-add-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/add`, { email, role: form.role?.value || "owner" });
       form.email.value = "";
       setFormStatus("manage-children-status", result.message || "已邀请进官方席位", "muted");
       toast(result.message || "已邀请进官方席位", operationTone(result), result.operation_id ? { label: "查看任务", onClick: () => openOperationById(result.operation_id) } : undefined);
@@ -2128,6 +2136,7 @@ function hmeRow(item) {
         proxy: form.proxy.value || "",
         force: Boolean(form.force.checked),
         skip_invite: Boolean(form.skip_invite.checked),
+        role: form.role?.value || "owner",
       });
       closeOnboard();
       await handleActionResult(result, { successMessage: result.message || "创建子号完成", longRunning: true });

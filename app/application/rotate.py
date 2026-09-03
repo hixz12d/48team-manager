@@ -21,6 +21,7 @@ from app.core.time import utcnow
 from app.domain.automation import WORKSPACE_LOCK_ACTIONS
 from app.domain.identity import MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_UNKNOWN, PROVIDER_SUB2API
 from app.domain.identity.ids import normalize_email
+from app.domain.identity.policy import is_workspace_owner
 from app.domain.rotate import (
     DEFAULT_AUTO_ROTATE_DAILY_LIMIT,
     DEFAULT_AUTO_ROTATE_DRAIN_SECONDS,
@@ -346,6 +347,21 @@ class RotateService:
                 "error": f"{live.get('error') or '读取成员失败'}，上游状态未知，未执行踢人/撤回，也未改本地状态",
                 "error_code": live.get("error_code") or "kick_lookup_unknown",
             }
+        owner = None
+        owner_fn = getattr(self.workspaces, "owner_account", None)
+        if callable(owner_fn):
+            owner = await owner_fn(db, workspace)
+        elif workspace.owner_account_id:
+            owner = await db.get(Account, workspace.owner_account_id)
+        if child is not None and is_workspace_owner(workspace, child.id):
+            return {"success": False, "error": "不能踢出当前工作区的主控母号", "error_code": "primary_mother_protected"}
+        if owner is not None and normalize_email(owner.email) == target:
+            return {"success": False, "error": "不能踢出当前工作区的主控母号", "error_code": "primary_mother_protected"}
+        guard_fn = getattr(self.workspaces, "_last_owner_guard", None)
+        if callable(guard_fn):
+            guard = guard_fn(workspace, owner, live, live_item, email=target)
+            if guard is not None:
+                return guard
         live_status = (live_item or {}).get("status")
         if live_item:
             live_id = live_item.get("user_id") or self.workspaces.client.pick_user_id(live_item)
@@ -459,6 +475,7 @@ class RotateService:
         next_eligible_at: datetime | None = None,
         refill: Any = None,
         in_test: bool = False,
+        role: str = "owner",
     ) -> dict[str, Any]:
         target = normalize_email(email)
         if not target:
@@ -524,6 +541,7 @@ class RotateService:
             job_id=job_id,
             skip_email=target,
             in_test=in_test,
+            role=role,
         )
         if not invite_result.get("success"):
             return {
@@ -567,6 +585,7 @@ class RotateService:
         now: datetime | None = None,
         refill: Any = None,
         in_test: bool = False,
+        role: str = "owner",
     ) -> dict[str, Any]:
         del now
         target = normalize_email(email)
@@ -589,7 +608,7 @@ class RotateService:
                     "error_code": "operation_conflict",
                     "operation_id": busy.public_id,
                 }
-            gate = await automation_gate(db, remote_account_id=remote_id, email=target)
+            gate = await automation_gate(db, remote_account_id=remote_id, email=target, workspace_id=workspace_id)
             if not gate.get("allow"):
                 await self._mark_step(
                     db,
@@ -674,6 +693,7 @@ class RotateService:
             proxy=proxy,
             child_id=child_id,
             force_refill=force_refill,
+            role=role,
             job_id=job_id,
             reason=reason,
             next_eligible_at=eligible,
@@ -748,14 +768,6 @@ class RotateService:
             )
             if not reason:
                 continue
-            gate = await automation_gate(db, remote_account_id=remote_id, email=email)
-            if not gate.get("allow"):
-                stats["skipped"] += 1
-                if gate.get("error_code") == "identity_conflict":
-                    stats["conflict"] += 1
-                    if child is not None:
-                        child.last_reauth_code = "identity_conflict"
-                continue
             if child is None:
                 stats["skipped"] += 1
                 continue
@@ -764,6 +776,14 @@ class RotateService:
             workspace = await self._joined_workspace(db, child)
             if workspace is None or workspace.id in occupied:
                 stats["skipped"] += 1
+                continue
+            gate = await automation_gate(db, remote_account_id=remote_id, email=email, workspace_id=workspace.id)
+            if not gate.get("allow"):
+                stats["skipped"] += 1
+                if gate.get("error_code") == "identity_conflict":
+                    stats["conflict"] += 1
+                    if child is not None:
+                        child.last_reauth_code = "identity_conflict"
                 continue
             due_at = child.next_eligible_at or stamp
             candidates.append((due_at, remote, child, workspace, reason))
