@@ -186,11 +186,11 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(added["ok"])
         self.assertTrue(added["created"])
         self.assertEqual(added["status"], "invited")
-        self.assertFalse(added["needs_auth"])
+        self.assertTrue(added["needs_auth"])
         self.assertEqual(workspaces.invites, ["manual.child@example.com"])
         created = await self.session.get(Account, added["account_id"])
         self.assertEqual(created.email, "manual.child@example.com")
-        self.assertEqual(created.auth_state, "unknown")
+        self.assertEqual(created.auth_state, "oauth_required")
         snap = (
             await self.session.execute(
                 select(WorkspaceOfficialMemberSnapshot).where(

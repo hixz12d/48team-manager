@@ -462,7 +462,7 @@
       <header>
         <div>
           <strong id="register-title">登记团队</strong>
-          <p class="muted">用母号 OAuth 授权。Workspace 和令牌从回调里取，不会在 OpenAI 开新团队。</p>
+          <p class="muted">用母号登录 ChatGPT 授权。团队和令牌从回调里取，不会在 OpenAI 开新团队。</p>
         </div>
         <button type="button" class="button ghost" data-close-register>关掉</button>
       </header>
@@ -492,8 +492,8 @@
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="reauth-title">
       <header>
         <div>
-          <strong id="reauth-title">重新授权</strong>
-          <p class="muted" id="reauth-subtitle">打开授权链接，登录后把跳转到 localhost:1455 的整段地址贴回来。母号和子号都走这条手动链接。</p>
+          <strong id="reauth-title">授权</strong>
+          <p class="muted" id="reauth-subtitle">点「打开授权」，用这个邮箱登录 ChatGPT。登录后会跳到 localhost:1455，把整段地址贴回来。</p>
         </div>
         <button type="button" class="button ghost" data-close-reauth>关掉</button>
       </header>
@@ -661,7 +661,7 @@
       <header>
         <div>
           <strong id="manage-children-title">管理子号</strong>
-          <p class="muted" id="manage-children-subtitle">邀请进官方席位、授权、删除。删除时可只下本地、踢官方，或永久清档案。</p>
+          <p class="muted" id="manage-children-subtitle">邀请进官方席位、授权、删除。对方接受邀请后，点「授权」才能读额度。</p>
         </div>
         <button type="button" class="button ghost" data-close-manage-children>关闭</button>
       </header>
@@ -674,7 +674,7 @@
           <input type="hidden" name="workspace_id" value="">
           <div class="sheet-section">
             <label>邀请邮箱<input name="email" type="email" required autocomplete="off" placeholder="child@example.com"></label>
-            <p class="hint">会向官方 Team 发邀请。对方接受后才能授权读额度。</p>
+            <p class="hint">会向官方 Team 发邀请。对方接受后，在这里点「授权」用这个邮箱登录再读额度。</p>
           </div>
           <p id="manage-children-status" class="muted" hidden></p>
           <div class="settings-probe-actions">

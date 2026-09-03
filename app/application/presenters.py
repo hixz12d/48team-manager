@@ -23,7 +23,15 @@ STATUS_LABELS = {
     "not_eligible": "不适用",
     "snapshot_updated": "快照已更新",
     "schema_mismatch": "官方数量不一致",
-    "verification_failed": "复读验证失败",
+    "verification_failed": "核对失败",
+    "oauth_required": "要授权",
+    "needs_auth": "要授权",
+    "unknown": "未授权",
+    "identity_conflict": "账号对不上",
+    "membership_drift": "本地和官方对不上",
+    "needs_management": "有人还没接入",
+    "vacancy": "有空位",
+    "billing": "账单异常",
     "probe_failed": "检测失败",
 }
 
@@ -33,13 +41,13 @@ MEMBERSHIP_STATUS_LABELS = {
     "remote_only": "官方已加入 · 未接入",
     "local_only": "本地有记录 · 官方未找到",
     "invited": "已邀请 · 等待加入",
-    "conflict": "身份冲突 · 需人工核对",
+    "conflict": "账号对不上 · 需人工核对",
 }
 
 OPERATION_TYPE_LABELS = {
     "quota_probe": "额度刷新",
-    "auth_probe": "授权探测",
-    "reauth": "重新授权",
+    "auth_probe": "检查授权",
+    "reauth": "授权",
     "onboard": "拉人",
     "rotate": "轮转",
     "kick_member": "踢出成员",

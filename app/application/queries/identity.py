@@ -23,7 +23,7 @@ from app.persistence.repositories import identity as identity_repo
 
 
 HIDDEN_ACCOUNT_STATES = {"archived"}
-AUTH_NEED_STATES = {"refresh_due", "oauth_required", "phone_required", "manual_required", "deactivated"}
+AUTH_NEED_STATES = {"refresh_due", "oauth_required", "phone_required", "manual_required", "deactivated", "unknown"}
 
 
 def _account_state(account, finding: dict[str, Any] | None) -> str:

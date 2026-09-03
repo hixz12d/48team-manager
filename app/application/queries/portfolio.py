@@ -61,9 +61,21 @@ def _quota_risk(quota: dict[str, Any] | None) -> str | None:
 
 def _account_card(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
     quota = item.get("quota") or {}
+    has_token = item.get("has_access_token")
+    auth = str(item.get("auth") or "")
+    needs_auth = bool(item.get("needs_auth")) or has_token is False or auth in {
+        "oauth_required",
+        "manual_required",
+        "deactivated",
+        "phone_required",
+        "refresh_due",
+        "unknown",
+    }
     return {
         **item,
         "kind": kind,
+        "has_access_token": bool(has_token),
+        "needs_auth": needs_auth,
         "quota_risk": _quota_risk(quota),
         "usage": None,
         "usage_note": "请求量、Token 和账单需独立采集后才显示，当前仅有官方 5h/7d 额度快照。",
@@ -115,6 +127,8 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                     "sub2api": "unbound",
                     "proxy": "set" if raw.proxy else "none",
                     "proxy_url": mask_proxy_url(raw.proxy) if raw.proxy else None,
+                    "has_access_token": bool(raw.access_token_encrypted),
+                    "needs_auth": not bool(raw.access_token_encrypted),
                 }
             if account is None:
                 continue

@@ -339,6 +339,11 @@ async def account_quota_probe(db: AsyncSession, account_id: int, workspace_id: i
         await db.commit()
         return payload
     ok = bool(getattr(snap, "success", False))
+    error = getattr(snap, "error_message", None) or getattr(snap, "error", None)
+    error_code = getattr(snap, "error_code", None)
+    if error_code == "missing_token" or (isinstance(error, str) and "local access token" in error):
+        error = "这个号还没授权，无法读额度。点「授权」，用这个邮箱登录后再试。"
+        error_code = "missing_token"
     payload = {
         "success": ok,
         "status": "success" if ok else "failed",
@@ -346,7 +351,9 @@ async def account_quota_probe(db: AsyncSession, account_id: int, workspace_id: i
         "five_hour_used_percent": getattr(snap, "five_hour_used_percent", None),
         "seven_day_used_percent": getattr(snap, "seven_day_used_percent", None),
         "queried_at": isoformat(getattr(snap, "queried_at", None)),
-        "error": getattr(snap, "error_message", None) or getattr(snap, "error", None),
+        "error": error,
+        "error_code": error_code,
+        "message": None if ok else error,
     }
     await operation_store.mark_step(
         db,

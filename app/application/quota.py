@@ -293,7 +293,7 @@ class QuotaService:
             result = QuotaResult(
                 success=False,
                 error_code="missing_token",
-                error_message="local access token missing or undecryptable",
+                error_message="这个号还没授权，无法读额度",
                 queried_at=stamp,
             )
         else:

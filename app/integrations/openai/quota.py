@@ -33,7 +33,7 @@ class OpenAIQuotaClient:
             return QuotaResult(
                 success=False,
                 error_code="missing_token",
-                error_message="local access token missing",
+                error_message="这个号还没授权，无法读额度",
                 queried_at=now,
             )
         account_id = str(workspace_id or "").strip() or None

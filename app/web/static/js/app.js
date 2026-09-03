@@ -44,7 +44,7 @@
     standby: "待命",
     conflict: "有冲突",
     archived: "已归档",
-    unknown: "未知",
+    unknown: "未授权",
     disabled: "停用",
     free: "空闲",
   };
@@ -71,14 +71,14 @@
     failed: "失败",
     refresh_due: "需刷新",
     refreshing: "刷新中",
-    oauth_required: "需 OAuth",
+    oauth_required: "要授权",
     phone_required: "需手机",
     deactivated: "已停用",
     ok: "正常",
-    needs_auth: "需授权",
-    identity_conflict: "身份冲突",
-    vacancy: "空席",
-    billing: "账单不清",
+    needs_auth: "要授权",
+    identity_conflict: "账号对不上",
+    vacancy: "有空位",
+    billing: "账单异常",
     quota_probe: "额度刷新",
     reauth: "重新授权",
     onboard: "拉人",
@@ -89,7 +89,7 @@
     revoke_invite: "撤回邀请",
     hme_reconcile: "HME 对账",
     hme_label_retry: "HME 标签重试",
-    auth_probe: "授权探测",
+    auth_probe: "检查授权",
     reconcile: "对账",
     sub2api_sync: "Sub2API 对账",
     sub2api_reconcile: "Sub2API 对账",
@@ -98,14 +98,22 @@
     not_eligible: "不适用",
     not_synced: "尚未同步",
     sync_failed: "同步失败",
-    needs_management: "待接入",
-    membership_drift: "成员漂移",
+    needs_management: "有人还没接入",
+    membership_drift: "本地和官方对不上",
     full: "已满席",
     snapshot_updated: "快照已更新",
-    verification_failed: "复读失败",
+    verification_failed: "核对失败",
     proxy_check: "代理检测",
     free_register: "空闲号注册",
     reregister: "重注册",
+  };
+  const roleLabels = {
+    owner: "所有者",
+    member: "成员",
+    admin: "管理员",
+    "account-owner": "成员",
+    account_owner: "成员",
+    "account-admin": "管理员",
   };
 
   function abortEntity(key) {
@@ -116,8 +124,24 @@
     return next;
   }
 
+  function needsAuth(item) {
+    if (!item) return false;
+    if (["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due", "unknown"].includes(item.auth)) return true;
+    if (item.needs_auth) return true;
+    if (item.has_access_token === false) return true;
+    return false;
+  }
+
+  function roleLabel(value) {
+    if (value == null || value === "") return "";
+    return roleLabels[value] || String(value);
+  }
+
   function friendlyError(error) {
     const text = String(error && error.message ? error.message : error || "请求失败");
+    if (/local access token missing/i.test(text) || /undecryptable/i.test(text)) {
+      return "这个号还没授权。点「授权」，用这个邮箱登录后再读额度。";
+    }
     if (text.length > 180 || text.trim().startsWith("{") || text.trim().startsWith("[")) {
       return "请求失败，请重试。";
     }
@@ -147,7 +171,7 @@
 
   function toneFor(code) {
     if (["conflict", "identity_conflict", "failed", "manual_required", "deactivated", "danger"].includes(code)) return "danger";
-    if (["warning", "needs_auth", "refresh_due", "oauth_required", "phone_required", "vacancy", "billing", "waiting", "pending", "quota_full"].includes(code)) return "warning";
+    if (["warning", "needs_auth", "refresh_due", "oauth_required", "phone_required", "vacancy", "billing", "waiting", "pending", "quota_full", "unknown", "membership_drift", "needs_management", "not_synced"].includes(code)) return "warning";
     if (["success", "verified", "healthy", "ok", "active", "running"].includes(code)) return "success";
     if (["queued", "accent"].includes(code)) return "accent";
     return "";
@@ -317,7 +341,8 @@
 
   async function handleActionResult(result, { successMessage, refresh = true, longRunning = false } = {}) {
     const failed = !(result?.ok || result?.success) || result?.partial || ["partial", "failed", "manual_required"].includes(result?.status);
-    const message = result?.message || (failed ? (result?.error || "操作失败") : (successMessage || "已完成"));
+    const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (successMessage || "已完成"));
+    const message = failed ? friendlyError(rawMessage) : rawMessage;
     const action = failed && result?.operation_id
       ? { label: "查看详情", onClick: () => openOperationById(result.operation_id) }
       : (longRunning && result?.operation_id ? { label: "查看任务", onClick: () => openOperationById(result.operation_id) } : null);
@@ -452,7 +477,7 @@
       remote_only: "官方已加入 · 未接入",
       local_only: "本地有记录 · 官方未找到",
       invited: "已邀请 · 等待加入",
-      conflict: "身份冲突 · 需人工核对",
+      conflict: "账号对不上 · 需人工核对",
     };
     return map[status] || status || "—";
   }
@@ -580,7 +605,7 @@
     const source = document.createElement("span");
     source.className = "cell-sub";
     const freshness = quota.queried_at ? relativeTime(quota.queried_at) : "无快照";
-    source.textContent = (quota.source || "official") + " · " + freshness;
+    source.textContent = (quota.source === "official" ? "官方" : (quota.source || "官方")) + " · " + freshness;
     if (quota.queried_at) source.title = quota.queried_at;
     footer.append(source);
     wrap.append(footer);
@@ -590,8 +615,8 @@
   function accountPrimaryAction(item) {
     const workspaceId = item.workspace_id || item.primary_workspace_id;
     const scoped = (path) => workspaceId ? `/api/workspaces/${workspaceId}/accounts/${item.id}${path}` : `/api/accounts/${item.id}${path}`;
-    if (["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due"].includes(item.auth)) {
-      return { id: "account.reauth", label: "重新授权", url: `/api/accounts/${item.id}/reauth` };
+    if (needsAuth(item)) {
+      return { id: "account.reauth", label: "授权", url: `/api/accounts/${item.id}/reauth` };
     }
     if (item.quota?.seven_day_used_percent == null || item.quota?.success === false) {
       return { id: "account.quota", label: "刷新额度", url: scoped("/quota/probe") };
@@ -614,7 +639,7 @@
   function accountRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "account", item);
-    const plan = [item.official_role, item.official_plan].filter(Boolean).join(" · ");
+    const plan = [roleLabel(item.official_role), item.official_plan].filter(Boolean).join(" · ");
     cell(row, twoLine(item.email, plan || null));
     cell(row, item.workspace);
     cell(row, labelOf(purposeLabels, item.purpose));
@@ -1216,7 +1241,7 @@ function hmeRow(item) {
       { id: "account.view", label: "查看详情", run: (item, trigger) => openSheet("account", item, trigger) },
       {
         id: "account.reauth",
-        label: "重新授权",
+        label: "授权",
         run: (item, trigger) => openReauth(item, trigger),
       },
       {
@@ -1705,7 +1730,7 @@ function hmeRow(item) {
         actions.append(linkBtn);
       } else if (row.id || row.local_account_id) {
         const accountId = row.id || row.local_account_id;
-        if (["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due"].includes(row.auth) || row.needs_auth) {
+        if (needsAuth(row)) {
           const authBtn = document.createElement("button");
           authBtn.type = "button";
           authBtn.className = "button ghost compact";
@@ -2245,7 +2270,7 @@ function openRegister(trigger) {
       if (form) form.ticket.value = started.ticket || "";
       if (authorize) authorize.value = started.authorize_url || "";
       if (openLink) openLink.href = started.authorize_url || "#";
-      setReauthStatus(started.message || "打开授权链接，登录后把回调地址贴回来。", "muted");
+      setReauthStatus(started.message || "打开授权链接，用这个邮箱登录 ChatGPT。登录后把跳转到 localhost:1455 的整段地址贴回来。", "muted");
       form?.querySelector("[name='callback_url']")?.focus();
     } catch (error) {
       setReauthStatus(friendlyError(error), "error");
@@ -2752,7 +2777,7 @@ function openRegister(trigger) {
     const identity = document.createElement("div");
     identity.className = "portfolio-cell portfolio-identity";
     identity.append(kindBadge(kind));
-    const label = twoLine(account.email || account.name || "—", account.official_role || account.note || null);
+    const label = twoLine(account.email || account.name || "—", roleLabel(account.official_role) || account.note || null);
     identity.append(label);
     row.append(identity);
 
@@ -2853,7 +2878,7 @@ function openRegister(trigger) {
       if (!account) return false;
       if (purpose === "conflict") return account.state === "conflict";
       if (purpose === "archived") return account.state === "archived" || account.kind === "history";
-      if (purpose === "needs_auth") return ["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due"].includes(account.auth);
+      if (purpose === "needs_auth") return needsAuth(account);
       if (purpose === "quota_full") return (account.quota || {}).seven_day_used_percent === 100;
       return account.purpose === purpose;
     };

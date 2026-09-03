@@ -71,7 +71,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
 
     accounts_payload = await accounts_query(db, purpose="all", include_archived=False)
     for account in accounts_payload.get("items") or []:
-        if account.get("auth") in {"oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due"}:
+        if account.get("auth") in {"oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due", "unknown"} or account.get("has_access_token") is False:
             add_attention(
                 {
                     "kind": "auth",
@@ -80,7 +80,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
                     "workspace": account.get("workspace"),
                     "workspace_id": account.get("workspace_id"),
                     "result": "warning",
-                    "message": f"账号需要处理授权：{account.get('auth')}",
+                    "message": f"{account.get('email') or '账号'}还没授权，读不了额度",
                     "action": "去授权",
                     "href": f"/accounts?account={account.get('id')}",
                 }

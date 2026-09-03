@@ -269,8 +269,8 @@ async def add_local_child(
     account, created = await upsert_child_account(db, email=target, status="active" if already_joined else "invited")
     if is_workspace_owner(workspace, account.id):
         return {"ok": False, "error": "workspace owner cannot be invited as a child", "error_code": "not_linkable"}
-    needs_auth = already_joined and not bool((account.access_token_encrypted or "").strip())
-    if already_joined and (created or (needs_auth and str(account.auth_state or "") in {"", "unknown"})):
+    needs_auth = not bool((account.access_token_encrypted or "").strip())
+    if created or (needs_auth and str(account.auth_state or "") in {"", "unknown"}):
         account.auth_state = "oauth_required"
     if created and workspace.source_team_id and not account.source_team_id:
         account.source_team_id = workspace.source_team_id
@@ -320,13 +320,13 @@ async def add_local_child(
     ).scalar_one_or_none()
     await db.commit()
     if already_joined:
-        message = f"{account.email} 已在官方席位，已接入本地"
+        message = f"{account.email} 已在官方席位，已接入本地" + ("。点「授权」，用这个邮箱登录后再读额度" if needs_auth else "")
         status = "managed"
     elif already_invited and not invited_now:
-        message = f"{account.email} 的官方邀请已存在"
+        message = f"{account.email} 的官方邀请已存在" + ("。点「授权」，用这个邮箱登录后再读额度" if needs_auth else "")
         status = "invited"
     else:
-        message = f"已邀请 {account.email} 进入官方席位"
+        message = f"已邀请 {account.email} 进入官方席位" + ("。点「授权」，用这个邮箱登录后再读额度" if needs_auth else "")
         status = "invited"
     return {
         "ok": True,
