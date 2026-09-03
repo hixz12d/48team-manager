@@ -1714,11 +1714,13 @@ function hmeRow(item) {
           });
           actions.append(authBtn);
         }
+      }
+      if (kind === "unmanaged" || kind === "invited" || row.id || row.local_account_id) {
         const removeBtn = document.createElement("button");
         removeBtn.type = "button";
         removeBtn.className = "button ghost compact";
-        removeBtn.textContent = "删除";
-        removeBtn.addEventListener("click", () => openManageChildRemove(row, removeBtn));
+        removeBtn.textContent = kind === "unmanaged" || kind === "invited" ? "踢出" : "删除";
+        removeBtn.addEventListener("click", () => openManageChildRemove(row, removeBtn, kind));
         actions.append(removeBtn);
       }
       item.append(actions);
@@ -1801,18 +1803,34 @@ function hmeRow(item) {
     return checked?.value === "official" ? "official" : "local";
   }
 
-  function openManageChildRemove(row, button) {
+  function openManageChildRemove(row, button, kind) {
     if (!manageChildRemoveSheet) return;
     const workspace = manageChildrenWorkspace();
     const workspaceId = workspace?.id;
     const email = (row?.email || "").trim();
     const accountId = row?.id || row?.local_account_id;
     if (!workspaceId || (!email && !accountId)) return;
-    pendingChildRemove = { row, button, workspaceId, email, accountId };
+    const officialDefault = kind === "unmanaged" || kind === "invited" || row?.kind === "unmanaged" || row?.kind === "invited";
+    pendingChildRemove = { row, button, workspaceId, email, accountId, officialDefault };
     const emailEl = document.getElementById("manage-child-remove-email");
     if (emailEl) emailEl.textContent = email || `#${accountId}`;
     const localRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='local']");
-    if (localRadio) localRadio.checked = true;
+    const officialRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='official']");
+    if (officialDefault) {
+      if (officialRadio) officialRadio.checked = true;
+      if (localRadio) localRadio.disabled = !accountId;
+    } else {
+      if (localRadio) {
+        localRadio.disabled = false;
+        localRadio.checked = true;
+      }
+    }
+    const subtitle = document.getElementById("manage-child-remove-subtitle");
+    if (subtitle) {
+      subtitle.textContent = officialDefault
+        ? "这个邮箱还在官方席位。默认踢官方，也可以只忽略本地。"
+        : "选择只下本地，还是连官方席位一起踢。";
+    }
     setFormStatus("manage-child-remove-status", "", "muted");
     manageChildRemoveSheet.hidden = false;
     activateFocusTrap(manageChildRemoveSheet.querySelector(".confirm-panel") || manageChildRemoveSheet);

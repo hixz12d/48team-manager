@@ -106,6 +106,7 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("manage-child-remove-sheet", accounts)
             self.assertIn("连官方席位一起踢", accounts)
             self.assertIn("只从本地移除", accounts)
+            self.assertIn('textContent = kind === "unmanaged" || kind === "invited" ? "踢出" : "删除"', js)
             self.assertNotIn("删除子号稍后补上", js)
             self.assertNotIn("删除子号会在下一步加上", accounts)
 
