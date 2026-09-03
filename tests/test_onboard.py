@@ -166,6 +166,27 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error_code"], "invite_failed")
         browser.assert_not_called()
 
+    async def test_skip_invite_does_not_call_invite_member(self):
+        workspace = await self._seed_workspace()
+        client = _FakeChatGPT()
+        service = self._service(client)
+        result = await service.invite_and_onboard(
+            self.session,
+            workspace_id=workspace.id,
+            email_line="kid@icloud.com----https://mail.example/pickup",
+            skip_invite=True,
+            in_test=True,
+        )
+        self.assertEqual(client.invites, [])
+        self.assertNotEqual(result.get("error_code"), "invite_failed")
+        membership = (
+            await self.session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.account_id == result.get("child", {}).get("id"))
+            )
+        ).scalar_one_or_none()
+        if membership is not None:
+            self.assertNotEqual(membership.membership_state, "invited")
+
     async def test_not_joined_does_not_mark_active(self):
         workspace = await self._seed_workspace()
         client = _FakeChatGPT()

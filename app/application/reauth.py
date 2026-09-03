@@ -188,6 +188,113 @@ class ReauthService:
             "proxy_profile_id": profile_id,
         }
 
+    async def start_manual_reauth(self, db: AsyncSession, account: Account) -> dict[str, Any]:
+        email = normalize_email(account.email)
+        role = "owner" if str(account.local_purpose or "") == "mother" else "child"
+        auth = chatgpt_client.create_oauth_authorize_url(
+            client_id=oauth_sessions.CLIENT_ID or DEFAULT_OAUTH_CLIENT_ID,
+            redirect_uri=oauth_sessions.REDIRECT_URI or OAUTH_REDIRECT_URI,
+            login_hint=email,
+        )
+        session = oauth_sessions.create_session(
+            team_id=int(account.source_team_id or 0),
+            email=email,
+            authorize=auth,
+            role=role,
+            mode="manual",
+            proxy=str(account.proxy or ""),
+            password="",
+        )
+        oauth_sessions.mark_session(session["ticket"], account_id=account.id, status="waiting", message="等待粘贴回调")
+        set_auth_state(account, "oauth_required")
+        await db.commit()
+        return {
+            "ok": True,
+            "success": True,
+            "account_id": account.id,
+            "email": email,
+            "ticket": session["ticket"],
+            "authorize_url": session.get("authorize_url") or auth.get("authorize_url") or "",
+            "redirect_uri": session.get("redirect_uri") or oauth_sessions.REDIRECT_URI,
+            "message": "打开授权链接，登录后把回调地址贴回来",
+        }
+
+    async def complete_manual_reauth(
+        self,
+        db: AsyncSession,
+        account: Account,
+        *,
+        ticket: str,
+        callback_url: str,
+        client=None,
+    ) -> dict[str, Any]:
+        from app.core.jwt import jwt_parser
+        from app.integrations.openai.oauth_sessions import parse_oauth_callback
+
+        session = oauth_sessions.get_session(ticket)
+        if session is None:
+            return {"ok": False, "success": False, "error": "认证会话不存在或已过期", "error_code": "oauth_expired"}
+        session_account_id = session.get("account_id")
+        if session_account_id not in (None, "", account.id) and int(session_account_id) != int(account.id):
+            return {"ok": False, "success": False, "error": "授权会话不属于这个账号", "error_code": "oauth_account_mismatch"}
+        if normalize_email(session.get("email")) != normalize_email(account.email):
+            return {"ok": False, "success": False, "error": "授权会话邮箱与账号不一致", "error_code": "oauth_email_mismatch"}
+        parsed = parse_oauth_callback(callback_url)
+        if parsed.get("error"):
+            return {
+                "ok": False,
+                "success": False,
+                "error": parsed.get("error_description") or parsed["error"],
+                "error_code": "oauth_denied",
+            }
+        if not parsed.get("code"):
+            return {
+                "ok": False,
+                "success": False,
+                "error": "回调地址里没有授权码，请把跳转到 localhost:1455 的整段地址贴回来",
+                "error_code": "missing_code",
+            }
+        expected_state = str(session.get("state") or "")
+        got_state = str(parsed.get("state") or "")
+        if expected_state and got_state and got_state != expected_state:
+            return {"ok": False, "success": False, "error": "回调 state 不匹配，请重新生成授权链接", "error_code": "state_mismatch"}
+        exchanger = client or chatgpt_client
+        exchanged = await exchanger.exchange_oauth_code(
+            code=parsed["code"],
+            client_id=str(session.get("client_id") or DEFAULT_OAUTH_CLIENT_ID),
+            redirect_uri=str(session.get("redirect_uri") or OAUTH_REDIRECT_URI),
+            code_verifier=str(session.get("code_verifier") or ""),
+            db_session=db,
+            identifier=account.email,
+        )
+        if not exchanged.get("success") or not exchanged.get("access_token"):
+            return {
+                "ok": False,
+                "success": False,
+                "error": str(exchanged.get("error") or "换票失败"),
+                "error_code": str(exchanged.get("error_code") or "oauth_exchange_failed"),
+            }
+        token_email = jwt_parser.extract_email(str(exchanged.get("access_token") or ""))
+        if token_email and token_email != normalize_email(account.email):
+            return {
+                "ok": False,
+                "success": False,
+                "error": f"登录邮箱是 {token_email}，和账号 {account.email} 不一致",
+                "error_code": "token_identity_mismatch",
+            }
+        await auth_service.apply_tokens(account, exchanged)
+        await self.mark_outcome(db, account, success=True)
+        oauth_sessions.pop_session(ticket)
+        await db.commit()
+        return {
+            "ok": True,
+            "success": True,
+            "account_id": account.id,
+            "email": account.email,
+            "auth_state": account.auth_state,
+            "message": f"{account.email} 授权已更新",
+        }
+
     async def run_job(self, db: AsyncSession, public_id: str, ticket: str) -> dict[str, Any]:
         from app.integrations.openai.browser.reauth import run_browser_oauth_reauth
 

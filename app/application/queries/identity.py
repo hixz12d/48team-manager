@@ -14,12 +14,11 @@ from app.domain.identity import (
     AUDIT_CONFLICT,
     MEMBERSHIP_STATE_INVITED,
     MEMBERSHIP_STATE_JOINED,
-    OFFICIAL_ROLE_OWNER,
 )
 from app.domain.identity.audit import build_audit_report
 from app.domain.identity.ids import normalize_email
+from app.domain.identity.policy import is_workspace_owner
 from app.domain.workspaces.names import resolve_display_name
-from app.integrations.openai.member_adapter import is_owner_role
 from app.persistence.repositories import identity as identity_repo
 
 
@@ -93,7 +92,7 @@ def _official_counts(snaps: list, *, owner_email: str) -> dict[str, Any]:
     invited_count = 0
     for snap in snaps:
         email = normalize_email(snap.normalized_email)
-        is_owner = is_owner_role(snap.official_role) or email == owner_email
+        is_owner = bool(owner_email) and email == owner_email
         if snap.remote_state == "invited":
             invited_count += 1
             continue
@@ -171,7 +170,7 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
             row
             for row in members_by_workspace.get(workspace.id, [])
             if row.membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
-            and row.official_role != OFFICIAL_ROLE_OWNER
+            and not is_workspace_owner(workspace, row.account_id)
         ]
         owner_finding = findings_by_id.get(owner.id) if owner is not None else None
         display = _workspace_display(workspace, owner_email=owner.email if owner else None)
@@ -251,7 +250,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             row
             for row in members
             if row.membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
-            and row.official_role != OFFICIAL_ROLE_OWNER
+            and not is_workspace_owner(workspace, row.account_id)
         ]
         snaps = snapshots_by_workspace.get(workspace.id, [])
         official_members = []
@@ -267,7 +266,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "seat_type": snap.seat_type,
                 "state": snap.remote_state,
                 "added_at": isoformat(snap.added_at),
-                "is_owner": is_owner_role(snap.official_role) or email == owner_email,
+                "is_owner": bool(owner_email) and email == owner_email,
             }
             official_members.append(item)
             official_by_email[email] = item
@@ -302,7 +301,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
         for email in emails:
             remote = official_by_email.get(email)
             local = local_by_email.get(email)
-            is_owner = email == owner_email or is_owner_role((remote or {}).get("role") or (local or {}).get("official_role"))
+            is_owner = bool(owner_email) and email == owner_email
             if is_owner:
                 status = "owner"
             elif remote and local:

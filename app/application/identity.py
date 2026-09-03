@@ -41,6 +41,7 @@ from app.domain.identity.policy import (
     child_local_purpose,
     child_operational_state,
     normalize_local_purpose,
+    membership_local_purpose_for,
     normalize_operational_state,
     normalize_workspace_status,
 )
@@ -78,6 +79,10 @@ async def ensure_membership(
     removed_at=None,
     source_mapping_id: int | None = None,
 ) -> bool:
+    workspace = await db.get(Workspace, int(workspace_id))
+    purpose = membership_local_purpose_for(workspace, account_id)
+    if not purpose:
+        purpose = normalize_local_purpose(local_purpose)
     result = await db.execute(
         select(WorkspaceMembership).where(
             WorkspaceMembership.workspace_id == workspace_id,
@@ -92,7 +97,7 @@ async def ensure_membership(
                 account_id=account_id,
                 official_role=official_role,
                 membership_state=membership_state,
-                local_purpose=normalize_local_purpose(local_purpose),
+                local_purpose=purpose,
                 joined_at=joined_at,
                 removed_at=removed_at,
                 source_mapping_id=source_mapping_id,
@@ -100,17 +105,14 @@ async def ensure_membership(
         )
         await db.flush()
         return True
-    if official_role == OFFICIAL_ROLE_OWNER:
-        row.official_role = OFFICIAL_ROLE_OWNER
-        row.local_purpose = LOCAL_PURPOSE_MOTHER
-        if row.membership_state in (None, MEMBERSHIP_STATE_UNKNOWN):
-            row.membership_state = membership_state
-    else:
-        row.membership_state = membership_state
+    row.official_role = official_role or row.official_role
+    row.local_purpose = purpose
+    row.membership_state = membership_state
+    if joined_at is not None:
         row.joined_at = joined_at
-        row.removed_at = removed_at
-        if source_mapping_id:
-            row.source_mapping_id = source_mapping_id
+    row.removed_at = removed_at
+    if source_mapping_id:
+        row.source_mapping_id = source_mapping_id
     return False
 
 
@@ -119,19 +121,33 @@ async def ensure_binding(
     *,
     account: Account,
     remote_account_id: Any,
+    workspace_id: int | None = None,
 ) -> bool:
     remote_id = _remote_id(remote_account_id)
     if not remote_id:
         return False
 
-    existing = (
-        await db.execute(
-            select(ExternalBinding).where(
-                ExternalBinding.provider == PROVIDER_SUB2API,
-                ExternalBinding.local_account_id == account.id,
+    local_filter = [
+        ExternalBinding.provider == PROVIDER_SUB2API,
+        ExternalBinding.local_account_id == account.id,
+    ]
+    if workspace_id is None:
+        local_filter.append(ExternalBinding.workspace_id.is_(None))
+    else:
+        local_filter.append(ExternalBinding.workspace_id == int(workspace_id))
+    existing = (await db.execute(select(ExternalBinding).where(*local_filter))).scalar_one_or_none()
+    if existing is None and workspace_id is not None:
+        existing = (
+            await db.execute(
+                select(ExternalBinding).where(
+                    ExternalBinding.provider == PROVIDER_SUB2API,
+                    ExternalBinding.local_account_id == account.id,
+                    ExternalBinding.workspace_id.is_(None),
+                )
             )
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.workspace_id = int(workspace_id)
     if existing is not None:
         if existing.remote_account_id != remote_id:
             existing.binding_state = BINDING_CONFLICT
@@ -139,6 +155,8 @@ async def ensure_binding(
                 f"local account already bound to remote {existing.remote_account_id}, "
                 f"refusing {remote_id}"
             )
+        elif workspace_id is not None:
+            existing.workspace_id = int(workspace_id)
         return False
 
     taken = (
@@ -149,7 +167,7 @@ async def ensure_binding(
             )
         )
     ).scalar_one_or_none()
-    if taken is not None and taken.local_account_id != account.id:
+    if taken is not None and (taken.local_account_id != account.id or taken.workspace_id != workspace_id):
         taken.binding_state = BINDING_CONFLICT
         taken.last_error = (
             f"remote id {remote_id} already bound to local account {taken.local_account_id}; "
@@ -162,6 +180,7 @@ async def ensure_binding(
             provider=PROVIDER_SUB2API,
             local_account_id=account.id,
             remote_account_id=remote_id,
+            workspace_id=int(workspace_id) if workspace_id is not None else None,
             binding_state=BINDING_PENDING,
         )
     )
@@ -279,6 +298,8 @@ async def verify_bindings(
             local,
             memberships=memberships_by_account.get(local.id, []),
             workspaces_by_id=workspaces_by_id,
+            workspace_id=getattr(binding, "workspace_id", None),
+            allow_ambiguous=True,
         )
         state, error = cross_check_binding(
             local_email=local.email,
@@ -330,6 +351,8 @@ async def verify_bindings(
             local,
             memberships=memberships_by_account.get(local.id, []),
             workspaces_by_id=workspaces_by_id,
+            workspace_id=getattr(binding, "workspace_id", None),
+            allow_ambiguous=True,
         )
         state, error = cross_check_binding(
             local_email=local.email,

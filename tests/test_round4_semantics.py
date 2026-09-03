@@ -226,7 +226,7 @@ class Sub2ApiSplitTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("app.application.sub2api_publish.decrypt_secret", side_effect=lambda raw: "token" if raw else ""),
-            patch("app.application.sub2api_publish.sub2api_client.find_account_by_email", new=AsyncMock(return_value=None)),
+            patch("app.application.sub2api_publish.sub2api_client.list_status_accounts", new=AsyncMock(return_value=[])),
             patch("app.application.sub2api_publish.sub2api_client.create_account", new=AsyncMock(side_effect=_create)),
             patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=remote)),
             patch("app.application.sub2api_publish.sub2api_client.set_account_schedulable", new=AsyncMock(return_value={"patched": True})),
@@ -241,11 +241,43 @@ class Sub2ApiSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(binding.binding_state, "verified")
         self.assertEqual(binding.remote_account_id, "123")
 
+    async def test_push_does_not_update_email_only_remote(self):
+        other = {
+            "id": 7,
+            "name": "newxiaozhu1@gmail.com",
+            "credentials": {"email": "newxiaozhu1@gmail.com", "chatgpt_account_id": "acct-1"},
+            "extra": {"email": "newxiaozhu1@gmail.com"},
+        }
+        created = {
+            "id": 88,
+            "name": "Team（newxiaozhu1） 子号",
+            "credentials": {"email": "newxiaozhu1@gmail.com", "chatgpt_account_id": "acct-1"},
+            "extra": {"email": "newxiaozhu1@gmail.com", "team48_context_key": "team48::1"},
+        }
+
+        async def _create(db, payload):
+            self.assertEqual(payload["extra"]["team48_context_key"], "team48::1")
+            return {"id": 88, **payload}
+
+        update = AsyncMock(side_effect=AssertionError("must not update email-only remote"))
+        with (
+            patch("app.application.sub2api_publish.decrypt_secret", side_effect=lambda raw: "token" if raw else ""),
+            patch("app.application.sub2api_publish.sub2api_client.list_status_accounts", new=AsyncMock(return_value=[other])),
+            patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
+            patch("app.application.sub2api_publish.sub2api_client.create_account", new=AsyncMock(side_effect=_create)),
+            patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=created)),
+            patch("app.application.sub2api_publish.sub2api_client.set_account_schedulable", new=AsyncMock(return_value={"patched": True})),
+        ):
+            result = await account_sub2api_push(self.session, self.account.id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_id"], 88)
+        update.assert_not_awaited()
+
     async def test_push_write_ok_but_verify_fail_stays_partial(self):
         bad_remote = {"id": 9, "credentials": {"email": "other@example.com"}}
         with (
             patch("app.application.sub2api_publish.decrypt_secret", side_effect=lambda raw: "token" if raw else ""),
-            patch("app.application.sub2api_publish.sub2api_client.find_account_by_email", new=AsyncMock(return_value=None)),
+            patch("app.application.sub2api_publish.sub2api_client.list_status_accounts", new=AsyncMock(return_value=[])),
             patch("app.application.sub2api_publish.sub2api_client.create_account", new=AsyncMock(return_value={"id": 9})),
             patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=bad_remote)),
         ):

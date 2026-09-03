@@ -30,7 +30,7 @@ from app.domain.quota import (
     success_next_quota_probe_at,
 )
 from app.integrations.openai.quota import OpenAIQuotaClient
-from app.persistence.models.identity import Account, WorkspaceMembership
+from app.persistence.models.identity import Account, Workspace, WorkspaceMembership
 from app.persistence.models.quota import QuotaSnapshot
 
 logger = logging.getLogger(__name__)
@@ -56,28 +56,28 @@ def decrypt_access_token(account: Account) -> str | None:
     return token or None
 
 
-def resolve_chatgpt_account_id(account: Account) -> str | None:
+def resolve_chatgpt_account_id(account: Account, workspace: Workspace | None = None) -> str | None:
+    if workspace is not None:
+        official = str(workspace.official_workspace_id or "").strip()
+        if official:
+            return official
     official = str(account.official_account_id or "").strip()
     if official:
         return official
-    for membership in account.memberships or []:
-        workspace = membership.workspace
-        if workspace is None:
-            continue
-        workspace_id = str(workspace.official_workspace_id or "").strip()
-        if workspace_id:
-            return workspace_id
-    for workspace in account.owned_workspaces or []:
-        workspace_id = str(workspace.official_workspace_id or "").strip()
-        if workspace_id:
-            return workspace_id
     return None
 
 
-def snapshot_from_result(account_id: int, result: QuotaResult, now: datetime) -> QuotaSnapshot:
+def snapshot_from_result(
+    account_id: int,
+    result: QuotaResult,
+    now: datetime,
+    *,
+    workspace_id: int | None = None,
+) -> QuotaSnapshot:
     queried_at = result.queried_at or now
     return QuotaSnapshot(
         account_id=account_id,
+        workspace_id=workspace_id,
         five_hour_used_percent=result.five_hour_used_percent,
         five_hour_reset_at=result.five_hour_reset_at,
         seven_day_used_percent=result.seven_day_used_percent,
@@ -95,6 +95,7 @@ def serialize_snapshot(row: QuotaSnapshot) -> dict[str, Any]:
     return {
         "id": row.id,
         "account_id": row.account_id,
+        "workspace_id": getattr(row, "workspace_id", None),
         "five_hour_used_percent": row.five_hour_used_percent,
         "five_hour_reset_at": row.five_hour_reset_at,
         "seven_day_used_percent": row.seven_day_used_percent,
@@ -145,6 +146,31 @@ class QuotaService:
             if current is None or (row.queried_at, row.id) > (current.queried_at, current.id):
                 latest[row.account_id] = row
         return latest
+
+    async def latest_official_by_contexts(self, db: AsyncSession) -> dict[tuple[int, int | None], QuotaSnapshot]:
+        rows = list((await db.execute(select(QuotaSnapshot).where(QuotaSnapshot.source == SOURCE_OFFICIAL))).scalars())
+        latest: dict[tuple[int, int | None], QuotaSnapshot] = {}
+        for row in rows:
+            key = (row.account_id, getattr(row, "workspace_id", None))
+            current = latest.get(key)
+            if current is None or (row.queried_at, row.id) > (current.queried_at, current.id):
+                latest[key] = row
+        return latest
+
+    async def resolve_probe_workspace(self, db: AsyncSession, account: Account, workspace_id: int | None = None) -> Workspace | None:
+        from app.domain.identity.binding import AmbiguousWorkspaceContext, resolve_workspace_context
+        from app.persistence.repositories import identity as identity_repo
+
+        memberships = list(
+            (await db.execute(select(WorkspaceMembership).where(WorkspaceMembership.account_id == account.id))).scalars()
+        )
+        workspaces_by_id = {row.id: row for row in await identity_repo.list_workspaces(db)}
+        return resolve_workspace_context(
+            account,
+            memberships=memberships,
+            workspaces_by_id=workspaces_by_id,
+            workspace_id=workspace_id,
+        )
 
     async def run_probe_once(
         self,
@@ -207,7 +233,22 @@ class QuotaService:
             before_state = account.operational_state
             before_purpose = account.local_purpose
             try:
-                result_row = await self.probe_account(db, account, now=stamp)
+                from app.domain.identity.binding import AmbiguousWorkspaceContext, workspace_contexts
+
+                try:
+                    result_row = await self.probe_account(db, account, now=stamp)
+                except AmbiguousWorkspaceContext:
+                    memberships = list(account.memberships or [])
+                    workspaces_by_id = {row.id: row for row in (account.owned_workspaces or [])}
+                    for membership in memberships:
+                        if membership.workspace is not None:
+                            workspaces_by_id[membership.workspace_id] = membership.workspace
+                    contexts = workspace_contexts(account, memberships=memberships, workspaces_by_id=workspaces_by_id)
+                    result_row = None
+                    for workspace in contexts:
+                        result_row = await self.probe_account(db, account, now=stamp, workspace=workspace, workspace_id=workspace.id)
+                if result_row is None:
+                    continue
             except Exception as exc:  # noqa: BLE001
                 result_row = QuotaResult(
                     success=False,
@@ -232,12 +273,22 @@ class QuotaService:
         await db.commit()
         return stats
 
-    async def probe_account(self, db: AsyncSession, account: Account, *, now: datetime | None = None) -> QuotaResult:
+    async def probe_account(
+        self,
+        db: AsyncSession,
+        account: Account,
+        *,
+        now: datetime | None = None,
+        workspace_id: int | None = None,
+        workspace: Workspace | None = None,
+    ) -> QuotaResult:
         stamp = now or utcnow()
         before_state = account.operational_state
         before_purpose = account.local_purpose
         token = decrypt_access_token(account)
-        chatgpt_account_id = resolve_chatgpt_account_id(account)
+        if workspace is None:
+            workspace = await self.resolve_probe_workspace(db, account, workspace_id)
+        chatgpt_account_id = resolve_chatgpt_account_id(account, workspace)
         if not token:
             result = QuotaResult(
                 success=False,
@@ -253,7 +304,7 @@ class QuotaService:
                 identifier=account.email or "default",
                 now=stamp,
             )
-        db.add(snapshot_from_result(account.id, result, stamp))
+        db.add(snapshot_from_result(account.id, result, stamp, workspace_id=workspace.id if workspace is not None else None))
         if result.success:
             account.quota_probe_fail_count = 0
             account.next_quota_probe_at = success_next_quota_probe_at(

@@ -309,18 +309,35 @@ async def account_auth_probe(db: AsyncSession, account_id: int) -> dict[str, Any
     return {"ok": ok, "operation_id": operation.public_id, **payload}
 
 
-async def account_quota_probe(db: AsyncSession, account_id: int) -> dict[str, Any]:
+async def account_quota_probe(db: AsyncSession, account_id: int, workspace_id: int | None = None) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
         return {"ok": False, "error": "account not found", "error_code": "not_found"}
+    from app.domain.identity.binding import AmbiguousWorkspaceContext
+
     operation = await operation_store.create(
         db,
         op_type="quota_probe",
         account_id=account.id,
         email=account.email,
-        input_payload={"account_id": account.id},
+        workspace_id=workspace_id,
+        input_payload={"account_id": account.id, "workspace_id": workspace_id},
     )
-    snap = await quota_service.probe_account(db, account)
+    try:
+        snap = await quota_service.probe_account(db, account, workspace_id=workspace_id)
+    except AmbiguousWorkspaceContext as exc:
+        payload = {
+            "ok": False,
+            "success": False,
+            "status": "failed",
+            "error_code": "ambiguous_workspace_context",
+            "error": str(exc),
+            "message": "该账号属于多个 Workspace，请先选择要刷新额度的上下文",
+            "account_id": account.id,
+        }
+        await operation_store.finish(db, operation, payload)
+        await db.commit()
+        return payload
     ok = bool(getattr(snap, "success", False))
     payload = {
         "success": ok,
@@ -348,9 +365,25 @@ async def account_reauth(db: AsyncSession, account_id: int) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
         return {"ok": False, "error": "account not found", "error_code": "not_found"}
-    result = await reauth_service.start_auto_reauth(db, account)
-    operation_id = result.get("operation_id") or result.get("public_id") or result.get("job_id")
-    return {"ok": bool(result.get("success")), "operation_id": operation_id, **result}
+    return await reauth_service.start_manual_reauth(db, account)
+
+
+async def account_reauth_complete(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    ticket: str,
+    callback_url: str,
+) -> dict[str, Any]:
+    account = await db.get(Account, int(account_id))
+    if account is None:
+        return {"ok": False, "error": "account not found", "error_code": "not_found"}
+    return await reauth_service.complete_manual_reauth(
+        db,
+        account,
+        ticket=ticket,
+        callback_url=callback_url,
+    )
 
 
 async def account_sub2api_sync(db: AsyncSession, account_id: int) -> dict[str, Any]:
@@ -372,10 +405,20 @@ async def account_sub2api_push(
     group_ids: list[int] | None = None,
     name: str | None = None,
     schedulable: bool | None = True,
+    confirm_mixed_channel_risk: bool = False,
+    workspace_id: int | None = None,
 ) -> dict[str, Any]:
     from app.application.sub2api_publish import account_sub2api_push as _push
 
-    return await _push(db, account_id, group_ids=group_ids, name=name, schedulable=schedulable)
+    return await _push(
+        db,
+        account_id,
+        group_ids=group_ids,
+        name=name,
+        schedulable=schedulable,
+        confirm_mixed_channel_risk=confirm_mixed_channel_risk,
+        workspace_id=workspace_id,
+    )
 
 
 async def account_refresh(db: AsyncSession, account_id: int) -> dict[str, Any]:

@@ -15,6 +15,7 @@ class QuotaSnapshot(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id"))
     five_hour_used_percent: Mapped[int | None] = mapped_column(Integer)
     five_hour_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     seven_day_used_percent: Mapped[int | None] = mapped_column(Integer)
@@ -31,4 +32,5 @@ class QuotaSnapshot(Base):
     __table_args__ = (
         Index("idx_quota_snapshots_account_queried", "account_id", "queried_at"),
         Index("idx_quota_snapshots_success", "account_id", "success", "queried_at"),
+        Index("idx_quota_snapshots_account_workspace_queried", "account_id", "workspace_id", "queried_at"),
     )

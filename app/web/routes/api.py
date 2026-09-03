@@ -36,7 +36,7 @@ from app.web.schemas.resources import (
     WorkspaceNamePatch,
 )
 from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
-from app.web.schemas.workspaces import CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
+from app.web.schemas.workspaces import CompleteAccountOAuthRequest, CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
 
 
 def _accepted(payload: dict) -> dict:
@@ -252,13 +252,28 @@ def build_api_router(get_db) -> APIRouter:
         account_id: int,
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
+        workspace_id: int | None = Query(default=None),
     ) -> dict:
-        result = await console_actions.account_quota_probe(db, account_id)
+        result = await console_actions.account_quota_probe(db, account_id, workspace_id=workspace_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") == "ambiguous_workspace_context":
+            raise HTTPException(status_code=400, detail=result.get("error") or "ambiguous workspace")
+        return _accepted(result)
+
+    @router.post("/workspaces/{workspace_id}/accounts/{account_id}/quota/probe")
+    async def probe_workspace_account_quota(
+        workspace_id: int,
+        account_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.account_quota_probe(db, account_id, workspace_id=workspace_id)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
-    @router.post("/accounts/{account_id}/reauth", status_code=status.HTTP_202_ACCEPTED)
+    @router.post("/accounts/{account_id}/reauth")
     async def reauth_account(
         account_id: int,
         _: dict = Depends(require_admin),
@@ -267,7 +282,26 @@ def build_api_router(get_db) -> APIRouter:
         result = await console_actions.account_reauth(db, account_id)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
-        return _accepted(result)
+        return result
+
+    @router.post("/accounts/{account_id}/reauth/complete")
+    async def complete_account_reauth(
+        account_id: int,
+        payload: CompleteAccountOAuthRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.account_reauth_complete(
+            db,
+            account_id,
+            ticket=payload.ticket,
+            callback_url=payload.callback_url,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "reauth failed")
+        return result
 
     @router.post("/accounts/{account_id}/sub2api/sync")
     async def sync_account_sub2api(
@@ -298,6 +332,7 @@ def build_api_router(get_db) -> APIRouter:
         payload: Sub2ApiPushRequest,
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
+        workspace_id: int | None = Query(default=None),
     ) -> dict:
         result = await console_actions.account_sub2api_push(
             db,
@@ -305,10 +340,35 @@ def build_api_router(get_db) -> APIRouter:
             group_ids=payload.group_ids,
             name=payload.name,
             schedulable=payload.schedulable,
+            confirm_mixed_channel_risk=payload.confirm_mixed_channel_risk,
+            workspace_id=workspace_id,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
-        if result.get("error_code") == "not_eligible":
+        if result.get("error_code") in {"not_eligible", "ambiguous_workspace_context"}:
+            raise HTTPException(status_code=400, detail=result.get("error") or "not eligible")
+        return _accepted(result)
+
+    @router.post("/workspaces/{workspace_id}/accounts/{account_id}/sub2api/push")
+    async def push_workspace_account_sub2api(
+        workspace_id: int,
+        account_id: int,
+        payload: Sub2ApiPushRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.account_sub2api_push(
+            db,
+            account_id,
+            group_ids=payload.group_ids,
+            name=payload.name,
+            schedulable=payload.schedulable,
+            confirm_mixed_channel_risk=payload.confirm_mixed_channel_risk,
+            workspace_id=workspace_id,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") in {"not_eligible", "ambiguous_workspace_context"}:
             raise HTTPException(status_code=400, detail=result.get("error") or "not eligible")
         return _accepted(result)
 

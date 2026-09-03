@@ -13,8 +13,8 @@ from app.core.time import utcnow
 from app.domain.automation import ACTIVE_STATES, TERMINAL_STATES
 from app.domain.identity import LOCAL_PURPOSE_CHILD, MEMBERSHIP_STATE_JOINED
 from app.domain.identity.ids import normalize_email
+from app.domain.identity.policy import is_workspace_owner
 from app.domain.workspaces.names import apply_custom_name, apply_official_name, is_placeholder_or_email_name, resolve_display_name
-from app.integrations.openai.member_adapter import is_owner_role
 from app.persistence.models.identity import Account, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 
 
@@ -128,8 +128,8 @@ async def link_remote_only_member(
     ).scalar_one_or_none()
     if snap is None:
         return {"ok": False, "error": "official member not found", "error_code": "not_found"}
-    if is_owner_role(snap.official_role) or snap.remote_state == "invited":
-        return {"ok": False, "error": "owner/invited cannot be linked this way", "error_code": "not_linkable"}
+    if snap.remote_state == "invited":
+        return {"ok": False, "error": "invited members cannot be linked until they join", "error_code": "not_linkable"}
     if account_id is not None:
         account = await db.get(Account, int(account_id))
     else:
@@ -142,13 +142,16 @@ async def link_remote_only_member(
         }
     if normalize_email(account.email) != target:
         return {"ok": False, "error": "account email mismatch", "error_code": "email_mismatch"}
+    owner = await db.get(Account, workspace.owner_account_id) if workspace.owner_account_id else None
+    if is_workspace_owner(workspace, account.id) or (owner is not None and normalize_email(owner.email) == target):
+        return {"ok": False, "error": "workspace owner cannot be linked as a child", "error_code": "not_linkable"}
     await ensure_membership(
         db,
         workspace_id=workspace.id,
         account_id=account.id,
         official_role=snap.official_role or "member",
-        membership_state=MEMBERSHIP_STATE_JOINED if snap.remote_state != "invited" else snap.remote_state,
-        local_purpose=account.local_purpose or LOCAL_PURPOSE_CHILD,
+        membership_state=MEMBERSHIP_STATE_JOINED,
+        local_purpose=LOCAL_PURPOSE_CHILD,
         joined_at=snap.added_at or utcnow(),
     )
     membership = (

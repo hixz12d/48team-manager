@@ -28,7 +28,7 @@ STATUS_LABELS = {
 }
 
 MEMBERSHIP_STATUS_LABELS = {
-    "owner": "母号 / Owner",
+    "owner": "母号",
     "managed": "已纳入本地管理",
     "remote_only": "官方已加入 · 未纳入本地管理",
     "local_only": "本地有记录 · 官方未找到",

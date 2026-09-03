@@ -24,6 +24,7 @@ from app.core.time import utcnow
 from app.domain.automation import WORKSPACE_LOCK_ACTIONS
 from app.domain.identity import (
     LOCAL_PURPOSE_CHILD,
+    LOCAL_PURPOSE_MOTHER,
     MEMBERSHIP_STATE_INVITED,
     MEMBERSHIP_STATE_JOINED,
     OFFICIAL_ROLE_UNKNOWN,
@@ -329,7 +330,8 @@ class OnboardService:
                 joined_at=utcnow(),
             )
             child.operational_state = "active"
-            child.local_purpose = LOCAL_PURPOSE_CHILD
+            if child.local_purpose != LOCAL_PURPOSE_MOTHER:
+                child.local_purpose = LOCAL_PURPOSE_CHILD
             await db.flush()
             return {
                 "success": True,
@@ -353,7 +355,9 @@ class OnboardService:
                 await self._progress(db, job_id=job_id, stage="blocked", message=error, error=error, error_code="team_full")
                 return {"success": False, "error": error, "error_code": "team_full", "status": "blocked"}
 
-        if already_invited:
+        if skip_invite:
+            await self._progress(db, job_id=job_id, stage="skip_invite", message="已跳过官方邀请，仅走浏览器入驻")
+        elif already_invited:
             await ensure_membership(
                 db,
                 workspace_id=workspace.id,
@@ -522,7 +526,8 @@ class OnboardService:
             joined_at=utcnow(),
         )
         child.operational_state = "active"
-        child.local_purpose = LOCAL_PURPOSE_CHILD
+        if child.local_purpose != LOCAL_PURPOSE_MOTHER:
+            child.local_purpose = LOCAL_PURPOSE_CHILD
         await db.flush()
         return {
             "success": True,

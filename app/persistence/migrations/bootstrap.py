@@ -54,6 +54,14 @@ WORKSPACE_COLUMNS = (
     ("last_official_sync_state", "VARCHAR(20)"),
 )
 
+QUOTA_COLUMNS = (
+    ("workspace_id", "INTEGER"),
+)
+
+BINDING_COLUMNS = (
+    ("workspace_id", "INTEGER"),
+)
+
 
 async def _ensure_sqlite_columns(conn, table: str, columns: tuple[tuple[str, str], ...]) -> None:
     existing = {
@@ -66,6 +74,72 @@ async def _ensure_sqlite_columns(conn, table: str, columns: tuple[tuple[str, str
         await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
+async def _index_names(conn, table: str) -> set[str]:
+    rows = (await conn.execute(text(f"PRAGMA index_list({table})"))).fetchall()
+    return {str(row[1]) for row in rows}
+
+
+async def _rebuild_external_bindings(conn) -> None:
+    existing = {
+        str(row[1])
+        for row in (await conn.execute(text("PRAGMA table_info(external_bindings)"))).fetchall()
+    }
+    if not existing:
+        return
+    indexes = await _index_names(conn, "external_bindings")
+    has_workspace = "workspace_id" in existing
+    has_old_local_unique = "uq_external_binding_local" in indexes
+    has_new_local_unique = "uq_external_binding_local_workspace" in indexes
+    if has_workspace and has_new_local_unique and not has_old_local_unique:
+        return
+    await conn.execute(text(
+        """
+        CREATE TABLE IF NOT EXISTS external_bindings_v2 (
+            id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            provider VARCHAR(40) NOT NULL,
+            local_account_id INTEGER NOT NULL,
+            remote_account_id VARCHAR(100) NOT NULL,
+            workspace_id INTEGER,
+            binding_state VARCHAR(20) DEFAULT 'pending' NOT NULL,
+            verified_email VARCHAR(255),
+            verified_official_account_id VARCHAR(100),
+            verified_workspace_id VARCHAR(100),
+            last_observed_at DATETIME,
+            last_error TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_external_binding_remote UNIQUE (provider, remote_account_id),
+            CONSTRAINT uq_external_binding_local_workspace UNIQUE (provider, local_account_id, workspace_id),
+            FOREIGN KEY(local_account_id) REFERENCES accounts (id),
+            FOREIGN KEY(workspace_id) REFERENCES workspaces (id)
+        )
+        """
+    ))
+    workspace_select = "workspace_id" if has_workspace else "NULL AS workspace_id"
+    await conn.execute(text(
+        f"""
+        INSERT INTO external_bindings_v2 (
+            id, provider, local_account_id, remote_account_id, workspace_id,
+            binding_state, verified_email, verified_official_account_id, verified_workspace_id,
+            last_observed_at, last_error, created_at, updated_at
+        )
+        SELECT
+            id, provider, local_account_id, remote_account_id, {workspace_select},
+            binding_state, verified_email, verified_official_account_id, verified_workspace_id,
+            last_observed_at, last_error, created_at, updated_at
+        FROM external_bindings
+        """
+    ))
+    await conn.execute(text("DROP TABLE external_bindings"))
+    await conn.execute(text("ALTER TABLE external_bindings_v2 RENAME TO external_bindings"))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_external_binding_state ON external_bindings (provider, binding_state)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_external_binding_workspace ON external_bindings (provider, workspace_id)"
+    ))
+
+
 async def bootstrap_schema(engine: AsyncEngine) -> None:
     await init_db(engine)
     if not str(engine.url).startswith("sqlite"):
@@ -75,3 +149,10 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
         await _ensure_sqlite_columns(conn, "workspace_official_member_snapshots", SNAPSHOT_COLUMNS)
         await _ensure_sqlite_columns(conn, "operations", OPERATION_COLUMNS)
         await _ensure_sqlite_columns(conn, "workspaces", WORKSPACE_COLUMNS)
+        await _ensure_sqlite_columns(conn, "quota_snapshots", QUOTA_COLUMNS)
+        await _ensure_sqlite_columns(conn, "external_bindings", BINDING_COLUMNS)
+        await _rebuild_external_bindings(conn)
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_workspace_queried "
+            "ON quota_snapshots (account_id, workspace_id, queried_at)"
+        ))

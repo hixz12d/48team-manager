@@ -167,7 +167,7 @@ class WorkspaceOfficialMemberSnapshot(Base):
 
 
 class ExternalBinding(Base):
-    """Explicit remote binding. One remote id maps to one local account."""
+    """Explicit remote binding. One remote id maps to one local account × workspace context."""
 
     __tablename__ = "external_bindings"
 
@@ -175,6 +175,7 @@ class ExternalBinding(Base):
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     local_account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
     remote_account_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    workspace_id: Mapped[int | None] = mapped_column(ForeignKey("workspaces.id"))
     binding_state: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     verified_email: Mapped[str | None] = mapped_column(String(255))
     verified_official_account_id: Mapped[str | None] = mapped_column(String(100))
@@ -192,6 +193,7 @@ class ExternalBinding(Base):
 
     __table_args__ = (
         UniqueConstraint("provider", "remote_account_id", name="uq_external_binding_remote"),
-        UniqueConstraint("provider", "local_account_id", name="uq_external_binding_local"),
+        UniqueConstraint("provider", "local_account_id", "workspace_id", name="uq_external_binding_local_workspace"),
         Index("idx_external_binding_state", "provider", "binding_state"),
+        Index("idx_external_binding_workspace", "provider", "workspace_id"),
     )

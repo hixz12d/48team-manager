@@ -13,3 +13,8 @@ class StartWorkspaceOAuthRequest(BaseModel):
 class CompleteWorkspaceOAuthRequest(BaseModel):
     ticket: str = Field(min_length=8, max_length=200)
     callback_url: str = Field(min_length=8, max_length=4000)
+
+
+class CompleteAccountOAuthRequest(BaseModel):
+    ticket: str = Field(min_length=8, max_length=200)
+    callback_url: str = Field(min_length=8, max_length=4000)

@@ -10,6 +10,10 @@ from app.domain.identity import (
     LOCAL_PURPOSE_FREE,
     LOCAL_PURPOSE_STANDBY,
     LOCAL_PURPOSES,
+    LOCAL_PURPOSE_MOTHER,
+    MANAGEMENT_ROLE_CHILD,
+    MANAGEMENT_ROLE_MOTHER,
+    MANAGEMENT_ROLE_NONE,
     MEMBERSHIP_STATE_INVITED,
     MEMBERSHIP_STATE_JOINED,
     MEMBERSHIP_STATE_REMOVED,
@@ -103,3 +107,24 @@ def mapping_membership_state(status: str | None) -> str:
     if status in {MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED}:
         return status
     return MEMBERSHIP_STATE_UNKNOWN
+
+
+def management_role(workspace, account_id: int | None) -> str:
+    """Workspace-local mother/child. Never inferred from official_role or Account.local_purpose."""
+    if account_id is None or workspace is None:
+        return MANAGEMENT_ROLE_NONE
+    owner_id = getattr(workspace, "owner_account_id", None)
+    if owner_id is None:
+        return MANAGEMENT_ROLE_NONE
+    try:
+        return MANAGEMENT_ROLE_MOTHER if int(owner_id) == int(account_id) else MANAGEMENT_ROLE_CHILD
+    except (TypeError, ValueError):
+        return MANAGEMENT_ROLE_NONE
+
+
+def is_workspace_owner(workspace, account_id: int | None) -> bool:
+    return management_role(workspace, account_id) == MANAGEMENT_ROLE_MOTHER
+
+
+def membership_local_purpose_for(workspace, account_id: int | None) -> str:
+    return LOCAL_PURPOSE_MOTHER if is_workspace_owner(workspace, account_id) else LOCAL_PURPOSE_CHILD

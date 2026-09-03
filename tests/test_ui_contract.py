@@ -58,6 +58,8 @@ class UIContractTests(unittest.TestCase):
             self.assertNotIn("danger-archive", accounts)
             self.assertIn('id="register-form"', accounts)  # shared overlay still present
             self.assertNotIn("data-open-register", accounts)
+            self.assertIn('id="reauth-sheet"', accounts)
+            self.assertIn("reauth-authorize-url", accounts)
             workspaces = client.get("/workspaces").text
             self.assertIn('id="register-form"', workspaces)
             self.assertIn("登记团队", workspaces)
@@ -84,11 +86,15 @@ class UIContractTests(unittest.TestCase):
             js = client.get("/static/js/app.js").text
             self.assertIn("quota-meter", js)
             self.assertIn("/api/accounts/portfolio", js)
-            self.assertIn("/api/workspaces/${item.id}/sync-name", js)
+            self.assertNotIn("/api/workspaces/${item.id}/sync-name", js)
+            self.assertNotIn("同步官方名称", js)
             self.assertIn("is-collapsed", js)
             self.assertIn("fillProxyProfileOptions", js)
             self.assertIn("meter-window", js)
             self.assertIn("toggle-icon", js)
+            self.assertIn("纳管", js)
+            self.assertIn("母号", js)
+            self.assertNotIn("母号 (Admin)", js)
             self.assertIn("绑定已有档案", proxies)
 
     def test_settings_never_returns_raw_secret(self):

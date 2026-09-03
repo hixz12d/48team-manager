@@ -187,7 +187,7 @@
               <option value="30d">最近 30 天</option>
               <option value="all">全部时间</option>
             </select>
-            <label class="muted"><input type="checkbox" id="operations-archived-only"> 已清除</label>
+            <label class="check"><input type="checkbox" id="operations-archived-only"> 已清除</label>
             <button type="button" class="button ghost" id="operations-clear-filters">清除筛选</button>
             <button type="button" class="button ghost" id="operations-bulk-archive" hidden>清除所选</button>
             <span class="toolbar-count muted" id="operations-count"></span>
@@ -456,7 +456,7 @@
       <div class="sheet-body" id="sheet-body"></div>
     </div>
   </div>
-  <div class="menu" id="action-menu" hidden></div>
+  <div class="menu" id="action-menu" role="menu" hidden></div>
   <div class="sheet" id="register-sheet" hidden>
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="register-title">
       <header>
@@ -484,6 +484,34 @@
         <p id="register-status" class="muted" hidden></p>
         <div class="settings-probe-actions">
           <button class="button primary" type="submit" id="register-submit">生成授权链接</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div class="sheet" id="reauth-sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="reauth-title">
+      <header>
+        <div>
+          <strong id="reauth-title">重新授权</strong>
+          <p class="muted" id="reauth-subtitle">打开授权链接，登录后把跳转到 localhost:1455 的整段地址贴回来。母号和子号都走这条手动链接。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-reauth>关掉</button>
+      </header>
+      <form id="reauth-form" class="sheet-body">
+        <input type="hidden" name="account_id" value="">
+        <input type="hidden" name="ticket" value="">
+        <div class="sheet-section">
+          <label>账号<input name="email" type="email" readonly></label>
+          <label>授权链接<textarea id="reauth-authorize-url" rows="4" readonly></textarea></label>
+          <div class="settings-probe-actions">
+            <button class="button" type="button" id="reauth-copy-link">复制链接</button>
+            <a class="button" id="reauth-open-link" href="#" target="_blank" rel="noopener">打开授权</a>
+          </div>
+          <label>回调地址<textarea name="callback_url" rows="4" placeholder="http://localhost:1455/auth/callback?code=...&state=..."></textarea></label>
+        </div>
+        <p id="reauth-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button class="button primary" type="submit" id="reauth-submit">完成授权</button>
         </div>
       </form>
     </div>

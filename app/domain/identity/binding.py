@@ -5,8 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from app.domain.identity import BINDING_CONFLICT, BINDING_PENDING, BINDING_VERIFIED, PROVIDER_SUB2API
+from app.domain.identity import (
+    BINDING_CONFLICT,
+    BINDING_PENDING,
+    BINDING_VERIFIED,
+    MANAGEMENT_ROLE_MOTHER,
+    PROVIDER_SUB2API,
+)
 from app.domain.identity.ids import is_workspace_account_id, normalize_email
+from app.domain.identity.policy import management_role
 
 
 def remote_id_from(account: Mapping[str, Any]) -> str:
@@ -65,30 +72,116 @@ def remote_snapshot(account: Mapping[str, Any]) -> dict[str, str | None]:
     }
 
 
+def email_local_part(email: str | None) -> str:
+    normalized = normalize_email(email)
+    if "@" not in normalized:
+        return normalized
+    return normalized.split("@", 1)[0]
+
+
+def canonical_sub2api_name(email: str, context_role: str) -> str:
+    local_part = email_local_part(email)
+    suffix = "母号" if context_role == MANAGEMENT_ROLE_MOTHER else "子号"
+    return f"Team（{local_part}） {suffix}"
+
+
+def team48_context_key(official_workspace_id: str | None, account_id: int) -> str:
+    workspace = str(official_workspace_id or "").strip().lower()
+    return f"team48:{workspace}:{int(account_id)}"
+
+
+def remote_context_key_from(account: Mapping[str, Any]) -> str:
+    credentials = account.get("credentials") if isinstance(account.get("credentials"), dict) else {}
+    extra = account.get("extra") if isinstance(account.get("extra"), dict) else {}
+    for source in (account, extra, credentials):
+        if not isinstance(source, dict):
+            continue
+        value = str(source.get("team48_context_key") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+class AmbiguousWorkspaceContext(ValueError):
+    error_code = "ambiguous_workspace_context"
+
+    def __init__(self, message: str = "account belongs to multiple workspaces; workspace_id is required"):
+        super().__init__(message)
+
+
+def workspace_contexts(
+    account,
+    *,
+    memberships: Sequence[Any],
+    workspaces_by_id: Mapping[int, Any],
+) -> list[Any]:
+    seen: set[int] = set()
+    contexts: list[Any] = []
+    for workspace in workspaces_by_id.values():
+        if workspace.owner_account_id == account.id and workspace.id not in seen:
+            seen.add(workspace.id)
+            contexts.append(workspace)
+    for row in memberships:
+        workspace = workspaces_by_id.get(row.workspace_id)
+        if workspace is None or workspace.id in seen:
+            continue
+        seen.add(workspace.id)
+        contexts.append(workspace)
+    return contexts
+
+
+def resolve_workspace_context(
+    account,
+    *,
+    memberships: Sequence[Any],
+    workspaces_by_id: Mapping[int, Any],
+    workspace_id: int | None = None,
+):
+    contexts = workspace_contexts(account, memberships=memberships, workspaces_by_id=workspaces_by_id)
+    if workspace_id is not None:
+        workspace = workspaces_by_id.get(int(workspace_id))
+        if workspace is None:
+            raise ValueError("workspace not found")
+        if workspace not in contexts and workspace.owner_account_id != account.id:
+            if all(row.workspace_id != workspace.id for row in memberships):
+                raise ValueError("account is not in the requested workspace")
+        return workspace
+    if len(contexts) == 1:
+        return contexts[0]
+    if not contexts:
+        return None
+    raise AmbiguousWorkspaceContext()
+
+
 def expected_workspace_id(
     account,
     *,
     memberships: Sequence[Any],
     workspaces_by_id: Mapping[int, Any],
+    workspace_id: int | None = None,
+    allow_ambiguous: bool = False,
 ) -> str | None:
-    owned = [
-        workspace
-        for workspace in workspaces_by_id.values()
-        if workspace.owner_account_id == account.id
-        and workspace.official_workspace_id
-        and is_workspace_account_id(workspace.official_workspace_id)
-    ]
-    if owned:
-        return owned[0].official_workspace_id
-    for row in memberships:
-        workspace = workspaces_by_id.get(row.workspace_id)
-        if (
-            workspace
-            and workspace.official_workspace_id
-            and is_workspace_account_id(workspace.official_workspace_id)
-        ):
-            return workspace.official_workspace_id
+    try:
+        workspace = resolve_workspace_context(
+            account,
+            memberships=memberships,
+            workspaces_by_id=workspaces_by_id,
+            workspace_id=workspace_id,
+        )
+    except AmbiguousWorkspaceContext:
+        if allow_ambiguous:
+            return None
+        raise
+    if workspace is None:
+        return None
+    official = str(workspace.official_workspace_id or "").strip()
+    if official and is_workspace_account_id(official):
+        return official.lower()
     return None
+
+
+def canonical_name_for_account(account, workspace) -> str:
+    return canonical_sub2api_name(account.email, management_role(workspace, account.id))
 
 
 def match_unbound_local_account(

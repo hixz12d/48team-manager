@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import AsyncMock
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -265,3 +266,63 @@ class ReauthGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["manual"], 1)
         refreshed = await self.session.get(type(row), row.id)
         self.assertEqual(refreshed.state, "manual_required")
+
+
+class ManualReauthLinkTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_maker = async_sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self.session = self.session_maker()
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        await self.engine.dispose()
+
+    async def _account(self, email: str, purpose: str) -> Account:
+        account = Account(
+            email=email,
+            official_plan="unknown",
+            local_purpose=purpose,
+            operational_state="active",
+            auth_state="oauth_required",
+        )
+        self.session.add(account)
+        await self.session.commit()
+        await self.session.refresh(account)
+        return account
+
+    async def test_mother_and_child_manual_reauth_return_authorize_url(self):
+        mother = await self._account("mom@gmail.com", "mother")
+        child = await self._account("kid@icloud.com", "child")
+        for account in (mother, child):
+            started = await reauth_service.start_manual_reauth(self.session, account)
+            self.assertTrue(started["ok"])
+            self.assertTrue(started["ticket"])
+            self.assertIn("auth.openai.com/oauth/authorize", started["authorize_url"])
+            self.assertEqual(started["email"], account.email)
+
+    async def test_complete_writes_tokens_without_browser(self):
+        account = await self._account("kid@icloud.com", "child")
+        started = await reauth_service.start_manual_reauth(self.session, account)
+        client = AsyncMock()
+        client.exchange_oauth_code = AsyncMock(
+            return_value={
+                "success": True,
+                "access_token": "at-new",
+                "refresh_token": "rt-new",
+                "id_token": "id-new",
+            }
+        )
+        result = await reauth_service.complete_manual_reauth(
+            self.session,
+            account,
+            ticket=started["ticket"],
+            callback_url="http://localhost:1455/auth/callback?code=abc",
+            client=client,
+        )
+        self.assertTrue(result.get("ok"), result)
+        refreshed = await self.session.get(Account, account.id)
+        self.assertEqual(refreshed.auth_state, "healthy")
+        self.assertTrue(refreshed.access_token_encrypted)

@@ -15,7 +15,6 @@ from app.core.time import utcnow
 from app.domain.identity.ids import normalize_email
 from app.integrations.openai.member_adapter import (
     adapt_collection,
-    is_owner_role,
     validate_fetch_counts,
 )
 from app.persistence.models.identity import Account, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
@@ -100,7 +99,7 @@ class WorkspaceSyncService:
         for email in emails:
             remote = remote_rows.get(email)
             local = local_by_email.get(email)
-            is_owner = email in owner_emails or is_owner_role((remote or {}).get("role") or (local or {}).get("official_role"))
+            is_owner = email in owner_emails
             if is_owner:
                 status = "owner"
             elif remote and local:
@@ -308,7 +307,7 @@ class WorkspaceSyncService:
         workspace.updated_at = stamp
         workspace.version = int(workspace.version or 1) + 1
 
-        # Best-effort official name refresh; never fail member sync for name misses.
+        name_warning = None
         try:
             from app.application.workspace_metadata import workspace_metadata_resolver
 
@@ -319,28 +318,30 @@ class WorkspaceSyncService:
             if isinstance(invites_raw, dict):
                 extra.append(("invites", invites_raw))
                 extra.append(("invites_seat_metadata", invites_raw.get("seat_metadata") or {}))
-            await workspace_metadata_resolver.refresh(db, workspace, owner, extra=extra, persist=False)
-        except Exception:
+            name_result = await workspace_metadata_resolver.refresh(db, workspace, owner, extra=extra, persist=False)
+            if isinstance(name_result, dict) and not name_result.get("ok", True):
+                name_warning = name_result.get("error") or "Team 名称获取失败，已保留现有名称"
+        except Exception as exc:
             logger.exception("official name refresh failed workspace=%s", workspace.id)
+            name_warning = f"Team 名称获取失败，已保留现有名称（{exc}"[:180] + ")" if str(exc) else "Team 名称获取失败，已保留现有名称"
 
         joined_people_total = sum(1 for row in remote_rows.values() if row.get("state") == "joined")
-        owner_count = sum(
-            1
-            for row in remote_rows.values()
-            if row.get("state") == "joined"
-            and (is_owner_role(row.get("role")) or row.get("email") in self._owner_emails(workspace, owner))
-        )
-        joined_member_count = max(0, joined_people_total - owner_count)
+        owner_emails = self._owner_emails(workspace, owner)
+        owner_count = 1 if any(row.get("state") == "joined" and row.get("email") in owner_emails for row in remote_rows.values()) else (1 if owner else 0)
+        joined_member_count = max(0, joined_people_total - (1 if owner else 0))
         invited = sum(1 for row in remote_rows.values() if row.get("state") == "invited")
+        warnings = [name_warning] if name_warning else []
         result = {
             "success": True,
             "ok": True,
-            "status": "success",
+            "status": "partial" if name_warning else "success",
             "outcome": "snapshot_updated",
+            "warnings": warnings,
             "message": (
-                f"同步完成：官方已加入 {joined_people_total} 人（Owner {owner_count} / 子成员 {joined_member_count}），"
+                f"同步完成：官方已加入 {joined_people_total} 人（1 母号 / {joined_member_count} 子号），"
                 f"待邀请 {invited}；本地受管 {reconciliation['managed']}；"
                 f"官方未纳入本地管理 {reconciliation['remote_only']}"
+                + (f"；{name_warning}" if name_warning else "")
             ),
             "workspace_id": workspace.id,
             "reported_total": members.get("reported_total"),

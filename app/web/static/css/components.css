@@ -515,7 +515,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  overflow: hidden;
+  overflow: visible;
   box-shadow: var(--shadow-xs);
 }
 
@@ -648,6 +648,40 @@
 
 .drawer[hidden], .sheet[hidden], .menu[hidden] {
   display: none !important;
+}
+
+.menu {
+  position: fixed;
+  z-index: 55;
+  min-width: 180px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-overlay);
+  display: grid;
+  gap: 2px;
+}
+
+.menu button,
+.menu [role="menuitem"] {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  border-radius: var(--radius-xs);
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.menu button:hover,
+.menu button:focus,
+.menu [role="menuitem"]:hover,
+.menu [role="menuitem"]:focus {
+  background: var(--surface-hover);
+  outline: none;
 }
 
 .drawer-panel, .sheet-panel {

@@ -14,12 +14,17 @@ from app.application.tokens import decrypt_secret
 from app.core.time import utcnow
 from app.domain.identity import BINDING_PENDING, BINDING_VERIFIED, PROVIDER_SUB2API
 from app.domain.identity.binding import (
+    AmbiguousWorkspaceContext,
+    canonical_name_for_account,
     cross_check_binding,
     expected_workspace_id,
+    remote_context_key_from,
     remote_email_from,
     remote_id_from,
     remote_official_account_id_from,
     remote_workspace_id_from,
+    resolve_workspace_context,
+    team48_context_key,
 )
 from app.domain.identity.ids import normalize_email
 from app.integrations.sub2api.client import sub2api_client
@@ -57,20 +62,73 @@ def sub2api_publish_eligibility(account: Account | None) -> dict[str, Any]:
     }
 
 
-def _binding_for_account(bindings: list[ExternalBinding], account_id: int) -> ExternalBinding | None:
+def _binding_for_account(
+    bindings: list[ExternalBinding],
+    account_id: int,
+    workspace_id: int | None = None,
+) -> ExternalBinding | None:
+    scoped = None
+    unscoped = None
     for row in bindings:
-        if int(row.local_account_id) == int(account_id):
+        if int(row.local_account_id) != int(account_id):
+            continue
+        if workspace_id is not None and row.workspace_id == int(workspace_id):
             return row
-    return None
+        if row.workspace_id is None:
+            unscoped = row
+        elif scoped is None:
+            scoped = row
+    return scoped or unscoped
 
 
-async def _expected_workspace(db: AsyncSession, account: Account) -> str | None:
+async def _resolve_push_context(
+    db: AsyncSession,
+    account: Account,
+    workspace_id: int | None = None,
+) -> tuple[Workspace | None, str | None]:
     memberships = list(
         (await db.execute(select(WorkspaceMembership).where(WorkspaceMembership.account_id == account.id))).scalars()
     )
-    workspaces = await identity_repo.list_workspaces(db)
-    workspaces_by_id = {row.id: row for row in workspaces}
-    return expected_workspace_id(account, memberships=memberships, workspaces_by_id=workspaces_by_id)
+    workspaces_by_id = {row.id: row for row in await identity_repo.list_workspaces(db)}
+    workspace = resolve_workspace_context(
+        account,
+        memberships=memberships,
+        workspaces_by_id=workspaces_by_id,
+        workspace_id=workspace_id,
+    )
+    official = expected_workspace_id(
+        account,
+        memberships=memberships,
+        workspaces_by_id=workspaces_by_id,
+        workspace_id=workspace.id if workspace is not None else None,
+    )
+    return workspace, official
+
+
+def _match_remote(
+    remotes: list[dict[str, Any]],
+    *,
+    context_key: str | None = None,
+    existing_remote_id: str | None = None,
+) -> dict[str, Any] | None:
+    if existing_remote_id:
+        for item in remotes:
+            if remote_id_from(item) == str(existing_remote_id):
+                return item
+    key = str(context_key or "").strip()
+    if not key:
+        return None
+    matches = [item for item in remotes if remote_context_key_from(item) == key]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise AmbiguousWorkspaceContext("multiple Sub2API accounts match this team48 context key")
+    return None
+
+
+async def _expected_workspace(db: AsyncSession, account: Account, workspace_id: int | None = None) -> str | None:
+    _workspace, official = await _resolve_push_context(db, account, workspace_id)
+    return official
 
 
 def _build_credentials(account: Account) -> dict[str, Any]:
@@ -212,6 +270,7 @@ async def account_sub2api_push(
     name: str | None = None,
     schedulable: bool | None = True,
     confirm_mixed_channel_risk: bool = False,
+    workspace_id: int | None = None,
 ) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
@@ -228,16 +287,28 @@ async def account_sub2api_push(
             **eligibility,
         }
 
+    try:
+        workspace, expected_ws = await _resolve_push_context(db, account, workspace_id)
+    except AmbiguousWorkspaceContext as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "error_code": "ambiguous_workspace_context",
+            "status": "failed",
+            "message": "该账号属于多个 Workspace，请先选择要推送的上下文",
+        }
+
     operation = await operation_store.create(
         db,
         op_type="sub2api_push",
         account_id=account.id,
         email=account.email,
+        workspace_id=workspace.id if workspace is not None else None,
         input_payload={
             "account_id": account.id,
+            "workspace_id": workspace.id if workspace is not None else None,
             "mode": "push",
             "group_ids": list(group_ids or []),
-            "name": name,
             "schedulable": schedulable,
         },
     )
@@ -247,9 +318,20 @@ async def account_sub2api_push(
             select(ExternalBinding).where(
                 ExternalBinding.provider == PROVIDER_SUB2API,
                 ExternalBinding.local_account_id == account.id,
+                ExternalBinding.workspace_id == (workspace.id if workspace is not None else None),
             )
         )
     ).scalar_one_or_none()
+    if existing is None:
+        existing = (
+            await db.execute(
+                select(ExternalBinding).where(
+                    ExternalBinding.provider == PROVIDER_SUB2API,
+                    ExternalBinding.local_account_id == account.id,
+                    ExternalBinding.workspace_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
 
     credentials = _build_credentials(account)
     if not credentials.get("access_token") and not credentials.get("refresh_token"):
@@ -267,12 +349,11 @@ async def account_sub2api_push(
         await db.commit()
         return present_action_result({"operation_id": operation.public_id, **payload})
 
-    expected_ws = await _expected_workspace(db, account)
     if expected_ws and "organization_id" not in credentials:
         credentials["organization_id"] = expected_ws
         credentials["workspace_id"] = expected_ws
 
-    account_name = str(name or "").strip() or normalize_email(account.email)
+    account_name = canonical_name_for_account(account, workspace) if workspace is not None else canonical_name_for_account(account, type("WS", (), {"owner_account_id": None})())
     body: dict[str, Any] = {
         "name": account_name,
         "platform": "openai",
@@ -283,7 +364,9 @@ async def account_sub2api_push(
             "chatgpt_account_id": account.official_account_id,
             "chatgpt_user_id": account.official_user_id,
             "workspace_id": expected_ws,
+            "organization_id": expected_ws,
             "source": "team48-manager",
+            "team48_context_key": team48_context_key(expected_ws, account.id),
         },
         "concurrency": 1,
         "priority": 1,
@@ -299,8 +382,11 @@ async def account_sub2api_push(
             written = await sub2api_client.update_account(db, remote_id, body)
             action = "update"
         else:
-            # Try match by email first to avoid duplicates.
-            matched = await sub2api_client.find_account_by_email(db, account.email)
+            remotes = await sub2api_client.list_status_accounts(db)
+            matched = _match_remote(
+                remotes,
+                context_key=team48_context_key(expected_ws, account.id),
+            )
             if matched and remote_id_from(matched):
                 remote_id = int(remote_id_from(matched))
                 written = await sub2api_client.update_account(db, remote_id, body)
@@ -379,7 +465,7 @@ async def account_sub2api_push(
     )
     if check_state != BINDING_VERIFIED:
         # Still record pending binding for triage, never verified.
-        await ensure_binding(db, account=account, remote_account_id=remote_id)
+        await ensure_binding(db, account=account, remote_account_id=remote_id, workspace_id=workspace.id if workspace is not None else None)
         binding = (
             await db.execute(
                 select(ExternalBinding).where(
@@ -413,7 +499,7 @@ async def account_sub2api_push(
         await db.commit()
         return present_action_result({"operation_id": operation.public_id, **payload})
 
-    await ensure_binding(db, account=account, remote_account_id=remote_id)
+    await ensure_binding(db, account=account, remote_account_id=remote_id, workspace_id=workspace.id if workspace is not None else None)
     binding = (
         await db.execute(
             select(ExternalBinding).where(
@@ -424,6 +510,7 @@ async def account_sub2api_push(
     ).scalar_one_or_none()
     if binding is not None:
         binding.binding_state = BINDING_VERIFIED
+        binding.workspace_id = workspace.id if workspace is not None else binding.workspace_id
         binding.verified_email = remote_email_from(remote) or normalize_email(account.email)
         binding.verified_official_account_id = remote_official_account_id_from(remote) or account.official_account_id
         binding.verified_workspace_id = remote_workspace_id_from(remote) or expected_ws
@@ -431,24 +518,51 @@ async def account_sub2api_push(
         binding.last_observed_at = utcnow()
         binding.updated_at = utcnow()
 
+    schedulable_error = None
     if schedulable is not None:
         try:
             await sub2api_client.set_account_schedulable(db, remote_id, bool(schedulable))
-        except Exception:
-            pass
+        except Exception as exc:
+            schedulable_error = str(exc)
 
     group_label = ",".join(str(x) for x in (group_ids or [])) or "默认分组"
+    if schedulable_error:
+        payload = {
+            "success": False,
+            "ok": False,
+            "status": "partial",
+            "partial": True,
+            "outcome": "verification_failed",
+            "error_code": "schedulable_failed",
+            "error": schedulable_error,
+            "message": f"推送已写入远端账号 #{remote_id}，但 schedulable 更新失败：{schedulable_error}",
+            "account_id": account.id,
+            "email": account.email,
+            "remote_id": remote_id,
+            "action": action,
+            "binding_state": BINDING_VERIFIED,
+            "canonical_name": account_name,
+            "workspace_id": workspace.id if workspace is not None else None,
+            "group_ids": list(group_ids or []),
+        }
+        await operation_store.mark_step(db, operation, "read_after_write", state="partial", result=payload, error_message=schedulable_error)
+        await operation_store.finish(db, operation, payload)
+        await db.commit()
+        return present_action_result({"operation_id": operation.public_id, **payload})
+
     payload = {
         "success": True,
         "ok": True,
         "status": "success",
         "outcome": "verified",
-        "message": f"推送成功：远端账号 #{remote_id}，分组 {group_label}，复读验证通过",
+        "message": f"推送成功：远端账号 #{remote_id}，名称 {account_name}，分组 {group_label}，复读验证通过",
         "account_id": account.id,
         "email": account.email,
         "remote_id": remote_id,
         "action": action,
         "binding_state": BINDING_VERIFIED,
+        "canonical_name": account_name,
+        "workspace_id": workspace.id if workspace is not None else None,
         "group_ids": list(group_ids or []),
     }
     await operation_store.mark_step(db, operation, "read_after_write", state="success", result=payload)
