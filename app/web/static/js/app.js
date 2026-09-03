@@ -14,6 +14,8 @@
   const rotateSheet = document.getElementById("rotate-sheet");
   const proxyEditSheet = document.getElementById("proxy-edit-sheet");
   const manageChildrenSheet = document.getElementById("manage-children-sheet");
+  const manageChildRemoveSheet = document.getElementById("manage-child-remove-sheet");
+  let pendingChildRemove = null;
   let focusTrapRoot = null;
   const SECRET_MASK = "••••••";
   const pageCache = { items: [], kind: "", portfolio: null };
@@ -1716,7 +1718,7 @@ function hmeRow(item) {
         removeBtn.type = "button";
         removeBtn.className = "button ghost compact";
         removeBtn.textContent = "删除";
-        removeBtn.addEventListener("click", () => manageChildRemove(row, removeBtn));
+        removeBtn.addEventListener("click", () => openManageChildRemove(row, removeBtn));
         actions.append(removeBtn);
       }
       item.append(actions);
@@ -1794,25 +1796,82 @@ function hmeRow(item) {
     }
   }
 
-  async function manageChildRemove(row, button) {
+  function selectedManageChildRemoveMode() {
+    const checked = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode']:checked");
+    return checked?.value === "official" ? "official" : "local";
+  }
+
+  function openManageChildRemove(row, button) {
+    if (!manageChildRemoveSheet) return;
     const workspace = manageChildrenWorkspace();
     const workspaceId = workspace?.id;
     const email = (row?.email || "").trim();
     const accountId = row?.id || row?.local_account_id;
     if (!workspaceId || (!email && !accountId)) return;
-    if (!confirmDanger(`确认从本地子号移除 ${email || accountId}？不会改官方成员。`)) return;
+    pendingChildRemove = { row, button, workspaceId, email, accountId };
+    const emailEl = document.getElementById("manage-child-remove-email");
+    if (emailEl) emailEl.textContent = email || `#${accountId}`;
+    const localRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='local']");
+    if (localRadio) localRadio.checked = true;
+    setFormStatus("manage-child-remove-status", "", "muted");
+    manageChildRemoveSheet.hidden = false;
+    activateFocusTrap(manageChildRemoveSheet.querySelector(".confirm-panel") || manageChildRemoveSheet);
+  }
+
+  function closeManageChildRemove() {
+    if (!manageChildRemoveSheet || manageChildRemoveSheet.hidden) return;
+    manageChildRemoveSheet.hidden = true;
+    pendingChildRemove = null;
+    if (manageChildrenSheet && !manageChildrenSheet.hidden) {
+      activateFocusTrap(manageChildrenSheet.querySelector(".sheet-panel") || manageChildrenSheet);
+    } else {
+      clearFocusTrap();
+    }
+  }
+
+  async function confirmManageChildRemove() {
+    const pending = pendingChildRemove;
+    if (!pending) return;
+    const { workspaceId, email, accountId, button } = pending;
+    const mode = selectedManageChildRemoveMode();
+    const confirmBtn = document.getElementById("manage-child-remove-confirm");
     if (button) button.disabled = true;
+    if (confirmBtn) confirmBtn.disabled = true;
+    setFormStatus("manage-child-remove-status", mode === "official" ? "正在踢官方席位…" : "正在从本地移除…", "muted");
     try {
+      if (mode === "official") {
+        if (!email) {
+          setFormStatus("manage-child-remove-status", "踢官方席位需要邮箱", "error");
+          toast("踢官方席位需要邮箱", "error");
+          return;
+        }
+        const kickResult = await postAction(`workspace-kick-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/kick`, {
+          email,
+          reason: "console_manage_children",
+        });
+        const kickFailed = !(kickResult?.ok || kickResult?.success) || kickResult?.partial || ["partial", "failed", "manual_required"].includes(kickResult?.status);
+        toast(kickResult.message || (kickFailed ? "官方踢人失败" : "已踢出官方席位并下本地"), operationTone(kickResult), kickResult.operation_id ? { label: "查看任务", onClick: () => openOperationById(kickResult.operation_id) } : undefined);
+        if (kickFailed) {
+          setFormStatus("manage-child-remove-status", kickResult.message || kickResult.error || "官方踢人失败", "error");
+          return;
+        }
+        closeManageChildRemove();
+        await reloadManageChildren();
+        return;
+      }
       const body = {};
       if (email) body.email = email;
       if (accountId) body.account_id = accountId;
       const result = await postAction(`workspace-remove-child-${workspaceId}-${email || accountId}`, `/api/workspaces/${workspaceId}/members/remove`, body);
       toast(result.message || "已从本地移除", operationTone(result));
+      closeManageChildRemove();
       await reloadManageChildren();
     } catch (error) {
+      setFormStatus("manage-child-remove-status", friendlyError(error), "error");
       toast(friendlyError(error), "error");
     } finally {
       if (button) button.disabled = false;
+      if (confirmBtn) confirmBtn.disabled = false;
     }
   }
 
@@ -3273,6 +3332,10 @@ function openRegister(trigger) {
   document.getElementById("proxy-edit-form")?.addEventListener("submit", submitProxyEdit);
   document.querySelector("[data-close-manage-children]")?.addEventListener("click", closeManageChildren);
   document.getElementById("manage-children-form")?.addEventListener("submit", submitManageChildren);
+  document.querySelectorAll("[data-close-manage-child-remove]").forEach((button) => {
+    button.addEventListener("click", closeManageChildRemove);
+  });
+  document.getElementById("manage-child-remove-confirm")?.addEventListener("click", confirmManageChildRemove);
 
 
   document.getElementById("register-copy-link")?.addEventListener("click", async () => {
@@ -3360,6 +3423,8 @@ function openRegister(trigger) {
     }
     if (event.key === "Escape") {
       if (!menu.hidden) closeMenu();
+      else if (manageChildRemoveSheet && !manageChildRemoveSheet.hidden) closeManageChildRemove();
+      else if (manageChildrenSheet && !manageChildrenSheet.hidden) closeManageChildren();
       else if (onboardSheet && !onboardSheet.hidden) closeOnboard();
       else if (rotateSheet && !rotateSheet.hidden) closeRotate();
       else if (proxyEditSheet && !proxyEditSheet.hidden) closeProxyEdit();

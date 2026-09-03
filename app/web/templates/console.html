@@ -661,7 +661,7 @@
       <header>
         <div>
           <strong id="manage-children-title">管理子号</strong>
-          <p class="muted" id="manage-children-subtitle">本地子号：加入、授权、从本地移除。不会改官方席位。</p>
+          <p class="muted" id="manage-children-subtitle">本地子号：加入、授权、删除。删除时可只下本地，或连官方席位一起踢。</p>
         </div>
         <button type="button" class="button ghost" data-close-manage-children>关闭</button>
       </header>
@@ -681,6 +681,30 @@
             <button class="button primary" type="submit" id="manage-children-submit">加入邮箱</button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+  <div class="sheet confirm-sheet" id="manage-child-remove-sheet" hidden>
+    <div class="sheet-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="manage-child-remove-title">
+      <header>
+        <div>
+          <strong id="manage-child-remove-title">删除子号</strong>
+          <p class="muted" id="manage-child-remove-subtitle">选择只下本地，还是连官方席位一起踢。</p>
+        </div>
+        <button type="button" class="button ghost" data-close-manage-child-remove>取消</button>
+      </header>
+      <div class="sheet-body">
+        <p id="manage-child-remove-email" class="manage-child-remove-email"></p>
+        <div class="sheet-section">
+          <label class="check"><input type="radio" name="manage-child-remove-mode" value="local" checked> 只从本地移除，不改官方席位</label>
+          <label class="check"><input type="radio" name="manage-child-remove-mode" value="official"> 连官方席位一起踢，转入待命</label>
+          <p class="hint">官方踢出会改 Team 成员，并走现有踢出待命流程。</p>
+        </div>
+        <p id="manage-child-remove-status" class="muted" hidden></p>
+        <div class="settings-probe-actions">
+          <button type="button" class="button ghost" data-close-manage-child-remove>取消</button>
+          <button type="button" class="button primary" id="manage-child-remove-confirm">确认删除</button>
+        </div>
       </div>
     </div>
   </div>

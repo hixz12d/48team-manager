@@ -909,3 +909,25 @@
   margin: 0;
   font-size: 12px;
 }
+
+.confirm-sheet {
+  justify-items: center;
+  align-items: center;
+  z-index: 50;
+}
+
+.confirm-panel {
+  width: min(420px, calc(100% - 32px));
+  height: auto;
+  max-height: min(90vh, 520px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  animation: fadeIn 0.15s ease;
+}
+
+.manage-child-remove-email {
+  margin: 0;
+  font-weight: 600;
+  word-break: break-all;
+}
