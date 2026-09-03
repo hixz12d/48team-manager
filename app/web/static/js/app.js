@@ -94,7 +94,7 @@
     not_eligible: "不适用",
     not_synced: "尚未同步",
     sync_failed: "同步失败",
-    needs_management: "待纳管",
+    needs_management: "待接入",
     membership_drift: "成员漂移",
     full: "已满席",
     snapshot_updated: "快照已更新",
@@ -444,8 +444,8 @@
   function membershipStatusLabel(status) {
     const map = {
       owner: "母号",
-      managed: "已纳入本地管理",
-      remote_only: "官方已加入 · 未纳入本地管理",
+      managed: "已接入",
+      remote_only: "官方已加入 · 未接入",
       local_only: "本地有记录 · 官方未找到",
       invited: "已邀请 · 等待加入",
       conflict: "身份冲突 · 需人工核对",
@@ -470,7 +470,7 @@
     }
     const managed = item.managed?.count ?? item.managed_count ?? 0;
     const pending = item.reconciliation?.actionable_count ?? item.reconciliation?.remote_only ?? 0;
-    const sub = pending ? `本地 ${managed} · ${pending} 位待纳管` : `本地 ${managed}`;
+    const sub = pending ? `本地 ${managed} · ${pending} 位待接入` : `本地 ${managed}`;
     return { main, sub };
   }
 
@@ -1024,7 +1024,7 @@ function hmeRow(item) {
         : [["官方成员", item.last_sync ? "官方列表为空" : "尚未同步"]];
       const managedLines = managed.length
         ? managed.map((member) => [member.email, [labelOf(purposeLabels, member.purpose), labelOf(statusLabels, member.auth)].filter(Boolean).join(" · ")])
-        : [["本地受管账号", "尚未纳入本地管理"]];
+        : [["本地受管账号", "尚未接入"]];
       const actionable = (item.reconciliation?.actionable_items || diffs.filter((row) => ["remote_only", "local_only", "conflict"].includes(row.status)));
       const diffLines = actionable.length
         ? actionable.map((row) => [row.name || row.email, (row.status_label || membershipStatusLabel(row.status)) + (row.note ? ` · ${row.note}` : "")])
@@ -2405,7 +2405,7 @@ function openRegister(trigger) {
   function kindBadge(kind) {
     const span = document.createElement("span");
     span.className = kind === "mother" ? "badge badge-primary" : (kind === "child" ? "badge badge-info" : (kind === "unmanaged" ? "badge badge-warning" : "badge badge-muted"));
-    span.textContent = { mother: "母号", child: "子号", history: "历史", unmanaged: "未纳管", invited: "待接受", unassigned: "未归属" }[kind] || kind;
+    span.textContent = { mother: "母号", child: "子号", history: "历史", unmanaged: "未接入", invited: "待接受", unassigned: "未归属" }[kind] || kind;
     return span;
   }
 
@@ -2427,7 +2427,7 @@ function openRegister(trigger) {
 
     const quotaCol = document.createElement("div");
     quotaCol.className = "portfolio-cell portfolio-quota";
-    quotaCol.append(account.id && kind !== "unmanaged" && kind !== "invited" ? quotaCell(account) : document.createTextNode(kind === "unmanaged" ? "未纳管，无法读取额度" : (kind === "invited" ? "待接受邀请" : "尚未获取")));
+    quotaCol.append(account.id && kind !== "unmanaged" && kind !== "invited" ? quotaCell(account) : document.createTextNode(kind === "unmanaged" ? "未接入，无法读取额度" : (kind === "invited" ? "待接受邀请" : "尚未获取")));
     row.append(quotaCol);
 
     const sub2Col = document.createElement("div");
@@ -2441,17 +2441,22 @@ function openRegister(trigger) {
       const linkBtn = document.createElement("button");
       linkBtn.type = "button";
       linkBtn.className = "button ghost compact";
-      linkBtn.textContent = account.id ? "纳管" : "导入/授权";
+      linkBtn.textContent = "接入";
       linkBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
-        if (!account.id) {
-          toast("本地没有该邮箱账号，请先导入或授权后再纳管", "warning");
+        if (!account.workspace_id || !account.email) {
+          toast("缺少官方邮箱，无法接入", "error");
           return;
         }
         linkBtn.disabled = true;
         try {
-          const result = await postAction(`workspace-link-${account.workspace_id}-${account.email}`, `/api/workspaces/${account.workspace_id}/members/link`, { email: account.email, account_id: account.id });
-          await handleActionResult(result, { successMessage: result.message || "已纳管" });
+          const body = { email: account.email };
+          if (account.id) body.account_id = account.id;
+          const result = await postAction(`workspace-link-${account.workspace_id}-${account.email}`, `/api/workspaces/${account.workspace_id}/members/link`, body);
+          await handleActionResult(result, { successMessage: result.message || "已接入" });
+          if (result.needs_auth && result.account_id) {
+            await openReauth({ id: result.account_id, email: result.email || account.email, workspace_id: account.workspace_id }, linkBtn);
+          }
         } catch (error) {
           toast(friendlyError(error), "error");
         } finally {
@@ -2571,7 +2576,7 @@ function openRegister(trigger) {
 
       const ownerCol = document.createElement("div");
       ownerCol.className = "portfolio-owner";
-      ownerCol.append(twoLine(group.owner_email || "无母号", `${counts.joined_people ?? ((counts.managed_children ?? counts.current_children ?? 0) + (counts.unmanaged ?? 0) + (group.mother ? 1 : 0))} 人 · ${counts.managed_children ?? counts.current_children ?? 0} 子号 · ${counts.unmanaged ?? 0} 未纳管`));
+      ownerCol.append(twoLine(group.owner_email || "无母号", `${counts.joined_people ?? ((counts.managed_children ?? counts.current_children ?? 0) + (counts.unmanaged ?? 0) + (group.mother ? 1 : 0))} 人 · ${counts.managed_children ?? counts.current_children ?? 0} 子号 · ${counts.unmanaged ?? 0} 未接入`));
 
       const healthCol = document.createElement("div");
       healthCol.className = "portfolio-health";

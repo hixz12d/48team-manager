@@ -184,7 +184,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 "account_id": local.get("id") if local else None,
                 "id": local.get("id") if local else None,
                 "name": remote.get("name"),
-                "note": "官方邀请尚未接受" if kind == "invited" else "官方已加入，本地未纳管",
+                "note": "官方邀请尚未接受" if kind == "invited" else "官方已加入，本地未接入",
                 "quota": None,
                 "usage": None,
             }

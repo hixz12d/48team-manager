@@ -329,7 +329,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                     "is_owner": is_owner,
                     "actionable": status in {"remote_only", "local_only", "conflict"},
                     "note": {
-                        "remote_only": "官方已加入，但本系统没有该账号的登录凭据、Token、代理和 Sub2API Binding，因此只能监控，不能执行授权、额度或轮转。",
+                        "remote_only": "官方已加入，本地尚未接入。点接入会按该邮箱建立本地子号，完成授权后才能读额度。",
                         "local_only": "本地有账号记录，但官方成员列表未找到对应邮箱。",
                         "invited": "官方邀请仍待接受。",
                         "conflict": "身份冲突，需人工核对。",

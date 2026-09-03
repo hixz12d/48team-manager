@@ -469,7 +469,7 @@ class UIActionMatrixTests(unittest.TestCase):
             self.assertIn("handleActionResult", js)
             self.assertIn("syncToastMessage", js)
             self.assertIn("官方已加入", js)
-            self.assertIn("尚未纳入本地管理", js)
+            self.assertIn("尚未接入", js)
             self.assertNotIn("还没有子号", js)
             self.assertLess(js.count("if (result.operation_id) await openOperationById(result.operation_id)"), 3)
             self.assertIn("can_retry", js)

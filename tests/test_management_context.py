@@ -125,7 +125,7 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(refused["ok"])
         self.assertEqual(refused["error_code"], "not_linkable")
 
-    async def test_invited_and_missing_local_account_are_not_linked(self):
+    async def test_invited_members_stay_unlinked_and_missing_local_accounts_are_created(self):
         self.session.add(
             WorkspaceOfficialMemberSnapshot(
                 workspace_id=self.ws_a.id,
@@ -151,8 +151,16 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.session.commit()
         missing = await link_remote_only_member(self.session, self.ws_a.id, email="missing@example.com")
-        self.assertFalse(missing["ok"])
-        self.assertEqual(missing["error_code"], "no_local_account")
+        self.assertTrue(missing["ok"])
+        self.assertTrue(missing["created"])
+        self.assertTrue(missing["needs_auth"])
+        created = await self.session.get(Account, missing["account_id"])
+        self.assertEqual(created.email, "missing@example.com")
+        self.assertEqual(created.auth_state, "oauth_required")
+        portfolio = await portfolio_query(self.session)
+        group_a = next(item for item in portfolio["groups"] if item["id"] == self.ws_a.id)
+        self.assertEqual(group_a["current_children"][0]["email"], "missing@example.com")
+        self.assertEqual(group_a["counts"]["managed_children"], 1)
 
     async def test_quota_snapshots_are_scoped_by_workspace(self):
         now = datetime(2026, 3, 29, 12, 0, 0)

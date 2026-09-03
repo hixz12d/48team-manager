@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.identity import ensure_membership
+from app.application.identity import ensure_membership, upsert_child_account
 from app.application.operations import operation_store
 from app.core.time import utcnow
 from app.domain.automation import ACTIVE_STATES, TERMINAL_STATES
@@ -130,21 +130,25 @@ async def link_remote_only_member(
         return {"ok": False, "error": "official member not found", "error_code": "not_found"}
     if snap.remote_state == "invited":
         return {"ok": False, "error": "invited members cannot be linked until they join", "error_code": "not_linkable"}
+    created = False
     if account_id is not None:
         account = await db.get(Account, int(account_id))
+        if account is None:
+            return {"ok": False, "error": "account not found", "error_code": "not_found"}
     else:
         account = (await db.execute(select(Account).where(Account.email == target))).scalar_one_or_none()
     if account is None:
-        return {
-            "ok": False,
-            "error": "no local account with exact email; refuse creating empty credentials",
-            "error_code": "no_local_account",
-        }
+        account, created = await upsert_child_account(db, email=target, status="active")
     if normalize_email(account.email) != target:
         return {"ok": False, "error": "account email mismatch", "error_code": "email_mismatch"}
     owner = await db.get(Account, workspace.owner_account_id) if workspace.owner_account_id else None
     if is_workspace_owner(workspace, account.id) or (owner is not None and normalize_email(owner.email) == target):
         return {"ok": False, "error": "workspace owner cannot be linked as a child", "error_code": "not_linkable"}
+    needs_auth = not bool((account.access_token_encrypted or "").strip())
+    if created or (needs_auth and str(account.auth_state or "") in {"", "unknown"}):
+        account.auth_state = "oauth_required"
+    if created and workspace.source_team_id and not account.source_team_id:
+        account.source_team_id = workspace.source_team_id
     await ensure_membership(
         db,
         workspace_id=workspace.id,
@@ -163,14 +167,19 @@ async def link_remote_only_member(
         )
     ).scalar_one_or_none()
     await db.commit()
+    message = f"已按官方邮箱接入 {account.email}" if created else f"已接入 {account.email}"
+    if needs_auth:
+        message += "，请完成授权后才能读取额度"
     return {
         "ok": True,
         "workspace_id": workspace.id,
         "account_id": account.id,
         "email": account.email,
+        "created": created,
+        "needs_auth": needs_auth,
         "status": "managed",
         "membership_id": membership.id if membership else None,
-        "message": f"已关联 {account.email}，状态变为已纳入本地管理",
+        "message": message,
     }
 
 

@@ -340,7 +340,7 @@ class WorkspaceSyncService:
             "message": (
                 f"同步完成：官方已加入 {joined_people_total} 人（1 母号 / {joined_member_count} 子号），"
                 f"待邀请 {invited}；本地受管 {reconciliation['managed']}；"
-                f"官方未纳入本地管理 {reconciliation['remote_only']}"
+                f"官方未接入 {reconciliation['remote_only']}"
                 + (f"；{name_warning}" if name_warning else "")
             ),
             "workspace_id": workspace.id,
