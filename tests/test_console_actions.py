@@ -39,6 +39,7 @@ class ConsoleActionsContractTests(unittest.TestCase):
             js = client.get("/static/js/app.js").text
             for action in (
                 "workspace.sync",
+                "workspace.manage-children",
                 "account.refresh",
                 "account.quota",
                 "account.sub2api",

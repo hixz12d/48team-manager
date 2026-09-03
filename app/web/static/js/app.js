@@ -13,6 +13,7 @@
   const onboardSheet = document.getElementById("onboard-sheet");
   const rotateSheet = document.getElementById("rotate-sheet");
   const proxyEditSheet = document.getElementById("proxy-edit-sheet");
+  const manageChildrenSheet = document.getElementById("manage-children-sheet");
   let focusTrapRoot = null;
   const SECRET_MASK = "••••••";
   const pageCache = { items: [], kind: "", portfolio: null };
@@ -502,7 +503,16 @@
         sync.disabled = false;
       }
     });
-    actions.append(sync, menuButton("workspace", item));
+    const manage = document.createElement("button");
+    manage.type = "button";
+    manage.className = "button ghost";
+    manage.textContent = "管理";
+    manage.dataset.action = "workspace.manage-children";
+    manage.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openManageChildren(manage, item);
+    });
+    actions.append(sync, manage, menuButton("workspace", item));
     cell(row, actions, "actions");
     return row;
   }
@@ -1183,6 +1193,11 @@ function hmeRow(item) {
         },
       },
       {
+        id: "workspace.manage-children",
+        label: "管理子号",
+        run: (item, trigger) => openManageChildren(trigger, item),
+      },
+      {
         id: "workspace.onboard",
         label: "创建子号",
         run: (item, trigger) => openOnboard(trigger, item),
@@ -1619,6 +1634,58 @@ function hmeRow(item) {
     const id = workspace?.id || "";
     form.workspace_id.value = id;
     if (form.workspace_id_display) form.workspace_id_display.value = id;
+  }
+
+  function openManageChildren(trigger, workspace) {
+    if (!manageChildrenSheet) return;
+    overlayReturn = trigger || document.activeElement;
+    const form = document.getElementById("manage-children-form");
+    form?.reset();
+    syncWorkspaceField(form, workspace);
+    const title = document.getElementById("manage-children-title");
+    const subtitle = document.getElementById("manage-children-subtitle");
+    if (title) title.textContent = "管理子号";
+    if (subtitle) subtitle.textContent = workspace?.display_name || workspace?.name || workspace?.owner_email || "";
+    setFormStatus("manage-children-status", "目前可手动加入已有邮箱。删除子号稍后补上。", "muted");
+    manageChildrenSheet.hidden = false;
+    activateFocusTrap(manageChildrenSheet.querySelector(".sheet-panel") || manageChildrenSheet);
+    form?.querySelector("[name='email']")?.focus();
+  }
+
+  function closeManageChildren() {
+    if (!manageChildrenSheet || manageChildrenSheet.hidden) return;
+    manageChildrenSheet.hidden = true;
+    clearFocusTrap();
+    overlayReturn?.focus?.();
+    overlayReturn = null;
+  }
+
+  async function submitManageChildren(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("#manage-children-submit");
+    const workspaceId = Number(form.workspace_id.value || form.workspace_id_display?.value || 0);
+    const email = (form.email.value || "").trim();
+    if (!workspaceId || !email) {
+      setFormStatus("manage-children-status", "Workspace 与邮箱都必填", "error");
+      return;
+    }
+    if (button) button.disabled = true;
+    setFormStatus("manage-children-status", "正在加入…", "muted");
+    try {
+      const result = await postAction(`workspace-add-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/add`, { email });
+      const trigger = overlayReturn;
+      closeManageChildren();
+      await handleActionResult(result, { successMessage: result.message || "已加入本地子号" });
+      if (result.needs_auth && result.account_id) {
+        await openReauth({ id: result.account_id, email: result.email || email, workspace_id: workspaceId }, trigger);
+      }
+    } catch (error) {
+      setFormStatus("manage-children-status", friendlyError(error), "error");
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function openOnboard(trigger, workspace) {
@@ -2604,7 +2671,15 @@ function openRegister(trigger) {
           sync.disabled = false;
         }
       });
-      actions.append(sync);
+      const manage = document.createElement("button");
+      manage.type = "button";
+      manage.className = "button ghost compact";
+      manage.textContent = "管理";
+      manage.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openManageChildren(manage, group);
+      });
+      actions.append(sync, manage);
       head.append(toggle, meta, ownerCol, healthCol, syncCol, actions);
 
       if (mother) body.append(portfolioAccountRow(mother, "mother"));
@@ -3039,6 +3114,8 @@ function openRegister(trigger) {
   document.getElementById("rotate-form")?.addEventListener("submit", submitRotate);
   document.querySelector("[data-close-proxy-edit]")?.addEventListener("click", closeProxyEdit);
   document.getElementById("proxy-edit-form")?.addEventListener("submit", submitProxyEdit);
+  document.querySelector("[data-close-manage-children]")?.addEventListener("click", closeManageChildren);
+  document.getElementById("manage-children-form")?.addEventListener("submit", submitManageChildren);
 
 
   document.getElementById("register-copy-link")?.addEventListener("click", async () => {

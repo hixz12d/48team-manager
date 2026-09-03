@@ -32,6 +32,14 @@ from app.persistence.models.identity import Account, ExternalBinding, Workspace,
 from app.persistence.repositories import identity as identity_repo
 
 
+def _is_remote_missing(exc: Exception) -> bool:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 404:
+        return True
+    text = str(exc)
+    return "404 Not Found" in text and "/admin/accounts/" in text
+
+
 def sub2api_publish_eligibility(account: Account | None) -> dict[str, Any]:
     if account is None:
         return {
@@ -377,23 +385,45 @@ async def account_sub2api_push(
         body["confirm_mixed_channel_risk"] = True
 
     try:
+        written = None
+        remote_id = 0
+        action = "create"
+        stale_binding = False
         if existing and existing.remote_account_id:
             remote_id = int(existing.remote_account_id)
-            written = await sub2api_client.update_account(db, remote_id, body)
-            action = "update"
-        else:
-            remotes = await sub2api_client.list_status_accounts(db)
-            matched = _match_remote(
-                remotes,
-                context_key=team48_context_key(expected_ws, account.id),
-            )
-            if matched and remote_id_from(matched):
-                remote_id = int(remote_id_from(matched))
+            try:
                 written = await sub2api_client.update_account(db, remote_id, body)
                 action = "update"
-            else:
+            except Exception as exc:
+                if not _is_remote_missing(exc):
+                    raise
+                await db.delete(existing)
+                await db.flush()
+                existing = None
+                stale_binding = True
+                remote_id = 0
+        if written is None:
+            matched = None
+            try:
+                matched = _match_remote(
+                    await sub2api_client.list_status_accounts(db),
+                    context_key=team48_context_key(expected_ws, account.id),
+                )
+            except Exception:
+                matched = None
+            if matched and remote_id_from(matched):
+                remote_id = int(remote_id_from(matched))
+                try:
+                    written = await sub2api_client.update_account(db, remote_id, body)
+                    action = "update"
+                except Exception as inner:
+                    if not _is_remote_missing(inner):
+                        raise
+                    remote_id = 0
+                    written = None
+            if written is None:
                 written = await sub2api_client.create_account(db, body)
-                action = "create"
+                action = "recreate" if stale_binding else "create"
                 remote_id = int(remote_id_from(written) or 0)
         await operation_store.mark_step(
             db,

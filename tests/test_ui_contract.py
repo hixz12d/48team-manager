@@ -97,6 +97,9 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("母号", js)
             self.assertNotIn("母号 (Admin)", js)
             self.assertIn("绑定已有档案", proxies)
+            self.assertIn("manage-children-sheet", accounts)
+            self.assertIn("workspace.manage-children", js)
+            self.assertIn("管理子号", js)
 
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

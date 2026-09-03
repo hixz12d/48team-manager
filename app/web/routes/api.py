@@ -32,6 +32,7 @@ from app.web.schemas.resources import (
     RevokeInviteRequest,
     RotateRequest,
     Sub2ApiPushRequest,
+    WorkspaceAddChildRequest,
     WorkspaceLinkMemberRequest,
     WorkspaceNamePatch,
 )
@@ -203,6 +204,20 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=result.get("error") or "link failed")
+        return result
+
+    @router.post("/workspaces/{workspace_id}/members/add")
+    async def add_workspace_child(
+        workspace_id: int,
+        payload: WorkspaceAddChildRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.add_local_child(db, workspace_id, email=payload.email)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "add failed")
         return result
 
     @router.post("/workspaces/repair-names")

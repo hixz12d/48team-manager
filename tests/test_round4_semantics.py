@@ -273,6 +273,49 @@ class Sub2ApiSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["remote_id"], 88)
         update.assert_not_awaited()
 
+    async def test_push_recreates_when_bound_remote_is_gone(self):
+        self.session.add(
+            ExternalBinding(
+                provider="sub2api",
+                local_account_id=self.account.id,
+                remote_account_id="2944",
+                binding_state="verified",
+            )
+        )
+        await self.session.commit()
+
+        class _MissingRemote(Exception):
+            def __init__(self):
+                super().__init__("Client error '404 Not Found' for url 'http://sub2api-canary:8080/api/v1/admin/accounts/2944'")
+                self.response = type("Resp", (), {"status_code": 404})()
+
+        created = {
+            "id": 4001,
+            "name": "Team（newxiaozhu1） 子号",
+            "credentials": {"email": "newxiaozhu1@gmail.com", "chatgpt_account_id": "acct-1"},
+            "extra": {"email": "newxiaozhu1@gmail.com"},
+        }
+        update = AsyncMock(side_effect=_MissingRemote())
+        create = AsyncMock(return_value={"id": 4001})
+        with (
+            patch("app.application.sub2api_publish.decrypt_secret", side_effect=lambda raw: "token" if raw else ""),
+            patch("app.application.sub2api_publish.sub2api_client.list_status_accounts", new=AsyncMock(return_value=[])),
+            patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
+            patch("app.application.sub2api_publish.sub2api_client.create_account", new=create),
+            patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=created)),
+            patch("app.application.sub2api_publish.sub2api_client.set_account_schedulable", new=AsyncMock(return_value={"patched": True})),
+        ):
+            result = await account_sub2api_push(self.session, self.account.id)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_id"], 4001)
+        self.assertEqual(result["action"], "recreate")
+        create.assert_awaited()
+        binding = (
+            await self.session.execute(select(ExternalBinding).where(ExternalBinding.local_account_id == self.account.id))
+        ).scalar_one()
+        self.assertEqual(binding.remote_account_id, "4001")
+        self.assertEqual(binding.binding_state, "verified")
+
     async def test_push_write_ok_but_verify_fail_stays_partial(self):
         bad_remote = {"id": 9, "credentials": {"email": "other@example.com"}}
         with (

@@ -215,3 +215,60 @@ async def repair_workspace_names(db: AsyncSession) -> dict[str, Any]:
     if changed:
         await db.commit()
     return {"ok": True, "changed": changed, "skipped": skipped}
+
+
+async def add_local_child(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email: str,
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    target = normalize_email(email)
+    if not target or "@" not in target:
+        return {"ok": False, "error": "email required", "error_code": "email_required"}
+    owner = await db.get(Account, workspace.owner_account_id) if workspace.owner_account_id else None
+    if owner is not None and normalize_email(owner.email) == target:
+        return {"ok": False, "error": "workspace owner cannot be added as a child", "error_code": "not_linkable"}
+    account, created = await upsert_child_account(db, email=target, status="active")
+    if is_workspace_owner(workspace, account.id):
+        return {"ok": False, "error": "workspace owner cannot be added as a child", "error_code": "not_linkable"}
+    needs_auth = not bool((account.access_token_encrypted or "").strip())
+    if created or (needs_auth and str(account.auth_state or "") in {"", "unknown"}):
+        account.auth_state = "oauth_required"
+    if created and workspace.source_team_id and not account.source_team_id:
+        account.source_team_id = workspace.source_team_id
+    await ensure_membership(
+        db,
+        workspace_id=workspace.id,
+        account_id=account.id,
+        official_role="member",
+        membership_state=MEMBERSHIP_STATE_JOINED,
+        local_purpose=LOCAL_PURPOSE_CHILD,
+        joined_at=utcnow(),
+    )
+    membership = (
+        await db.execute(
+            select(WorkspaceMembership).where(
+                WorkspaceMembership.workspace_id == workspace.id,
+                WorkspaceMembership.account_id == account.id,
+            )
+        )
+    ).scalar_one_or_none()
+    await db.commit()
+    message = f"已加入本地子号 {account.email}" if created else f"已接入本地子号 {account.email}"
+    if needs_auth:
+        message += "，请完成授权后才能读取额度"
+    return {
+        "ok": True,
+        "workspace_id": workspace.id,
+        "account_id": account.id,
+        "email": account.email,
+        "created": created,
+        "needs_auth": needs_auth,
+        "status": "managed",
+        "membership_id": membership.id if membership else None,
+        "message": message,
+    }

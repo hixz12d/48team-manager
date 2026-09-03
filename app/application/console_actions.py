@@ -770,6 +770,7 @@ from app.application.console_maintenance import (  # noqa: E402
     archive_operation,
     bulk_archive_operations,
     link_remote_only_member,
+    add_local_child,
     repair_workspace_names,
     sync_workspace_official_name,
     restore_operation,
