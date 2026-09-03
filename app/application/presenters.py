@@ -43,6 +43,7 @@ OPERATION_TYPE_LABELS = {
     "onboard": "拉人",
     "rotate": "轮转",
     "kick_member": "踢出成员",
+    "purge_child": "永久删除子号",
     "revoke_invite": "撤回邀请",
     "hme_reconcile": "HME 对账",
     "hme_label_retry": "HME 标签重试",

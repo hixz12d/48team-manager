@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.application.console_maintenance import purge_local_child_record
 from app.application.identity import automation_gate
 from app.application.operations import operation_store
 from app.application.quota import quota_service
@@ -309,6 +310,7 @@ class RotateService:
         reason: str = "",
         next_eligible_at: datetime | None = None,
         unbind_sub2api: bool = False,
+        purge_local: bool = False,
         job_id: str | None = None,
     ) -> dict[str, Any]:
         busy = await operation_store.active_for_workspace(
@@ -354,12 +356,15 @@ class RotateService:
             result = await self.workspaces.revoke_invite(db, workspace.id, target)
             if not result.get("success"):
                 return {"success": False, "error": result.get("error") or "撤回邀请失败", "error_code": "revoke_failed"}
-            if child:
-                child.operational_state = "unused"
-                child.updated_at = utcnow()
-            await db.flush()
-            return {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请，子号回到未使用"}
-        if lookup_state == "absent_confirmed" and live_item is None:
+            if not purge_local:
+                if child:
+                    child.operational_state = "unused"
+                    child.updated_at = utcnow()
+                    await db.flush()
+                    return {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请，子号回到未使用"}
+                return {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请"}
+            result = {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请"}
+        elif lookup_state == "absent_confirmed" and live_item is None:
             result = {"success": True, "message": f"{target} 官方成员和邀请都不存在", "already_absent": True}
         else:
             result = await self._kick_joined_and_verify(
@@ -371,7 +376,7 @@ class RotateService:
             )
         if not result.get("success"):
             return {"success": False, "error": result.get("error") or "踢人失败", "error_code": result.get("error_code") or "kick_failed"}
-        unbind = bool(unbind_sub2api or should_unbind_sub2api(reason))
+        unbind = bool(unbind_sub2api or should_unbind_sub2api(reason) or purge_local)
         deleted_sub = None
         remote_unbind_confirmed = False
         binding_error = None
@@ -383,7 +388,18 @@ class RotateService:
             except Exception as exc:  # noqa: BLE001
                 binding_error = str(exc)
                 logger.warning("Sub2API 下架失败 email=%s error=%s", target, exc)
-        if child:
+        purged = False
+        if child and purge_local and not (unbind and remote_id and not remote_unbind_confirmed):
+            purged_local = await purge_local_child_record(db, workspace, child)
+            if not purged_local.get("ok"):
+                return {
+                    "success": False,
+                    "error": purged_local.get("error") or "本地档案删除失败",
+                    "error_code": purged_local.get("error_code") or "purge_failed",
+                }
+            purged = True
+            child = None
+        elif child:
             await self.workspaces.mark_standby(
                 db,
                 child,
@@ -394,7 +410,10 @@ class RotateService:
             )
         await db.flush()
         vacancy = result.get("vacancy")
-        if child:
+        if purged:
+            message = f"{target} 已永久删除：官方席位已处理，本地档案已清除"
+            status = "purged"
+        elif child:
             message = f"{target} 已踢出，子号进入待命"
             status = "standby"
         else:
@@ -417,6 +436,7 @@ class RotateService:
             "message": message,
             "child": {"id": child.id, "email": child.email} if child else None,
             "vacancy": vacancy,
+            "purged": purged,
             "unbound_sub2api": bool(unbind and remote_unbind_confirmed),
             "deleted_sub2api": deleted_sub,
             "error": binding_error if status == "partial" else None,

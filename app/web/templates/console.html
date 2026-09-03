@@ -661,7 +661,7 @@
       <header>
         <div>
           <strong id="manage-children-title">管理子号</strong>
-          <p class="muted" id="manage-children-subtitle">本地子号：加入、授权、删除。删除时可只下本地，或连官方席位一起踢。</p>
+          <p class="muted" id="manage-children-subtitle">本地子号：加入、授权、删除。删除时可只下本地、踢官方，或永久清档案。</p>
         </div>
         <button type="button" class="button ghost" data-close-manage-children>关闭</button>
       </header>
@@ -698,7 +698,8 @@
         <div class="sheet-section">
           <label class="check"><input type="radio" name="manage-child-remove-mode" value="official" checked> 踢出官方席位</label>
           <label class="check"><input type="radio" name="manage-child-remove-mode" value="local"> 只从本地拿掉，官方席位先留着</label>
-          <p class="hint" id="manage-child-remove-hint">踢出后会改 Team 成员，本地没有档案的邮箱不会进待命。</p>
+          <label class="check"><input type="radio" name="manage-child-remove-mode" value="purge"> 永久删除：踢官方、下架 Sub，并清掉本地档案</label>
+          <p class="hint" id="manage-child-remove-hint">踢出后会改 Team 成员，本地没有档案的邮箱不会进待命。永久删除不可恢复。</p>
         </div>
         <p id="manage-child-remove-status" class="muted" hidden></p>
         <div class="settings-probe-actions">

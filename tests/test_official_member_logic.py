@@ -342,6 +342,88 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
         binding = (await self.session.execute(select(ExternalBinding))).scalar_one()
         self.assertEqual(binding.binding_state, "error")
 
+    async def test_purge_deletes_local_account_after_official_kick(self):
+        from app.application.rotate import RotateService
+
+        class _WS:
+            async def load_workspace(self, db, workspace_id):
+                return await db.get(Workspace, workspace_id)
+
+            async def lookup_live_member(self, db, workspace, email):
+                self._lookups = getattr(self, "_lookups", 0) + 1
+                if self._lookups == 1:
+                    return {"success": True, "lookup_state": "found"}, {"email": email, "status": "joined", "user_id": "user-kid"}
+                return {"success": True, "lookup_state": "absent_confirmed"}, None
+
+            async def delete_member(self, db, workspace_id, user_id, email=None):
+                return {"success": True, "message": "kicked"}
+
+            client = type("C", (), {"pick_user_id": staticmethod(lambda item: item.get("user_id"))})()
+
+        sub = AsyncMock()
+        sub.delete_accounts = AsyncMock(return_value={"deleted": [55], "failed": []})
+        rotate = RotateService(workspaces=_WS(), sub2api=sub)
+        rotate._remote_id_for = AsyncMock(return_value="55")
+        result = await rotate.kick_to_standby(
+            self.session,
+            workspace_id=self.workspace.id,
+            email="kid@example.com",
+            unbind_sub2api=True,
+            purge_local=True,
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "purged")
+        self.assertTrue(result["purged"])
+        self.assertIsNone(await self.session.get(Account, self.child.id))
+        self.assertIsNone((await self.session.execute(select(ExternalBinding))).scalar_one_or_none())
+        sub.delete_accounts.assert_awaited()
+
+    async def test_purge_keeps_account_when_sub2api_unbind_fails(self):
+        from app.application.rotate import RotateService
+
+        class _WS:
+            async def load_workspace(self, db, workspace_id):
+                return await db.get(Workspace, workspace_id)
+
+            async def lookup_live_member(self, db, workspace, email):
+                self._lookups = getattr(self, "_lookups", 0) + 1
+                if self._lookups == 1:
+                    return {"success": True, "lookup_state": "found"}, {"email": email, "status": "joined", "user_id": "user-kid"}
+                return {"success": True, "lookup_state": "absent_confirmed"}, None
+
+            async def delete_member(self, db, workspace_id, user_id, email=None):
+                return {"success": True, "message": "kicked"}
+
+            client = type("C", (), {"pick_user_id": staticmethod(lambda item: item.get("user_id"))})()
+
+            async def mark_standby(self, db, account, next_eligible_at=None, unbind_sub2api=False, remote_unbind_confirmed=False, binding_error=None):
+                from app.application.workspaces import workspace_service
+
+                await workspace_service.mark_standby(
+                    db,
+                    account,
+                    next_eligible_at=next_eligible_at,
+                    unbind_sub2api=unbind_sub2api,
+                    remote_unbind_confirmed=remote_unbind_confirmed,
+                    binding_error=binding_error,
+                )
+
+        sub = AsyncMock()
+        sub.delete_accounts = AsyncMock(side_effect=RuntimeError("sub down"))
+        rotate = RotateService(workspaces=_WS(), sub2api=sub)
+        rotate._remote_id_for = AsyncMock(return_value="55")
+        result = await rotate.kick_to_standby(
+            self.session,
+            workspace_id=self.workspace.id,
+            email="kid@example.com",
+            unbind_sub2api=True,
+            purge_local=True,
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "partial")
+        self.assertIsNotNone(await self.session.get(Account, self.child.id))
+        binding = (await self.session.execute(select(ExternalBinding))).scalar_one()
+        self.assertEqual(binding.binding_state, "error")
 
 class ConsoleLoopTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

@@ -9,6 +9,7 @@ OPERATION_TYPES = (
     "onboard",
     "rotate",
     "kick_member",
+    "purge_child",
     "revoke_invite",
     "hme_reconcile",
     "hme_label_retry",
@@ -37,7 +38,7 @@ REDACT_VALUE_MARKERS = ("password", "passwd", "secret", "token", "verifier")
 DEFAULT_LEASE_SECONDS = 180
 MAX_LOG_ITEMS = 40
 BROWSER_ACTIONS = ("reauth", "onboard", "rotate", "free_register", "reregister", "free")
-WORKSPACE_LOCK_ACTIONS = ("rotate", "onboard", "reregister", "kick_member", "revoke_invite")
+WORKSPACE_LOCK_ACTIONS = ("rotate", "onboard", "reregister", "kick_member", "purge_child", "revoke_invite")
 DEFAULT_AUTO_REAUTH_ENABLED = False
 DEFAULT_AUTO_REAUTH_INTERVAL_MINUTES = 30
 MIN_AUTO_REAUTH_INTERVAL_MINUTES = 5

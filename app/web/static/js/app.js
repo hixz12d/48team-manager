@@ -85,6 +85,7 @@
     rotate: "轮转",
     workspace_sync: "同步官方成员",
     kick_member: "踢出成员",
+    purge_child: "永久删除子号",
     revoke_invite: "撤回邀请",
     hme_reconcile: "HME 对账",
     hme_label_retry: "HME 标签重试",
@@ -1800,7 +1801,38 @@ function hmeRow(item) {
 
   function selectedManageChildRemoveMode() {
     const checked = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode']:checked");
-    return checked?.value === "official" ? "official" : "local";
+    if (checked?.value === "official") return "official";
+    if (checked?.value === "purge") return "purge";
+    return "local";
+  }
+
+  function applyManageChildRemoveCopy(mode, officialDefault, accountId) {
+    const titleEl = document.getElementById("manage-child-remove-title");
+    const hintEl = document.getElementById("manage-child-remove-hint");
+    const confirmBtn = document.getElementById("manage-child-remove-confirm");
+    const subtitle = document.getElementById("manage-child-remove-subtitle");
+    if (mode === "purge") {
+      if (titleEl) titleEl.textContent = "永久删除子号";
+      if (confirmBtn) confirmBtn.textContent = "确认永久删除";
+      if (hintEl) hintEl.textContent = accountId
+        ? "会踢官方席位、下架 Sub2API，并清掉本地档案。不可恢复。"
+        : "这个邮箱还没接入本地。永久删除会踢官方席位，不会留下待命档案。";
+      if (subtitle) subtitle.textContent = "官方、Sub 和本地档案一起清掉。";
+      return;
+    }
+    if (mode === "official") {
+      if (titleEl) titleEl.textContent = "踢出官方席位";
+      if (confirmBtn) confirmBtn.textContent = "确认踢出";
+      if (hintEl) hintEl.textContent = accountId
+        ? "踢出后会改 Team 成员，本地档案转入待命。"
+        : "这个邮箱还没接入本地。踢出只改官方席位，不会生成待命档案。";
+      if (subtitle) subtitle.textContent = officialDefault ? "这个邮箱还在官方席位。默认踢官方。" : "会改 Team 成员，本地档案转入待命。";
+      return;
+    }
+    if (titleEl) titleEl.textContent = "删除子号";
+    if (confirmBtn) confirmBtn.textContent = "确认删除";
+    if (hintEl) hintEl.textContent = "只下本地不会改官方席位；踢官方会改 Team 成员并转入待命。永久删除会清掉档案。";
+    if (subtitle) subtitle.textContent = "选择只下本地、踢官方，或永久删除。";
   }
 
   function openManageChildRemove(row, button, kind) {
@@ -1816,32 +1848,18 @@ function hmeRow(item) {
     if (emailEl) emailEl.textContent = email || `#${accountId}`;
     const localRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='local']");
     const officialRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='official']");
-    const titleEl = document.getElementById("manage-child-remove-title");
-    const hintEl = document.getElementById("manage-child-remove-hint");
-    const confirmBtn = document.getElementById("manage-child-remove-confirm");
+    const purgeRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='purge']");
     if (officialDefault) {
       if (officialRadio) officialRadio.checked = true;
       if (localRadio) localRadio.disabled = !accountId;
-      if (titleEl) titleEl.textContent = "踢出官方席位";
-      if (confirmBtn) confirmBtn.textContent = "确认踢出";
-      if (hintEl) hintEl.textContent = accountId
-        ? "踢出后会改 Team 成员，本地档案转入待命。"
-        : "这个邮箱还没接入本地。踢出只改官方席位，不会生成待命档案。";
     } else {
       if (localRadio) {
         localRadio.disabled = false;
         localRadio.checked = true;
       }
-      if (titleEl) titleEl.textContent = "删除子号";
-      if (confirmBtn) confirmBtn.textContent = "确认删除";
-      if (hintEl) hintEl.textContent = "只下本地不会改官方席位；踢官方会改 Team 成员并转入待命。";
     }
-    const subtitle = document.getElementById("manage-child-remove-subtitle");
-    if (subtitle) {
-      subtitle.textContent = officialDefault
-        ? "这个邮箱还在官方席位。默认踢官方。"
-        : "选择只下本地，还是连官方席位一起踢。";
-    }
+    if (purgeRadio) purgeRadio.disabled = false;
+    applyManageChildRemoveCopy(selectedManageChildRemoveMode(), officialDefault, accountId);
     setFormStatus("manage-child-remove-status", "", "muted");
     manageChildRemoveSheet.hidden = false;
     activateFocusTrap(manageChildRemoveSheet.querySelector(".confirm-panel") || manageChildRemoveSheet);
@@ -1866,22 +1884,28 @@ function hmeRow(item) {
     const confirmBtn = document.getElementById("manage-child-remove-confirm");
     if (button) button.disabled = true;
     if (confirmBtn) confirmBtn.disabled = true;
-    setFormStatus("manage-child-remove-status", mode === "official" ? "正在踢官方席位…" : "正在从本地移除…", "muted");
+    const statusText = mode === "purge" ? "正在永久删除…" : (mode === "official" ? "正在踢官方席位…" : "正在从本地移除…");
+    setFormStatus("manage-child-remove-status", statusText, "muted");
     try {
-      if (mode === "official") {
+      if (mode === "official" || mode === "purge") {
         if (!email) {
-          setFormStatus("manage-child-remove-status", "踢官方席位需要邮箱", "error");
-          toast("踢官方席位需要邮箱", "error");
+          const needEmail = mode === "purge" ? "永久删除需要邮箱" : "踢官方席位需要邮箱";
+          setFormStatus("manage-child-remove-status", needEmail, "error");
+          toast(needEmail, "error");
           return;
         }
-        const kickResult = await postAction(`workspace-kick-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/kick`, {
-          email,
-          reason: "console_manage_children",
-        });
+        const actionKey = mode === "purge" ? `workspace-purge-child-${workspaceId}-${email}` : `workspace-kick-child-${workspaceId}-${email}`;
+        const actionUrl = mode === "purge" ? `/api/workspaces/${workspaceId}/members/purge` : `/api/workspaces/${workspaceId}/kick`;
+        const actionBody = mode === "purge"
+          ? { email, reason: "console_purge" }
+          : { email, reason: "console_manage_children" };
+        const kickResult = await postAction(actionKey, actionUrl, actionBody);
         const kickFailed = !(kickResult?.ok || kickResult?.success) || kickResult?.partial || ["partial", "failed", "manual_required"].includes(kickResult?.status);
-        toast(kickResult.message || (kickFailed ? "官方踢人还没确认成功" : "已踢出官方席位"), operationTone(kickResult), kickResult.operation_id ? { label: "查看任务", onClick: () => openOperationById(kickResult.operation_id) } : undefined);
+        const failedLabel = mode === "purge" ? "永久删除还没确认成功" : "官方踢人还没确认成功";
+        const okLabel = mode === "purge" ? "已永久删除" : "已踢出官方席位";
+        toast(kickResult.message || (kickFailed ? failedLabel : okLabel), operationTone(kickResult), kickResult.operation_id ? { label: "查看任务", onClick: () => openOperationById(kickResult.operation_id) } : undefined);
         if (kickFailed) {
-          setFormStatus("manage-child-remove-status", kickResult.message || kickResult.error || "官方踢人还没确认成功", "error");
+          setFormStatus("manage-child-remove-status", kickResult.message || kickResult.error || failedLabel, "error");
           return;
         }
         closeManageChildRemove();
@@ -3365,6 +3389,12 @@ function openRegister(trigger) {
     button.addEventListener("click", closeManageChildRemove);
   });
   document.getElementById("manage-child-remove-confirm")?.addEventListener("click", confirmManageChildRemove);
+  document.querySelectorAll("#manage-child-remove-sheet input[name='manage-child-remove-mode']").forEach((input) => {
+    input.addEventListener("change", () => {
+      const pending = pendingChildRemove;
+      applyManageChildRemoveCopy(selectedManageChildRemoveMode(), pending?.officialDefault, pending?.accountId);
+    });
+  });
 
 
   document.getElementById("register-copy-link")?.addEventListener("click", async () => {

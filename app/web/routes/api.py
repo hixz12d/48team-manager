@@ -35,6 +35,7 @@ from app.web.schemas.resources import (
     WorkspaceAddChildRequest,
     WorkspaceLinkMemberRequest,
     WorkspaceNamePatch,
+    WorkspacePurgeChildRequest,
     WorkspaceRemoveChildRequest,
 )
 from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
@@ -161,6 +162,26 @@ def build_api_router(get_db) -> APIRouter:
         result = await console_actions.revoke_workspace_invite(db, workspace_id, email=payload.email)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+    @router.post("/workspaces/{workspace_id}/members/purge", status_code=status.HTTP_202_ACCEPTED)
+    async def purge_workspace_child(
+        workspace_id: int,
+        payload: WorkspacePurgeChildRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.purge_workspace_child(
+            db,
+            workspace_id,
+            email=payload.email,
+            user_id=payload.user_id,
+            reason=payload.reason,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") == "not_linkable":
+            raise HTTPException(status_code=400, detail=result.get("error") or "not linkable")
         return _accepted(result)
 
     @router.patch("/workspaces/{workspace_id}/name")

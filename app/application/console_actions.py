@@ -35,7 +35,7 @@ from app.persistence.models.operations import OperationStep
 from app.persistence.models.resources import HmeAliasLease, ProxyProfile
 
 SAFE_RETRY_TYPES = {"quota_probe", "auth_probe", "proxy_check", "workspace_sync", "hme_reconcile", "sub2api_sync", "sub2api_reconcile", "sub2api_push"}
-UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free", "kick_member", "revoke_invite"}
+UNSAFE_RETRY_TYPES = {"onboard", "rotate", "reauth", "free_register", "reregister", "free", "kick_member", "purge_child", "revoke_invite"}
 
 
 def _mask_log_items(items: list[Any]) -> list[Any]:
@@ -660,6 +660,57 @@ async def kick_member_to_standby(
         user_id=user_id,
         reason=reason,
         unbind_sub2api=unbind_sub2api,
+        job_id=operation.public_id,
+    )
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
+async def purge_workspace_child(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email: str,
+    user_id: str | None = None,
+    reason: str = "console_purge",
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    target = normalize_email(email)
+    if not target:
+        return {"ok": False, "error": "email required", "error_code": "email_required"}
+    child = (
+        await db.execute(select(Account).where(Account.email == normalize_email(target)))
+    ).scalar_one_or_none()
+    if child is not None and (child.local_purpose == "mother" or workspace.owner_account_id == child.id):
+        return {"ok": False, "error": "workspace owner cannot be permanently deleted", "error_code": "not_linkable"}
+    operation = await operation_store.create(
+        db,
+        op_type="purge_child",
+        workspace_id=workspace.id,
+        account_id=child.id if child else None,
+        email=target,
+        input_payload={
+            "workspace_id": workspace.id,
+            "email": target,
+            "user_id": user_id,
+            "reason": reason,
+            "mode": "purge",
+            "unbind_sub2api": True,
+            "purge_local": True,
+        },
+    )
+    await db.commit()
+    result = await rotate_service.kick_to_standby(
+        db,
+        workspace_id=workspace.id,
+        email=target,
+        user_id=user_id,
+        reason=reason,
+        unbind_sub2api=True,
+        purge_local=True,
         job_id=operation.public_id,
     )
     await operation_store.finish(db, operation, result)

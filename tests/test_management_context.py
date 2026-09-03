@@ -7,7 +7,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.application.console_maintenance import add_local_child, link_remote_only_member, remove_local_child
+from app.application.console_maintenance import add_local_child, link_remote_only_member, purge_local_child_record, remove_local_child
 from app.application.identity import upsert_mother_account, upsert_workspace
 from app.application.queries.portfolio import portfolio_query
 from app.application.quota import QuotaService, snapshot_from_result
@@ -184,6 +184,9 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         owner_refused = await remove_local_child(self.session, self.ws_a.id, email=self.alice.email)
         self.assertFalse(owner_refused["ok"])
         self.assertEqual(owner_refused["error_code"], "not_linkable")
+        owner_purge = await purge_local_child_record(self.session, self.ws_a, self.alice)
+        self.assertFalse(owner_purge["ok"])
+        self.assertEqual(owner_purge["error_code"], "not_linkable")
 
     async def test_quota_snapshots_are_scoped_by_workspace(self):
         now = datetime(2026, 3, 29, 12, 0, 0)

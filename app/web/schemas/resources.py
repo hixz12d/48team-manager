@@ -94,3 +94,9 @@ class WorkspaceAddChildRequest(BaseModel):
 class WorkspaceRemoveChildRequest(BaseModel):
     email: str = Field(default="", max_length=320)
     account_id: int | None = None
+
+
+class WorkspacePurgeChildRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    user_id: str | None = Field(default=None, max_length=120)
+    reason: str = Field(default="console_purge", max_length=120)

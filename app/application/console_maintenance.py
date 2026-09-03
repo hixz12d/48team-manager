@@ -4,18 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import ensure_membership, upsert_child_account
 from app.application.operations import operation_store
 from app.core.time import utcnow
 from app.domain.automation import ACTIVE_STATES, TERMINAL_STATES
-from app.domain.identity import LOCAL_PURPOSE_CHILD, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
+from app.domain.identity import LOCAL_PURPOSE_CHILD, LOCAL_PURPOSE_MOTHER, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import is_workspace_owner
 from app.domain.workspaces.names import apply_custom_name, apply_official_name, is_placeholder_or_email_name, resolve_display_name
-from app.persistence.models.identity import Account, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
+from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
+from app.persistence.models.quota import QuotaSnapshot
+from app.persistence.models.resources import HmeAliasLease
 
 
 async def archive_operation(db: AsyncSession, public_id: str, *, reason: str | None = None) -> dict[str, Any]:
@@ -325,3 +327,31 @@ async def remove_local_child(
         "status": "removed",
         "message": f"已从本地子号移除 {account.email}，未改官方成员",
     }
+
+
+async def purge_local_child_record(db: AsyncSession, workspace: Workspace, account: Account) -> dict[str, Any]:
+    if is_workspace_owner(workspace, account.id) or account.local_purpose == LOCAL_PURPOSE_MOTHER:
+        return {"ok": False, "error": "workspace owner cannot be permanently deleted", "error_code": "not_linkable"}
+    owned = (await db.execute(select(Workspace.id).where(Workspace.owner_account_id == account.id))).scalars().all()
+    if owned:
+        return {"ok": False, "error": "account owns a workspace and cannot be permanently deleted", "error_code": "not_linkable"}
+    email = normalize_email(account.email)
+    account_id = account.id
+    from app.persistence.models.operations import Operation
+
+    await db.execute(delete(QuotaSnapshot).where(QuotaSnapshot.account_id == account_id))
+    await db.execute(delete(ExternalBinding).where(ExternalBinding.local_account_id == account_id))
+    await db.execute(delete(WorkspaceMembership).where(WorkspaceMembership.account_id == account_id))
+    if email:
+        await db.execute(
+            delete(WorkspaceOfficialMemberSnapshot).where(
+                WorkspaceOfficialMemberSnapshot.workspace_id == workspace.id,
+                WorkspaceOfficialMemberSnapshot.normalized_email == email,
+            )
+        )
+        await db.execute(delete(HmeAliasLease).where(HmeAliasLease.email == email))
+    await db.execute(update(Account).where(Account.source_child_account_id == account_id).values(source_child_account_id=None))
+    await db.execute(update(Operation).where(Operation.account_id == account_id).values(account_id=None))
+    await db.delete(account)
+    await db.flush()
+    return {"ok": True, "purged_account_id": account_id, "email": email}
