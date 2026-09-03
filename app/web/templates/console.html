@@ -688,17 +688,17 @@
     <div class="sheet-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="manage-child-remove-title">
       <header>
         <div>
-          <strong id="manage-child-remove-title">删除子号</strong>
-          <p class="muted" id="manage-child-remove-subtitle">选择只下本地，还是连官方席位一起踢。</p>
+          <strong id="manage-child-remove-title">踢出子号</strong>
+          <p class="muted" id="manage-child-remove-subtitle">这个邮箱还在官方席位。默认踢官方。</p>
         </div>
         <button type="button" class="button ghost" data-close-manage-child-remove>取消</button>
       </header>
       <div class="sheet-body">
         <p id="manage-child-remove-email" class="manage-child-remove-email"></p>
         <div class="sheet-section">
-          <label class="check"><input type="radio" name="manage-child-remove-mode" value="local" checked> 只从本地移除，不改官方席位</label>
-          <label class="check"><input type="radio" name="manage-child-remove-mode" value="official"> 连官方席位一起踢，转入待命</label>
-          <p class="hint">官方踢出会改 Team 成员，并走现有踢出待命流程。</p>
+          <label class="check"><input type="radio" name="manage-child-remove-mode" value="official" checked> 踢出官方席位</label>
+          <label class="check"><input type="radio" name="manage-child-remove-mode" value="local"> 只从本地拿掉，官方席位先留着</label>
+          <p class="hint" id="manage-child-remove-hint">踢出后会改 Team 成员，本地没有档案的邮箱不会进待命。</p>
         </div>
         <p id="manage-child-remove-status" class="muted" hidden></p>
         <div class="settings-probe-actions">

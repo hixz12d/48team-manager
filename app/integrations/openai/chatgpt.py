@@ -170,6 +170,7 @@ class ChatGPTClient:
         reported_total: int | None = None
         seat_meta: dict[str, Any] = {}
         pages = 0
+        last_page_short = False
         incomplete = False
         error_code = ""
         error = None
@@ -237,7 +238,8 @@ class ChatGPTClient:
                     seen_ids.add(identity)
                 collected.append(item)
             pages += 1
-            if len(page_items) < self.PAGE_LIMIT:
+            last_page_short = len(page_items) < self.PAGE_LIMIT
+            if last_page_short:
                 break
             if reported_total is not None and len(collected) >= reported_total:
                 break
@@ -248,9 +250,17 @@ class ChatGPTClient:
                 error_code = "incomplete"
                 error = "official pagination exceeded safety limits"
         if reported_total is not None and reported_total > 0 and len(collected) < reported_total and not incomplete:
-            incomplete = True
-            error_code = "incomplete"
-            error = "fetched fewer official items than reported_total"
+            if last_page_short:
+                logger.warning(
+                    "official %s reported_total=%s collected=%s on a short last page; trusting items",
+                    path,
+                    reported_total,
+                    len(collected),
+                )
+            else:
+                incomplete = True
+                error_code = "incomplete"
+                error = "fetched fewer official items than reported_total"
         success = not incomplete
         payload = {
             "success": success,

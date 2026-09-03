@@ -92,21 +92,27 @@ class MemberAdapterTests(unittest.TestCase):
 class PaginationTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_page_duplicate_and_max_pages(self):
         client = ChatGPTClient()
-        pages = [
-            {"success": True, "data": {"items": [{"email": "a@x.com", "id": "user-a"}], "total": 3}},
-            {"success": True, "data": {"items": [], "total": 3}},
-        ]
 
-        async def first(method, url, headers, db_session=None, identifier="default"):
-            return pages.pop(0)
+        async def empty_first(method, url, headers, db_session=None, identifier="default"):
+            return {"success": True, "data": {"items": [], "total": 3}}
 
-        client._make_request = first  # type: ignore[method-assign]
-        result = await client.get_members("token", "acc", None)
-        self.assertFalse(result["success"])
-        self.assertEqual(result["error_code"], "incomplete")
+        client._make_request = empty_first  # type: ignore[method-assign]
+        empty = await client.get_members("token", "acc", None)
+        self.assertFalse(empty["success"])
+        self.assertEqual(empty["error_code"], "schema_mismatch")
+
+        async def stale_total(method, url, headers, db_session=None, identifier="default"):
+            return {"success": True, "data": {"items": [{"email": "a@x.com", "id": "user-a"}], "total": 2}}
+
+        client._make_request = stale_total  # type: ignore[method-assign]
+        trusted = await client.get_members("token", "acc", None)
+        self.assertTrue(trusted["success"])
+        self.assertEqual(trusted["raw_item_count"], 1)
+        self.assertFalse(trusted["incomplete"])
 
         async def repeats(method, url, headers, db_session=None, identifier="default"):
-            return {"success": True, "data": {"items": [{"email": "a@x.com", "id": "user-a"}], "total": 4}}
+            items = [{"email": f"u{i}@x.com", "id": f"user-{i}"} for i in range(50)]
+            return {"success": True, "data": {"items": items, "total": 80}}
 
         client._make_request = repeats  # type: ignore[method-assign]
         repeated = await client.get_members("token", "acc", None)
@@ -120,7 +126,7 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
             return {
                 "success": True,
                 "data": {
-                    "items": [{"email": f"u{calls['n']}@x.com", "id": f"user-{calls['n']}"} for _ in range(50)],
+                    "items": [{"email": f"u{calls['n']}-{i}@x.com", "id": f"user-{calls['n']}-{i}"} for i in range(50)],
                     "total": 5000,
                 },
             }
@@ -275,6 +281,26 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(child.operational_state, "active")
         binding = (await self.session.execute(select(ExternalBinding))).scalar_one()
         self.assertEqual(binding.binding_state, "verified")
+
+    async def test_lookup_finds_email_even_if_reported_total_is_stale(self):
+        service = WorkspaceService()
+        service.get_members = AsyncMock(
+            return_value={
+                "success": False,
+                "incomplete": True,
+                "error": "fetched fewer official items than reported_total",
+                "error_code": "incomplete",
+                "members": [{"email": "kid@example.com", "id": "user-kid"}],
+                "reported_total": 2,
+                "raw_item_count": 1,
+            }
+        )
+        service.get_invites = AsyncMock(return_value={"success": True, "items": [], "total": 0})
+        live, found = await service.lookup_live_member(self.session, self.workspace, "kid@example.com")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["email"], "kid@example.com")
+        self.assertEqual(live["lookup_state"], "found")
+        self.assertTrue(live["success"])
 
     async def test_sub2api_delete_failure_keeps_binding_partial(self):
         from app.application.rotate import RotateService

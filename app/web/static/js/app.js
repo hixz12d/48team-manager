@@ -1816,19 +1816,30 @@ function hmeRow(item) {
     if (emailEl) emailEl.textContent = email || `#${accountId}`;
     const localRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='local']");
     const officialRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='official']");
+    const titleEl = document.getElementById("manage-child-remove-title");
+    const hintEl = document.getElementById("manage-child-remove-hint");
+    const confirmBtn = document.getElementById("manage-child-remove-confirm");
     if (officialDefault) {
       if (officialRadio) officialRadio.checked = true;
       if (localRadio) localRadio.disabled = !accountId;
+      if (titleEl) titleEl.textContent = "踢出官方席位";
+      if (confirmBtn) confirmBtn.textContent = "确认踢出";
+      if (hintEl) hintEl.textContent = accountId
+        ? "踢出后会改 Team 成员，本地档案转入待命。"
+        : "这个邮箱还没接入本地。踢出只改官方席位，不会生成待命档案。";
     } else {
       if (localRadio) {
         localRadio.disabled = false;
         localRadio.checked = true;
       }
+      if (titleEl) titleEl.textContent = "删除子号";
+      if (confirmBtn) confirmBtn.textContent = "确认删除";
+      if (hintEl) hintEl.textContent = "只下本地不会改官方席位；踢官方会改 Team 成员并转入待命。";
     }
     const subtitle = document.getElementById("manage-child-remove-subtitle");
     if (subtitle) {
       subtitle.textContent = officialDefault
-        ? "这个邮箱还在官方席位。默认踢官方，也可以只忽略本地。"
+        ? "这个邮箱还在官方席位。默认踢官方。"
         : "选择只下本地，还是连官方席位一起踢。";
     }
     setFormStatus("manage-child-remove-status", "", "muted");
@@ -1868,9 +1879,9 @@ function hmeRow(item) {
           reason: "console_manage_children",
         });
         const kickFailed = !(kickResult?.ok || kickResult?.success) || kickResult?.partial || ["partial", "failed", "manual_required"].includes(kickResult?.status);
-        toast(kickResult.message || (kickFailed ? "官方踢人失败" : "已踢出官方席位并下本地"), operationTone(kickResult), kickResult.operation_id ? { label: "查看任务", onClick: () => openOperationById(kickResult.operation_id) } : undefined);
+        toast(kickResult.message || (kickFailed ? "官方踢人还没确认成功" : "已踢出官方席位"), operationTone(kickResult), kickResult.operation_id ? { label: "查看任务", onClick: () => openOperationById(kickResult.operation_id) } : undefined);
         if (kickFailed) {
-          setFormStatus("manage-child-remove-status", kickResult.message || kickResult.error || "官方踢人失败", "error");
+          setFormStatus("manage-child-remove-status", kickResult.message || kickResult.error || "官方踢人还没确认成功", "error");
           return;
         }
         closeManageChildRemove();

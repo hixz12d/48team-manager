@@ -286,7 +286,7 @@ class RotateService:
             if live.get("success") is False:
                 return {
                     "success": False,
-                    "error": f"踢人请求已发出，但无法核对成员列表: {live.get('error') or '读取失败'}。没有把子号标成 standby。",
+                    "error": "官方踢人已经发出，但成员列表还对不上，没法确认这个邮箱是否踢掉。本地没有改成待命。请先同步，还在的话再踢一次。",
                     "error_code": "kick_unverified",
                 }
             if still is None or still.get("status") == "invited":
@@ -394,8 +394,12 @@ class RotateService:
             )
         await db.flush()
         vacancy = result.get("vacancy")
-        message = f"{target} 已踢出，子号进入 standby"
-        status = "standby"
+        if child:
+            message = f"{target} 已踢出，子号进入待命"
+            status = "standby"
+        else:
+            message = f"{target} 已踢出官方席位"
+            status = "kicked"
         success = True
         if unbind and remote_id and not remote_unbind_confirmed:
             message = f"{message}，官方已踢出但 Sub2API 下架失败，本地 Binding 已保留"

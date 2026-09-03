@@ -186,12 +186,11 @@ class WorkspaceService:
         members_ok = bool(members.get("success")) and bool(members_check.get("ok"))
         invites_ok = bool(invites.get("success")) and bool(invites_check.get("ok"))
         found = None
-        if members_ok:
-            for item in members_adapted["members"]:
-                if item["email"] == target:
-                    found = {**item, "status": "joined"}
-                    break
-        if found is None and invites_ok:
+        for item in members_adapted["members"]:
+            if item["email"] == target:
+                found = {**item, "status": "joined"}
+                break
+        if found is None:
             for item in invites_adapted["members"]:
                 if item["email"] == target:
                     found = {**item, "status": "invited"}
