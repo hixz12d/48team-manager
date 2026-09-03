@@ -1636,6 +1636,112 @@ function hmeRow(item) {
     if (form.workspace_id_display) form.workspace_id_display.value = id;
   }
 
+  function manageChildrenWorkspace() {
+    const form = document.getElementById("manage-children-form");
+    const workspaceId = Number(form?.workspace_id?.value || 0);
+    if (!workspaceId) return null;
+    const fromWorkspaces = (pageCache.items || []).find((item) => item.id === workspaceId);
+    if (fromWorkspaces) return fromWorkspaces;
+    return (pageCache.portfolio?.groups || []).find((item) => item.id === workspaceId) || null;
+  }
+
+  function manageChildRows(workspace) {
+    const rows = [];
+    const seen = new Set();
+    const push = (row) => {
+      const email = String(row?.email || "").trim();
+      if (!email || seen.has(email.toLowerCase())) return;
+      seen.add(email.toLowerCase());
+      rows.push(row);
+    };
+    (workspace?.current_children || []).forEach(push);
+    (workspace?.managed?.accounts || workspace?.member_accounts || []).forEach((row) => {
+      if (row?.purpose === "mother" || row?.is_owner) return;
+      push({ ...row, kind: "child" });
+    });
+    (workspace?.reconciliation?.items || []).forEach((row) => {
+      if (row?.is_owner || row?.status === "owner") return;
+      if (row?.status === "remote_only") push({ ...row, kind: "unmanaged", id: row.local_account_id || row.candidate_account_id });
+      else if (row?.status === "local_only") push({ ...row, kind: "local_only", id: row.local_account_id });
+      else if (row?.status === "invited") push({ ...row, kind: "invited", id: row.local_account_id || row.candidate_account_id });
+    });
+    (workspace?.unmanaged || []).forEach((row) => push({ ...row, kind: "unmanaged" }));
+    (workspace?.invited || []).forEach((row) => push({ ...row, kind: "invited" }));
+    rows.sort((a, b) => String(a.email || "").localeCompare(String(b.email || "")));
+    return rows;
+  }
+
+  function renderManageChildrenList(workspace) {
+    const list = document.getElementById("manage-children-list");
+    if (!list) return;
+    list.replaceChildren();
+    const rows = manageChildRows(workspace || {});
+    if (!rows.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted manage-children-empty";
+      empty.textContent = "这个工作区还没有本地子号。";
+      list.append(empty);
+      return;
+    }
+    rows.forEach((row) => {
+      const item = document.createElement("div");
+      item.className = "manage-child-row";
+      const kind = row.kind || (row.status === "remote_only" ? "unmanaged" : (row.status === "invited" ? "invited" : (row.status === "local_only" ? "local_only" : "child")));
+      const statusText = kind === "unmanaged"
+        ? "官方已加入 · 未接入"
+        : (kind === "invited" ? "已邀请 · 等待加入" : (kind === "local_only" ? "仅本地" : membershipStatusLabel(row.status) || labelOf(statusLabels, row.auth) || "已接入"));
+      item.append(twoLine(row.email || "—", statusText));
+      const actions = document.createElement("div");
+      actions.className = "row-actions";
+      if (kind === "unmanaged") {
+        const linkBtn = document.createElement("button");
+        linkBtn.type = "button";
+        linkBtn.className = "button ghost compact";
+        linkBtn.textContent = "接入";
+        linkBtn.addEventListener("click", () => manageChildLink(row, linkBtn));
+        actions.append(linkBtn);
+      } else if (row.id || row.local_account_id) {
+        const accountId = row.id || row.local_account_id;
+        if (["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due"].includes(row.auth) || row.needs_auth) {
+          const authBtn = document.createElement("button");
+          authBtn.type = "button";
+          authBtn.className = "button ghost compact";
+          authBtn.textContent = "授权";
+          authBtn.addEventListener("click", async () => {
+            await openReauth({ id: accountId, email: row.email, workspace_id: workspace?.id }, authBtn);
+          });
+          actions.append(authBtn);
+        }
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "button ghost compact";
+        removeBtn.textContent = "删除";
+        removeBtn.addEventListener("click", () => manageChildRemove(row, removeBtn));
+        actions.append(removeBtn);
+      }
+      item.append(actions);
+      list.append(item);
+    });
+  }
+
+  async function reloadManageChildren() {
+    const form = document.getElementById("manage-children-form");
+    const workspaceId = Number(form?.workspace_id?.value || 0);
+    const trigger = overlayReturn;
+    const sheetOpen = manageChildrenSheet && !manageChildrenSheet.hidden;
+    await bootPage();
+    if (!sheetOpen || !workspaceId) return;
+    const workspace = manageChildrenWorkspace();
+    overlayReturn = trigger;
+    manageChildrenSheet.hidden = false;
+    if (workspace) {
+      const subtitle = document.getElementById("manage-children-subtitle");
+      if (subtitle) subtitle.textContent = workspace.display_name || workspace.name || workspace.owner_email || "";
+      renderManageChildrenList(workspace);
+    }
+    activateFocusTrap(manageChildrenSheet.querySelector(".sheet-panel") || manageChildrenSheet);
+  }
+
   function openManageChildren(trigger, workspace) {
     if (!manageChildrenSheet) return;
     overlayReturn = trigger || document.activeElement;
@@ -1646,7 +1752,8 @@ function hmeRow(item) {
     const subtitle = document.getElementById("manage-children-subtitle");
     if (title) title.textContent = "管理子号";
     if (subtitle) subtitle.textContent = workspace?.display_name || workspace?.name || workspace?.owner_email || "";
-    setFormStatus("manage-children-status", "目前可手动加入已有邮箱。删除子号稍后补上。", "muted");
+    setFormStatus("manage-children-status", "", "muted");
+    renderManageChildrenList(workspace);
     manageChildrenSheet.hidden = false;
     activateFocusTrap(manageChildrenSheet.querySelector(".sheet-panel") || manageChildrenSheet);
     form?.querySelector("[name='email']")?.focus();
@@ -1658,6 +1765,55 @@ function hmeRow(item) {
     clearFocusTrap();
     overlayReturn?.focus?.();
     overlayReturn = null;
+  }
+
+  async function manageChildLink(row, button) {
+    const workspace = manageChildrenWorkspace();
+    const workspaceId = workspace?.id;
+    const email = (row?.email || "").trim();
+    if (!workspaceId || !email) {
+      toast("缺少官方邮箱，无法接入", "error");
+      return;
+    }
+    if (button) button.disabled = true;
+    try {
+      const body = { email };
+      if (row.id || row.local_account_id || row.candidate_account_id) {
+        body.account_id = row.id || row.local_account_id || row.candidate_account_id;
+      }
+      const result = await postAction(`workspace-link-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/link`, body);
+      toast(result.message || "已接入", operationTone(result));
+      await reloadManageChildren();
+      if (result.needs_auth && result.account_id) {
+        await openReauth({ id: result.account_id, email: result.email || email, workspace_id: workspaceId }, overlayReturn);
+      }
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function manageChildRemove(row, button) {
+    const workspace = manageChildrenWorkspace();
+    const workspaceId = workspace?.id;
+    const email = (row?.email || "").trim();
+    const accountId = row?.id || row?.local_account_id;
+    if (!workspaceId || (!email && !accountId)) return;
+    if (!confirmDanger(`确认从本地子号移除 ${email || accountId}？不会改官方成员。`)) return;
+    if (button) button.disabled = true;
+    try {
+      const body = {};
+      if (email) body.email = email;
+      if (accountId) body.account_id = accountId;
+      const result = await postAction(`workspace-remove-child-${workspaceId}-${email || accountId}`, `/api/workspaces/${workspaceId}/members/remove`, body);
+      toast(result.message || "已从本地移除", operationTone(result));
+      await reloadManageChildren();
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   async function submitManageChildren(event) {
@@ -1674,11 +1830,12 @@ function hmeRow(item) {
     setFormStatus("manage-children-status", "正在加入…", "muted");
     try {
       const result = await postAction(`workspace-add-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/add`, { email });
-      const trigger = overlayReturn;
-      closeManageChildren();
-      await handleActionResult(result, { successMessage: result.message || "已加入本地子号" });
+      form.email.value = "";
+      setFormStatus("manage-children-status", result.message || "已加入本地子号", "muted");
+      toast(result.message || "已加入本地子号", operationTone(result));
+      await reloadManageChildren();
       if (result.needs_auth && result.account_id) {
-        await openReauth({ id: result.account_id, email: result.email || email, workspace_id: workspaceId }, trigger);
+        await openReauth({ id: result.account_id, email: result.email || email, workspace_id: workspaceId }, overlayReturn);
       }
     } catch (error) {
       setFormStatus("manage-children-status", friendlyError(error), "error");

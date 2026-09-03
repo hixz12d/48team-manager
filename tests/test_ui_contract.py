@@ -100,6 +100,10 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("manage-children-sheet", accounts)
             self.assertIn("workspace.manage-children", js)
             self.assertIn("管理子号", js)
+            self.assertIn("manage-children-list", accounts)
+            self.assertIn("/api/workspaces/${workspaceId}/members/remove", js)
+            self.assertNotIn("删除子号稍后补上", js)
+            self.assertNotIn("删除子号会在下一步加上", accounts)
 
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

@@ -884,3 +884,28 @@
     border-bottom: 0;
   }
 }
+
+.manage-children-list {
+  display: grid;
+  gap: 8px;
+}
+
+.manage-child-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-subtle, var(--surface));
+}
+
+.manage-child-row .row-actions {
+  flex-wrap: wrap;
+}
+
+.manage-children-empty {
+  margin: 0;
+  font-size: 12px;
+}

@@ -11,7 +11,7 @@ from app.application.identity import ensure_membership, upsert_child_account
 from app.application.operations import operation_store
 from app.core.time import utcnow
 from app.domain.automation import ACTIVE_STATES, TERMINAL_STATES
-from app.domain.identity import LOCAL_PURPOSE_CHILD, MEMBERSHIP_STATE_JOINED
+from app.domain.identity import LOCAL_PURPOSE_CHILD, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import is_workspace_owner
 from app.domain.workspaces.names import apply_custom_name, apply_official_name, is_placeholder_or_email_name, resolve_display_name
@@ -271,4 +271,57 @@ async def add_local_child(
         "status": "managed",
         "membership_id": membership.id if membership else None,
         "message": message,
+    }
+
+
+async def remove_local_child(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    email: str | None = None,
+    account_id: int | None = None,
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    account = None
+    if account_id is not None:
+        account = await db.get(Account, int(account_id))
+    target = normalize_email(email or "")
+    if account is None and target:
+        account = (await db.execute(select(Account).where(Account.email == target))).scalar_one_or_none()
+    if account is None:
+        return {"ok": False, "error": "account not found", "error_code": "not_found"}
+    if is_workspace_owner(workspace, account.id):
+        return {"ok": False, "error": "workspace owner cannot be removed as a child", "error_code": "not_linkable"}
+    membership = (
+        await db.execute(
+            select(WorkspaceMembership).where(
+                WorkspaceMembership.workspace_id == workspace.id,
+                WorkspaceMembership.account_id == account.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if membership is None:
+        return {"ok": False, "error": "membership not found", "error_code": "not_found"}
+    if membership.membership_state == MEMBERSHIP_STATE_REMOVED:
+        return {
+            "ok": True,
+            "already": True,
+            "workspace_id": workspace.id,
+            "account_id": account.id,
+            "email": account.email,
+            "status": "removed",
+            "message": f"{account.email} 已不在本地子号",
+        }
+    membership.membership_state = MEMBERSHIP_STATE_REMOVED
+    membership.removed_at = utcnow()
+    await db.commit()
+    return {
+        "ok": True,
+        "workspace_id": workspace.id,
+        "account_id": account.id,
+        "email": account.email,
+        "status": "removed",
+        "message": f"已从本地子号移除 {account.email}，未改官方成员",
     }
