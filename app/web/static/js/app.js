@@ -1689,10 +1689,10 @@ function hmeRow(item) {
     rows.forEach((row) => {
       const item = document.createElement("div");
       item.className = "manage-child-row";
-      const kind = row.kind || (row.status === "remote_only" ? "unmanaged" : (row.status === "invited" ? "invited" : (row.status === "local_only" ? "local_only" : "child")));
+      const kind = row.kind || (row.membership_state === "invited" || row.status === "invited" ? "invited" : (row.status === "remote_only" ? "unmanaged" : (row.status === "local_only" ? "local_only" : "child")));
       const statusText = kind === "unmanaged"
         ? "官方已加入 · 未接入"
-        : (kind === "invited" ? "已邀请 · 等待加入" : (kind === "local_only" ? "仅本地" : membershipStatusLabel(row.status) || labelOf(statusLabels, row.auth) || "已接入"));
+        : (kind === "invited" ? "已邀请 · 等待加入" : (kind === "local_only" ? "仅本地" : membershipStatusLabel(row.status) || membershipStatusLabel(row.membership_state) || labelOf(statusLabels, row.auth) || "已接入"));
       item.append(twoLine(row.email || "—", statusText));
       const actions = document.createElement("div");
       actions.className = "row-actions";
@@ -1939,12 +1939,12 @@ function hmeRow(item) {
       return;
     }
     if (button) button.disabled = true;
-    setFormStatus("manage-children-status", "正在加入…", "muted");
+    setFormStatus("manage-children-status", "正在发送官方邀请…", "muted");
     try {
       const result = await postAction(`workspace-add-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/add`, { email });
       form.email.value = "";
-      setFormStatus("manage-children-status", result.message || "已加入本地子号", "muted");
-      toast(result.message || "已加入本地子号", operationTone(result));
+      setFormStatus("manage-children-status", result.message || "已邀请进官方席位", "muted");
+      toast(result.message || "已邀请进官方席位", operationTone(result), result.operation_id ? { label: "查看任务", onClick: () => openOperationById(result.operation_id) } : undefined);
       await reloadManageChildren();
       if (result.needs_auth && result.account_id) {
         await openReauth({ id: result.account_id, email: result.email || email, workspace_id: workspaceId }, overlayReturn);

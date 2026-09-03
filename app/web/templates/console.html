@@ -661,7 +661,7 @@
       <header>
         <div>
           <strong id="manage-children-title">管理子号</strong>
-          <p class="muted" id="manage-children-subtitle">本地子号：加入、授权、删除。删除时可只下本地、踢官方，或永久清档案。</p>
+          <p class="muted" id="manage-children-subtitle">邀请进官方席位、授权、删除。删除时可只下本地、踢官方，或永久清档案。</p>
         </div>
         <button type="button" class="button ghost" data-close-manage-children>关闭</button>
       </header>
@@ -673,12 +673,12 @@
         <form id="manage-children-form">
           <input type="hidden" name="workspace_id" value="">
           <div class="sheet-section">
-            <label>加入邮箱<input name="email" type="email" required autocomplete="off" placeholder="child@example.com"></label>
-            <p class="hint">只写本地档案，不邀请官方席位。额度要等授权完成后才能读。</p>
+            <label>邀请邮箱<input name="email" type="email" required autocomplete="off" placeholder="child@example.com"></label>
+            <p class="hint">会向官方 Team 发邀请。对方接受后才能授权读额度。</p>
           </div>
           <p id="manage-children-status" class="muted" hidden></p>
           <div class="settings-probe-actions">
-            <button class="button primary" type="submit" id="manage-children-submit">加入邮箱</button>
+            <button class="button primary" type="submit" id="manage-children-submit">邀请进 Team</button>
           </div>
         </form>
       </div>

@@ -15,7 +15,7 @@ from app.application.queries.identity import (
 from app.application.quota import quota_service
 from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat
-from app.domain.identity import MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
+from app.domain.identity import MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import management_role
 from app.persistence.repositories import identity as identity_repo
@@ -120,7 +120,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 continue
             assigned_ids.add(account["id"])
             quota = _quota_payload(latest_by_context.get((account["id"], ws_id)) or latest.get(account["id"]))
-            kind = "mother" if is_owner else ("history" if row.membership_state == MEMBERSHIP_STATE_REMOVED else "child")
+            kind = "mother" if is_owner else ("history" if row.membership_state == MEMBERSHIP_STATE_REMOVED else ("invited" if row.membership_state == MEMBERSHIP_STATE_INVITED else "child"))
             card = _account_card(
                 {
                     **account,
@@ -141,6 +141,8 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
             elif row.membership_state == MEMBERSHIP_STATE_REMOVED:
                 history.append(card)
             elif row.membership_state == MEMBERSHIP_STATE_JOINED:
+                current_children.append(card)
+            elif row.membership_state == MEMBERSHIP_STATE_INVITED:
                 current_children.append(card)
         if mother is None and owner_email:
             owner_item = next(

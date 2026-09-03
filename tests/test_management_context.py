@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.console_maintenance import add_local_child, link_remote_only_member, purge_local_child_record, remove_local_child
@@ -12,7 +13,7 @@ from app.application.identity import upsert_mother_account, upsert_workspace
 from app.application.queries.portfolio import portfolio_query
 from app.application.quota import QuotaService, snapshot_from_result
 from app.application.workspace_sync import WorkspaceSyncService
-from app.domain.identity import LOCAL_PURPOSE_MOTHER
+from app.domain.identity import LOCAL_PURPOSE_MOTHER, MEMBERSHIP_STATE_INVITED
 from app.domain.identity.binding import canonical_sub2api_name
 from app.domain.identity.policy import management_role
 from app.domain.quota import QuotaResult
@@ -162,18 +163,49 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(group_a["current_children"][0]["email"], "missing@example.com")
         self.assertEqual(group_a["counts"]["managed_children"], 1)
 
-    async def test_add_local_child_creates_account_without_official_snapshot(self):
-        added = await add_local_child(self.session, self.ws_a.id, email="manual.child@example.com")
+    async def test_add_local_child_invites_official_seat(self):
+        class _InviteWS(_FakeWorkspaces):
+            def __init__(self):
+                super().__init__()
+                self.invites = []
+
+            async def lookup_live_member(self, db, workspace, email):
+                return {"success": True, "lookup_state": "absent_confirmed"}, None
+
+            async def invite_member(self, db, workspace_id, email):
+                self.invites.append(email)
+                return {"success": True, "message": f"已邀请 {email}"}
+
+        workspaces = _InviteWS()
+        added = await add_local_child(
+            self.session,
+            self.ws_a.id,
+            email="manual.child@example.com",
+            workspaces=workspaces,
+        )
         self.assertTrue(added["ok"])
         self.assertTrue(added["created"])
-        self.assertTrue(added["needs_auth"])
+        self.assertEqual(added["status"], "invited")
+        self.assertFalse(added["needs_auth"])
+        self.assertEqual(workspaces.invites, ["manual.child@example.com"])
         created = await self.session.get(Account, added["account_id"])
         self.assertEqual(created.email, "manual.child@example.com")
-        self.assertEqual(created.auth_state, "oauth_required")
+        self.assertEqual(created.auth_state, "unknown")
+        snap = (
+            await self.session.execute(
+                select(WorkspaceOfficialMemberSnapshot).where(
+                    WorkspaceOfficialMemberSnapshot.workspace_id == self.ws_a.id,
+                    WorkspaceOfficialMemberSnapshot.normalized_email == "manual.child@example.com",
+                )
+            )
+        ).scalar_one()
+        self.assertEqual(snap.remote_state, "invited")
         portfolio = await portfolio_query(self.session)
         group_a = next(item for item in portfolio["groups"] if item["id"] == self.ws_a.id)
         self.assertEqual(group_a["current_children"][0]["email"], "manual.child@example.com")
-        refused = await add_local_child(self.session, self.ws_a.id, email=self.alice.email)
+        self.assertEqual(group_a["current_children"][0]["membership_state"], MEMBERSHIP_STATE_INVITED)
+        self.assertEqual(group_a["current_children"][0]["kind"], "invited")
+        refused = await add_local_child(self.session, self.ws_a.id, email=self.alice.email, workspaces=workspaces)
         self.assertFalse(refused["ok"])
         self.assertEqual(refused["error_code"], "not_linkable")
         removed = await remove_local_child(self.session, self.ws_a.id, email="manual.child@example.com")
@@ -187,6 +219,25 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         owner_purge = await purge_local_child_record(self.session, self.ws_a, self.alice)
         self.assertFalse(owner_purge["ok"])
         self.assertEqual(owner_purge["error_code"], "not_linkable")
+
+    async def test_add_local_child_does_not_create_account_when_invite_fails(self):
+        class _FailWS(_FakeWorkspaces):
+            async def lookup_live_member(self, db, workspace, email):
+                return {"success": True, "lookup_state": "absent_confirmed"}, None
+
+            async def invite_member(self, db, workspace_id, email):
+                return {"success": False, "error": "invite rejected", "error_code": "invite_failed"}
+
+        failed = await add_local_child(
+            self.session,
+            self.ws_a.id,
+            email="ghost@example.com",
+            workspaces=_FailWS(),
+        )
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["error_code"], "invite_failed")
+        ghost = (await self.session.execute(select(Account).where(Account.email == "ghost@example.com"))).scalar_one_or_none()
+        self.assertIsNone(ghost)
 
     async def test_quota_snapshots_are_scoped_by_workspace(self):
         now = datetime(2026, 3, 29, 12, 0, 0)
