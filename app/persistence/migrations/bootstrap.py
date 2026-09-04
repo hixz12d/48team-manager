@@ -18,6 +18,8 @@ from app.persistence.models import (  # noqa: F401
     QuotaSnapshot,
     SeatVacancyEvent,
     SystemSetting,
+    Sub2ApiProxyBinding,
+    Sub2ApiUsageSnapshot,
     Workspace,
     WorkspaceMembership,
     WorkspaceOfficialMemberSnapshot,

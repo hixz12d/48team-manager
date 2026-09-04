@@ -14,6 +14,7 @@ from app.application.resources.hme import list_leases
 from app.application.resources.phones import phone_pool_service
 from app.application.resources.proxies import proxy_profile_service
 from app.application.settings import load_console_settings
+from app.application.sub2api_usage import sub2api_usage_service
 from app.core.time import isoformat
 from app.domain.automation import ACTIVE_STATES
 
@@ -212,10 +213,12 @@ async def workspaces(db: AsyncSession) -> dict[str, Any]:
 async def accounts(db: AsyncSession, purpose: str = "all", include_archived: bool = False) -> dict[str, Any]:
     payload = await accounts_query(db, purpose=purpose, include_archived=include_archived)
     latest = await quota_service.latest_official_by_accounts(db)
+    usage_by_context = await sub2api_usage_service.payloads_by_context(db)
     for item in payload["items"]:
         snap = latest.get(item["id"])
         item["quota_7d"] = _quota_label(snap)
         item["quota"] = _quota_payload(snap)
+        item["usage"] = usage_by_context.get((item["id"], item.get("workspace_id"))) or usage_by_context.get((item["id"], None))
     if purpose == "quota_full":
         payload["items"] = [
             item
@@ -402,23 +405,37 @@ async def hme(db: AsyncSession) -> dict[str, Any]:
 
 
 async def proxies(db: AsyncSession) -> dict[str, Any]:
-    # GET stays read-only. Use POST /api/resources/proxies/repair for backfill.
+    # GET stays read-only. Sync and repair use explicit POST endpoints.
     from collections import Counter
 
     from sqlalchemy import select
 
+    from app.application.sub2api_proxy import sub2api_proxy_service
     from app.persistence.models.identity import Account
+    from app.persistence.models.sub2api import Sub2ApiProxyBinding
 
     rows = await proxy_profile_service.list_profiles(db)
     counts = Counter()
-    bound = list((await db.execute(select(Account.proxy_profile_id).where(Account.proxy_profile_id.is_not(None)))).all())
+    bound = list(
+        (
+            await db.execute(
+                select(Account.proxy_profile_id).where(Account.proxy_profile_id.is_not(None))
+            )
+        ).all()
+    )
     for (profile_id,) in bound:
         if profile_id:
             counts[int(profile_id)] += 1
-    return {
-        "items": [proxy_profile_service.serialize(row, binding_count=int(counts.get(row.id, 0))) for row in rows],
-        "next_cursor": None,
+    mappings = {
+        row.local_proxy_profile_id: row
+        for row in (await db.execute(select(Sub2ApiProxyBinding))).scalars()
     }
+    items = []
+    for row in rows:
+        item = proxy_profile_service.serialize(row, binding_count=int(counts.get(row.id, 0)))
+        item["sub2api"] = sub2api_proxy_service.serialize(mappings.get(row.id))
+        items.append(item)
+    return {"items": items, "next_cursor": None}
 
 
 async def settings_view(db: AsyncSession) -> dict[str, Any]:

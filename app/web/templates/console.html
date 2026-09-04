@@ -298,6 +298,17 @@
                 </div>
                 <div class="panel-body stack">
                   <p class="service-summary muted" data-service-summary="sub2api">默认只显示地址和检测摘要。密钥留空则不修改。</p>
+                  <div class="service-management-grid">
+                    <div>
+                      <span class="field-label">用量同步</span>
+                      <p class="hint" id="sub2api-usage-status">正在读取本地快照状态…</p>
+                    </div>
+                    <button class="button compact" id="sub2api-usage-sync-all" type="button">同步全部</button>
+                    <div>
+                      <span class="field-label">账号推送模板</span>
+                      <p class="hint" id="sub2api-template-status">正在探测远端能力…</p>
+                    </div>
+                  </div>
                   <div class="service-edit" data-edit-panel="sub2api" hidden>
                     <label>地址<input name="sub2api_base_url" autocomplete="off"></label>
                     <p class="hint" id="sub2api-auth-hint">认证方式会显示在这里。</p>

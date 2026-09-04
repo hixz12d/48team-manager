@@ -13,6 +13,7 @@ from app.application.queries.identity import (
     workspaces_query,
 )
 from app.application.quota import quota_service
+from app.application.sub2api_usage import sub2api_usage_service
 from app.application.presenters import build_auth_status
 from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat
@@ -69,8 +70,12 @@ def _account_card(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
         "kind": kind,
         "has_access_token": bool(item.get("has_access_token")),
         "quota_risk": _quota_risk(quota),
-        "usage": None,
-        "usage_note": "请求量、Token 和账单需独立采集后才显示，当前仅有官方 5h/7d 额度快照。",
+        "usage": item.get("usage"),
+        "usage_note": (
+            "Sub2API 用量来自本地快照。"
+            if (item.get("usage") or {}).get("available")
+            else "Sub2API 尚无成功用量快照，不显示 0。"
+        ),
     }
 
 
@@ -80,6 +85,10 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
     latest = await quota_service.latest_official_by_accounts(db)
     latest_by_context = await quota_service.latest_official_by_contexts(db)
     accounts_by_id = {item["id"]: item for item in accounts_payload.get("items") or []}
+    usage_by_context = await sub2api_usage_service.payloads_by_context(db)
+
+    def usage_for(account_id: int, workspace_id: int | None) -> dict[str, Any] | None:
+        return usage_by_context.get((int(account_id), workspace_id)) or usage_by_context.get((int(account_id), None))
     accounts_by_email = {normalize_email(item.get("email")): item for item in accounts_by_id.values()}
     for item in accounts_by_id.values():
         snap = latest.get(item["id"])
@@ -151,6 +160,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                     "management_role": "mother" if is_owner else "child",
                     "managed": True,
                     "quota": quota,
+                    "usage": usage_for(account["id"], ws_id),
                     "joined_at": isoformat(row.joined_at),
                     "removed_at": isoformat(row.removed_at),
                 },
@@ -180,6 +190,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                         "management_role": "mother",
                         "managed": True,
                         "quota": quota,
+                        "usage": usage_for(owner_item["id"], ws_id),
                     },
                     kind="mother",
                 )
@@ -220,6 +231,8 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
             if _quota_risk(item.get("quota"))
         ]
         joined_people = workspace.get("official", {}).get("joined_people_total")
+        managed_usage = [item.get("usage") for item in ([mother] if mother else []) + current_children]
+        workspace_usage = sub2api_usage_service.aggregate(managed_usage)
         groups.append(
             {
                 **workspace,
@@ -238,8 +251,8 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                     "history": len(history),
                 },
                 "quota_risk": "danger" if "danger" in risks else ("warning" if "warning" in risks else ("ok" if risks else None)),
-                "usage": None,
-                "usage_note": "Workspace 生命周期账单尚未采集，不显示虚构金额。",
+                "usage": workspace_usage,
+                "usage_note": "Workspace 计费按已验证 Binding 的本地快照聚合。" if (workspace_usage or {}).get("available") else "尚无可聚合的 Sub2API 用量快照。",
             }
         )
 
@@ -249,11 +262,12 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
             continue
         if not item.get("include_reason") and item.get("state") in HIDDEN_ACCOUNT_STATES:
             continue
+        item["usage"] = usage_for(item["id"], None)
         unassigned.append(_account_card(item, kind="unassigned"))
 
     return {
         "groups": groups,
         "unassigned": unassigned,
-        "usage_available": False,
-        "usage_note": "当前只有官方 5h/7d 额度快照。请求量、Token、账号计费和用户扣费需独立账本，未采集时不显示 0。",
+        "usage_available": any(item.get("available") for item in usage_by_context.values()),
+        "usage_note": "Sub2API 用量仅来自后台同步的本地快照；缺失和失败不会显示为 0。",
     }

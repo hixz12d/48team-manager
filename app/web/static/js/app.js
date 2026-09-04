@@ -1013,27 +1013,80 @@
     return row;
   }
 
+  function compactMetric(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "—";
+    return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(number);
+  }
+
+  function usageWindowLine(label, windowData) {
+    const line = document.createElement("div");
+    line.className = "usage-window tabular";
+    const tag = document.createElement("span");
+    tag.className = "meter-window";
+    tag.textContent = label;
+    const values = document.createElement("span");
+    values.className = "usage-window-values";
+    if (!windowData || windowData.last_success_at == null) {
+      values.textContent = "—";
+    } else {
+      values.textContent = [
+        windowData.requests == null ? null : `${compactMetric(windowData.requests)} req`,
+        windowData.tokens == null ? null : `${compactMetric(windowData.tokens)} tok`,
+        windowData.user_cost == null ? null : `U $${windowData.user_cost}`,
+        windowData.account_cost == null ? null : `A $${windowData.account_cost}`,
+      ].filter(Boolean).join(" · ") || "—";
+      line.title = [
+        windowData.standard_cost == null ? null : `标准计费 S $${windowData.standard_cost}`,
+        windowData.billing_margin == null ? null : `计费毛差 Δ $${windowData.billing_margin}`,
+        windowData.last_success_at ? `同步 ${relativeTime(windowData.last_success_at)}` : null,
+        windowData.sync_status === "failed" ? (windowData.error || "最近同步失败，当前为旧数据") : null,
+      ].filter(Boolean).join("；");
+    }
+    const state = document.createElement("span");
+    state.className = "usage-window-state";
+    state.textContent = windowData?.sync_status === "failed" ? "失败" : (windowData?.stale ? "旧" : "");
+    line.append(tag, values, state);
+    return line;
+  }
+
+  function workspaceUsageSummary(usage) {
+    const windows = usage?.windows || {};
+    const entry = windows.seven_day || windows.today || windows.five_hour;
+    if (!entry?.last_success_at) return null;
+    const label = entry === windows.seven_day ? "7d" : (entry === windows.today ? "今日" : "5h");
+    const node = document.createElement("span");
+    node.className = "workspace-usage-summary tabular";
+    node.textContent = [
+      label,
+      entry.user_cost == null ? null : `U $${entry.user_cost}`,
+      entry.account_cost == null ? null : `A $${entry.account_cost}`,
+    ].filter(Boolean).join(" · ");
+    const coverage = entry.coverage;
+    node.title = [
+      entry.standard_cost == null ? null : `标准计费 S $${entry.standard_cost}`,
+      entry.billing_margin == null ? null : `计费毛差 Δ $${entry.billing_margin}`,
+      coverage ? `覆盖 ${coverage.synced}/${coverage.total} 个已管理账号` : null,
+      entry.stale ? "包含旧快照" : null,
+    ].filter(Boolean).join("；");
+    return node;
+  }
+
   function quotaCell(item) {
     const wrap = document.createElement("div");
     wrap.className = "quota-cell";
     const quota = item.quota || {};
     const usage = item.usage || {};
-    const metrics = [];
-    if (usage.requests != null) metrics.push(usage.requests + " req");
-    if (usage.tokens != null) metrics.push(usage.tokens + " tok");
-    if (usage.account_billed != null) metrics.push("A $" + usage.account_billed);
-    if (usage.user_billed != null) metrics.push("U $" + usage.user_billed);
-    if (metrics.length) {
-      const line = document.createElement("div");
-      line.className = "metric-chip-group tabular";
-      metrics.forEach((m) => {
-        const chip = document.createElement("span");
-        chip.className = "metric-chip";
-        chip.textContent = m;
-        line.append(chip);
-      });
-      line.title = "A=账号计费口径；U=用户/API Key 计费口径。未采集时不显示。";
-      wrap.append(line);
+    const windows = usage.windows || {};
+    const primaryWindow = windows.five_hour || windows.today;
+    if (primaryWindow || windows.seven_day) {
+      const usageBlock = document.createElement("div");
+      usageBlock.className = "usage-window-list";
+      usageBlock.append(
+        usageWindowLine(primaryWindow === windows.today ? "今日" : "5h", primaryWindow),
+        usageWindowLine("7d", windows.seven_day),
+      );
+      wrap.append(usageBlock);
     }
     wrap.append(
       quotaMeter("5h", quota.five_hour_used_percent, quota.five_hour_reset_at),
@@ -1493,6 +1546,37 @@ function hmeRow(item) {
       closeOverlay();
     }
 
+  async function pushSub2ApiAccount(item) {
+    const query = item.workspace_id ? `?workspace_id=${encodeURIComponent(item.workspace_id)}` : "";
+    const body = {};
+    const preview = await fetchEntity(
+      `account-sub2api-preview-${item.id}`,
+      `/api/accounts/${item.id}/sub2api/preview${query}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const updateText = (preview.would_update || []).join(", ") || "无";
+    const preserveText = (preview.would_preserve || []).join(", ");
+    const prompt = [
+      preview.action === "create" ? "确认创建 Sub2API 账号？" : "确认更新 Sub2API 账号？",
+      `将写入：${updateText}`,
+      preserveText ? `将保留：${preserveText}` : null,
+      ...(preview.warnings || []),
+    ].filter(Boolean).join("\n");
+    if (!window.confirm(prompt)) return;
+    const result = await postAction(
+      `account-sub2api-push-${item.id}`,
+      `/api/accounts/${item.id}/sub2api/push${query}`,
+      body,
+    );
+    await handleActionResult(result, {
+      successMessage: result.message || (preview.action === "create" ? "Sub2API 推送完成" : "Sub2API 更新完成"),
+    });
+  }
+
   const entityActions = {
     workspace: [
       { id: "workspace.manage", label: "管理", run: (item, trigger) => openWorkspaceDetails(trigger, item) },
@@ -1592,19 +1676,13 @@ function hmeRow(item) {
         id: "account.sub2api.push",
         label: "推送到 Sub2API",
         visible: (item) => (item.sub2api_publish?.eligible !== false) && ["missing", "unbound", "none", "pending"].includes(item.sub2api),
-        run: async (item) => {
-          const result = await postAction(`account-sub2api-push-${item.id}`, `/api/accounts/${item.id}/sub2api/push`, {});
-          await handleActionResult(result, { successMessage: result.message || "Sub2API 推送完成" });
-        },
+        run: (item) => pushSub2ApiAccount(item),
       },
       {
         id: "account.sub2api.update",
         label: "更新 Sub2API",
         visible: (item) => (item.sub2api_publish?.eligible !== false) && item.sub2api === "verified",
-        run: async (item) => {
-          const result = await postAction(`account-sub2api-push-${item.id}`, `/api/accounts/${item.id}/sub2api/push`, {});
-          await handleActionResult(result, { successMessage: result.message || "Sub2API 更新完成" });
-        },
+        run: (item) => pushSub2ApiAccount(item),
       },
       {
         id: "account.sub2api.reconcile",
@@ -1613,6 +1691,16 @@ function hmeRow(item) {
         run: async (item) => {
           const result = await postAction(`account-sub2api-reconcile-${item.id}`, `/api/accounts/${item.id}/sub2api/reconcile`);
           await handleActionResult(result, { successMessage: result.message || "Sub2API 对账完成" });
+        },
+      },
+      {
+        id: "account.sub2api.usage",
+        label: "同步用量与计费",
+        visible: (item) => item.sub2api === "verified",
+        run: async (item) => {
+          const query = item.workspace_id ? `?workspace_id=${encodeURIComponent(item.workspace_id)}` : "";
+          const result = await postAction(`account-sub2api-usage-${item.id}`, `/api/accounts/${item.id}/sub2api/usage/sync${query}`, {});
+          await handleActionResult(result, { successMessage: result.message || "用量同步完成" });
         },
       },
       {
@@ -1748,6 +1836,14 @@ function hmeRow(item) {
         run: async (item) => {
           const result = await postAction(`proxy-probe-${item.id}`, `/api/resources/proxies/${item.id}/probe`);
           await handleActionResult(result, { successMessage: result.message || (result.last_exit_ip ? ("检测成功 " + result.last_exit_ip) : "检测完成") });
+        },
+      },
+      {
+        id: "proxy.sub2api.sync",
+        label: "同步到 Sub2API",
+        run: async (item) => {
+          const result = await postAction(`proxy-sub2api-${item.id}`, `/api/resources/proxies/${item.id}/sub2api/sync`, {});
+          await handleActionResult(result, { successMessage: result.action === "unchanged" ? "远端代理已是最新" : "代理同步完成" });
         },
       },
       {
@@ -3125,6 +3221,54 @@ function openRegister(trigger) {
     }
   }
 
+  function renderSub2ApiManagement(status, templates) {
+    const usageEl = document.getElementById("sub2api-usage-status");
+    if (usageEl && status) {
+      const snapshot = status.last_success_at ? relativeTime(status.last_success_at) : "尚无成功快照";
+      const failures = status.failed_windows ? ` · ${status.failed_windows} 个失败窗口` : "";
+      usageEl.textContent = `${status.verified_bindings || 0} 个已验证绑定 · ${status.snapshot_count || 0} 个窗口 · ${snapshot}${failures}`;
+      usageEl.className = status.failed_windows ? "hint error" : "hint";
+    }
+    const templateEl = document.getElementById("sub2api-template-status");
+    if (templateEl && templates) {
+      templateEl.textContent = templates.supported
+        ? `${(templates.items || []).length} 个远端模板可用`
+        : (templates.message || "当前远端不支持账号推送模板");
+      templateEl.className = "hint";
+    }
+  }
+
+  async function loadSub2ApiManagement() {
+    const statusTask = fetchEntity("sub2api-status", "/api/sub2api/status")
+      .then((status) => renderSub2ApiManagement(status, null))
+      .catch((error) => {
+        const usageEl = document.getElementById("sub2api-usage-status");
+        if (usageEl) {
+          usageEl.textContent = friendlyError(error);
+          usageEl.className = "hint error";
+        }
+      });
+    const templateTask = fetchEntity("sub2api-templates", "/api/sub2api/templates")
+      .then((templates) => renderSub2ApiManagement(null, templates))
+      .catch((error) => renderSub2ApiManagement(null, {
+        supported: false,
+        message: friendlyError(error),
+      }));
+    await Promise.allSettled([statusTask, templateTask]);
+  }
+
+  async function syncAllSub2ApiUsage(button) {
+    if (button) button.disabled = true;
+    try {
+      const result = await postAction("sub2api-usage-sync-all", "/api/sub2api/usage/sync", {});
+      await handleActionResult(result, { successMessage: result.message || "Sub2API 用量同步完成" });
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   async function saveSettings(event) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -3347,6 +3491,8 @@ function openRegister(trigger) {
       const ownerCol = document.createElement("div");
       ownerCol.className = "portfolio-owner";
       ownerCol.append(twoLine(group.owner_email || "无母号", `${counts.joined_people ?? ((counts.managed_children ?? counts.current_children ?? 0) + (counts.unmanaged ?? 0) + (group.mother ? 1 : 0))} 人 · ${counts.managed_children ?? counts.current_children ?? 0} 子号 · ${counts.unmanaged ?? 0} 未接入`));
+      const groupUsage = workspaceUsageSummary(group.usage);
+      if (groupUsage) ownerCol.append(groupUsage);
 
       const healthCol = document.createElement("div");
       healthCol.className = "portfolio-health";
@@ -3704,6 +3850,7 @@ function openRegister(trigger) {
       form.addEventListener("change", updateDirty);
       document.getElementById("settings-discard")?.addEventListener("click", () => bootPage());
       document.getElementById("settings-probe-all")?.addEventListener("click", () => probeSettings("all"));
+      document.getElementById("sub2api-usage-sync-all")?.addEventListener("click", (event) => syncAllSub2ApiUsage(event.currentTarget));
       document.querySelectorAll("[data-probe]").forEach((button) => {
         button.addEventListener("click", () => probeSettings(button.dataset.probe));
       });
@@ -3721,6 +3868,7 @@ function openRegister(trigger) {
       passwordForm.addEventListener("submit", savePassword);
     }
     fillSettings(await fetchEntity("settings", "/api/settings"));
+    void loadSub2ApiManagement();
   }
 
   const pageBootstraps = {

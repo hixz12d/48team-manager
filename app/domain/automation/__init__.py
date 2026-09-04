@@ -19,6 +19,8 @@ OPERATION_TYPES = (
     "sub2api_sync",
     "sub2api_reconcile",
     "sub2api_push",
+    "sub2api_usage_sync",
+    "sub2api_proxy_sync",
     "proxy_check",
     "free_register",
     "reregister",

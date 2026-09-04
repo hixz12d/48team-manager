@@ -63,19 +63,44 @@ async def scheduled_auto_rotate() -> None:
         await rotate_service.run_once(session)
 
 
+async def scheduled_sub2api_usage_sync() -> None:
+    from app.application.sub2api_usage import sub2api_usage_service
+    from app.integrations.sub2api.client import sub2api_client
+    from app.main import app
+
+    factory = getattr(app.state, "session_factory", None)
+    if factory is None:
+        return
+    async with factory() as session:
+        config = await sub2api_client.load_config(session)
+        if not config.get("configured"):
+            return
+        await sub2api_usage_service.sync(session, source="scheduled", force_usage=False)
+
+
 def configure_jobs(settings: Settings) -> None:
-    if scheduler.get_job("official_quota_probe_scan"):
-        scheduler.remove_job("official_quota_probe_scan")
-    if scheduler.get_job("auth_probe_scan"):
-        scheduler.remove_job("auth_probe_scan")
-    if scheduler.get_job("auto_reauth_scan"):
-        scheduler.remove_job("auto_reauth_scan")
-    if scheduler.get_job("auto_rotate_scan"):
-        scheduler.remove_job("auto_rotate_scan")
+    job_ids = (
+        "official_quota_probe_scan",
+        "auth_probe_scan",
+        "auto_reauth_scan",
+        "auto_rotate_scan",
+        "sub2api_usage_sync",
+    )
+    for job_id in job_ids:
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
     scheduler.add_job(scheduled_quota_probe, IntervalTrigger(minutes=2), id="official_quota_probe_scan", replace_existing=True)
     scheduler.add_job(scheduled_auth_probe, IntervalTrigger(minutes=30), id="auth_probe_scan", replace_existing=True)
     scheduler.add_job(scheduled_auto_reauth, IntervalTrigger(minutes=30), id="auto_reauth_scan", replace_existing=True)
     scheduler.add_job(scheduled_auto_rotate, IntervalTrigger(minutes=30), id="auto_rotate_scan", replace_existing=True)
+    scheduler.add_job(
+        scheduled_sub2api_usage_sync,
+        IntervalTrigger(minutes=15),
+        id="sub2api_usage_sync",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     if settings.auto_rotate_enabled or settings.force_refill:
         logger.warning("auto rotate / force refill must stay off until explicitly approved")
     if settings.auto_reauth_enabled:

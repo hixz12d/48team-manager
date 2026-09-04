@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -224,7 +225,8 @@ class Sub2ApiClient:
             raise RuntimeError("尚未配置 Sub2API 地址")
         if not cfg["configured"]:
             raise RuntimeError("尚未配置 Sub2API Admin API Key 或后台账号")
-        client = httpx.AsyncClient(base_url=cfg["base_url"], timeout=30.0)
+        timeout = httpx.Timeout(30.0, connect=5.0, read=30.0, write=15.0, pool=5.0)
+        client = httpx.AsyncClient(base_url=cfg["base_url"], timeout=timeout)
         headers = await self._login_headers(client, cfg)
         return client, headers, cfg
 
@@ -445,6 +447,243 @@ class Sub2ApiClient:
         finally:
             await client.aclose()
         return data if isinstance(data, dict) else {}
+
+    async def _request_json(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        retries: int = 2,
+    ) -> Any:
+        """Run a safe Admin API request with bounded transient retries."""
+        last_error: Exception | None = None
+        for attempt in range(max(0, retries) + 1):
+            try:
+                response = await client.request(method, path, headers=headers, params=params, json=json)
+                if response.status_code == 429 or response.status_code >= 500:
+                    if attempt < retries:
+                        await asyncio.sleep(0.25 * (attempt + 1))
+                        continue
+                response.raise_for_status()
+                return self._unwrap(response.json())
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = exc
+                if attempt >= retries:
+                    raise
+                await asyncio.sleep(0.25 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Sub2API request failed")
+
+    async def fetch_billing_windows(
+        self,
+        db: AsyncSession,
+        account_ids: list[int],
+        *,
+        force_usage: bool = False,
+    ) -> dict[str, Any]:
+        """Fetch 5h, today, and natural 7-day windows using one authenticated client."""
+        ids = sorted({int(value) for value in account_ids if _as_int(value) and int(value) > 0})
+        result: dict[str, Any] = {
+            "five_hour": {},
+            "today": {},
+            "seven_day": {},
+            "errors": {},
+        }
+        if not ids:
+            return result
+
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            current_call = self._request_json(
+                client,
+                headers,
+                "POST",
+                "/api/v1/admin/accounts/usage/batch",
+                json={"account_ids": ids, "force": bool(force_usage)},
+            )
+            today_call = self._request_json(
+                client,
+                headers,
+                "POST",
+                "/api/v1/admin/accounts/today-stats/batch",
+                json={"account_ids": ids},
+            )
+            current, today = await asyncio.gather(current_call, today_call, return_exceptions=True)
+
+            if isinstance(current, Exception):
+                for account_id in ids:
+                    result["errors"].setdefault(str(account_id), {})["five_hour"] = str(current)
+            elif isinstance(current, dict):
+                usage_map = current.get("usage") if isinstance(current.get("usage"), dict) else {}
+                error_map = current.get("errors") if isinstance(current.get("errors"), dict) else {}
+                for account_id in ids:
+                    key = str(account_id)
+                    usage = usage_map.get(key, usage_map.get(account_id))
+                    five = usage.get("five_hour") if isinstance(usage, dict) else None
+                    if isinstance(five, dict) and isinstance(five.get("window_stats"), dict):
+                        result["five_hour"][key] = five
+                    elif error_map.get(key) or error_map.get(account_id):
+                        result["errors"].setdefault(key, {})["five_hour"] = str(
+                            error_map.get(key) or error_map.get(account_id)
+                        )
+
+            if isinstance(today, Exception):
+                for account_id in ids:
+                    result["errors"].setdefault(str(account_id), {})["today"] = str(today)
+            elif isinstance(today, dict):
+                stats_map = today.get("stats") if isinstance(today.get("stats"), dict) else {}
+                for account_id in ids:
+                    key = str(account_id)
+                    stats = stats_map.get(key, stats_map.get(account_id))
+                    if isinstance(stats, dict):
+                        result["today"][key] = stats
+
+            semaphore = asyncio.Semaphore(6)
+
+            async def fetch_seven(account_id: int) -> tuple[int, Any]:
+                async with semaphore:
+                    try:
+                        payload = await self._request_json(
+                            client,
+                            headers,
+                            "GET",
+                            f"/api/v1/admin/accounts/{account_id}/stats",
+                            params={"days": "7"},
+                        )
+                        return account_id, payload
+                    except Exception as exc:
+                        return account_id, exc
+
+            seven_results = await asyncio.gather(*(fetch_seven(account_id) for account_id in ids))
+            for account_id, payload in seven_results:
+                key = str(account_id)
+                if isinstance(payload, Exception):
+                    result["errors"].setdefault(key, {})["seven_day"] = str(payload)
+                    continue
+                summary = payload.get("summary") if isinstance(payload, dict) else None
+                if isinstance(summary, dict):
+                    result["seven_day"][key] = summary
+            return result
+        finally:
+            await client.aclose()
+
+    async def get_proxy(self, db: AsyncSession, proxy_id: int) -> dict[str, Any]:
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            data = await self._request_json(
+                client, headers, "GET", f"/api/v1/admin/proxies/{int(proxy_id)}"
+            )
+            return data if isinstance(data, dict) else {}
+        finally:
+            await client.aclose()
+
+    async def create_proxy(
+        self,
+        db: AsyncSession,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        client, headers, _cfg = await self._with_client(db)
+        request_headers = dict(headers)
+        if idempotency_key:
+            request_headers["Idempotency-Key"] = str(idempotency_key)[:120]
+        try:
+            data = await self._request_json(
+                client, request_headers, "POST", "/api/v1/admin/proxies", json=payload, retries=1
+            )
+            return data if isinstance(data, dict) else {}
+        finally:
+            await client.aclose()
+
+    async def update_proxy(
+        self, db: AsyncSession, proxy_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            data = await self._request_json(
+                client,
+                headers,
+                "PUT",
+                f"/api/v1/admin/proxies/{int(proxy_id)}",
+                json=payload,
+                retries=1,
+            )
+            return data if isinstance(data, dict) else {}
+        finally:
+            await client.aclose()
+
+    async def test_proxy(self, db: AsyncSession, proxy_id: int) -> dict[str, Any]:
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            data = await self._request_json(
+                client,
+                headers,
+                "POST",
+                f"/api/v1/admin/proxies/{int(proxy_id)}/test",
+                retries=1,
+            )
+            return data if isinstance(data, dict) else {}
+        finally:
+            await client.aclose()
+
+    async def integration_capabilities(self, db: AsyncSession) -> dict[str, Any]:
+        """Detect optional cross-system contracts without claiming unsupported templates."""
+        fallback = {
+            "schema_version": None,
+            "detection": "legacy_fallback",
+            "usage": {
+                "batch_current": True,
+                "batch_today": True,
+                "batch_exact_windows": False,
+            },
+            "proxies": {"crud": True, "test": True},
+            "account_templates": {
+                "crud": False,
+                "schema": False,
+                "create_from_template": False,
+                "apply": False,
+                "preview": False,
+            },
+        }
+        config = await self.load_config(db)
+        if not config.get("configured"):
+            return {**fallback, "detection": "unconfigured"}
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            try:
+                data = await self._request_json(
+                    client,
+                    headers,
+                    "GET",
+                    "/api/v1/admin/integration/capabilities",
+                    retries=0,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    return fallback
+                raise
+            if not isinstance(data, dict):
+                return fallback
+            return {**fallback, **data, "detection": "remote"}
+        finally:
+            await client.aclose()
+
+
+    async def list_account_templates(self, db: AsyncSession) -> list[dict[str, Any]]:
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            data = await self._request_json(
+                client, headers, "GET", "/api/v1/admin/account-templates", retries=1
+            )
+            return self._account_items(data)
+        finally:
+            await client.aclose()
 
     async def read_after_write(self, db: AsyncSession, account_id: int) -> dict[str, Any]:
         return await self.get_account(db, account_id)

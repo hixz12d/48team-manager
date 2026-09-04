@@ -331,6 +331,32 @@
 .quota-meter.is-warning .meter-pct { color: var(--warning-text); }
 .quota-meter.is-danger .meter-pct { color: var(--danger-text); }
 
+.usage-window-list {
+  display: grid;
+  gap: 2px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.usage-window {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 24px;
+  gap: 5px;
+  align-items: baseline;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.usage-window-values {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.usage-window-state {
+  color: var(--warning-text);
+  text-align: right;
+}
+
 .quota-cell-foot,
 .quota-footer {
   display: flex;
@@ -586,6 +612,18 @@
 .portfolio-sync,
 .portfolio-actions {
   min-width: 0;
+}
+
+.portfolio-owner {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-usage-summary {
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .portfolio-identity {
@@ -1027,6 +1065,27 @@
 
 .team-auth-form {
   align-content: start;
+}
+
+.service-management-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-xs) var(--space-sm);
+  align-items: center;
+  padding: var(--space-xs) 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.service-management-grid > :last-child {
+  grid-column: 1 / -1;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 @media (max-width: 720px) {
