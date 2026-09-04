@@ -14,11 +14,11 @@ from app.application.queries.portfolio import portfolio_query
 from app.application.quota import QuotaService, snapshot_from_result
 from app.application.workspace_sync import WorkspaceSyncService
 from app.domain.identity import LOCAL_PURPOSE_MOTHER, MEMBERSHIP_STATE_INVITED
-from app.domain.identity.binding import canonical_sub2api_name
+from app.domain.identity.binding import canonical_name_for_account, canonical_sub2api_name
 from app.domain.identity.policy import management_role
 from app.domain.quota import QuotaResult
 from app.persistence.database import Base
-from app.persistence.models.identity import Account, Workspace, WorkspaceOfficialMemberSnapshot
+from app.persistence.models.identity import Account, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 
 
 WORKSPACE_A = "11111111-1111-1111-1111-111111111111"
@@ -86,7 +86,19 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(management_role(self.ws_b, self.bob.id), "mother")
         self.assertEqual(management_role(self.ws_b, self.alice.id), "child")
         self.assertEqual(canonical_sub2api_name("newxiaozhu1@gmail.com", "mother"), "Team（newxiaozhu1） 母号")
+        self.assertEqual(
+            canonical_sub2api_name("bouncy.evasion3c@icloud.com", "child", team_email="hixz262@gmail.com"),
+            "Team（hixz262） 子号",
+        )
         self.assertEqual(canonical_sub2api_name("hixz262@gmail.com", "child"), "Team（hixz262） 子号")
+        self.assertEqual(
+            canonical_name_for_account(self.bob, self.ws_a, owner_email=self.alice.email),
+            "Team（newxiaozhu1） 子号",
+        )
+        self.assertEqual(
+            canonical_name_for_account(self.alice, self.ws_a, owner_email=self.alice.email),
+            "Team（newxiaozhu1） 母号",
+        )
 
         service = WorkspaceSyncService(
             workspaces=_FakeWorkspaces(
@@ -160,6 +172,20 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         created = await self.session.get(Account, missing["account_id"])
         self.assertEqual(created.email, "missing@example.com")
         self.assertEqual(created.auth_state, "oauth_required")
+        repeated = await link_remote_only_member(self.session, self.ws_a.id, email="missing@example.com")
+        self.assertFalse(repeated["ok"])
+        self.assertEqual(repeated["error_code"], "already_linked")
+        memberships = list(
+            (
+                await self.session.execute(
+                    select(WorkspaceMembership).where(
+                        WorkspaceMembership.workspace_id == self.ws_a.id,
+                        WorkspaceMembership.account_id == created.id,
+                    )
+                )
+            ).scalars()
+        )
+        self.assertEqual(len(memberships), 1)
         portfolio = await portfolio_query(self.session)
         group_a = next(item for item in portfolio["groups"] if item["id"] == self.ws_a.id)
         self.assertEqual(group_a["current_children"][0]["email"], "missing@example.com")

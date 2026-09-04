@@ -39,7 +39,9 @@ class ConsoleActionsContractTests(unittest.TestCase):
             js = client.get("/static/js/app.js").text
             for action in (
                 "workspace.sync",
-                "workspace.manage-children",
+                "workspace.manage",
+                "team.member.invite",
+                "team.member.link",
                 "account.refresh",
                 "account.quota",
                 "account.sub2api",

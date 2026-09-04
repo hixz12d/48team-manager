@@ -52,6 +52,9 @@ class IdentityQueryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(workspaces[0]["name"], "Team .2026.11")
                 self.assertEqual(workspaces[0]["owner_email"], "owner@icloud.com")
                 self.assertEqual(workspaces[0]["official_workspace_id"], WORKSPACE_UUID)
+                self.assertIsInstance(workspaces[0]["owner_account_id"], int)
+                self.assertIsNone(workspaces[0]["owner_quota_updated_at"])
+                self.assertIsNone(workspaces[0]["owner_quota"]["queried_at"])
                 accounts = client.get("/api/accounts").json()["items"]
                 by_email = {row["email"]: row for row in accounts}
                 self.assertEqual(by_email["owner@icloud.com"]["purpose"], "mother")

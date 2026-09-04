@@ -79,9 +79,10 @@ def email_local_part(email: str | None) -> str:
     return normalized.split("@", 1)[0]
 
 
-def canonical_sub2api_name(email: str, context_role: str) -> str:
-    local_part = email_local_part(email)
+def canonical_sub2api_name(email: str, context_role: str, *, team_email: str | None = None) -> str:
     suffix = "母号" if context_role == MANAGEMENT_ROLE_MOTHER else "子号"
+    label_source = team_email if context_role != MANAGEMENT_ROLE_MOTHER and team_email else email
+    local_part = email_local_part(label_source)
     return f"Team（{local_part}） {suffix}"
 
 
@@ -180,8 +181,13 @@ def expected_workspace_id(
     return None
 
 
-def canonical_name_for_account(account, workspace) -> str:
-    return canonical_sub2api_name(account.email, management_role(workspace, account.id))
+def canonical_name_for_account(account, workspace, *, owner_email: str | None = None) -> str:
+    role = management_role(workspace, account.id)
+    team_email = owner_email
+    if not team_email and workspace is not None:
+        owner = getattr(workspace, "owner_account", None)
+        team_email = getattr(owner, "email", None) if owner is not None else None
+    return canonical_sub2api_name(account.email, role, team_email=team_email)
 
 
 def match_unbound_local_account(

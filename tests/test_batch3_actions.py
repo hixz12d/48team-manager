@@ -123,6 +123,17 @@ class Batch3ApiTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 404)
 
+            missing_auth = client.post("/api/accounts/999/reauth")
+            self.assertEqual(missing_auth.status_code, 404)
+            self.assertEqual(missing_auth.json()["detail"]["error_code"], "account_not_found")
+
+            missing_link = client.post(
+                "/api/workspaces/999/members/link",
+                json={"email": "kid@example.com"},
+            )
+            self.assertEqual(missing_link.status_code, 404)
+            self.assertEqual(missing_link.json()["detail"]["error_code"], "not_found")
+
             created = client.post(
                 "/api/resources/proxies",
                 json={"url": "http://127.0.0.1:8080", "name": "lab"},
@@ -149,13 +160,15 @@ class Batch3ApiTests(unittest.TestCase):
             self.assertIn("attention", payload)
 
             js = client.get("/static/js/app.js").text
-            self.assertIn("workspace.onboard", js)
-            self.assertIn("account.kick", js)
+            self.assertIn("team.member.invite", js)
+            self.assertIn("team.member.link", js)
             self.assertIn("phone.reset-cooldown", js)
-            self.assertIn("openOnboard", js)
             self.assertIn("confirmDanger", js)
+            self.assertNotIn("workspace.onboard", js)
+            self.assertNotIn("account.kick", js)
+            self.assertNotIn("openOnboard", js)
 
             accounts = client.get("/accounts").text
-            self.assertIn("data-open-onboard", accounts)
-            self.assertIn("onboard-sheet", accounts)
-            self.assertIn("rotate-sheet", accounts)
+            self.assertNotIn("data-open-onboard", accounts)
+            self.assertNotIn("onboard-sheet", accounts)
+            self.assertNotIn("rotate-sheet", accounts)

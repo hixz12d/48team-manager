@@ -27,6 +27,7 @@ STATUS_LABELS = {
     "oauth_required": "要授权",
     "needs_auth": "要授权",
     "unknown": "未授权",
+    "owner_account_missing": "母号本地档案缺失",
     "identity_conflict": "账号对不上",
     "membership_drift": "本地和官方对不上",
     "needs_management": "有人还没接入",
@@ -85,6 +86,73 @@ BUSINESS_STEP_LABELS = {
     "quota": "刷新额度",
     "probe": "检测",
 }
+
+
+AUTH_NEED_STATES = frozenset({
+    "refresh_due",
+    "oauth_required",
+    "phone_required",
+    "manual_required",
+    "deactivated",
+    "unknown",
+})
+
+
+def _account_value(account: Any, key: str, default: Any = None) -> Any:
+    if isinstance(account, dict):
+        return account.get(key, default)
+    return getattr(account, key, default)
+
+
+def build_auth_status(account: Any, *, missing_reason: str = "account_not_found") -> dict[str, Any]:
+    """Present one canonical authorization state for all console read models."""
+    if account is None:
+        return {
+            "auth_state": missing_reason,
+            "needs_auth": False,
+            "auth_action": None,
+            "auth_reason": missing_reason,
+        }
+
+    auth_state = str(
+        _account_value(account, "auth_state")
+        or _account_value(account, "auth")
+        or "unknown"
+    ).strip().lower()
+    explicit_token = _account_value(account, "has_access_token")
+    has_access_token = (
+        bool(explicit_token)
+        if explicit_token is not None
+        else bool(_account_value(account, "access_token_encrypted"))
+    )
+    if auth_state == "deactivated":
+        return {
+            "auth_state": auth_state,
+            "needs_auth": True,
+            "auth_action": None,
+            "auth_reason": "deactivated",
+        }
+
+    if not has_access_token:
+        return {
+            "auth_state": auth_state,
+            "needs_auth": True,
+            "auth_action": "authorize" if auth_state in {"unknown", "oauth_required"} else "reauthorize",
+            "auth_reason": "missing_token",
+        }
+    if auth_state not in AUTH_NEED_STATES:
+        return {
+            "auth_state": auth_state,
+            "needs_auth": False,
+            "auth_action": None,
+            "auth_reason": None,
+        }
+    return {
+        "auth_state": auth_state,
+        "needs_auth": True,
+        "auth_action": None if auth_state == "deactivated" else "reauthorize",
+        "auth_reason": auth_state,
+    }
 
 
 def label_of(mapping: dict[str, str], value: Any, *, fallback: str | None = None) -> str:

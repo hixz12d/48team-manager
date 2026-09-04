@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.presenters import membership_status_label
+from app.application.presenters import AUTH_NEED_STATES, build_auth_status, membership_status_label
 from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat
 from app.domain.identity import (
@@ -24,7 +24,6 @@ from app.persistence.repositories import identity as identity_repo
 
 
 HIDDEN_ACCOUNT_STATES = {"archived"}
-AUTH_NEED_STATES = {"refresh_due", "oauth_required", "phone_required", "manual_required", "deactivated", "unknown"}
 
 
 def _account_state(account, finding: dict[str, Any] | None) -> str:
@@ -50,7 +49,7 @@ def _binding_label(bindings: list) -> str:
 
 def _workspace_health(
     *,
-    owner,
+    owner_auth: dict[str, Any],
     owner_state: str | None,
     sync_state: str | None,
     joined_member_count: int | None,
@@ -62,7 +61,9 @@ def _workspace_health(
 ) -> str:
     if owner_state == "conflict":
         return "identity_conflict"
-    if owner is not None and owner.auth_state in AUTH_NEED_STATES:
+    if owner_auth.get("auth_reason") == "owner_account_missing":
+        return "owner_account_missing"
+    if owner_auth.get("needs_auth"):
         return "needs_auth"
     if sync_state in {"failed", "error"}:
         return "sync_failed"
@@ -186,10 +187,11 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
             and not is_workspace_owner(workspace, row.account_id)
         ]
         owner_finding = findings_by_id.get(owner.id) if owner is not None else None
+        owner_auth = build_auth_status(owner, missing_reason="owner_account_missing")
         display = _workspace_display(workspace, owner_email=owner.email if owner else None)
         sync_state = _sync_state_for(workspace, has_snapshot=has_snapshot)
         health = _workspace_health(
-            owner=owner,
+            owner_auth=owner_auth,
             owner_state=_account_state(owner, owner_finding) if owner is not None else None,
             sync_state=sync_state,
             joined_member_count=counts["joined_member_count"],
@@ -310,6 +312,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "user_id": row.official_user_id,
                 "membership_state": row.membership_state,
                 "auth": account.auth_state,
+                **build_auth_status(account),
                 "state": _account_state(account, findings_by_id.get(account.id)),
             }
             member_items.append(payload)
@@ -348,6 +351,11 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                     "user_id": (remote or {}).get("user_id") or (local or {}).get("user_id"),
                     "official_user_id": (remote or {}).get("user_id") or (local or {}).get("official_user_id"),
                     "local_account_id": (local or {}).get("id"),
+                    "auth": (local or {}).get("auth"),
+                    "auth_state": (local or {}).get("auth_state"),
+                    "needs_auth": bool((local or {}).get("needs_auth")),
+                    "auth_action": (local or {}).get("auth_action"),
+                    "auth_reason": (local or {}).get("auth_reason"),
                     "candidate_account_id": candidate.id if candidate is not None and not local else None,
                     "is_owner": is_owner,
                     "actionable": status in {"remote_only", "local_only", "conflict"},
@@ -363,9 +371,10 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
         has_snapshot = bool(snaps) or bool(workspace.last_official_sync_at)
         sync_state = _sync_state_for(workspace, has_snapshot=has_snapshot)
         owner_finding = findings_by_id.get(owner.id) if owner is not None else None
+        owner_auth = build_auth_status(owner, missing_reason="owner_account_missing")
         display = _workspace_display(workspace, owner_email=owner.email if owner else None)
         health = _workspace_health(
-            owner=owner,
+            owner_auth=owner_auth,
             owner_state=_account_state(owner, owner_finding) if owner is not None else None,
             sync_state=sync_state,
             joined_member_count=counts["joined_member_count"],
@@ -388,8 +397,13 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "official_name_payload_source": display.get("official_name_payload_source") or getattr(workspace, "official_name_payload_source", None),
                 "official_workspace_id": workspace.official_workspace_id,
                 "owner_email": owner.email if owner else None,
+                "owner_account_id": owner.id if owner else None,
                 "owner_purpose": owner.local_purpose if owner else None,
                 "owner_auth": owner.auth_state if owner else None,
+                "owner_auth_state": owner_auth["auth_state"],
+                "owner_needs_auth": owner_auth["needs_auth"],
+                "owner_auth_action": owner_auth["auth_action"],
+                "owner_auth_reason": owner_auth["auth_reason"],
                 "owner_proxy": mask_proxy_url(owner.proxy) if owner and owner.proxy else None,
                 "owner_proxy_set": bool(owner and owner.proxy),
                 "proxy_profile_id": owner.proxy_profile_id if owner else None,
@@ -464,12 +478,13 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
             continue
         finding = findings_by_id.get(account.id)
         state = _account_state(account, finding)
+        auth_status = build_auth_status(account)
         if purpose not in {"all", "", None}:
             if purpose == "conflict" and state != "conflict":
                 continue
             if purpose == "archived" and account.operational_state != "archived":
                 continue
-            if purpose == "needs_auth" and (account.auth_state not in AUTH_NEED_STATES):
+            if purpose == "needs_auth" and not auth_status["needs_auth"]:
                 continue
             if purpose == "quota_full":
                 pass
@@ -536,6 +551,7 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
                 "membership_state": primary_membership.membership_state if primary_membership else None,
                 "quota_7d": None,
                 "auth": account.auth_state,
+                **auth_status,
                 "sub2api": _binding_label(binding_rows),
                 "sub2api_publish": eligibility,
                 "proxy": "set" if account.proxy else "none",

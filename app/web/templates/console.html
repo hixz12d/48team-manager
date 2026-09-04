@@ -23,7 +23,6 @@
         <a href="/" class="nav-link{% if page == 'overview' %} is-active{% endif %}">总览</a>
         <a href="/workspaces" class="nav-link{% if page == 'workspaces' %} is-active{% endif %}">团队</a>
         <a href="/accounts" class="nav-link{% if page == 'accounts' %} is-active{% endif %}">账号</a>
-        <a href="/operations" class="nav-link{% if page == 'operations' %} is-active{% endif %}">任务</a>
         <p class="nav-label">资源</p>
         <a href="/resources/phones" class="nav-link{% if page == 'phones' %} is-active{% endif %}">手机号</a>
         <a href="/resources/hme" class="nav-link{% if page == 'hme' %} is-active{% endif %}">HME</a>
@@ -45,15 +44,11 @@
         <div class="topbar-actions">
           {% if page == 'workspaces' %}
           <button type="button" class="button primary" data-open-register>登记团队</button>
-          <button type="button" class="button" data-open-onboard>创建子号</button>
-          {% elif page == 'accounts' %}
-          <button type="button" class="button primary" data-open-onboard>创建子号</button>
           {% elif page == 'hme' %}
           <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
           {% elif page == 'proxies' %}
           <button type="button" class="button" data-action-page="proxy-probe-all">检测全部</button>
           {% endif %}
-          <button type="button" class="button" id="open-operations" data-open-operations>任务</button>
         </div>
       </header>
       <main class="page page-{{ page }}" id="page-root">
@@ -67,7 +62,6 @@
           <a class="summary-item" href="/workspaces"><span class="summary-label">工作区</span><strong class="tabular" data-summary="workspaces">—</strong></a>
           <a class="summary-item" href="/accounts"><span class="summary-label">账号</span><strong class="tabular" data-summary="accounts">—</strong></a>
           <a class="summary-item" href="/"><span class="summary-label">待处理</span><strong class="tabular" data-summary="attention">—</strong></a>
-          <a class="summary-item" href="/operations"><span class="summary-label">运行任务</span><strong class="tabular" data-summary="running">—</strong></a>
           <a class="summary-item" href="/accounts?purpose=conflict"><span class="summary-label">身份冲突</span><strong class="tabular" data-summary="conflicts">—</strong></a>
         </section>
         <div class="overview-layout">
@@ -81,10 +75,6 @@
             <section class="panel" id="overview-attention-panel">
               <div class="panel-header"><span class="panel-title">待处理</span></div>
               <div class="panel-body compact" id="overview-attention">正在加载总览…</div>
-            </section>
-            <section class="panel" id="overview-running-panel" hidden>
-              <div class="panel-header"><span class="panel-title">正在运行</span></div>
-              <div class="panel-body compact" id="overview-running"></div>
             </section>
           </aside>
         </div>
@@ -104,10 +94,9 @@
                   <th scope="col" class="num">官方 / 本地</th>
                   <th scope="col">健康</th>
                   <th scope="col">最近同步</th>
-                  <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="workspaces-body"><tr><td colspan="6" class="muted">正在加载工作区…</td></tr></tbody>
+              <tbody id="workspaces-body"><tr><td colspan="5" class="muted">正在加载工作区…</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -143,10 +132,9 @@
                   <th scope="col">官方额度</th>
                   <th scope="col">Sub2API</th>
                   <th scope="col">运行状态</th>
-                  <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
-              <tbody id="accounts-body"><tr><td colspan="8" class="muted">正在加载账号…</td></tr></tbody>
+              <tbody id="accounts-body"><tr><td colspan="7" class="muted">正在加载账号…</td></tr></tbody>
             </table>
           </div>
         </section>
@@ -434,16 +422,6 @@
       </main>
     </div>
   </div>
-  <div class="drawer" id="operations-drawer" hidden>
-    <div class="drawer-panel" role="dialog" aria-modal="true" aria-labelledby="operations-drawer-title">
-      <header>
-        <strong id="operations-drawer-title">任务</strong>
-        <button type="button" class="button ghost" data-close-drawer>关掉</button>
-      </header>
-      <p class="muted" id="operations-drawer-meta">临时看一眼就行，不会一直占着页面。</p>
-      <div id="operations-drawer-body"></div>
-    </div>
-  </div>
   <div class="sheet" id="entity-sheet" hidden>
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
       <header>
@@ -559,66 +537,6 @@
       </form>
     </div>
   </div>
-  <div class="sheet" id="onboard-sheet" hidden>
-    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="onboard-title">
-      <header>
-        <div>
-          <strong id="onboard-title">创建子号</strong>
-          <p class="muted">向指定 Workspace 邀请并完成 Playwright 入驻。邮箱可留空以自动领取 HME。</p>
-        </div>
-        <button type="button" class="button ghost" data-close-onboard>关闭</button>
-      </header>
-      <form id="onboard-form" class="sheet-body">
-        <input type="hidden" name="workspace_id" value="">
-        <div class="sheet-section">
-          <label>Workspace ID<input name="workspace_id_display" type="number" min="1" required></label>
-          <label>邮箱 / 邮件原文<textarea name="email_line" rows="3" placeholder="留空则自动领取 HME；也可粘贴完整邮件原文"></textarea></label>
-          <label>手机号行<input name="phone_line" autocomplete="off" placeholder="可选；通常由号池自动分配"></label>
-          <label>代理<input name="proxy" autocomplete="off" placeholder="可选 socks5://host:port"></label>
-          <label>官方角色
-            <select name="role">
-              <option value="owner" selected>所有者 Owner（默认）</option>
-              <option value="member">成员 Member</option>
-            </select>
-          </label>
-          <label class="check"><input name="force" type="checkbox"> 强制（跳过部分门禁）</label>
-          <label class="check"><input name="skip_invite" type="checkbox"> 跳过邀请（仅浏览器入驻）</label>
-          <p class="hint">这会创建真实 onboard 任务，可能调用官方邀请与浏览器自动化。</p>
-        </div>
-        <p id="onboard-status" class="muted" hidden></p>
-        <div class="settings-probe-actions">
-          <button class="button primary" type="submit" id="onboard-submit">开始创建子号</button>
-        </div>
-      </form>
-    </div>
-  </div>
-  <div class="sheet" id="rotate-sheet" hidden>
-    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="rotate-title">
-      <header>
-        <div>
-          <strong id="rotate-title">受控轮转</strong>
-          <p class="muted">先踢出/撤回目标子号，再按策略补位。需二次确认。</p>
-        </div>
-        <button type="button" class="button ghost" data-close-rotate>关闭</button>
-      </header>
-      <form id="rotate-form" class="sheet-body">
-        <input type="hidden" name="workspace_id" value="">
-        <div class="sheet-section">
-          <label>Workspace ID<input name="workspace_id_display" type="number" min="1" required></label>
-          <label>要轮转的子号邮箱<input name="email" type="email" required autocomplete="off"></label>
-          <label>补位邮箱 / 原文<textarea name="email_line" rows="3" placeholder="可选；留空则系统挑选待命号或领 HME"></textarea></label>
-          <label>手机号行<input name="phone_line" autocomplete="off" placeholder="可选"></label>
-          <label>代理<input name="proxy" autocomplete="off" placeholder="可选"></label>
-          <label class="check"><input name="force_refill" type="checkbox"> 强制补位</label>
-          <p class="hint">危险操作：会改官方成员席位。提交前会再次确认。</p>
-        </div>
-        <p id="rotate-status" class="muted" hidden></p>
-        <div class="settings-probe-actions">
-          <button class="button primary" type="submit" id="rotate-submit">确认轮转</button>
-        </div>
-      </form>
-    </div>
-  </div>
   <div class="sheet" id="proxy-edit-sheet" hidden>
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="proxy-edit-title">
       <header>
@@ -662,66 +580,6 @@
       </form>
     </div>
   </div>
-  <div class="sheet" id="manage-children-sheet" hidden>
-    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="manage-children-title">
-      <header>
-        <div>
-          <strong id="manage-children-title">管理子号</strong>
-          <p class="muted" id="manage-children-subtitle">邀请进官方席位、改已加入成员的 Owner/Member、授权、删除。对方接受邀请后，点「授权」才能读额度。</p>
-        </div>
-        <button type="button" class="button ghost" data-close-manage-children>关闭</button>
-      </header>
-      <div class="sheet-body">
-        <div class="sheet-section">
-          <h3>当前子号</h3>
-          <div id="manage-children-list" class="manage-children-list"></div>
-        </div>
-        <form id="manage-children-form">
-          <input type="hidden" name="workspace_id" value="">
-          <div class="sheet-section">
-            <label>邀请邮箱<input name="email" type="email" required autocomplete="off" placeholder="child@example.com"></label>
-            <label>官方角色
-              <select name="role">
-                <option value="owner" selected>所有者 Owner（默认）</option>
-                <option value="member">成员 Member</option>
-              </select>
-            </label>
-            <p class="hint">会向官方 Team 发邀请。对方接受后，在这里点「授权」用这个邮箱登录再读额度。</p>
-          </div>
-          <p id="manage-children-status" class="muted" hidden></p>
-          <div class="settings-probe-actions">
-            <button class="button primary" type="submit" id="manage-children-submit">邀请进 Team</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-  <div class="sheet confirm-sheet" id="manage-child-remove-sheet" hidden>
-    <div class="sheet-panel confirm-panel" role="dialog" aria-modal="true" aria-labelledby="manage-child-remove-title">
-      <header>
-        <div>
-          <strong id="manage-child-remove-title">踢出子号</strong>
-          <p class="muted" id="manage-child-remove-subtitle">这个邮箱还在官方席位。默认踢官方。</p>
-        </div>
-        <button type="button" class="button ghost" data-close-manage-child-remove>取消</button>
-      </header>
-      <div class="sheet-body">
-        <p id="manage-child-remove-email" class="manage-child-remove-email"></p>
-        <div class="sheet-section">
-          <label class="check"><input type="radio" name="manage-child-remove-mode" value="official" checked> 踢出官方席位</label>
-          <label class="check"><input type="radio" name="manage-child-remove-mode" value="local"> 只从本地拿掉，官方席位先留着</label>
-          <label class="check"><input type="radio" name="manage-child-remove-mode" value="purge"> 永久删除：踢官方、下架 Sub，并清掉本地档案</label>
-          <p class="hint" id="manage-child-remove-hint">踢出后会改 Team 成员，本地没有档案的邮箱不会进待命。永久删除不可恢复。</p>
-        </div>
-        <p id="manage-child-remove-status" class="muted" hidden></p>
-        <div class="settings-probe-actions">
-          <button type="button" class="button ghost" data-close-manage-child-remove>取消</button>
-          <button type="button" class="button primary" id="manage-child-remove-confirm">确认删除</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <dialog class="palette" id="command-palette">
     <input id="command-input" placeholder="去哪…">

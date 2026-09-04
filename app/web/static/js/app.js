@@ -1,35 +1,46 @@
 (() => {
-  const controllers = new Map();
+  const readControllers = new Map();
+  const readVersions = new Map();
+  const inFlightWrites = new Map();
+  const currentOperations = new Map();
+  const CURRENT_OPERATION_STORAGE = "team48:current-operations";
   const palette = document.getElementById("command-palette");
   const commandInput = document.getElementById("command-input");
   const commandList = document.getElementById("command-list");
-  const drawer = document.getElementById("operations-drawer");
-  const sheet = document.getElementById("entity-sheet");
+  const shellRoot = document.querySelector(".shell");
+  const overlayState = {
+    active: null,
+    returnFocus: null,
+    context: null,
+    previousContext: null,
+  };
+  const overlayRegistry = new Map([
+    ["entity", document.getElementById("entity-sheet")],
+    ["register", document.getElementById("register-sheet")],
+    ["reauth", document.getElementById("reauth-sheet")],
+    ["phone-import", document.getElementById("phone-import-sheet")],
+    ["proxy-add", document.getElementById("proxy-add-sheet")],
+    ["proxy-edit", document.getElementById("proxy-edit-sheet")],
+  ]);
+  const sheet = overlayRegistry.get("entity");
   const menu = document.getElementById("action-menu");
-  const registerSheet = document.getElementById("register-sheet");
-  const reauthSheet = document.getElementById("reauth-sheet");
-  const phoneImportSheet = document.getElementById("phone-import-sheet");
-  const proxyAddSheet = document.getElementById("proxy-add-sheet");
-  const onboardSheet = document.getElementById("onboard-sheet");
-  const rotateSheet = document.getElementById("rotate-sheet");
-  const proxyEditSheet = document.getElementById("proxy-edit-sheet");
-  const manageChildrenSheet = document.getElementById("manage-children-sheet");
-  const manageChildRemoveSheet = document.getElementById("manage-child-remove-sheet");
-  let pendingChildRemove = null;
+  const registerSheet = overlayRegistry.get("register");
+  const reauthSheet = overlayRegistry.get("reauth");
+  const phoneImportSheet = overlayRegistry.get("phone-import");
+  const proxyAddSheet = overlayRegistry.get("proxy-add");
+  const proxyEditSheet = overlayRegistry.get("proxy-edit");
   let focusTrapRoot = null;
+  let teamDetailState = null;
   const SECRET_MASK = "••••••";
   const pageCache = { items: [], kind: "", portfolio: null };
   let settingsBaseline = "";
   let settingsDirty = false;
-  let overlayReturn = null;
-  let pollTimer = null;
   let searchTimer = null;
 
   const destinations = [
     { label: "去总览", href: "/" },
     { label: "去团队", href: "/workspaces" },
     { label: "去账号", href: "/accounts" },
-    { label: "去任务", href: "/operations" },
     { label: "去手机号", href: "/resources/phones" },
     { label: "去 HME", href: "/resources/hme" },
     { label: "去代理", href: "/resources/proxies" },
@@ -67,6 +78,8 @@
     off: "关着",
     unchecked: "未检测",
     healthy: "正常",
+    normal: "正常",
+    active: "正常",
     degraded: "降级",
     failed: "失败",
     refresh_due: "需刷新",
@@ -118,20 +131,113 @@
     "account-admin": "管理员",
   };
 
+  const ERROR_CODE_MESSAGES = {
+    missing_token: "该账号尚未授权，请先完成授权。",
+    token_revoked: "账号授权已失效，请重新授权。",
+    token_invalidated: "账号授权已失效，请重新授权。",
+    callback_invalid: "授权回调无效，请重新复制完整回调地址。",
+    callback_expired: "授权回调已过期，请重新生成授权链接。",
+    account_not_found: "本地账号档案不存在，请先核对账号关系。",
+    owner_account_missing: "该团队没有绑定本地母号，暂时无法直接授权。",
+    identity_conflict: "该账号身份存在冲突，请先核对账号关系。",
+    already_linked: "该成员已接入本地，无需重复接入。",
+    membership_not_found: "未找到该成员的本地关系，请刷新后重试。",
+    operation_in_progress: "相同操作正在进行，请等待当前操作完成。",
+    operation_conflict: "相同操作正在进行，请等待当前操作完成。",
+  };
+  const ACTIVE_OPERATION_STATES = new Set(["pending", "queued", "running", "waiting"]);
+  const TERMINAL_OPERATION_STATES = new Set(["success", "failed", "manual_required", "cancelled", "partial"]);
+
   function abortEntity(key) {
-    const previous = controllers.get(key);
+    const previous = readControllers.get(key);
     if (previous) previous.abort();
     const next = new AbortController();
-    controllers.set(key, next);
+    readControllers.set(key, next);
     return next;
   }
 
+  function nextReadVersion(key) {
+    const version = (readVersions.get(key) || 0) + 1;
+    readVersions.set(key, version);
+    return version;
+  }
+
+  function isLatestRead(key, version) {
+    return readVersions.get(key) === version;
+  }
+
+  function isAbortError(error) {
+    return Boolean(error) && (error.name === "AbortError" || /aborted/i.test(String(error.message || "")));
+  }
+
+  function extractErrorPayload(error) {
+    if (error && typeof error === "object") {
+      if (error.payload && typeof error.payload === "object") return error.payload;
+      if (error.detail && typeof error.detail === "object") return error;
+    }
+    return {};
+  }
+
+  function extractErrorCode(error) {
+    if (error && typeof error === "object" && error.errorCode) return error.errorCode;
+    const payload = extractErrorPayload(error);
+    const detail = payload.detail;
+    if (typeof detail === "object" && detail) return detail.error_code || payload.error_code || null;
+    return payload.error_code || null;
+  }
+
+  function extractErrorMessage(error) {
+    const payload = extractErrorPayload(error);
+    const detail = payload.detail;
+    if (typeof detail === "object" && detail) return detail.message || payload.message || payload.error || "";
+    if (typeof detail === "string") return detail;
+    if (error && typeof error === "object") return error.message || payload.message || payload.error || "";
+    return String(error || "");
+  }
+
+  class RequestError extends Error {
+    constructor(message, { status, payload, errorCode } = {}) {
+      super(message);
+      this.name = "RequestError";
+      this.status = status || 0;
+      this.payload = payload || {};
+      this.errorCode = errorCode || null;
+    }
+  }
+
+  function legacyAuthStatus(item) {
+    const state = item?.auth_state ?? item?.auth ?? item?.owner_auth_state ?? item?.owner_auth ?? "unknown";
+    const needsAuth = ["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due", "unknown"].includes(state)
+      || item?.needs_auth === true
+      || item?.owner_needs_auth === true
+      || item?.has_access_token === false;
+    return {
+      state,
+      needsAuth,
+      action: item?.auth_action ?? item?.owner_auth_action ?? (needsAuth ? "reauthorize" : null),
+      reason: item?.auth_reason ?? item?.owner_auth_reason ?? (needsAuth ? state : null),
+    };
+  }
+
+  function authStatus(item) {
+    if (!item) return { state: "unknown", needsAuth: false, action: null, reason: null };
+    if (typeof item.needs_auth === "boolean" || typeof item.owner_needs_auth === "boolean") {
+      return {
+        state: item.auth_state ?? item.owner_auth_state ?? item.auth ?? item.owner_auth ?? "unknown",
+        needsAuth: Boolean(item.needs_auth ?? item.owner_needs_auth),
+        action: item.auth_action ?? item.owner_auth_action ?? null,
+        reason: item.auth_reason ?? item.owner_auth_reason ?? null,
+      };
+    }
+    return legacyAuthStatus(item);
+  }
+
   function needsAuth(item) {
-    if (!item) return false;
-    if (["oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due", "unknown"].includes(item.auth)) return true;
-    if (item.needs_auth) return true;
-    if (item.has_access_token === false) return true;
-    return false;
+    return authStatus(item).needsAuth;
+  }
+
+  function authActionLabel(action) {
+    return action === "authorize" ? "授权" : "重新授权";
   }
 
   function roleLabel(value) {
@@ -141,12 +247,15 @@
   }
 
   function friendlyError(error) {
-    const text = String(error && error.message ? error.message : error || "请求失败");
+    if (isAbortError(error)) return "";
+    const code = extractErrorCode(error);
+    if (code && ERROR_CODE_MESSAGES[code]) return ERROR_CODE_MESSAGES[code];
+    const text = extractErrorMessage(error) || "请求失败";
     if (/local access token missing/i.test(text) || /undecryptable/i.test(text)) {
-      return "这个号还没授权。点「授权」，用这个邮箱登录后再读额度。";
+      return ERROR_CODE_MESSAGES.missing_token;
     }
     if (/token_revoked|token_invalidated|invalidated oauth token/i.test(text)) {
-      return "官方登录已失效，点「授权」用这个邮箱重新登录后再读额度。";
+      return ERROR_CODE_MESSAGES.token_revoked;
     }
     if (text.length > 180 || text.trim().startsWith("{") || text.trim().startsWith("[")) {
       return "请求失败，请重试。";
@@ -154,20 +263,66 @@
     return text;
   }
 
+  async function parseJsonResponse(response, key) {
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok) return payload;
+    const detail = payload.detail;
+    const errorCode = typeof detail === "object" && detail ? detail.error_code : payload.error_code;
+    const message = typeof detail === "object" && detail
+      ? (detail.message || payload.message || payload.error || `请求失败: ${key}`)
+      : (typeof detail === "string" ? detail : (payload.message || payload.error || `请求失败: ${key}`));
+    throw new RequestError(message, { status: response.status, payload, errorCode });
+  }
+
   async function fetchEntity(key, url, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
+    const isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+    if (isWrite) return writeEntity(key, url, options);
+    const version = nextReadVersion(key);
     const controller = abortEntity(key);
     const { headers, ...rest } = options;
-    const response = await fetch(url, {
-      ...rest,
-      headers: { Accept: "application/json", ...(headers || {}) },
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      const detail = payload.detail || `请求失败: ${key}`;
-      throw new Error(typeof detail === "string" ? detail : "请求失败，请重试。");
+    try {
+      const response = await fetch(url, {
+        ...rest,
+        method,
+        headers: { Accept: "application/json", ...(headers || {}) },
+        signal: controller.signal,
+      });
+      const payload = await parseJsonResponse(response, key);
+      if (!isLatestRead(key, version)) {
+        const stale = new Error("stale read");
+        stale.name = "AbortError";
+        throw stale;
+      }
+      return payload;
+    } catch (error) {
+      if (isAbortError(error) || !isLatestRead(key, version)) {
+        const abortError = error;
+        abortError.name = "AbortError";
+        throw abortError;
+      }
+      throw error;
+    } finally {
+      if (readControllers.get(key) === controller) readControllers.delete(key);
     }
-    return response.json();
+  }
+
+  async function writeEntity(key, url, options = {}) {
+    if (inFlightWrites.has(key)) return inFlightWrites.get(key);
+    const { headers, ...rest } = options;
+    const pending = (async () => {
+      const response = await fetch(url, {
+        ...rest,
+        headers: { Accept: "application/json", ...(headers || {}) },
+      });
+      return parseJsonResponse(response, key);
+    })();
+    inFlightWrites.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      inFlightWrites.delete(key);
+    }
   }
 
   function labelOf(map, value) {
@@ -295,27 +450,29 @@
   }
 
   function toast(message, tone = "muted", action) {
-    const region = document.getElementById("toast-region");
-    if (!region) return;
-    const item = document.createElement("div");
-    item.className = `toast toast-${tone || "muted"}`;
-    const textNode = document.createElement("span");
-    textNode.textContent = message;
-    item.append(textNode);
-    if (action && action.label && action.onClick) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "button ghost";
-      button.textContent = action.label;
-      button.addEventListener("click", () => {
-        item.remove();
-        action.onClick();
-      });
-      item.append(button);
+      if (!message) return;
+      const region = document.getElementById("toast-region");
+      if (!region) return;
+      const item = document.createElement("div");
+      item.className = `toast toast-${tone || "muted"}`;
+      item.setAttribute("role", tone === "error" ? "alert" : "status");
+      const textNode = document.createElement("span");
+      textNode.textContent = message;
+      item.append(textNode);
+      if (action && action.label && action.onClick) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "button ghost";
+        button.textContent = action.label;
+        button.addEventListener("click", () => {
+          item.remove();
+          action.onClick();
+        });
+        item.append(button);
+      }
+      region.append(item);
+      window.setTimeout(() => item.remove(), 6500);
     }
-    region.append(item);
-    window.setTimeout(() => item.remove(), 6500);
-  }
 
   function operationTone(result) {
     if (result?.tone) return result.tone;
@@ -326,47 +483,31 @@
     return "error";
   }
 
-  function syncToastMessage(result) {
-    if (result?.message) return result.message;
-    if (result?.ok || result?.success) {
-      return `同步完成：官方已加入 ${result.joined ?? 0}、待邀请 ${result.invited ?? 0}；本地受管 ${result.managed ?? 0}；仅官方 ${result.remote_only ?? 0}`;
+  async function handleActionResult(result, { successMessage, refresh = true, stableKey, context } = {}) {
+      const started = startCurrentOperation(stableKey, result, context);
+      if (started) return result;
+      const failed = !(result?.ok || result?.success) || result?.partial || ["partial", "failed", "manual_required"].includes(result?.status);
+      const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (successMessage || "已完成"));
+      const message = failed ? friendlyError(rawMessage) : rawMessage;
+      const retryable = failed && Boolean(context?.retry);
+      const action = retryable
+        ? { label: "重试", onClick: context.retry }
+        : (failed && result?.operation_id ? { label: "技术详情", onClick: () => openOperationById(result.operation_id) } : undefined);
+      toast(message, operationTone(result), action);
+      if (refresh) await bootPage();
+      return result;
     }
-    return result?.error || "同步失败";
-  }
-
-  function chooseWorkspaceId(item) {
-    const memberships = item.memberships || [];
-    if (memberships.length > 1) {
-      const options = memberships.map((row) => String(row.workspace_id) + ":" + (row.workspace || row.workspace_id)).join("\n");
-      const picked = window.prompt("该账号属于多个 Workspace，请输入要操作的 Workspace ID:\n" + options, String(item.primary_workspace_id || item.workspace_id || ""));
-      const chosen = Number(picked || 0);
-      return chosen || null;
-    }
-    return item.primary_workspace_id || item.workspace_id || (memberships[0] && memberships[0].workspace_id) || null;
-  }
-
-  async function handleActionResult(result, { successMessage, refresh = true, longRunning = false } = {}) {
-    const failed = !(result?.ok || result?.success) || result?.partial || ["partial", "failed", "manual_required"].includes(result?.status);
-    const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (successMessage || "已完成"));
-    const message = failed ? friendlyError(rawMessage) : rawMessage;
-    const action = failed && result?.operation_id
-      ? { label: "查看详情", onClick: () => openOperationById(result.operation_id) }
-      : (longRunning && result?.operation_id ? { label: "查看任务", onClick: () => openOperationById(result.operation_id) } : null);
-    toast(message, operationTone(result), action || undefined);
-    if (refresh) await bootPage();
-    return result;
-  }
 
   function confirmDanger(message) {
     return window.confirm(message);
   }
 
   function focusableNodes(root) {
-    if (!root) return [];
-    return Array.from(
-      root.querySelectorAll('a[href], button:not([disabled]), textarea, input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')
-    ).filter((node) => !node.hasAttribute("disabled") && node.getAttribute("aria-hidden") !== "true");
-  }
+      if (!root) return [];
+      return Array.from(
+        root.querySelectorAll('a[href], button:not([disabled]), textarea, input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')
+      ).filter((node) => !node.hasAttribute("disabled") && node.getAttribute("aria-hidden") !== "true" && !node.closest("[hidden]"));
+    }
 
   function activateFocusTrap(root) {
     focusTrapRoot = root;
@@ -393,6 +534,136 @@
     }
   }
 
+  function overlayElement(name) {
+    return overlayRegistry.get(name) || null;
+  }
+
+  function overlayNameOf(node) {
+    for (const [name, element] of overlayRegistry.entries()) {
+      if (element === node) return name;
+    }
+    return null;
+  }
+
+  function getActiveOverlay() {
+    return overlayState.active;
+  }
+
+  function assertSinglePrimaryOverlay() {
+    const count = document.querySelectorAll(
+      '.sheet:not([hidden]) [aria-modal="true"], .drawer:not([hidden]) [aria-modal="true"]'
+    ).length;
+    if (count > 1) {
+      console.error(`[OverlayManager] expected <= 1 primary overlay, found ${count}`);
+    }
+  }
+
+  function setOverlayLock(locked) {
+    if (shellRoot) {
+      shellRoot.inert = locked;
+      shellRoot.setAttribute("aria-hidden", locked ? "true" : "false");
+    }
+    document.body.classList.toggle("overlay-open", locked);
+    document.body.style.overflow = locked ? "hidden" : "";
+  }
+
+  function hideOverlayElement(element) {
+    if (!element) return;
+    element.hidden = true;
+  }
+
+  function showOverlayElement(name, { initialFocus } = {}) {
+    const overlay = overlayElement(name);
+    if (!overlay) return null;
+    overlay.hidden = false;
+    overlayState.active = name;
+    setOverlayLock(true);
+    const panel = overlay.querySelector("[role='dialog']") || overlay;
+    activateFocusTrap(panel);
+    const focusTarget = typeof initialFocus === "string"
+      ? overlay.querySelector(initialFocus)
+      : initialFocus;
+    (focusTarget || focusableNodes(panel)[0] || panel)?.focus?.();
+    assertSinglePrimaryOverlay();
+    return overlay;
+  }
+
+  function deactivateOverlay({ restoreFocus = true, discardPrevious = true } = {}) {
+    const name = overlayState.active;
+    const overlay = overlayElement(name);
+    const returnTarget = overlayState.returnFocus;
+    if (overlay) hideOverlayElement(overlay);
+    overlayState.active = null;
+    overlayState.returnFocus = null;
+    overlayState.context = null;
+    if (discardPrevious) overlayState.previousContext = null;
+    clearFocusTrap();
+    setOverlayLock(false);
+    if (restoreFocus && returnTarget?.isConnected && !returnTarget.closest("[hidden]")) returnTarget.focus?.();
+    return { name, overlay, returnTarget };
+  }
+
+  function openOverlay(name, { returnFocus, context, initialFocus } = {}) {
+    const overlay = overlayElement(name);
+    if (!overlay) return null;
+    closeMenu();
+    if (overlayState.active && overlayState.active !== name) {
+      console.error(`[OverlayManager] ${overlayState.active} already open; use replaceOverlay() to switch to ${name}`);
+      return overlayElement(overlayState.active);
+    }
+    if (!overlayState.active) {
+      overlayState.returnFocus = returnFocus || document.activeElement;
+      overlayState.context = context || null;
+    } else if (context !== undefined) {
+      overlayState.context = context;
+    }
+    return showOverlayElement(name, { initialFocus });
+  }
+
+  function replaceOverlay(name, options = {}) {
+    const current = overlayState.active;
+    if (current) {
+      overlayState.previousContext = {
+        name: current,
+        returnFocus: overlayState.returnFocus,
+        context: overlayState.context,
+      };
+      deactivateOverlay({ restoreFocus: false, discardPrevious: false });
+    }
+    return openOverlay(name, options);
+  }
+
+  function closeOverlay({ restoreFocus = true, discardPrevious = true } = {}) {
+    if (!overlayState.active) return null;
+    return deactivateOverlay({ restoreFocus, discardPrevious });
+  }
+
+  function restoreOverlayContext() {
+    const previous = overlayState.previousContext;
+    deactivateOverlay({ restoreFocus: false, discardPrevious: true });
+    if (!previous?.name) return null;
+    overlayState.previousContext = null;
+    return openOverlay(previous.name, {
+      returnFocus: previous.returnFocus,
+      context: previous.context,
+    });
+  }
+
+  function setButtonBusy(button, busy, label) {
+    if (!button) return;
+    if (busy) {
+      button.dataset.idleLabel = button.textContent;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      if (label) button.textContent = label;
+      return;
+    }
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel;
+    delete button.dataset.idleLabel;
+  }
+
   async function patchAction(key, url, body) {
     return fetchEntity(key, url, {
       method: "PATCH",
@@ -417,6 +688,136 @@
     return fetchEntity(key, url, {
       method: "DELETE",
       headers: { Accept: "application/json" },
+    });
+  }
+
+  function persistCurrentOperations() {
+    const payload = Array.from(currentOperations.values()).map((entry) => ({
+      stableKey: entry.stableKey,
+      operationId: entry.operationId,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      action: entry.action,
+      state: entry.state,
+      startedAt: entry.startedAt,
+    }));
+    try {
+      sessionStorage.setItem(CURRENT_OPERATION_STORAGE, JSON.stringify(payload));
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function cancelCurrentOperationPolling(stableKey) {
+    const entry = currentOperations.get(stableKey);
+    if (!entry) return;
+    if (entry.timer) window.clearTimeout(entry.timer);
+    entry.controller?.abort?.();
+    entry.timer = null;
+    entry.controller = null;
+  }
+
+  function stopPolling() {
+    Array.from(currentOperations.keys()).forEach((key) => cancelCurrentOperationPolling(key));
+  }
+
+  function operationPollDelay(entry) {
+    const elapsed = Date.now() - (entry.startedAt || Date.now());
+    if (elapsed < 4000) return 1200;
+    if (elapsed < 15000) return 2000;
+    return 4000;
+  }
+
+  function startCurrentOperation(stableKey, response, context = {}) {
+    const operationId = response?.operation_id || response?.id;
+    const state = String(response?.status || response?.state || "").toLowerCase();
+    if (!stableKey || !operationId || !ACTIVE_OPERATION_STATES.has(state)) return false;
+    cancelCurrentOperationPolling(stableKey);
+    const entry = {
+      stableKey,
+      operationId,
+      entityType: context.entityType || null,
+      entityId: context.entityId || null,
+      action: context.action || null,
+      state,
+      controller: null,
+      timer: null,
+      startedAt: Date.now(),
+      successMessage: context.successMessage,
+    };
+    currentOperations.set(stableKey, entry);
+    persistCurrentOperations();
+    pollCurrentOperation(stableKey);
+    return true;
+  }
+
+  async function finishCurrentOperation(stableKey, result) {
+    const entry = currentOperations.get(stableKey);
+    cancelCurrentOperationPolling(stableKey);
+    currentOperations.delete(stableKey);
+    persistCurrentOperations();
+    const failed = !(result?.ok || result?.success) || result?.partial || ["partial", "failed", "manual_required"].includes(result?.status || result?.state);
+    const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (entry?.successMessage || "已完成"));
+    const message = failed ? friendlyError(rawMessage) : rawMessage;
+    toast(
+      message,
+      operationTone(result),
+      failed && result?.operation_id ? { label: "技术详情", onClick: () => openOperationById(result.operation_id) } : undefined,
+    );
+    if (teamDetailState?.workspaceId) {
+      try {
+        await reloadTeamDetails();
+        return;
+      } catch (error) {
+        if (!isAbortError(error)) toast(friendlyError(error), "error");
+      }
+    }
+    await bootPage();
+  }
+
+  async function pollCurrentOperation(stableKey) {
+    const entry = currentOperations.get(stableKey);
+    if (!entry) return;
+    cancelCurrentOperationPolling(stableKey);
+    const controller = new AbortController();
+    entry.controller = controller;
+    try {
+      const detail = await fetch(`/api/operations/${encodeURIComponent(entry.operationId)}`, {
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      }).then((response) => parseJsonResponse(response, `operation-${entry.operationId}`));
+      const state = String(detail.state || detail.status || "").toLowerCase();
+      entry.state = state;
+      persistCurrentOperations();
+      if (TERMINAL_OPERATION_STATES.has(state)) {
+        await finishCurrentOperation(stableKey, detail);
+        return;
+      }
+      entry.timer = window.setTimeout(() => pollCurrentOperation(stableKey), operationPollDelay(entry));
+    } catch (error) {
+      if (isAbortError(error)) return;
+      entry.timer = window.setTimeout(() => pollCurrentOperation(stableKey), Math.max(3000, operationPollDelay(entry)));
+    }
+  }
+
+  function resumeCurrentOperations() {
+    let stored = [];
+    try {
+      stored = JSON.parse(sessionStorage.getItem(CURRENT_OPERATION_STORAGE) || "[]");
+    } catch {
+      stored = [];
+    }
+    if (!Array.isArray(stored)) return;
+    stored.forEach((item) => {
+      if (!item?.stableKey || !item?.operationId) return;
+      if (currentOperations.has(item.stableKey)) return;
+      currentOperations.set(item.stableKey, {
+        ...item,
+        controller: null,
+        timer: null,
+        startedAt: item.startedAt || Date.now(),
+      });
+      pollCurrentOperation(item.stableKey);
     });
   }
 
@@ -464,17 +865,18 @@
   }
 
   function bindRow(row, kind, item) {
-    row.classList.add("is-interactive");
-    row.tabIndex = 0;
-    row.dataset.entityId = String(item.id);
-    row.addEventListener("click", (event) => {
-      if (event.target.closest("button, a, input, select")) return;
-      openSheet(kind, item, row);
-    });
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") openSheet(kind, item, row);
-    });
-  }
+      row.classList.add("is-interactive");
+      row.tabIndex = 0;
+      row.dataset.entityId = String(item.id);
+      const open = () => kind === "workspace" ? openWorkspaceDetails(row, item) : openSheet(kind, item, row);
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("button, a, input, select, details")) return;
+        open();
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.target === row && event.key === "Enter") open();
+      });
+    }
 
   function shortId(value) {
     const text = String(value || "");
@@ -482,18 +884,6 @@
     return `${text.slice(0, 8)}…`;
   }
 
-
-  function membershipStatusLabel(status) {
-    const map = {
-      owner: "母号",
-      managed: "已接入",
-      remote_only: "官方已加入 · 未接入",
-      local_only: "本地有记录 · 官方未找到",
-      invited: "已邀请 · 等待加入",
-      conflict: "账号对不上 · 需人工核对",
-    };
-    return map[status] || status || "—";
-  }
 
   function workspaceOfficialSummary(item) {
     const official = item.official || {};
@@ -518,55 +908,79 @@
     return { main, sub };
   }
 
+  function workspacePrimaryAction(workspace) {
+    if (workspace.owner_auth_reason === "owner_account_missing" || workspace.owner_auth_state === "owner_account_missing") {
+      return { id: "owner-missing", label: "去账号核对" };
+    }
+    if (workspace.owner_needs_auth && workspace.owner_account_id) {
+      return {
+        id: "owner-auth",
+        label: workspace.owner_auth_action === "authorize" ? "授权" : "重新授权",
+      };
+    }
+    if ((workspace.official?.sync_state ?? "never") === "never") {
+      return { id: "sync", label: "同步" };
+    }
+    return { id: "manage", label: "管理" };
+  }
+
+  function runWorkspacePrimaryAction(workspace, trigger) {
+    const action = workspacePrimaryAction(workspace);
+    if (action.id === "owner-missing") {
+      window.location.href = "/accounts";
+      return;
+    }
+    if (action.id === "owner-auth") {
+      openWorkspaceDetails(trigger, workspace);
+      showTeamAuthStep({
+        id: workspace.owner_account_id,
+        email: workspace.owner_email,
+        workspace_id: workspace.id,
+        selectedMemberEmail: workspace.owner_email,
+      });
+      return;
+    }
+    if (action.id === "sync") {
+      return (entityActions.workspace || []).find((item) => item.id === "workspace.sync")?.run(workspace, trigger);
+    }
+    return openWorkspaceDetails(trigger, workspace);
+  }
+
   function workspaceRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "workspace", item);
     const summary = workspaceOfficialSummary(item);
+    const ownerStatus = authStatus({
+      needs_auth: item.owner_needs_auth,
+      auth_state: item.owner_auth_state,
+      auth_action: item.owner_auth_action,
+      auth_reason: item.owner_auth_reason,
+    });
+    const healthCode = ownerStatus.reason === "owner_account_missing"
+      ? "owner_account_missing"
+      : (ownerStatus.needsAuth ? "needs_auth" : (item.health || item.status));
+    const healthLabel = ownerStatus.reason === "owner_account_missing"
+      ? "母号本地档案缺失"
+      : (ownerStatus.needsAuth ? "母号要授权" : labelOf(statusLabels, item.health || item.status));
     cell(row, twoLine(item.display_name || item.name, shortId(item.official_workspace_id)));
     cell(row, item.owner_email);
     cell(row, twoLine(summary.main, summary.sub), "num");
-    cell(row, statusNode(item.health || item.status, labelOf(statusLabels, item.health || item.status)));
-    cell(row, timeNode(item.last_sync));
+    cell(row, statusNode(healthCode, healthLabel));
+    const lastSync = cell(row, timeNode(item.last_sync), "row-action-host");
     const actions = document.createElement("div");
-    actions.className = "row-actions";
-    const sync = document.createElement("button");
-    sync.type = "button";
-    sync.className = "button ghost";
-    sync.textContent = "同步";
-    sync.dataset.action = "workspace.sync";
-    sync.addEventListener("click", async (event) => {
+    actions.className = "row-actions row-actions-contextual";
+    const primary = workspacePrimaryAction(item);
+    const primaryButton = document.createElement("button");
+    primaryButton.type = "button";
+    primaryButton.className = primary.id === "owner-auth" ? "button danger compact" : "button compact";
+    primaryButton.dataset.action = primary.id === "manage" ? "workspace.manage" : `workspace.${primary.id}`;
+    primaryButton.textContent = primary.label;
+    primaryButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      sync.disabled = true;
-      try {
-        const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
-        await handleActionResult(result, { successMessage: syncToastMessage(result) });
-      } catch (error) {
-        toast(friendlyError(error), "error");
-      } finally {
-        sync.disabled = false;
-      }
+      runWorkspacePrimaryAction(item, primaryButton);
     });
-    const manage = document.createElement("button");
-    manage.type = "button";
-    manage.className = "button ghost";
-    manage.textContent = "管理";
-    manage.dataset.action = "workspace.manage-children";
-    manage.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openManageChildren(manage, item);
-    });
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "button ghost danger";
-    remove.textContent = "删除";
-    remove.dataset.action = "workspace.delete";
-    remove.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const action = (entityActions.workspace || []).find((entry) => entry.id === "workspace.delete");
-      if (action) await action.run(item, remove);
-    });
-    actions.append(sync, manage, remove, menuButton("workspace", item));
-    cell(row, actions, "actions");
+    actions.append(primaryButton, menuButton("workspace", item));
+    lastSync.append(actions);
     return row;
   }
 
@@ -637,30 +1051,6 @@
     return wrap;
   }
 
-  function accountPrimaryAction(item) {
-    const workspaceId = item.workspace_id || item.primary_workspace_id;
-    const scoped = (path) => workspaceId ? `/api/workspaces/${workspaceId}/accounts/${item.id}${path}` : `/api/accounts/${item.id}${path}`;
-    if (needsAuth(item)) {
-      return { id: "account.reauth", label: "授权", url: `/api/accounts/${item.id}/reauth` };
-    }
-    if (item.quota?.seven_day_used_percent == null || item.quota?.success === false) {
-      return { id: "account.quota", label: "刷新额度", url: scoped("/quota/probe") };
-    }
-    const publish = item.sub2api_publish || {};
-    if (publish.eligible !== false) {
-      if (["missing", "unbound", "none", "pending"].includes(item.sub2api)) {
-        return { id: "account.sub2api.push", label: "推送到 Sub2API", url: scoped("/sub2api/push"), body: {} };
-      }
-      if (item.sub2api === "verified") {
-        return { id: "account.sub2api.push", label: "更新 Sub2API", url: scoped("/sub2api/push"), body: {} };
-      }
-      if (item.sub2api === "conflict") {
-        return { id: "account.sub2api.reconcile", label: "处理冲突", url: `/api/accounts/${item.id}/sub2api/reconcile` };
-      }
-    }
-    return { id: "account.refresh", label: "刷新状态", url: `/api/accounts/${item.id}/refresh` };
-  }
-
   function accountRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "account", item);
@@ -671,33 +1061,11 @@
     cell(row, statusNode(item.auth, labelOf(statusLabels, item.auth)));
     cell(row, quotaCell(item));
     cell(row, statusNode(item.sub2api, labelOf(statusLabels, item.sub2api)));
-    cell(row, statusNode(item.state, labelOf(stateLabels, item.state)));
+    const state = cell(row, statusNode(item.state, labelOf(stateLabels, item.state)), "row-action-host");
     const actions = document.createElement("div");
-    actions.className = "row-actions";
-    const primary = accountPrimaryAction(item);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button ghost";
-    button.textContent = primary.label;
-    button.dataset.action = primary.id;
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      if (primary.id === "account.reauth") {
-        await openReauth(item, button);
-        return;
-      }
-      button.disabled = true;
-      try {
-        const result = await postAction(`${primary.id}-${item.id}`, primary.url, primary.body);
-        await handleActionResult(result, { successMessage: result.message || (primary.label + "已完成") });
-      } catch (error) {
-        toast(friendlyError(error), "error");
-      } finally {
-        button.disabled = false;
-      }
-    });
-    actions.append(button, menuButton("account", item));
-    cell(row, actions, "actions");
+    actions.className = "row-actions row-actions-contextual";
+    actions.append(menuButton("account", item));
+    state.append(actions);
     return row;
   }
 
@@ -897,16 +1265,15 @@ function hmeRow(item) {
       node.textContent = value ?? 0;
       node.parentElement.classList.toggle("is-alert", Boolean(alert && value));
     };
+    const attention = (payload.attention || []).filter((item) => item.kind !== "operation");
     set("workspaces", summary.workspaces ?? payload.workspaces);
     set("accounts", summary.accounts ?? payload.accounts);
-    set("attention", summary.attention ?? (payload.attention || []).length, true);
-    set("running", summary.running_operations ?? (payload.running_operations || []).length);
+    set("attention", attention.length, true);
     set("conflicts", summary.identity_conflicts, true);
 
     const attentionRoot = document.getElementById("overview-attention");
     const attentionPanel = document.getElementById("overview-attention-panel");
     attentionRoot.replaceChildren();
-    const attention = payload.attention || [];
     if (!attention.length) {
       if (attentionPanel) {
         const header = attentionPanel.querySelector(".panel-header");
@@ -940,10 +1307,6 @@ function hmeRow(item) {
             window.location.href = item.href;
             return;
           }
-          if (item.operation_id) {
-            window.location.href = `/operations?op=${encodeURIComponent(item.operation_id)}`;
-            return;
-          }
           if (item.account_id) {
             window.location.href = `/accounts?account=${encodeURIComponent(item.account_id)}`;
             return;
@@ -958,30 +1321,6 @@ function hmeRow(item) {
         list.append(row);
       });
       attentionRoot.append(list);
-    }
-
-    const runningRoot = document.getElementById("overview-running");
-    const runningPanel = document.getElementById("overview-running-panel");
-    const running = payload.running_operations || [];
-    if (runningRoot) runningRoot.replaceChildren();
-    if (runningPanel) runningPanel.hidden = running.length === 0;
-    if (running.length && runningRoot) {
-      const list = document.createElement("div");
-      list.className = "running-list";
-      running.forEach((item) => {
-        const row = document.createElement("div");
-        row.className = "list-row is-interactive";
-        row.tabIndex = 0;
-        row.append(
-          twoLine(
-            `${labelOf(statusLabels, item.state || item.status)}  ${labelOf(statusLabels, item.operation)}  ${item.target || item.email || ""}`,
-            `${item.current_step || "—"} · ${relativeTime(item.updated || item.started)}`
-          )
-        );
-        row.addEventListener("click", () => openSheet("operation", item, row));
-        list.append(row);
-      });
-      runningRoot.append(list);
     }
 
     const healthRoot = document.getElementById("overview-health");
@@ -1004,17 +1343,8 @@ function hmeRow(item) {
     }
 
     stopPolling();
-    if (running.length && document.visibilityState === "visible") {
-      pollTimer = window.setTimeout(() => bootPage(), 7000);
-    }
   }
 
-  function stopPolling() {
-    if (pollTimer) {
-      window.clearTimeout(pollTimer);
-      pollTimer = null;
-    }
-  }
 
   function kvSection(title, rows) {
     const section = document.createElement("section");
@@ -1036,7 +1366,6 @@ function hmeRow(item) {
 
   function openSheet(kind, item, trigger) {
     if (!sheet) return;
-    overlayReturn = trigger || document.activeElement;
     const title = document.getElementById("sheet-title");
     const subtitle = document.getElementById("sheet-subtitle");
     const body = document.getElementById("sheet-body");
@@ -1073,51 +1402,6 @@ function hmeRow(item) {
           ["原因", (item.reasons || []).join("；")],
         ])
       );
-    } else if (kind === "workspace") {
-      title.textContent = item.name;
-      subtitle.textContent = item.owner_email || "";
-      const officialMembers = item.official_members || item.official?.members || [];
-      const managed = item.member_accounts || item.managed?.accounts || [];
-      const diffs = item.reconciliation?.items || [];
-      const officialLines = officialMembers.length
-        ? officialMembers.map((member) => {
-            const bits = [member.role, member.state, member.is_owner ? "Owner" : ""].filter(Boolean).join(" · ");
-            return [member.name || member.email, bits || member.email];
-          })
-        : [["官方成员", item.last_sync ? "官方列表为空" : "尚未同步"]];
-      const managedLines = managed.length
-        ? managed.map((member) => [member.email, [labelOf(purposeLabels, member.purpose), labelOf(statusLabels, member.auth)].filter(Boolean).join(" · ")])
-        : [["本地受管账号", "尚未接入"]];
-      const actionable = (item.reconciliation?.actionable_items || diffs.filter((row) => ["remote_only", "local_only", "conflict"].includes(row.status)));
-      const diffLines = actionable.length
-        ? actionable.map((row) => [row.name || row.email, (row.status_label || membershipStatusLabel(row.status)) + (row.note ? ` · ${row.note}` : "")])
-        : [];
-      const official = item.official || {};
-      const peopleText = official.sync_state === "never" || (item.last_sync == null && official.joined_people_total == null)
-        ? "尚未同步"
-        : (official.joined_people_total == null ? "—" : `已加入 ${official.joined_people_total} 人（Owner ${official.official_owner_count ?? official.owner_count ?? "—"} / Member ${official.official_member_count ?? official.joined_member_count ?? "—"}）`);
-      const seatText = official.occupied_seats != null && official.seat_limit != null
-        ? `${official.occupied_seats} / ${official.seat_limit}`
-        : "无官方席位元数据";
-      const nameError = item.official_name_last_error;
-      body.append(
-        kvSection("概览", [
-          ["Team 名称", item.display_name || item.name],
-          ["健康", labelOf(statusLabels, item.health || item.status)],
-          ["官方已加入", peopleText],
-          ["席位", seatText],
-          ["受管子号", item.managed?.count ?? item.managed_count ?? managed.length],
-          ["最近同步", item.last_sync || "尚未同步"],
-        ].concat(nameError ? [["名称警告", `Team 名称获取失败，已保留现有名称`]] : [])),
-        kvSection("母号", [
-          ["邮箱", item.owner_email],
-          ["授权", labelOf(statusLabels, item.owner_auth)],
-          ["代理", item.owner_proxy || (item.owner_proxy_set ? "已设" : "未绑定")],
-        ]),
-        kvSection(officialMembers.length ? `官方成员（${officialMembers.length}）` : "官方成员", officialLines),
-        kvSection(managed.length ? `本地受管账号（${managed.length}）` : "本地受管账号", managedLines)
-      );
-      if (actionable.length) body.append(kvSection("需要处理", diffLines));
     } else if (kind === "operation") {
       title.textContent = labelOf(statusLabels, item.operation);
       subtitle.textContent = item.target || item.email || item.id;
@@ -1201,76 +1485,71 @@ function hmeRow(item) {
       }
       body.append(...sections);
     }
-    closeMenu();
-    sheet.hidden = false;
-    activateFocusTrap(sheet.querySelector('.sheet-panel') || sheet);
-    sheet.querySelector("[data-close-sheet]")?.focus();
+    openOverlay("entity", { returnFocus: trigger, context: { kind, item }, initialFocus: "[data-close-sheet]" });
   }
 
   function closeSheet() {
-    if (!sheet || sheet.hidden) return;
-    sheet.hidden = true;
-    clearFocusTrap();
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
+      if (teamDetailState) teamDetailState = null;
+      closeOverlay();
+    }
 
   const entityActions = {
     workspace: [
-      {
-        id: "workspace.rename",
-        label: "编辑显示名称",
-        run: async (item) => {
-          const next = window.prompt("工作区显示名称（留空清除自定义名）", item.custom_name || item.display_name || item.name || "");
-          if (next == null) return;
-          const result = await patchAction(`workspace-name-${item.id}`, `/api/workspaces/${item.id}/name`, { custom_name: next });
-          await handleActionResult(result, { successMessage: result.display_name ? `已更新为 ${result.display_name}` : "名称已更新" });
-        },
-      },
-
-      { id: "workspace.view", label: "查看详情", run: (item, trigger) => openSheet("workspace", item, trigger) },
+      { id: "workspace.manage", label: "管理", run: (item, trigger) => openWorkspaceDetails(trigger, item) },
       {
         id: "workspace.sync",
-        label: "同步官方成员",
+        label: "同步",
         run: async (item) => {
           const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
-          await handleActionResult(result, { successMessage: syncToastMessage(result) });
+          await handleActionResult(result, { successMessage: "同步完成" });
         },
       },
+    ],
+    team: [
       {
-        id: "workspace.open-owner",
-        label: "打开母号账号",
-        visible: (item) => Boolean(item.owner_email),
-        run: (item) => {
-          window.location.href = `/accounts?q=${encodeURIComponent(item.owner_email || "")}`;
-        },
+        id: "team.member.invite",
+        label: "邀请加入 Team",
+        run: ({ workspace, values }, trigger) => inviteTeamMember(workspace, values, trigger),
       },
       {
-        id: "workspace.manage-children",
-        label: "管理子号",
-        run: (item, trigger) => openManageChildren(trigger, item),
+        id: "team.member.link",
+        label: "接入本地",
+        visible: ({ row }) => presentTeamMember(row).primaryId === "team.member.link",
+        run: ({ workspace, row }, trigger) => linkTeamMember(workspace, row, trigger),
       },
       {
-        id: "workspace.onboard",
-        label: "创建子号",
-        run: (item, trigger) => openOnboard(trigger, item),
+        id: "team.member.reauth",
+        label: ({ row }) => authActionLabel(authStatus(row).action),
+        visible: ({ row }) => presentTeamMember(row).primaryId === "team.member.reauth",
+        run: ({ workspace, row }) => showTeamAuthStep({ id: row.id || row.local_account_id, email: row.email, workspace_id: workspace.id, selectedMemberEmail: row.email }),
       },
       {
-        id: "workspace.rotate",
-        label: "受控轮转",
-        run: (item, trigger) => openRotate(trigger, item),
+        id: "team.member.role",
+        label: ({ row }) => String(row.role || row.official_role || "").toLowerCase() === "owner" ? "改成 Member" : "改成 Owner",
+        visible: ({ row }) => teamMemberIsJoined(row) && Boolean(row.email),
+        run: ({ workspace, row }, trigger) => changeTeamMemberRole(workspace, row, trigger, String(row.role || row.official_role || "").toLowerCase() === "owner" ? "member" : "owner"),
       },
       {
-        id: "workspace.delete",
-        label: "删除本地团队",
-        run: async (item) => {
-          const name = item.display_name || item.name || item.owner_email || `#${item.id}`;
-          if (!confirmDanger(`确认从本地删除团队「${name}」？只清本地档案，不会改官方 Team。`)) return;
-          const result = await deleteAction(`workspace-delete-${item.id}`, `/api/workspaces/${item.id}`);
-          await handleActionResult(result, { successMessage: result.message || "已从本地删除团队" });
-        },
+        id: "team.member.local-remove",
+        label: "仅移出本地",
+        danger: true,
+        visible: ({ row }) => Boolean(row.id || row.local_account_id),
+        run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "local"),
       },
-
+      {
+        id: "team.member.official-remove",
+        label: ({ row }) => (row.kind || row.status || row.membership_state) === "invited" ? "撤回邀请" : "移出官方席位",
+        danger: true,
+        visible: ({ row }) => Boolean(row.email),
+        run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "official"),
+      },
+      {
+        id: "team.member.purge",
+        label: "永久删除",
+        danger: true,
+        visible: ({ row }) => Boolean(row.email),
+        run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "purge"),
+      },
     ],
     account: [
       { id: "account.view", label: "查看详情", run: (item, trigger) => openSheet("account", item, trigger) },
@@ -1343,47 +1622,6 @@ function hmeRow(item) {
         run: async (item) => {
           const ok = await copyText(item.email);
           toast(ok ? "邮箱已复制" : "复制失败", ok ? "success" : "error");
-        },
-      },
-      {
-        id: "account.onboard",
-        label: "创建子号",
-        visible: (item) => Boolean(item.workspace_id) || item.purpose === "mother",
-        run: (item, trigger) => { const workspaceId = chooseWorkspaceId(item); if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; } openOnboard(trigger, { id: workspaceId, name: item.workspace }); },
-      },
-      {
-        id: "account.rotate",
-        label: "受控轮转",
-        visible: (item) => item.purpose === "child" && Boolean(item.workspace_id),
-        run: (item, trigger) => { const workspaceId = chooseWorkspaceId(item); if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; } openRotate(trigger, { id: workspaceId, name: item.workspace }, item); },
-      },
-      {
-        id: "account.kick",
-        label: "踢出待命",
-        visible: (item) => item.purpose === "child" && Boolean(item.workspace_id),
-        run: async (item) => {
-          const workspaceId = chooseWorkspaceId(item);
-          if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; }
-          if (!confirmDanger(`确认把 ${item.email} 踢出并转入待命？这会改官方成员。`)) return;
-          const result = await postAction(`account-kick-${item.id}`, `/api/workspaces/${workspaceId}/kick`, {
-            email: item.email,
-            reason: "console_kick",
-          });
-          await handleActionResult(result, { successMessage: result.message || "踢人完成", longRunning: true });
-        },
-      },
-      {
-        id: "account.revoke",
-        label: "撤回邀请",
-        visible: (item) => item.purpose === "child" && Boolean(item.workspace_id) && item.membership_state === "invited",
-        run: async (item) => {
-          const workspaceId = chooseWorkspaceId(item);
-          if (!workspaceId) { toast("请先选择 Workspace", "warning"); return; }
-          if (!confirmDanger(`确认撤回 ${item.email} 的邀请？`)) return;
-          const result = await postAction(`account-revoke-${item.id}`, `/api/workspaces/${workspaceId}/revoke-invite`, {
-            email: item.email,
-          });
-          await handleActionResult(result, { successMessage: result.message || "邀请已撤回" });
         },
       },
       {
@@ -1560,7 +1798,6 @@ function hmeRow(item) {
 
   function openMenu(button, kind, item) {
     if (!menu) return;
-    overlayReturn = button;
     menu.replaceChildren();
     const add = (label, handler, className) => {
       const option = document.createElement("button");
@@ -1603,80 +1840,14 @@ function hmeRow(item) {
     document.querySelectorAll('[data-menu-trigger][aria-expanded="true"]').forEach((node) => node.setAttribute("aria-expanded", "false"));
   }
 
-  function renderDrawer(items) {
-    const body = document.getElementById("operations-drawer-body");
-    const meta = document.getElementById("operations-drawer-meta");
-    if (!body) return;
-    const running = items.filter((item) => ["queued", "running", "waiting"].includes(item.state || item.status));
-    const manual = items.filter((item) => (item.state || item.status) === "manual_required");
-    meta.textContent = `${running.length} 个运行中 · ${manual.length} 个需人工`;
-    body.replaceChildren();
-    const addGroup = (title, rows) => {
-      const heading = document.createElement("h3");
-      heading.className = "drawer-group-title";
-      heading.textContent = title;
-      body.append(heading);
-      if (!rows.length) {
-        const p = document.createElement("p");
-        p.className = "muted";
-        p.textContent = "没有";
-        body.append(p);
-        return;
-      }
-      rows.slice(0, 6).forEach((item) => {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "button ghost drawer-item";
-        row.textContent = `${labelOf(statusLabels, item.operation)} ${item.target || item.email || ""} · ${item.current_step || "—"}`;
-        row.addEventListener("click", async () => {
-          closeDrawer();
-          if (item.id) {
-            await openOperationById(item.id);
-            return;
-          }
-          window.location.href = "/operations";
-        });
-        body.append(row);
-      });
-    };
-    addGroup("进行中", running);
-    addGroup("需人工", manual);
-    const all = document.createElement("a");
-    all.href = "/operations";
-    all.className = "button drawer-footer-link";
-    all.textContent = "查看全部任务";
-    body.append(all);
-  }
-
-  async function openDrawer() {
-    if (!drawer) return;
-    overlayReturn = document.getElementById("open-operations");
-    drawer.hidden = false;
-    const body = document.getElementById("operations-drawer-body");
-    body.textContent = "正在加载任务…";
-    try {
-      const payload = await fetchEntity("operation-drawer", "/api/operations");
-      renderDrawer(payload.items || []);
-    } catch (error) {
-      body.replaceChildren(emptyState("任务加载失败", friendlyError(error)));
-    }
-    drawer.querySelector("[data-close-drawer]")?.focus();
-  }
-
-  function closeDrawer() {
-    if (!drawer || drawer.hidden) return;
-    drawer.hidden = true;
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
-
   function setRegisterStatus(text, tone) {
-    const statusEl = document.getElementById("register-status");
-    if (!statusEl) return;
-    statusEl.hidden = !text;
-    statusEl.className = tone || "muted";
-    statusEl.textContent = text || "";
-  }
+      const statusEl = document.getElementById("register-status");
+      if (!statusEl) return;
+      statusEl.hidden = !text;
+      statusEl.className = tone || "muted";
+      statusEl.setAttribute("role", tone === "error" ? "alert" : "status");
+      statusEl.textContent = text || "";
+    }
 
   function resetRegisterForm() {
     const form = document.getElementById("register-form");
@@ -1692,403 +1863,685 @@ function hmeRow(item) {
     setRegisterStatus("", "muted");
   }
 
-    function syncWorkspaceField(form, workspace) {
-    if (!form) return;
-    const id = workspace?.id || "";
-    form.workspace_id.value = id;
-    if (form.workspace_id_display) form.workspace_id_display.value = id;
-  }
-
-  function manageChildrenWorkspace() {
-    const form = document.getElementById("manage-children-form");
-    const workspaceId = Number(form?.workspace_id?.value || 0);
-    if (!workspaceId) return null;
-    const fromWorkspaces = (pageCache.items || []).find((item) => item.id === workspaceId);
-    if (fromWorkspaces) return fromWorkspaces;
-    return (pageCache.portfolio?.groups || []).find((item) => item.id === workspaceId) || null;
-  }
-
-  function manageChildRows(workspace) {
-    const rows = [];
-    const seen = new Set();
-    const push = (row) => {
-      const email = String(row?.email || "").trim();
-      if (!email || seen.has(email.toLowerCase())) return;
-      seen.add(email.toLowerCase());
-      rows.push(row);
-    };
-    (workspace?.current_children || []).forEach(push);
-    (workspace?.managed?.accounts || workspace?.member_accounts || []).forEach((row) => {
-      if (row?.purpose === "mother" || row?.is_owner) return;
-      push({ ...row, kind: "child" });
-    });
-    (workspace?.reconciliation?.items || []).forEach((row) => {
-      if (row?.is_owner || row?.status === "owner") return;
-      if (row?.status === "remote_only") push({ ...row, kind: "unmanaged", id: row.local_account_id || row.candidate_account_id });
-      else if (row?.status === "local_only") push({ ...row, kind: "local_only", id: row.local_account_id });
-      else if (row?.status === "invited") push({ ...row, kind: "invited", id: row.local_account_id || row.candidate_account_id });
-    });
-    (workspace?.unmanaged || []).forEach((row) => push({ ...row, kind: "unmanaged" }));
-    (workspace?.invited || []).forEach((row) => push({ ...row, kind: "invited" }));
-    rows.sort((a, b) => String(a.email || "").localeCompare(String(b.email || "")));
-    return rows;
-  }
-
-  function renderManageChildrenList(workspace) {
-    const list = document.getElementById("manage-children-list");
-    if (!list) return;
-    list.replaceChildren();
-    const rows = manageChildRows(workspace || {});
-    if (!rows.length) {
-      const empty = document.createElement("p");
-      empty.className = "muted manage-children-empty";
-      empty.textContent = "这个工作区还没有本地子号。";
-      list.append(empty);
-      return;
+  function teamMemberRows(workspace) {
+      const rows = [];
+      const indexes = new Map();
+      const push = (row) => {
+        const email = String(row?.email || "").trim();
+        if (!email || row?.purpose === "mother" || row?.is_owner) return;
+        const key = email.toLowerCase();
+        const existingIndex = indexes.get(key);
+        if (existingIndex != null) {
+          const existing = rows[existingIndex];
+          rows[existingIndex] = { ...existing, ...row, id: row.id || existing.id, auth: row.auth || existing.auth };
+          return;
+        }
+        indexes.set(key, rows.length);
+        rows.push(row);
+      };
+      (workspace?.managed?.accounts || workspace?.member_accounts || []).forEach((row) => push({ ...row, kind: "managed" }));
+      (workspace?.reconciliation?.items || []).forEach((row) => {
+        if (row?.status === "owner") return;
+        const kind = row?.status === "remote_only" ? "unmanaged" : row?.status;
+        push({ ...row, kind, id: row.local_account_id || row.candidate_account_id });
+      });
+      rows.sort((a, b) => String(a.email || "").localeCompare(String(b.email || "")));
+      return rows;
     }
-    rows.forEach((row) => {
-      const item = document.createElement("div");
-      item.className = "manage-child-row";
-      const kind = row.kind || (row.membership_state === "invited" || row.status === "invited" ? "invited" : (row.status === "remote_only" ? "unmanaged" : (row.status === "local_only" ? "local_only" : "child")));
-      const currentRole = String(row.role || row.official_role || "").trim().toLowerCase();
-      const joined = kind === "unmanaged" || kind === "child" || row.membership_state === "joined" || row.status === "managed" || row.status === "remote_only";
-      const statusText = kind === "unmanaged"
-        ? "官方已加入 · 未接入"
-        : (kind === "invited" ? "已邀请 · 等待加入" : (kind === "local_only" ? "仅本地" : [membershipStatusLabel(row.status) || membershipStatusLabel(row.membership_state) || labelOf(statusLabels, row.auth) || "已接入", roleLabel(currentRole)].filter(Boolean).join(" · ")));
-      item.append(twoLine(row.email || "—", statusText));
-      const actions = document.createElement("div");
-      actions.className = "row-actions";
-      if (kind === "unmanaged") {
-        const linkBtn = document.createElement("button");
-        linkBtn.type = "button";
-        linkBtn.className = "button ghost compact";
-        linkBtn.textContent = "接入";
-        linkBtn.addEventListener("click", () => manageChildLink(row, linkBtn));
-        actions.append(linkBtn);
-      } else if (row.id || row.local_account_id) {
-        const accountId = row.id || row.local_account_id;
-        if (needsAuth(row)) {
-          const authBtn = document.createElement("button");
-          authBtn.type = "button";
-          authBtn.className = "button ghost compact";
-          authBtn.textContent = "授权";
-          authBtn.addEventListener("click", async () => {
-            await openReauth({ id: accountId, email: row.email, workspace_id: workspace?.id }, authBtn);
+
+    function presentTeamMember(row) {
+      const kind = row.kind || row.status || row.membership_state;
+      const auth = authStatus(row);
+      const accountId = row.id || row.local_account_id || row.candidate_account_id || null;
+      if (kind === "owner" || row.purpose === "mother" || row.is_owner) {
+        return {
+          code: "owner",
+          label: "母号",
+          primaryId: auth.needsAuth && accountId ? "team.member.reauth" : null,
+          secondaryIds: [],
+        };
+      }
+      if (kind === "unmanaged" || kind === "remote_only") {
+        return { code: "remote_only", label: "官方已加入，未接入本地", primaryId: "team.member.link", secondaryIds: [] };
+      }
+      if (kind === "invited" || row.membership_state === "invited") {
+        return { code: "invited", label: "等待接受邀请", primaryId: null, secondaryIds: ["team.member.official-remove"] };
+      }
+      if (kind === "conflict") {
+        return { code: "conflict", label: "身份冲突", primaryId: null, secondaryIds: ["team.member.local-remove"] };
+      }
+      if (kind === "local_only") {
+        return { code: "local_only", label: "本地有记录，官方未找到", primaryId: null, secondaryIds: ["team.member.local-remove"] };
+      }
+      if (auth.needsAuth && accountId) {
+        return {
+          code: "needs_auth",
+          label: "已接入，需授权",
+          primaryId: "team.member.reauth",
+          secondaryIds: ["team.member.role", "team.member.official-remove", "team.member.local-remove"],
+        };
+      }
+      return {
+        code: "managed",
+        label: "已接入",
+        primaryId: null,
+        secondaryIds: ["team.member.role", "team.member.official-remove", "team.member.local-remove"],
+      };
+    }
+
+    function teamMemberState(row) {
+      const presented = presentTeamMember(row);
+      return { code: presented.code === "remote_only" ? "warning" : presented.code, label: presented.label };
+    }
+
+  function teamMemberIsJoined(row) {
+    const kind = row.kind || row.status || row.membership_state;
+    return !["invited", "local_only", "unmanaged", "remote_only"].includes(kind);
+  }
+
+    function teamMemberMenu(workspace, row) {
+        const context = { workspace, row };
+        if (!row.email && !row.id && !row.local_account_id) return null;
+        const details = document.createElement("details");
+        details.className = "member-action-menu";
+        const summary = document.createElement("summary");
+        summary.setAttribute("aria-label", `打开 ${row.email || "成员"} 的次级操作`);
+        summary.textContent = "…";
+        const options = document.createElement("div");
+        options.className = "member-action-options";
+        const secondaryIds = new Set(presentTeamMember(row).secondaryIds);
+        (entityActions.team || []).forEach((action) => {
+          if (!secondaryIds.has(action.id) || (action.visible && !action.visible(context))) return;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = action.danger ? "button ghost compact danger" : "button ghost compact";
+          button.textContent = typeof action.label === "function" ? action.label(context) : action.label;
+          button.addEventListener("click", async () => {
+            details.open = false;
+            await action.run(context, button);
           });
-          actions.append(authBtn);
+          options.append(button);
+        });
+        details.append(summary, options);
+        return options.childElementCount ? details : null;
+      }
+
+    function renderTeamMember(workspace, row) {
+        const item = document.createElement("div");
+        item.className = "team-member-row";
+        const presented = presentTeamMember(row);
+        const email = String(row.email || "").trim();
+        if (email && teamDetailState?.selectedMemberEmail && email.toLowerCase() === String(teamDetailState.selectedMemberEmail).toLowerCase()) {
+          item.classList.add("is-selected");
         }
+        item.dataset.memberEmail = email;
+        const identity = document.createElement("div");
+        identity.className = "team-member-identity";
+        identity.append(twoLine(row.email || row.name || "—", roleLabel(row.role || row.official_role) || null));
+        const stateWrap = document.createElement("div");
+        stateWrap.className = "team-member-state";
+        stateWrap.append(statusNode(presented.code, presented.label));
+        const actions = document.createElement("div");
+        actions.className = "row-actions";
+        const context = { workspace, row };
+        const primary = presented.primaryId && (entityActions.team || []).find((action) => action.id === presented.primaryId);
+        if (primary && (!primary.visible || primary.visible(context))) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = presented.primaryId === "team.member.reauth" ? "button danger compact" : "button primary compact";
+          button.textContent = typeof primary.label === "function" ? primary.label(context) : primary.label;
+          button.addEventListener("click", () => primary.run(context, button));
+          actions.append(button);
+        }
+        const secondary = teamMemberMenu(workspace, row);
+        if (secondary) actions.append(secondary);
+        item.append(identity, stateWrap, actions);
+        return item;
       }
-      if (joined && (row.email || "").trim()) {
-        const roleBtn = document.createElement("button");
-        roleBtn.type = "button";
-        roleBtn.className = "button ghost compact";
-        roleBtn.textContent = currentRole === "owner" ? "改成 Member" : "改成 Owner";
-        roleBtn.addEventListener("click", () => manageChildRole(row, roleBtn, currentRole === "owner" ? "member" : "owner"));
-        actions.append(roleBtn);
-      }
-      if (kind === "unmanaged" || kind === "invited" || row.id || row.local_account_id) {
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "button ghost compact";
-        removeBtn.textContent = kind === "unmanaged" || kind === "invited" ? "踢出" : "删除";
-        removeBtn.addEventListener("click", () => openManageChildRemove(row, removeBtn, kind));
-        actions.append(removeBtn);
-      }
-      item.append(actions);
-      list.append(item);
+
+  function renderTeamInviteControls(workspace) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "team-invite-controls";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "button ghost compact";
+    toggle.textContent = "邀请成员";
+    toggle.setAttribute("aria-expanded", "false");
+    const form = document.createElement("form");
+    form.className = "team-invite-form stack";
+    form.hidden = true;
+    const emailLabel = document.createElement("label");
+    emailLabel.textContent = "邮箱 / 邮件原文";
+    const emailLine = document.createElement("textarea");
+    emailLine.name = "email_line";
+    emailLine.rows = 2;
+    emailLine.placeholder = "留空则自动领取 HME";
+    emailLabel.append(emailLine);
+    const roleLabelEl = document.createElement("label");
+    roleLabelEl.textContent = "官方角色";
+    const role = document.createElement("select");
+    role.name = "role";
+    [["owner", "Owner"], ["member", "Member"]].forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      role.append(option);
     });
+    roleLabelEl.append(role);
+    const more = document.createElement("details");
+    more.className = "team-detail-disclosure";
+    const moreSummary = document.createElement("summary");
+    moreSummary.textContent = "更多邀请参数";
+    const moreBody = document.createElement("div");
+    moreBody.className = "team-detail-disclosure-body";
+    const phoneLabel = document.createElement("label");
+    phoneLabel.textContent = "手机号行";
+    const phone = document.createElement("input");
+    phone.name = "phone_line";
+    phone.placeholder = "可选，通常由号池分配";
+    phoneLabel.append(phone);
+    const proxyLabel = document.createElement("label");
+    proxyLabel.textContent = "代理";
+    const proxy = document.createElement("input");
+    proxy.name = "proxy";
+    proxy.placeholder = "可选 socks5://host:port";
+    proxyLabel.append(proxy);
+    const forceLabel = document.createElement("label");
+    forceLabel.className = "check";
+    const force = document.createElement("input");
+    force.type = "checkbox";
+    force.name = "force";
+    forceLabel.append(force, document.createTextNode(" 强制跳过部分门禁"));
+    const skipLabel = document.createElement("label");
+    skipLabel.className = "check";
+    const skip = document.createElement("input");
+    skip.type = "checkbox";
+    skip.name = "skip_invite";
+    skipLabel.append(skip, document.createTextNode(" 跳过官方邀请"));
+    moreBody.append(phoneLabel, proxyLabel, forceLabel, skipLabel);
+    more.append(moreSummary, moreBody);
+    const status = document.createElement("p");
+    status.className = "muted";
+    status.hidden = true;
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "button ghost";
+    cancel.textContent = "取消";
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.className = "button primary";
+    submit.textContent = "发送邀请";
+    actions.append(cancel, submit);
+    form.append(emailLabel, roleLabelEl, more, status, actions);
+    const setOpen = (open) => {
+      form.hidden = !open;
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.textContent = open ? "收起邀请" : "邀请成员";
+      if (open) emailLine.focus();
+    };
+    toggle.addEventListener("click", () => setOpen(form.hidden));
+    cancel.addEventListener("click", () => setOpen(false));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const action = (entityActions.team || []).find((candidate) => candidate.id === "team.member.invite");
+      const values = Object.fromEntries(new FormData(form).entries());
+      values.force = force.checked;
+      values.skip_invite = skip.checked;
+      status.hidden = false;
+      status.className = "muted";
+      status.setAttribute("role", "status");
+      status.textContent = "正在发送邀请…";
+      try {
+        await action.run({ workspace, values }, submit);
+      } catch (error) {
+        status.className = "error";
+        status.setAttribute("role", "alert");
+        status.textContent = friendlyError(error);
+      }
+    });
+    wrapper.append(toggle, form);
+    return wrapper;
   }
 
-  async function reloadManageChildren() {
-    const form = document.getElementById("manage-children-form");
-    const workspaceId = Number(form?.workspace_id?.value || 0);
-    const trigger = overlayReturn;
-    const sheetOpen = manageChildrenSheet && !manageChildrenSheet.hidden;
-    await bootPage();
-    if (!sheetOpen || !workspaceId) return;
-    const workspace = manageChildrenWorkspace();
-    overlayReturn = trigger;
-    manageChildrenSheet.hidden = false;
-    if (workspace) {
-      const subtitle = document.getElementById("manage-children-subtitle");
-      if (subtitle) subtitle.textContent = workspace.display_name || workspace.name || workspace.owner_email || "";
-      renderManageChildrenList(workspace);
+  function canRotateWorkspace(workspace) {
+      return workspace?.rotation?.eligible === true || workspace?.rotation_eligible === true || workspace?.can_rotate === true;
     }
-    activateFocusTrap(manageChildrenSheet.querySelector(".sheet-panel") || manageChildrenSheet);
-  }
 
-  function openManageChildren(trigger, workspace) {
-    if (!manageChildrenSheet) return;
-    overlayReturn = trigger || document.activeElement;
-    const form = document.getElementById("manage-children-form");
-    form?.reset();
-    syncWorkspaceField(form, workspace);
-    const title = document.getElementById("manage-children-title");
-    const subtitle = document.getElementById("manage-children-subtitle");
-    if (title) title.textContent = "管理子号";
-    if (subtitle) subtitle.textContent = workspace?.display_name || workspace?.name || workspace?.owner_email || "";
-    setFormStatus("manage-children-status", "", "muted");
-    renderManageChildrenList(workspace);
-    manageChildrenSheet.hidden = false;
-    activateFocusTrap(manageChildrenSheet.querySelector(".sheet-panel") || manageChildrenSheet);
-    form?.querySelector("[name='email']")?.focus();
-  }
-
-  function closeManageChildren() {
-    if (!manageChildrenSheet || manageChildrenSheet.hidden) return;
-    manageChildrenSheet.hidden = true;
-    clearFocusTrap();
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
-
-  async function manageChildRole(row, button, role) {
-    const workspace = manageChildrenWorkspace();
-    const workspaceId = workspace?.id;
-    const email = (row?.email || "").trim();
-    if (!workspaceId || !email) {
-      toast("缺少官方邮箱，无法改角色", "error");
-      return;
+    function renderTeamRotationControls(container, workspace) {
+      const form = document.createElement("form");
+      form.className = "team-rotation-form stack";
+      const emailLabel = document.createElement("label");
+      emailLabel.textContent = "要轮转的成员";
+      const email = document.createElement("input");
+      email.type = "email";
+      email.name = "email";
+      email.required = true;
+      emailLabel.append(email);
+      const replacementLabel = document.createElement("label");
+      replacementLabel.textContent = "补位邮箱 / 原文";
+      const replacement = document.createElement("textarea");
+      replacement.name = "email_line";
+      replacement.rows = 3;
+      replacement.placeholder = "可留空，由现有策略选择待命账号";
+      replacementLabel.append(replacement);
+      const forceLabel = document.createElement("label");
+      forceLabel.className = "check";
+      const force = document.createElement("input");
+      force.type = "checkbox";
+      force.name = "force_refill";
+      forceLabel.append(force, document.createTextNode(" 强制补位"));
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.className = "button danger";
+      submit.textContent = "执行受控轮转";
+      form.append(emailLabel, replacementLabel, forceLabel, submit);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!confirmDanger(`确认对 ${email.value} 执行受控轮转？这会修改官方 Team 席位。`)) return;
+        setButtonBusy(submit, true, "轮转中");
+        try {
+          const result = await postAction(`rotate-${workspace.id}-${email.value}`, `/api/workspaces/${workspace.id}/rotate`, {
+            email: email.value.trim(),
+            email_line: replacement.value || "",
+            force_refill: force.checked,
+            reason: "console_team_detail",
+          });
+          await handleActionResult(result, { successMessage: result.message || "轮转已提交", refresh: false });
+          await reloadTeamDetails();
+        } catch (error) {
+          toast(friendlyError(error), "error");
+        } finally {
+          setButtonBusy(submit, false);
+        }
+      });
+      container.append(form);
     }
-    const nextLabel = role === "owner" ? "Owner" : "Member";
-    if (!confirmDanger(`确认把 ${email} 的官方角色改成 ${nextLabel}？这会改 Team 成员。`)) return;
-    if (button) button.disabled = true;
+
+    function renderTeamDetails(workspace) {
+      if (!sheet || !workspace) return;
+      teamDetailState = { ...(teamDetailState || {}), workspaceId: workspace.id, workspace, view: "details" };
+      const title = document.getElementById("sheet-title");
+      const subtitle = document.getElementById("sheet-subtitle");
+      const body = document.getElementById("sheet-body");
+      title.textContent = workspace.display_name || workspace.name || "团队详情";
+      subtitle.textContent = workspace.official_workspace_id || "";
+      body.replaceChildren();
+      const official = workspace.official || {};
+      const seats = official.occupied_seats != null && official.seat_limit != null
+        ? `${official.occupied_seats} / ${official.seat_limit}`
+        : (official.joined_people_total == null ? "尚未同步" : `${official.joined_people_total} 人`);
+      body.append(kvSection("团队概览", [
+        ["团队名称", workspace.display_name || workspace.name],
+        ["Workspace ID", workspace.official_workspace_id],
+        ["官方席位", seats],
+        ["最近同步", workspace.last_sync ? relativeTime(workspace.last_sync) : "尚未同步"],
+        ["健康状态", workspace.owner_auth_reason === "owner_account_missing" ? "母号本地档案缺失" : (workspace.owner_needs_auth ? "母号要授权" : labelOf(statusLabels, workspace.health || workspace.status))],
+      ]));
+
+      const mother = document.createElement("section");
+      mother.className = "sheet-section team-mother-section";
+      const motherTitle = document.createElement("h3");
+      motherTitle.textContent = "母号";
+      const motherGrid = document.createElement("div");
+      motherGrid.className = "team-mother-grid";
+      motherGrid.append(kvSection("", [
+        ["邮箱", workspace.owner_email],
+        ["授权状态", labelOf(statusLabels, workspace.owner_auth_state || workspace.owner_auth)],
+        ["代理状态", workspace.owner_proxy || (workspace.owner_proxy_set ? "已绑定" : "未绑定")],
+        ["额度更新时间", workspace.owner_quota_updated_at ? relativeTime(workspace.owner_quota_updated_at) : "暂无额度快照"],
+      ]));
+      const motherAside = document.createElement("div");
+      motherAside.className = "team-mother-aside";
+      const ownerQuota = workspace.owner_quota || {};
+      if ([ownerQuota.five_hour_used_percent, ownerQuota.seven_day_used_percent, ownerQuota.queried_at].some((value) => value != null)) {
+        motherAside.append(quotaCell({ quota: ownerQuota }));
+      }
+      const ownerAction = workspacePrimaryAction(workspace);
+      if (ownerAction.id === "owner-missing" || ownerAction.id === "owner-auth") {
+        const ownerButton = document.createElement("button");
+        ownerButton.type = "button";
+        ownerButton.className = ownerAction.id === "owner-auth" ? "button danger" : "button";
+        ownerButton.textContent = ownerAction.label;
+        ownerButton.addEventListener("click", () => runWorkspacePrimaryAction(workspace, ownerButton));
+        motherAside.append(ownerButton);
+      }
+      if (motherAside.childElementCount) motherGrid.append(motherAside);
+      mother.append(motherTitle, motherGrid);
+      body.append(mother);
+
+      const members = document.createElement("section");
+      members.className = "sheet-section";
+      const membersTitle = document.createElement("h3");
+      const rows = teamMemberRows(workspace);
+      membersTitle.textContent = `成员（${rows.length}）`;
+      const list = document.createElement("div");
+      list.className = "team-member-list";
+      if (!rows.length) list.append(emptyState("没有子成员", "同步官方成员后，这里会显示当前 Team 成员。", true));
+      else rows.forEach((row) => list.append(renderTeamMember(workspace, row)));
+      members.append(membersTitle, renderTeamInviteControls(workspace), list);
+      body.append(members);
+
+      if (canRotateWorkspace(workspace)) {
+        const advanced = document.createElement("details");
+        advanced.className = "team-detail-disclosure";
+        const summary = document.createElement("summary");
+        summary.textContent = "高级操作";
+        const content = document.createElement("div");
+        content.className = "team-detail-disclosure-body";
+        renderTeamRotationControls(content, workspace);
+        advanced.append(summary, content);
+        body.append(advanced);
+      }
+
+      const danger = document.createElement("details");
+      danger.className = "team-detail-disclosure team-danger-zone";
+      const dangerSummary = document.createElement("summary");
+      dangerSummary.textContent = "危险操作";
+      const dangerBody = document.createElement("div");
+      dangerBody.className = "team-detail-disclosure-body";
+      const warning = document.createElement("p");
+      warning.className = "hint";
+      warning.textContent = "删除只清理本地团队数据，不会修改官方 Team。成员和历史关联会按后端安全规则处理。";
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "button danger";
+      deleteButton.textContent = "删除本地团队";
+      deleteButton.addEventListener("click", async () => {
+        const name = workspace.display_name || workspace.name || workspace.owner_email || `#${workspace.id}`;
+        if (!confirmDanger(`确认删除本地团队「${name}」？只删除本地数据，不改官方 Team。`)) return;
+        setButtonBusy(deleteButton, true, "删除中");
+        try {
+          const result = await deleteAction(`workspace-delete-${workspace.id}`, `/api/workspaces/${workspace.id}`);
+          closeSheet();
+          await handleActionResult(result, { successMessage: "已删除本地团队" });
+        } catch (error) {
+          toast(friendlyError(error), "error");
+          setButtonBusy(deleteButton, false);
+        }
+      });
+      dangerBody.append(warning, deleteButton);
+      danger.append(dangerSummary, dangerBody);
+      body.append(danger);
+    }
+
+    function openWorkspaceDetails(trigger, workspace) {
+      if (!workspace || !sheet) return;
+      teamDetailState = { workspaceId: workspace.id, workspace, view: "details" };
+      renderTeamDetails(workspace);
+      openOverlay("entity", { returnFocus: trigger, context: { kind: "workspace", workspace }, initialFocus: "[data-close-sheet]" });
+    }
+
+    async function fetchTeamDetails(workspaceId) {
+        const payload = await fetchEntity("workspace-list", "/api/workspaces");
+        if (document.body.dataset.page === "workspaces") {
+          pageCache.kind = "workspace";
+          pageCache.items = payload.items || [];
+          paintList("workspace");
+          if (overlayState.returnFocus && !overlayState.returnFocus.isConnected) {
+            overlayState.returnFocus = document.querySelector(`[data-entity-id="${workspaceId}"] [data-action="workspace.manage"]`)
+              || document.querySelector(`[data-entity-id="${workspaceId}"]`)
+              || document.getElementById("page-root");
+          }
+        }
+        const workspace = (payload.items || []).find((item) => Number(item.id) === Number(workspaceId));
+        if (!workspace) throw new Error("团队已不存在或无法读取");
+        if (teamDetailState) teamDetailState.workspace = workspace;
+        return workspace;
+      }
+
+    async function reloadTeamDetails() {
+      if (!teamDetailState?.workspaceId) return;
+      const workspace = await fetchTeamDetails(teamDetailState.workspaceId);
+      renderTeamDetails(workspace);
+      const selected = teamDetailState.selectedMemberEmail;
+      const panel = sheet?.querySelector(".sheet-panel");
+      if (panel && teamDetailState.scrollTop) panel.scrollTop = teamDetailState.scrollTop;
+      if (selected) {
+        const target = sheet?.querySelector(`[data-member-email="${CSS.escape(selected)}"]`);
+        target?.scrollIntoView({ block: "nearest" });
+      }
+    }
+
+  async function inviteTeamMember(workspace, values, button) {
+    setButtonBusy(button, true, "发送中");
     try {
-      const body = { email, role };
-      if (row.user_id || row.official_user_id) body.user_id = row.user_id || row.official_user_id;
-      const result = await patchAction(`workspace-role-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/role`, body);
-      toast(result.message || `已改成 ${nextLabel}`, operationTone(result));
-      await reloadManageChildren();
-    } catch (error) {
-      toast(friendlyError(error), "error");
+      const result = await postAction(`workspace-invite-${workspace.id}`, `/api/workspaces/${workspace.id}/onboard`, {
+        email_line: String(values.email_line || "").trim(),
+        phone_line: String(values.phone_line || "").trim(),
+        proxy: String(values.proxy || "").trim(),
+        role: values.role === "member" ? "member" : "owner",
+        force: Boolean(values.force),
+        skip_invite: Boolean(values.skip_invite),
+      });
+      await handleActionResult(result, { successMessage: result.message || "邀请已提交", refresh: false });
+      await reloadTeamDetails();
+      return result;
     } finally {
-      if (button) button.disabled = false;
+      setButtonBusy(button, false);
     }
   }
 
-  async function manageChildLink(row, button) {
-    const workspace = manageChildrenWorkspace();
-    const workspaceId = workspace?.id;
-    const email = (row?.email || "").trim();
-    if (!workspaceId || !email) {
-      toast("缺少官方邮箱，无法接入", "error");
-      return;
-    }
-    if (button) button.disabled = true;
-    try {
-      const body = { email };
-      if (row.id || row.local_account_id || row.candidate_account_id) {
-        body.account_id = row.id || row.local_account_id || row.candidate_account_id;
+  async function linkTeamMember(workspace, row, button) {
+      const email = String(row.email || "").trim();
+      if (!email) return;
+      if (teamDetailState) {
+        teamDetailState.stage = "linking_member";
+        teamDetailState.selectedMemberEmail = email;
       }
-      const result = await postAction(`workspace-link-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/link`, body);
-      toast(result.message || "已接入", operationTone(result));
-      await reloadManageChildren();
-      if (result.needs_auth && result.account_id) {
-        await openReauth({ id: result.account_id, email: result.email || email, workspace_id: workspaceId }, overlayReturn);
-      }
-    } catch (error) {
-      toast(friendlyError(error), "error");
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
-
-  function selectedManageChildRemoveMode() {
-    const checked = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode']:checked");
-    if (checked?.value === "official") return "official";
-    if (checked?.value === "purge") return "purge";
-    return "local";
-  }
-
-  function applyManageChildRemoveCopy(mode, officialDefault, accountId) {
-    const titleEl = document.getElementById("manage-child-remove-title");
-    const hintEl = document.getElementById("manage-child-remove-hint");
-    const confirmBtn = document.getElementById("manage-child-remove-confirm");
-    const subtitle = document.getElementById("manage-child-remove-subtitle");
-    if (mode === "purge") {
-      if (titleEl) titleEl.textContent = "永久删除子号";
-      if (confirmBtn) confirmBtn.textContent = "确认永久删除";
-      if (hintEl) hintEl.textContent = accountId
-        ? "会踢官方席位、下架 Sub2API，并清掉本地档案。不可恢复。"
-        : "这个邮箱还没接入本地。永久删除会踢官方席位，不会留下待命档案。";
-      if (subtitle) subtitle.textContent = "官方、Sub 和本地档案一起清掉。";
-      return;
-    }
-    if (mode === "official") {
-      if (titleEl) titleEl.textContent = "踢出官方席位";
-      if (confirmBtn) confirmBtn.textContent = "确认踢出";
-      if (hintEl) hintEl.textContent = accountId
-        ? "踢出后会改 Team 成员，本地档案转入待命。"
-        : "这个邮箱还没接入本地。踢出只改官方席位，不会生成待命档案。";
-      if (subtitle) subtitle.textContent = officialDefault ? "这个邮箱还在官方席位。默认踢官方。" : "会改 Team 成员，本地档案转入待命。";
-      return;
-    }
-    if (titleEl) titleEl.textContent = "删除子号";
-    if (confirmBtn) confirmBtn.textContent = "确认删除";
-    if (hintEl) hintEl.textContent = "只下本地不会改官方席位；踢官方会改 Team 成员并转入待命。永久删除会清掉档案。";
-    if (subtitle) subtitle.textContent = "选择只下本地、踢官方，或永久删除。";
-  }
-
-  function openManageChildRemove(row, button, kind) {
-    if (!manageChildRemoveSheet) return;
-    const workspace = manageChildrenWorkspace();
-    const workspaceId = workspace?.id;
-    const email = (row?.email || "").trim();
-    const accountId = row?.id || row?.local_account_id;
-    if (!workspaceId || (!email && !accountId)) return;
-    const officialDefault = kind === "unmanaged" || kind === "invited" || row?.kind === "unmanaged" || row?.kind === "invited";
-    pendingChildRemove = { row, button, workspaceId, email, accountId, officialDefault };
-    const emailEl = document.getElementById("manage-child-remove-email");
-    if (emailEl) emailEl.textContent = email || `#${accountId}`;
-    const localRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='local']");
-    const officialRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='official']");
-    const purgeRadio = document.querySelector("#manage-child-remove-sheet input[name='manage-child-remove-mode'][value='purge']");
-    if (officialDefault) {
-      if (officialRadio) officialRadio.checked = true;
-      if (localRadio) localRadio.disabled = !accountId;
-    } else {
-      if (localRadio) {
-        localRadio.disabled = false;
-        localRadio.checked = true;
-      }
-    }
-    if (purgeRadio) purgeRadio.disabled = false;
-    applyManageChildRemoveCopy(selectedManageChildRemoveMode(), officialDefault, accountId);
-    setFormStatus("manage-child-remove-status", "", "muted");
-    manageChildRemoveSheet.hidden = false;
-    activateFocusTrap(manageChildRemoveSheet.querySelector(".confirm-panel") || manageChildRemoveSheet);
-  }
-
-  function closeManageChildRemove() {
-    if (!manageChildRemoveSheet || manageChildRemoveSheet.hidden) return;
-    manageChildRemoveSheet.hidden = true;
-    pendingChildRemove = null;
-    if (manageChildrenSheet && !manageChildrenSheet.hidden) {
-      activateFocusTrap(manageChildrenSheet.querySelector(".sheet-panel") || manageChildrenSheet);
-    } else {
-      clearFocusTrap();
-    }
-  }
-
-  async function confirmManageChildRemove() {
-    const pending = pendingChildRemove;
-    if (!pending) return;
-    const { workspaceId, email, accountId, button } = pending;
-    const mode = selectedManageChildRemoveMode();
-    const confirmBtn = document.getElementById("manage-child-remove-confirm");
-    if (button) button.disabled = true;
-    if (confirmBtn) confirmBtn.disabled = true;
-    const statusText = mode === "purge" ? "正在永久删除…" : (mode === "official" ? "正在踢官方席位…" : "正在从本地移除…");
-    setFormStatus("manage-child-remove-status", statusText, "muted");
-    try {
-      if (mode === "official" || mode === "purge") {
-        if (!email) {
-          const needEmail = mode === "purge" ? "永久删除需要邮箱" : "踢官方席位需要邮箱";
-          setFormStatus("manage-child-remove-status", needEmail, "error");
-          toast(needEmail, "error");
+      setButtonBusy(button, true, "接入中");
+      button.closest(".team-member-row")?.setAttribute("aria-busy", "true");
+      try {
+        const body = { email };
+        if (row.id || row.local_account_id || row.candidate_account_id) body.account_id = row.id || row.local_account_id || row.candidate_account_id;
+        const result = await postAction(`workspace:${workspace.id}:member:${email}:link`, `/api/workspaces/${workspace.id}/members/link`, body);
+        toast("已接入本地", "success");
+        const refreshed = await fetchTeamDetails(workspace.id);
+        if (result.needs_auth && result.account_id) {
+          if (teamDetailState) {
+            teamDetailState.workspace = refreshed;
+            teamDetailState.stage = "authorization_required";
+            teamDetailState.selectedMemberEmail = result.email || email;
+          }
+          showTeamAuthStep({ id: result.account_id, email: result.email || email, workspace_id: workspace.id, selectedMemberEmail: result.email || email });
+        } else {
+          renderTeamDetails(refreshed);
+        }
+      } catch (error) {
+        if (extractErrorCode(error) === "already_linked") {
+          toast(friendlyError(error), "warning");
+          await reloadTeamDetails();
           return;
         }
-        const actionKey = mode === "purge" ? `workspace-purge-child-${workspaceId}-${email}` : `workspace-kick-child-${workspaceId}-${email}`;
-        const actionUrl = mode === "purge" ? `/api/workspaces/${workspaceId}/members/purge` : `/api/workspaces/${workspaceId}/kick`;
-        const actionBody = mode === "purge"
-          ? { email, reason: "console_purge" }
-          : { email, reason: "console_manage_children" };
-        const kickResult = await postAction(actionKey, actionUrl, actionBody);
-        const kickFailed = !(kickResult?.ok || kickResult?.success) || kickResult?.partial || ["partial", "failed", "manual_required"].includes(kickResult?.status);
-        const failedLabel = mode === "purge" ? "永久删除还没确认成功" : "官方踢人还没确认成功";
-        const okLabel = mode === "purge" ? "已永久删除" : "已踢出官方席位";
-        toast(kickResult.message || (kickFailed ? failedLabel : okLabel), operationTone(kickResult), kickResult.operation_id ? { label: "查看任务", onClick: () => openOperationById(kickResult.operation_id) } : undefined);
-        if (kickFailed) {
-          setFormStatus("manage-child-remove-status", kickResult.message || kickResult.error || failedLabel, "error");
+        toast(friendlyError(error), "error", { label: "重试", onClick: () => linkTeamMember(workspace, row, button) });
+        setButtonBusy(button, false);
+        button.closest(".team-member-row")?.removeAttribute("aria-busy");
+      }
+    }
+
+    async function changeTeamMemberRole(workspace, row, button, role) {
+      const email = String(row.email || "").trim();
+      if (!email || !confirmDanger(`确认把 ${email} 的官方角色改为 ${role === "owner" ? "Owner" : "Member"}？`)) return;
+      setButtonBusy(button, true, "更新中");
+      try {
+        const body = { email, role };
+        if (row.user_id || row.official_user_id) body.user_id = row.user_id || row.official_user_id;
+        const result = await patchAction(`workspace-role-${workspace.id}-${email}`, `/api/workspaces/${workspace.id}/members/role`, body);
+        toast(result.message || "成员角色已更新", operationTone(result));
+        await reloadTeamDetails();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function removeTeamMember(workspace, row, button, mode) {
+      const email = String(row.email || "").trim();
+      const accountId = row.id || row.local_account_id;
+      const kind = row.kind || row.status || row.membership_state;
+      const copy = mode === "purge"
+        ? `永久删除 ${email}？这会移出官方席位、下架 Sub2API 并清理本地档案，且不可恢复。`
+        : mode === "official"
+          ? `${kind === "invited" ? "撤回" : "移出"} ${email} 的官方席位？这会修改官方 Team。`
+          : `只从本地移除 ${email}？官方 Team 不会改变。`;
+      if (!confirmDanger(copy)) return;
+      setButtonBusy(button, true, "处理中");
+      try {
+        let result;
+        if (mode === "purge") {
+          result = await postAction(`workspace-purge-${workspace.id}-${email}`, `/api/workspaces/${workspace.id}/members/purge`, { email, reason: "console_team_detail" });
+        } else if (mode === "official") {
+          const endpoint = kind === "invited" ? "revoke-invite" : "kick";
+          result = await postAction(`workspace-${endpoint}-${workspace.id}-${email}`, `/api/workspaces/${workspace.id}/${endpoint}`, { email, reason: "console_team_detail" });
+        } else {
+          result = await postAction(`workspace-remove-${workspace.id}-${accountId}`, `/api/workspaces/${workspace.id}/members/remove`, { email, account_id: accountId });
+        }
+        await handleActionResult(result, { successMessage: mode === "purge" ? "已永久删除" : "成员已更新", refresh: false });
+        await reloadTeamDetails();
+      } catch (error) {
+        toast(friendlyError(error), "error");
+        setButtonBusy(button, false);
+      }
+    }
+
+    async function showTeamAuthStep(account) {
+      if (!sheet || !account?.id || !teamDetailState) return;
+      teamDetailState.view = "auth";
+      teamDetailState.account = account;
+      teamDetailState.stage = teamDetailState.stage || "authorization_required";
+      teamDetailState.selectedMemberEmail = account.selectedMemberEmail || account.email || teamDetailState.selectedMemberEmail;
+      const panel = sheet.querySelector(".sheet-panel");
+      teamDetailState.scrollTop = panel?.scrollTop || teamDetailState.scrollTop || 0;
+      const title = document.getElementById("sheet-title");
+      const subtitle = document.getElementById("sheet-subtitle");
+      const body = document.getElementById("sheet-body");
+      title.textContent = "账号授权";
+      subtitle.textContent = `正在授权：${account.email || "账号"}`;
+      body.replaceChildren();
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "button ghost team-auth-back";
+      back.textContent = "← 返回团队详情";
+      back.addEventListener("click", () => {
+        teamDetailState.stage = "workspace_detail";
+        teamDetailState.view = "details";
+        renderTeamDetails(teamDetailState.workspace);
+        if (panel) panel.scrollTop = teamDetailState.scrollTop || 0;
+      });
+      const form = document.createElement("form");
+      form.className = "team-auth-form sheet-section";
+      const linkLabel = document.createElement("label");
+      linkLabel.textContent = "授权链接";
+      const authorize = document.createElement("textarea");
+      authorize.rows = 4;
+      authorize.readOnly = true;
+      linkLabel.append(authorize);
+      const linkActions = document.createElement("div");
+      linkActions.className = "settings-probe-actions";
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "button";
+      copy.textContent = "复制链接";
+      const open = document.createElement("a");
+      open.className = "button";
+      open.target = "_blank";
+      open.rel = "noopener";
+      open.textContent = "打开授权";
+      open.href = "#";
+      const regenerate = document.createElement("button");
+      regenerate.type = "button";
+      regenerate.className = "button ghost";
+      regenerate.textContent = "重新生成链接";
+      regenerate.hidden = true;
+      linkActions.append(copy, open, regenerate);
+      const callbackLabel = document.createElement("label");
+      callbackLabel.textContent = "回调地址";
+      const callback = document.createElement("textarea");
+      callback.rows = 4;
+      callback.placeholder = "http://localhost:1455/auth/callback?code=...&state=...";
+      callbackLabel.append(callback);
+      const status = document.createElement("p");
+      status.className = "muted";
+      status.setAttribute("role", "status");
+      status.textContent = "正在生成授权链接…";
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.className = "button primary";
+      submit.textContent = "完成授权";
+      form.append(linkLabel, linkActions, callbackLabel, status, submit);
+      body.append(back, form);
+      activateFocusTrap(panel || sheet);
+      back.focus();
+      let ticket = "";
+      const startAuth = async () => {
+        teamDetailState.stage = "authorizing";
+        status.className = "muted";
+        status.setAttribute("role", "status");
+        status.textContent = "正在生成授权链接…";
+        regenerate.hidden = true;
+        const started = await fetchEntity(`account:${account.id}:reauth:start`, `/api/accounts/${account.id}/reauth`, {
+          method: "POST",
+          headers: { Accept: "application/json" },
+        });
+        ticket = started.ticket || "";
+        authorize.value = started.authorize_url || "";
+        open.href = started.authorize_url || "#";
+        status.textContent = started.message || "打开授权链接登录，完成后粘贴回调地址。";
+        callback.focus();
+      };
+      copy.addEventListener("click", async () => {
+        const copied = await copyText(authorize.value);
+        status.textContent = copied ? "授权链接已复制。" : "复制失败，请手动选中链接。";
+        status.className = copied ? "muted" : "error";
+        status.setAttribute("role", copied ? "status" : "alert");
+      });
+      regenerate.addEventListener("click", async () => {
+        try {
+          await startAuth();
+        } catch (error) {
+          status.textContent = friendlyError(error);
+          status.className = "error";
+          status.setAttribute("role", "alert");
+        }
+      });
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!ticket || !callback.value.trim()) {
+          status.textContent = ticket ? "请粘贴完整回调地址。" : "授权会话尚未准备好，请重试。";
+          status.className = "error";
+          status.setAttribute("role", "alert");
           return;
         }
-        closeManageChildRemove();
-        await reloadManageChildren();
-        return;
+        setButtonBusy(submit, true, "授权中");
+        try {
+          const result = await fetchEntity(`account:${account.id}:reauth:complete:${ticket}`, `/api/accounts/${account.id}/reauth/complete`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({ ticket, callback_url: callback.value.trim() }),
+          });
+          teamDetailState.stage = "authorization_completed";
+          await reloadTeamDetails();
+          toast(result.message || "授权成功", "success");
+        } catch (error) {
+          const code = extractErrorCode(error);
+          status.textContent = friendlyError(error);
+          status.className = "error";
+          status.setAttribute("role", "alert");
+          regenerate.hidden = code !== "callback_expired" ? true : false;
+          if (code === "callback_expired") regenerate.hidden = false;
+          setButtonBusy(submit, false);
+        }
+      });
+      try {
+        await startAuth();
+      } catch (error) {
+        status.textContent = friendlyError(error);
+        status.className = "error";
+        status.setAttribute("role", "alert");
+        regenerate.hidden = false;
       }
-      const body = {};
-      if (email) body.email = email;
-      if (accountId) body.account_id = accountId;
-      const result = await postAction(`workspace-remove-child-${workspaceId}-${email || accountId}`, `/api/workspaces/${workspaceId}/members/remove`, body);
-      toast(result.message || "已从本地移除", operationTone(result));
-      closeManageChildRemove();
-      await reloadManageChildren();
-    } catch (error) {
-      setFormStatus("manage-child-remove-status", friendlyError(error), "error");
-      toast(friendlyError(error), "error");
-    } finally {
-      if (button) button.disabled = false;
-      if (confirmBtn) confirmBtn.disabled = false;
     }
-  }
-
-  async function submitManageChildren(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("#manage-children-submit");
-    const workspaceId = Number(form.workspace_id.value || form.workspace_id_display?.value || 0);
-    const email = (form.email.value || "").trim();
-    if (!workspaceId || !email) {
-      setFormStatus("manage-children-status", "Workspace 与邮箱都必填", "error");
-      return;
-    }
-    if (button) button.disabled = true;
-    setFormStatus("manage-children-status", "正在发送官方邀请…", "muted");
-    try {
-      const result = await postAction(`workspace-add-child-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/members/add`, { email, role: form.role?.value || "owner" });
-      form.email.value = "";
-      setFormStatus("manage-children-status", result.message || "已邀请进官方席位", "muted");
-      toast(result.message || "已邀请进官方席位", operationTone(result), result.operation_id ? { label: "查看任务", onClick: () => openOperationById(result.operation_id) } : undefined);
-      await reloadManageChildren();
-      if (result.needs_auth && result.account_id) {
-        await openReauth({ id: result.account_id, email: result.email || email, workspace_id: workspaceId }, overlayReturn);
-      }
-    } catch (error) {
-      setFormStatus("manage-children-status", friendlyError(error), "error");
-      toast(friendlyError(error), "error");
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
-
-  function openOnboard(trigger, workspace) {
-    if (!onboardSheet) return;
-    overlayReturn = trigger || document.querySelector("[data-open-onboard]");
-    const form = document.getElementById("onboard-form");
-    form?.reset();
-    syncWorkspaceField(form, workspace);
-    setFormStatus("onboard-status", "", "muted");
-    onboardSheet.hidden = false;
-    activateFocusTrap(onboardSheet.querySelector(".sheet-panel") || onboardSheet);
-  }
-
-  function closeOnboard() {
-    if (!onboardSheet || onboardSheet.hidden) return;
-    onboardSheet.hidden = true;
-    clearFocusTrap();
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
-
-  function openRotate(trigger, workspace, account) {
-    if (!rotateSheet) return;
-    overlayReturn = trigger || document.activeElement;
-    const form = document.getElementById("rotate-form");
-    form?.reset();
-    syncWorkspaceField(form, workspace);
-    if (form && account?.email) form.email.value = account.email;
-    setFormStatus("rotate-status", "", "muted");
-    rotateSheet.hidden = false;
-    activateFocusTrap(rotateSheet.querySelector(".sheet-panel") || rotateSheet);
-  }
-
-  function closeRotate() {
-    if (!rotateSheet || rotateSheet.hidden) return;
-    rotateSheet.hidden = true;
-    clearFocusTrap();
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
 
   async function fillProxyProfileOptions(selectedId) {
     const form = document.getElementById("proxy-edit-form");
@@ -2133,113 +2586,42 @@ function hmeRow(item) {
   }
 
   async function openProxyEdit(trigger, account) {
-    if (!proxyEditSheet) return;
-    overlayReturn = trigger || document.activeElement;
-    const form = document.getElementById("proxy-edit-form");
-    form?.reset();
-    setProxyEditMode("account");
-    if (form) {
-      form.account_id.value = account.id || "";
-      form.proxy_id.value = "";
-      form.email.value = account.email || "";
-      form.current_proxy.value = account.proxy_url || "";
-      form.proxy.value = "";
-      form.clear.checked = false;
+      if (!proxyEditSheet) return;
+      const form = document.getElementById("proxy-edit-form");
+      form?.reset();
+      setProxyEditMode("account");
+      if (form) {
+        form.account_id.value = account.id || "";
+        form.proxy_id.value = "";
+        form.email.value = account.email || "";
+        form.current_proxy.value = account.proxy_url || "";
+        form.proxy.value = "";
+        form.clear.checked = false;
+      }
+      await fillProxyProfileOptions(account.proxy_profile_id);
+      setFormStatus("proxy-edit-status", "", "muted");
+      openOverlay("proxy-edit", { returnFocus: trigger, context: { kind: "account-proxy", account }, initialFocus: "#proxy-edit-submit" });
     }
-    await fillProxyProfileOptions(account.proxy_profile_id);
-    setFormStatus("proxy-edit-status", "", "muted");
-    proxyEditSheet.hidden = false;
-    activateFocusTrap(proxyEditSheet.querySelector(".sheet-panel") || proxyEditSheet);
-  }
 
   function openProxyProfileEdit(trigger, proxy) {
-    if (!proxyEditSheet) return;
-    overlayReturn = trigger || document.activeElement;
-    const form = document.getElementById("proxy-edit-form");
-    form?.reset();
-    setProxyEditMode("profile");
-    if (form) {
-      form.proxy_id.value = proxy.id || "";
-      form.account_id.value = "";
-      form.name.value = proxy.name || "";
-      form.status.value = proxy.status === "disabled" ? "disabled" : "active";
-      form.restore_auto_name.checked = false;
+      if (!proxyEditSheet) return;
+      const form = document.getElementById("proxy-edit-form");
+      form?.reset();
+      setProxyEditMode("profile");
+      if (form) {
+        form.proxy_id.value = proxy.id || "";
+        form.account_id.value = "";
+        form.name.value = proxy.name || "";
+        form.status.value = proxy.status === "disabled" ? "disabled" : "active";
+        form.restore_auto_name.checked = false;
+      }
+      setFormStatus("proxy-edit-status", "", "muted");
+      openOverlay("proxy-edit", { returnFocus: trigger, context: { kind: "proxy-profile", proxy }, initialFocus: "#proxy-edit-submit" });
     }
-    setFormStatus("proxy-edit-status", "", "muted");
-    proxyEditSheet.hidden = false;
-    activateFocusTrap(proxyEditSheet.querySelector(".sheet-panel") || proxyEditSheet);
-  }
 
   function closeProxyEdit() {
-    if (!proxyEditSheet || proxyEditSheet.hidden) return;
-    proxyEditSheet.hidden = true;
-    clearFocusTrap();
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
-
-  async function submitOnboard(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("#onboard-submit");
-    const workspaceId = Number(form.workspace_id_display.value || form.workspace_id.value || 0);
-    if (!workspaceId) {
-      setFormStatus("onboard-status", "请填写 Workspace ID", "error");
-      return;
+      closeOverlay();
     }
-    if (!confirmDanger(`确认向 Workspace #${workspaceId} 创建子号？可能触发邀请与浏览器自动化。`)) return;
-    if (button) button.disabled = true;
-    setFormStatus("onboard-status", "正在提交…", "muted");
-    try {
-      const result = await postAction(`onboard-${workspaceId}`, `/api/workspaces/${workspaceId}/onboard`, {
-        email_line: form.email_line.value || "",
-        phone_line: form.phone_line.value || "",
-        proxy: form.proxy.value || "",
-        force: Boolean(form.force.checked),
-        skip_invite: Boolean(form.skip_invite.checked),
-        role: form.role?.value || "owner",
-      });
-      closeOnboard();
-      await handleActionResult(result, { successMessage: result.message || "创建子号完成", longRunning: true });
-    } catch (error) {
-      setFormStatus("onboard-status", friendlyError(error), "error");
-      toast(friendlyError(error), "error");
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
-
-  async function submitRotate(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("#rotate-submit");
-    const workspaceId = Number(form.workspace_id_display.value || form.workspace_id.value || 0);
-    const email = (form.email.value || "").trim();
-    if (!workspaceId || !email) {
-      setFormStatus("rotate-status", "Workspace 与邮箱都必填", "error");
-      return;
-    }
-    if (!confirmDanger(`确认对 ${email} 执行受控轮转？会踢人/撤邀请并可能补位。`)) return;
-    if (button) button.disabled = true;
-    setFormStatus("rotate-status", "正在提交…", "muted");
-    try {
-      const result = await postAction(`rotate-${workspaceId}-${email}`, `/api/workspaces/${workspaceId}/rotate`, {
-        email,
-        email_line: form.email_line.value || "",
-        phone_line: form.phone_line.value || "",
-        proxy: form.proxy.value || "",
-        force_refill: Boolean(form.force_refill.checked),
-        reason: "console",
-      });
-      closeRotate();
-      await handleActionResult(result, { successMessage: result.message || "轮转完成", longRunning: true });
-    } catch (error) {
-      setFormStatus("rotate-status", friendlyError(error), "error");
-      toast(friendlyError(error), "error");
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
 
   async function submitProxyEdit(event) {
     event.preventDefault();
@@ -2287,37 +2669,33 @@ function hmeRow(item) {
 
 function openRegister(trigger) {
     if (!registerSheet) return;
-    overlayReturn = trigger || document.querySelector("[data-open-register]");
     resetRegisterForm();
-    registerSheet.hidden = false;
-    document.getElementById("register-form")?.querySelector("[name='email']")?.focus();
+    openOverlay("register", {
+      returnFocus: trigger || document.querySelector("[data-open-register]"),
+      context: { kind: "register" },
+      initialFocus: "[name='email']",
+    });
   }
 
   function closeRegister() {
-    if (!registerSheet || registerSheet.hidden) return;
-    registerSheet.hidden = true;
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
+      closeOverlay();
+    }
 
   function setReauthStatus(text, tone) {
-    const statusEl = document.getElementById("reauth-status");
-    if (!statusEl) return;
-    statusEl.hidden = !text;
-    statusEl.className = tone || "muted";
-    statusEl.textContent = text || "";
-  }
+      const statusEl = document.getElementById("reauth-status");
+      if (!statusEl) return;
+      statusEl.hidden = !text;
+      statusEl.className = tone || "muted";
+      statusEl.setAttribute("role", tone === "error" ? "alert" : "status");
+      statusEl.textContent = text || "";
+    }
 
   function closeReauth() {
-    if (!reauthSheet || reauthSheet.hidden) return;
-    reauthSheet.hidden = true;
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
+      closeOverlay();
+    }
 
   async function openReauth(item, trigger) {
     if (!reauthSheet || !item?.id) return;
-    overlayReturn = trigger || null;
     const form = document.getElementById("reauth-form");
     const authorize = document.getElementById("reauth-authorize-url");
     const openLink = document.getElementById("reauth-open-link");
@@ -2330,10 +2708,9 @@ function openRegister(trigger) {
     if (authorize) authorize.value = "";
     if (openLink) openLink.href = "#";
     setReauthStatus("正在生成授权链接…", "muted");
-    reauthSheet.hidden = false;
-    activateFocusTrap(reauthSheet.querySelector(".sheet-panel") || reauthSheet);
+    openOverlay("reauth", { returnFocus: trigger, context: { kind: "reauth", account: item }, initialFocus: "[name='callback_url']" });
     try {
-      const started = await fetchEntity(`account-reauth-${item.id}`, `/api/accounts/${item.id}/reauth`, {
+      const started = await fetchEntity(`account:${item.id}:reauth:start`, `/api/accounts/${item.id}/reauth`, {
         method: "POST",
         headers: { Accept: "application/json" },
       });
@@ -2366,7 +2743,7 @@ function openRegister(trigger) {
     if (button) button.disabled = true;
     setReauthStatus("正在用回调换票…", "muted");
     try {
-      const result = await fetchEntity(`account-reauth-complete-${accountId}`, `/api/accounts/${accountId}/reauth/complete`, {
+      const result = await fetchEntity(`account:${accountId}:reauth:complete:${ticket}`, `/api/accounts/${accountId}/reauth/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ ticket, callback_url: callbackUrl }),
@@ -2382,46 +2759,45 @@ function openRegister(trigger) {
   }
 
   function setFormStatus(id, text, tone) {
-    const statusEl = document.getElementById(id);
-    if (!statusEl) return;
-    statusEl.hidden = !text;
-    statusEl.className = tone || "muted";
-    statusEl.textContent = text || "";
-  }
+      const statusEl = document.getElementById(id);
+      if (!statusEl) return;
+      statusEl.hidden = !text;
+      statusEl.className = tone || "muted";
+      statusEl.setAttribute("role", tone === "error" ? "alert" : "status");
+      statusEl.textContent = text || "";
+    }
 
   function openPhoneImport(trigger) {
-    if (!phoneImportSheet) return;
-    overlayReturn = trigger || document.querySelector("[data-open-phone-import]");
-    const form = document.getElementById("phone-import-form");
-    if (form) form.reset();
-    setFormStatus("phone-import-status", "", "muted");
-    phoneImportSheet.hidden = false;
-    form?.querySelector("[name='text']")?.focus();
-  }
+      if (!phoneImportSheet) return;
+      const form = document.getElementById("phone-import-form");
+      if (form) form.reset();
+      setFormStatus("phone-import-status", "", "muted");
+      openOverlay("phone-import", {
+        returnFocus: trigger || document.querySelector("[data-open-phone-import]"),
+        context: { kind: "phone-import" },
+        initialFocus: "[name='text']",
+      });
+    }
 
   function closePhoneImport() {
-    if (!phoneImportSheet || phoneImportSheet.hidden) return;
-    phoneImportSheet.hidden = true;
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
+      closeOverlay();
+    }
 
   function openProxyAdd(trigger) {
-    if (!proxyAddSheet) return;
-    overlayReturn = trigger || document.querySelector("[data-open-proxy-add]");
-    const form = document.getElementById("proxy-add-form");
-    if (form) form.reset();
-    setFormStatus("proxy-add-status", "", "muted");
-    proxyAddSheet.hidden = false;
-    form?.querySelector("[name='url']")?.focus();
-  }
+      if (!proxyAddSheet) return;
+      const form = document.getElementById("proxy-add-form");
+      if (form) form.reset();
+      setFormStatus("proxy-add-status", "", "muted");
+      openOverlay("proxy-add", {
+        returnFocus: trigger || document.querySelector("[data-open-proxy-add]"),
+        context: { kind: "proxy-add" },
+        initialFocus: "[name='url']",
+      });
+    }
 
   function closeProxyAdd() {
-    if (!proxyAddSheet || proxyAddSheet.hidden) return;
-    proxyAddSheet.hidden = true;
-    overlayReturn?.focus?.();
-    overlayReturn = null;
-  }
+      closeOverlay();
+    }
 
   async function submitPhoneImport(event) {
     event.preventDefault();
@@ -2843,7 +3219,9 @@ function openRegister(trigger) {
   function portfolioAccountRow(account, kind) {
     const row = document.createElement("div");
     row.className = kind === "history" ? "portfolio-row is-history" : (kind === "mother" ? "portfolio-row is-mother" : "portfolio-row");
-    
+    const canOpen = Boolean(account.id) && kind !== "unmanaged" && kind !== "invited";
+    if (canOpen) bindRow(row, "account", account);
+
     const identity = document.createElement("div");
     identity.className = "portfolio-cell portfolio-identity";
     identity.append(kindBadge(kind));
@@ -2858,74 +3236,19 @@ function openRegister(trigger) {
 
     const quotaCol = document.createElement("div");
     quotaCol.className = "portfolio-cell portfolio-quota";
-    quotaCol.append(account.id && kind !== "unmanaged" && kind !== "invited" ? quotaCell(account) : document.createTextNode(kind === "unmanaged" ? "未接入，无法读取额度" : (kind === "invited" ? "待接受邀请" : "尚未获取")));
+    quotaCol.append(canOpen ? quotaCell(account) : document.createTextNode(kind === "unmanaged" ? "未接入，无法读取额度" : (kind === "invited" ? "待接受邀请" : "尚未获取")));
     row.append(quotaCol);
 
     const sub2Col = document.createElement("div");
-    sub2Col.className = "portfolio-cell portfolio-sub2";
+    sub2Col.className = "portfolio-cell portfolio-sub2 row-action-host";
     sub2Col.append(statusNode(account.sub2api, labelOf(statusLabels, account.sub2api)));
-    row.append(sub2Col);
-
-    const actions = document.createElement("div");
-    actions.className = "portfolio-cell portfolio-actions row-actions";
-    if (kind === "unmanaged") {
-      const linkBtn = document.createElement("button");
-      linkBtn.type = "button";
-      linkBtn.className = "button ghost compact";
-      linkBtn.textContent = "接入";
-      linkBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (!account.workspace_id || !account.email) {
-          toast("缺少官方邮箱，无法接入", "error");
-          return;
-        }
-        linkBtn.disabled = true;
-        try {
-          const body = { email: account.email };
-          if (account.id) body.account_id = account.id;
-          const result = await postAction(`workspace-link-${account.workspace_id}-${account.email}`, `/api/workspaces/${account.workspace_id}/members/link`, body);
-          await handleActionResult(result, { successMessage: result.message || "已接入" });
-          if (result.needs_auth && result.account_id) {
-            await openReauth({ id: result.account_id, email: result.email || account.email, workspace_id: account.workspace_id }, linkBtn);
-          }
-        } catch (error) {
-          toast(friendlyError(error), "error");
-        } finally {
-          linkBtn.disabled = false;
-        }
-      });
-      actions.append(linkBtn);
-    } else if (account.id) {
-      const primary = accountPrimaryAction(account);
-      const actionBtn = document.createElement("button");
-      actionBtn.type = "button";
-      actionBtn.className = "button ghost compact";
-      actionBtn.textContent = primary.label;
-      actionBtn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (primary.id === "account.reauth") {
-          await openReauth(account, actionBtn);
-          return;
-        }
-        actionBtn.disabled = true;
-        try {
-          const result = await postAction(primary.id + "-" + account.id, primary.url, primary.body);
-          await handleActionResult(result, { successMessage: result.message || (primary.label + "已完成") });
-        } catch (error) {
-          toast(friendlyError(error), "error");
-        } finally {
-          actionBtn.disabled = false;
-        }
-      });
-      actions.append(actionBtn);
-      const detailBtn = document.createElement("button");
-      detailBtn.type = "button";
-      detailBtn.className = "button ghost compact";
-      detailBtn.textContent = "详情";
-      detailBtn.addEventListener("click", () => openSheet("account", account, detailBtn));
-      actions.append(detailBtn);
+    if (canOpen) {
+      const actions = document.createElement("div");
+      actions.className = "row-actions row-actions-contextual";
+      actions.append(menuButton("account", account));
+      sub2Col.append(actions);
     }
-    row.append(actions);
+    row.append(sub2Col);
     return row;
   }
 
@@ -3017,43 +3340,7 @@ function openRegister(trigger) {
       syncCol.className = "portfolio-sync";
       syncCol.append(timeNode(group.last_sync));
 
-      const actions = document.createElement("div");
-      actions.className = "portfolio-actions row-actions";
-      const sync = document.createElement("button");
-      sync.type = "button";
-      sync.className = "button ghost compact";
-      sync.textContent = "同步";
-      sync.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        sync.disabled = true;
-        try {
-          const result = await postAction("workspace-sync-" + group.id, "/api/workspaces/" + group.id + "/sync");
-          await handleActionResult(result, { successMessage: syncToastMessage(result) });
-        } catch (err) {
-          toast(friendlyError(err), "error");
-        } finally {
-          sync.disabled = false;
-        }
-      });
-      const manage = document.createElement("button");
-      manage.type = "button";
-      manage.className = "button ghost compact";
-      manage.textContent = "管理";
-      manage.addEventListener("click", (event) => {
-        event.stopPropagation();
-        openManageChildren(manage, group);
-      });
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "button ghost compact danger";
-      remove.textContent = "删除";
-      remove.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        const action = (entityActions.workspace || []).find((entry) => entry.id === "workspace.delete");
-        if (action) await action.run(group, remove);
-      });
-      actions.append(sync, manage, remove);
-      head.append(toggle, meta, ownerCol, healthCol, syncCol, actions);
+      head.append(toggle, meta, ownerCol, healthCol, syncCol);
 
       if (mother) body.append(portfolioAccountRow(mother, "mother"));
       currentChildren.forEach((row) => body.append(portfolioAccountRow(row, "child")));
@@ -3087,7 +3374,7 @@ function openRegister(trigger) {
       renderRows(
         "workspaces-body",
         items,
-        8,
+        5,
         workspaceRow,
         items.length === 0 && pageCache.items.length
           ? emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。")
@@ -3104,7 +3391,7 @@ function openRegister(trigger) {
         renderRows(
           "accounts-body",
           items,
-          8,
+          7,
           accountRow,
           items.length === 0 && pageCache.items.length
             ? emptyState("没有符合当前筛选的账号", "清除筛选或换一个关键词。")
@@ -3437,8 +3724,9 @@ function openRegister(trigger) {
     try {
       const bootstrap = pageBootstraps[page];
       if (bootstrap) await bootstrap();
+      resumeCurrentOperations();
     } catch (error) {
-      if (error.name === "AbortError") return;
+      if (isAbortError(error) || error.name === "AbortError") return;
       showPageError(friendlyError(error));
     }
   }
@@ -3458,8 +3746,6 @@ function openRegister(trigger) {
       });
   }
 
-  document.getElementById("open-operations")?.addEventListener("click", openDrawer);
-  document.querySelector("[data-close-drawer]")?.addEventListener("click", closeDrawer);
   document.querySelector("[data-close-sheet]")?.addEventListener("click", closeSheet);
   document.querySelectorAll("[data-open-register]").forEach((button) => {
     button.addEventListener("click", () => openRegister(button));
@@ -3478,38 +3764,17 @@ function openRegister(trigger) {
   });
   document.querySelector("[data-close-proxy-add]")?.addEventListener("click", closeProxyAdd);
   document.getElementById("proxy-add-form")?.addEventListener("submit", submitProxyAdd);
-  document.querySelectorAll("[data-open-onboard]").forEach((button) => {
-    button.addEventListener("click", () => openOnboard(button));
-  });
-  document.querySelector("[data-close-onboard]")?.addEventListener("click", closeOnboard);
-  document.getElementById("onboard-form")?.addEventListener("submit", submitOnboard);
-  document.querySelector("[data-close-rotate]")?.addEventListener("click", closeRotate);
-  document.getElementById("rotate-form")?.addEventListener("submit", submitRotate);
-  document.querySelector("[data-close-proxy-edit]")?.addEventListener("click", closeProxyEdit);
-  document.getElementById("proxy-edit-form")?.addEventListener("submit", submitProxyEdit);
-  document.querySelector("[data-close-manage-children]")?.addEventListener("click", closeManageChildren);
-  document.getElementById("manage-children-form")?.addEventListener("submit", submitManageChildren);
-  document.querySelectorAll("[data-close-manage-child-remove]").forEach((button) => {
-    button.addEventListener("click", closeManageChildRemove);
-  });
-  document.getElementById("manage-child-remove-confirm")?.addEventListener("click", confirmManageChildRemove);
-  document.querySelectorAll("#manage-child-remove-sheet input[name='manage-child-remove-mode']").forEach((input) => {
-    input.addEventListener("change", () => {
-      const pending = pendingChildRemove;
-      applyManageChildRemoveCopy(selectedManageChildRemoveMode(), pending?.officialDefault, pending?.accountId);
-    });
-  });
 
 
   document.getElementById("register-copy-link")?.addEventListener("click", async () => {
+    const authorize = document.getElementById("register-authorize-url");
+    const copied = await copyText(authorize?.value);
+    setRegisterStatus(copied ? "授权链接已复制。" : "复制失败，请手动选中链接。", copied ? "muted" : "error");
+  });
   document.getElementById("reauth-copy-link")?.addEventListener("click", async () => {
     const authorize = document.getElementById("reauth-authorize-url");
     const copied = await copyText(authorize?.value);
     setReauthStatus(copied ? "授权链接已复制。" : "复制失败，请手动选中链接。", copied ? "muted" : "error");
-  });
-    const authorize = document.getElementById("register-authorize-url");
-    const copied = await copyText(authorize?.value);
-    setRegisterStatus(copied ? "授权链接已复制。" : "复制失败，请手动选中链接。", copied ? "muted" : "error");
   });
   document.querySelectorAll("[data-action-page]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -3555,54 +3820,39 @@ function openRegister(trigger) {
   document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
     document.body.classList.toggle("nav-open");
   });
-  drawer?.addEventListener("click", (event) => {
-    if (event.target === drawer) closeDrawer();
-  });
-  sheet?.addEventListener("click", (event) => {
-    if (event.target === sheet) closeSheet();
-  });
-  registerSheet?.addEventListener("click", (event) => {
-  reauthSheet?.addEventListener("click", (event) => {
-    if (event.target === reauthSheet) closeReauth();
-  });
-    if (event.target === registerSheet) closeRegister();
-  });
-  phoneImportSheet?.addEventListener("click", (event) => {
-    if (event.target === phoneImportSheet) closePhoneImport();
-  });
-  proxyAddSheet?.addEventListener("click", (event) => {
-    if (event.target === proxyAddSheet) closeProxyAdd();
+  overlayRegistry.forEach((overlay, name) => {
+    overlay?.addEventListener("click", (event) => {
+      if (event.target !== overlay) return;
+      if (name === "entity") closeSheet();
+      else closeOverlay();
+    });
   });
   document.addEventListener("click", (event) => {
     if (menu && !menu.hidden && !event.target.closest("#action-menu, [data-menu-trigger], .row-actions")) closeMenu();
   });
 
   window.addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if (!getActiveOverlay() && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       palette.showModal();
       renderPalette("");
       commandInput.focus();
     }
     if (event.key === "Escape") {
-      if (!menu.hidden) closeMenu();
-      else if (manageChildRemoveSheet && !manageChildRemoveSheet.hidden) closeManageChildRemove();
-      else if (manageChildrenSheet && !manageChildrenSheet.hidden) closeManageChildren();
-      else if (onboardSheet && !onboardSheet.hidden) closeOnboard();
-      else if (rotateSheet && !rotateSheet.hidden) closeRotate();
-      else if (proxyEditSheet && !proxyEditSheet.hidden) closeProxyEdit();
-      else if (phoneImportSheet && !phoneImportSheet.hidden) closePhoneImport();
-      else if (proxyAddSheet && !proxyAddSheet.hidden) closeProxyAdd();
-      else if (reauthSheet && !reauthSheet.hidden) closeReauth();
-      else if (registerSheet && !registerSheet.hidden) closeRegister();
-      else if (sheet && !sheet.hidden) closeSheet();
-      else closeDrawer();
+      if (menu && !menu.hidden) {
+        closeMenu();
+      } else if (getActiveOverlay()) {
+        event.preventDefault();
+        if (getActiveOverlay() === "entity") closeSheet();
+        else closeOverlay();
+      }
       document.body.classList.remove("nav-open");
     }
     handleFocusTrap(event);
   });
   commandInput?.addEventListener("input", () => renderPalette(commandInput.value));
   window.addEventListener("beforeunload", (event) => {
+    stopPolling();
     if (!settingsDirty) return;
     event.preventDefault();
     event.returnValue = "";
@@ -3610,7 +3860,22 @@ function openRegister(trigger) {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") stopPolling();
   });
+  document.querySelector("[data-close-proxy-edit]")?.addEventListener("click", closeProxyEdit);
+  document.getElementById("proxy-edit-form")?.addEventListener("submit", submitProxyEdit);
 
-  window.Team48 = { abortEntity, fetchEntity, entityActions, pageBootstraps };
+  window.Team48 = {
+    abortEntity,
+    fetchEntity,
+    entityActions,
+    pageBootstraps,
+    overlayState,
+    openOverlay,
+    replaceOverlay,
+    closeOverlay,
+    restoreOverlayContext,
+    getActiveOverlay,
+    presentTeamMember,
+    workspacePrimaryAction,
+  };
   bootPage();
 })();

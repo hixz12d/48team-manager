@@ -71,7 +71,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
 
     accounts_payload = await accounts_query(db, purpose="all", include_archived=False)
     for account in accounts_payload.get("items") or []:
-        if account.get("auth") in {"oauth_required", "manual_required", "deactivated", "phone_required", "refresh_due", "unknown"} or account.get("has_access_token") is False:
+        if account.get("needs_auth"):
             add_attention(
                 {
                     "kind": "auth",
@@ -197,7 +197,11 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
 
 async def workspaces(db: AsyncSession) -> dict[str, Any]:
     payload = await workspaces_query(db)
+    latest_quota = await quota_service.latest_official_by_accounts(db)
     for item in payload["items"]:
+        owner_snapshot = latest_quota.get(item.get("owner_account_id"))
+        item["owner_quota_updated_at"] = isoformat(owner_snapshot.queried_at) if owner_snapshot else None
+        item["owner_quota"] = _quota_payload(owner_snapshot)
         item.setdefault("quota", None)
         item.setdefault("quota_available", False)
         item.setdefault("automation", None)

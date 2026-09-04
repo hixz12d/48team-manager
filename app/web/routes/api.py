@@ -47,6 +47,13 @@ def _accepted(payload: dict) -> dict:
     return payload
 
 
+def _error_detail(payload: dict, fallback: str) -> dict[str, str]:
+    return {
+        "message": str(payload.get("error") or fallback),
+        "error_code": str(payload.get("error_code") or "request_failed"),
+    }
+
+
 def build_api_router(get_db) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["api"])
 
@@ -225,10 +232,10 @@ def build_api_router(get_db) -> APIRouter:
             email=payload.email,
             account_id=payload.account_id,
         )
-        if result.get("error_code") == "not_found":
-            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") in {"not_found", "account_not_found"}:
+            raise HTTPException(status_code=404, detail=_error_detail(result, "not found"))
         if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result.get("error") or "link failed")
+            raise HTTPException(status_code=400, detail=_error_detail(result, "link failed"))
         return result
 
     @router.post("/workspaces/{workspace_id}/members/add")
@@ -372,8 +379,8 @@ def build_api_router(get_db) -> APIRouter:
         db: AsyncSession = Depends(get_db),
     ) -> dict:
         result = await console_actions.account_reauth(db, account_id)
-        if result.get("error_code") == "not_found":
-            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") in {"not_found", "account_not_found"}:
+            raise HTTPException(status_code=404, detail=_error_detail(result, "account not found"))
         return result
 
     @router.post("/accounts/{account_id}/reauth/complete")
@@ -389,10 +396,10 @@ def build_api_router(get_db) -> APIRouter:
             ticket=payload.ticket,
             callback_url=payload.callback_url,
         )
-        if result.get("error_code") == "not_found":
-            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") in {"not_found", "account_not_found"}:
+            raise HTTPException(status_code=404, detail=_error_detail(result, "account not found"))
         if not result.get("ok"):
-            raise HTTPException(status_code=400, detail=result.get("error") or "reauth failed")
+            raise HTTPException(status_code=400, detail=_error_detail(result, "reauth failed"))
         return result
 
     @router.post("/accounts/{account_id}/sub2api/sync")

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import ensure_membership, upsert_child_account
 from app.application.operations import operation_store
+from app.application.presenters import build_auth_status
 from app.core.time import utcnow
 from app.domain.automation import ACTIVE_STATES, TERMINAL_STATES, WORKSPACE_LOCK_ACTIONS
 from app.domain.identity import LOCAL_PURPOSE_CHILD, LOCAL_PURPOSE_MOTHER, MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
@@ -134,23 +135,46 @@ async def link_remote_only_member(
         return {"ok": False, "error": "official member not found", "error_code": "not_found"}
     if snap.remote_state == "invited":
         return {"ok": False, "error": "invited members cannot be linked until they join", "error_code": "not_linkable"}
+
     created = False
     if account_id is not None:
         account = await db.get(Account, int(account_id))
         if account is None:
-            return {"ok": False, "error": "account not found", "error_code": "not_found"}
+            return {"ok": False, "error": "account not found", "error_code": "account_not_found"}
     else:
         account = (await db.execute(select(Account).where(Account.email == target))).scalar_one_or_none()
     if account is None:
         account, created = await upsert_child_account(db, email=target, status="active")
     if normalize_email(account.email) != target:
-        return {"ok": False, "error": "account email mismatch", "error_code": "email_mismatch"}
+        return {"ok": False, "error": "account email mismatch", "error_code": "identity_conflict"}
+
     owner = await db.get(Account, workspace.owner_account_id) if workspace.owner_account_id else None
     if is_workspace_owner(workspace, account.id) or (owner is not None and normalize_email(owner.email) == target):
         return {"ok": False, "error": "workspace owner cannot be linked as a child", "error_code": "not_linkable"}
-    needs_auth = not bool((account.access_token_encrypted or "").strip())
-    if created or (needs_auth and str(account.auth_state or "") in {"", "unknown"}):
+
+    membership = (
+        await db.execute(
+            select(WorkspaceMembership).where(
+                WorkspaceMembership.workspace_id == workspace.id,
+                WorkspaceMembership.account_id == account.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if membership is not None and membership.membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}:
+        return {
+            "ok": False,
+            "workspace_id": workspace.id,
+            "account_id": account.id,
+            "email": account.email,
+            "error": "该成员已接入本地，无需重复接入。",
+            "error_code": "already_linked",
+            **build_auth_status(account),
+        }
+
+    auth_status = build_auth_status(account)
+    if created or (auth_status["needs_auth"] and str(account.auth_state or "") in {"", "unknown"}):
         account.auth_state = "oauth_required"
+        auth_status = build_auth_status(account)
     if created and workspace.source_team_id and not account.source_team_id:
         account.source_team_id = workspace.source_team_id
     await ensure_membership(
@@ -172,7 +196,7 @@ async def link_remote_only_member(
     ).scalar_one_or_none()
     await db.commit()
     message = f"已按官方邮箱接入 {account.email}" if created else f"已接入 {account.email}"
-    if needs_auth:
+    if auth_status["needs_auth"]:
         message += "，请完成授权后才能读取额度"
     return {
         "ok": True,
@@ -180,10 +204,10 @@ async def link_remote_only_member(
         "account_id": account.id,
         "email": account.email,
         "created": created,
-        "needs_auth": needs_auth,
         "status": "managed",
         "membership_id": membership.id if membership else None,
         "message": message,
+        **auth_status,
     }
 
 
@@ -290,9 +314,12 @@ async def add_local_child(
     account, created = await upsert_child_account(db, email=target, status="active" if already_joined else "invited")
     if is_workspace_owner(workspace, account.id):
         return {"ok": False, "error": "workspace owner cannot be invited as a child", "error_code": "not_linkable"}
-    needs_auth = not bool((account.access_token_encrypted or "").strip())
+    auth_status = build_auth_status(account)
+    needs_auth = auth_status["needs_auth"]
     if created or (needs_auth and str(account.auth_state or "") in {"", "unknown"}):
         account.auth_state = "oauth_required"
+        auth_status = build_auth_status(account)
+        needs_auth = auth_status["needs_auth"]
     if created and workspace.source_team_id and not account.source_team_id:
         account.source_team_id = workspace.source_team_id
     membership_state = MEMBERSHIP_STATE_JOINED if already_joined else MEMBERSHIP_STATE_INVITED
@@ -355,7 +382,7 @@ async def add_local_child(
         "account_id": account.id,
         "email": account.email,
         "created": created,
-        "needs_auth": needs_auth,
+        **auth_status,
         "status": status,
         "invited": status == "invited",
         "already_joined": already_joined,

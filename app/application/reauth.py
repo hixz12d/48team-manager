@@ -10,6 +10,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.tokens import auth_service, decrypt_secret, set_auth_state
+from app.application.presenters import build_auth_status
 from app.application.identity import automation_gate
 from app.application.jobs import browser as browser_slot
 from app.application.operations import operation_store, unpack_input
@@ -205,9 +206,13 @@ class ReauthService:
             proxy=str(account.proxy or ""),
             password="",
         )
-        oauth_sessions.mark_session(session["ticket"], account_id=account.id, status="waiting", message="等待粘贴回调")
-        set_auth_state(account, "oauth_required")
-        await db.commit()
+        oauth_sessions.mark_session(
+            session["ticket"],
+            account_id=account.id,
+            original_auth_state=account.auth_state,
+            status="waiting",
+            message="等待粘贴回调",
+        )
         return {
             "ok": True,
             "success": True,
@@ -217,6 +222,7 @@ class ReauthService:
             "authorize_url": session.get("authorize_url") or auth.get("authorize_url") or "",
             "redirect_uri": session.get("redirect_uri") or oauth_sessions.REDIRECT_URI,
             "message": "打开授权链接，登录后把回调地址贴回来",
+            **build_auth_status(account),
         }
 
     async def complete_manual_reauth(
@@ -233,7 +239,7 @@ class ReauthService:
 
         session = oauth_sessions.get_session(ticket)
         if session is None:
-            return {"ok": False, "success": False, "error": "认证会话不存在或已过期", "error_code": "oauth_expired"}
+            return {"ok": False, "success": False, "error": "授权回调已过期，请重新生成授权链接。", "error_code": "callback_expired"}
         session_account_id = session.get("account_id")
         if session_account_id not in (None, "", account.id) and int(session_account_id) != int(account.id):
             return {"ok": False, "success": False, "error": "授权会话不属于这个账号", "error_code": "oauth_account_mismatch"}
@@ -245,19 +251,19 @@ class ReauthService:
                 "ok": False,
                 "success": False,
                 "error": parsed.get("error_description") or parsed["error"],
-                "error_code": "oauth_denied",
+                "error_code": "callback_invalid",
             }
         if not parsed.get("code"):
             return {
                 "ok": False,
                 "success": False,
                 "error": "回调地址里没有授权码，请把跳转到 localhost:1455 的整段地址贴回来",
-                "error_code": "missing_code",
+                "error_code": "callback_invalid",
             }
         expected_state = str(session.get("state") or "")
         got_state = str(parsed.get("state") or "")
         if expected_state and got_state and got_state != expected_state:
-            return {"ok": False, "success": False, "error": "回调 state 不匹配，请重新生成授权链接", "error_code": "state_mismatch"}
+            return {"ok": False, "success": False, "error": "授权回调无效，请重新生成授权链接。", "error_code": "callback_invalid"}
         exchanger = client or chatgpt_client
         exchanged = await exchanger.exchange_oauth_code(
             code=parsed["code"],

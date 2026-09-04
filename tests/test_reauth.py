@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.operations import operation_store
+from app.application.presenters import build_auth_status
+from app.application.queries.identity import workspaces_query
 from app.application.reauth import reauth_service
 from app.application.tokens import auth_service, encrypt_secret
 from app.core.crypto import token_cipher
@@ -77,6 +79,34 @@ class ReauthPolicyTests(unittest.TestCase):
         self.assertEqual(first, now + timedelta(hours=2))
         self.assertEqual(second, now + timedelta(hours=4))
         self.assertEqual(later, now + timedelta(hours=6))
+
+
+    def test_auth_presenter_has_one_canonical_mapping(self):
+        missing = Account(
+            email="new@example.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="oauth_required",
+        )
+        self.assertEqual(
+            build_auth_status(missing),
+            {
+                "auth_state": "oauth_required",
+                "needs_auth": True,
+                "auth_action": "authorize",
+                "auth_reason": "missing_token",
+            },
+        )
+        missing.access_token_encrypted = "encrypted"
+        self.assertEqual(build_auth_status(missing)["auth_action"], "reauthorize")
+        missing.auth_state = "healthy"
+        self.assertFalse(build_auth_status(missing)["needs_auth"])
+        missing.auth_state = "deactivated"
+        deactivated = build_auth_status(missing)
+        self.assertTrue(deactivated["needs_auth"])
+        self.assertIsNone(deactivated["auth_action"])
+        self.assertEqual(deactivated["auth_reason"], "deactivated")
 
 
 class AuthProbeTests(unittest.IsolatedAsyncioTestCase):
@@ -326,3 +356,86 @@ class ManualReauthLinkTests(unittest.IsolatedAsyncioTestCase):
         refreshed = await self.session.get(Account, account.id)
         self.assertEqual(refreshed.auth_state, "healthy")
         self.assertTrue(refreshed.access_token_encrypted)
+
+
+    async def test_start_and_failed_complete_preserve_existing_auth(self):
+        account = await self._account("stable@example.com", "mother")
+        account.auth_state = "healthy"
+        account.access_token_encrypted = encrypt_secret("at-existing")
+        await self.session.commit()
+        original_token = account.access_token_encrypted
+
+        started = await reauth_service.start_manual_reauth(self.session, account)
+        refreshed = await self.session.get(Account, account.id)
+        self.assertEqual(refreshed.auth_state, "healthy")
+        self.assertEqual(refreshed.access_token_encrypted, original_token)
+
+        client = AsyncMock()
+        client.exchange_oauth_code = AsyncMock(
+            return_value={"success": False, "error": "revoked", "error_code": "token_revoked"}
+        )
+        failed = await reauth_service.complete_manual_reauth(
+            self.session,
+            account,
+            ticket=started["ticket"],
+            callback_url="http://localhost:1455/auth/callback?code=bad",
+            client=client,
+        )
+        self.assertFalse(failed["ok"])
+        self.assertEqual(failed["error_code"], "token_revoked")
+        refreshed = await self.session.get(Account, account.id)
+        self.assertEqual(refreshed.auth_state, "healthy")
+        self.assertEqual(refreshed.access_token_encrypted, original_token)
+
+    async def test_expired_callback_has_stable_error_code(self):
+        account = await self._account("expired@example.com", "child")
+        result = await reauth_service.complete_manual_reauth(
+            self.session,
+            account,
+            ticket="missing-ticket",
+            callback_url="http://localhost:1455/auth/callback?code=late",
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "callback_expired")
+        self.assertEqual(account.auth_state, "oauth_required")
+
+    async def test_owner_reauth_updates_workspace_auth_health(self):
+        owner = await self._account("owner@example.com", "mother")
+        workspace = Workspace(
+            official_workspace_id=WORKSPACE_UUID,
+            owner_account_id=owner.id,
+            status="active",
+        )
+        self.session.add(workspace)
+        await self.session.flush()
+        self.session.add(
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                account_id=owner.id,
+                official_role="owner",
+                membership_state="joined",
+                local_purpose="mother",
+            )
+        )
+        await self.session.commit()
+        before = (await workspaces_query(self.session))["items"][0]
+        self.assertTrue(before["owner_needs_auth"])
+        self.assertEqual(before["health"], "needs_auth")
+
+        started = await reauth_service.start_manual_reauth(self.session, owner)
+        client = AsyncMock()
+        client.exchange_oauth_code = AsyncMock(
+            return_value={"success": True, "access_token": "at-new", "refresh_token": "rt-new"}
+        )
+        completed = await reauth_service.complete_manual_reauth(
+            self.session,
+            owner,
+            ticket=started["ticket"],
+            callback_url="http://localhost:1455/auth/callback?code=ok",
+            client=client,
+        )
+        self.assertTrue(completed["ok"])
+        after = (await workspaces_query(self.session))["items"][0]
+        self.assertEqual(after["owner_auth_state"], "healthy")
+        self.assertFalse(after["owner_needs_auth"])
+        self.assertEqual(after["health"], "not_synced")

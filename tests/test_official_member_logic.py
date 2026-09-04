@@ -24,6 +24,7 @@ from app.application.queries.identity import accounts_query, workspaces_query
 from app.application.resources.hme import occupied_account_emails, reconcile_aliases
 from app.application.resources.phones import phone_pool_service
 from app.application.workspace_sync import WorkspaceSyncService
+from app.application.tokens import encrypt_secret
 from app.application.workspaces import WorkspaceService
 from app.core.time import utcnow
 from app.domain.identity import PROVIDER_SUB2API
@@ -195,6 +196,7 @@ class WorkspaceQueryAndSyncTests(unittest.IsolatedAsyncioTestCase):
         james = next(row for row in item["reconciliation"]["items"] if row["email"] == "james.smith@example.com")
         self.assertEqual(james["status"], "remote_only")
         self.assertEqual(item["managed"]["count"], 0)
+        self.assertEqual(item["owner_account_id"], self.workspace.owner_account_id)
 
     async def test_schema_mismatch_keeps_old_snapshot(self):
         first = WorkspaceSyncService(
@@ -237,6 +239,43 @@ class WorkspaceQueryAndSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(owner["workspace_id"], self.workspace.id)
         self.assertEqual(owner["primary_workspace_id"], self.workspace.id)
         self.assertIsInstance(owner["memberships"], list)
+
+
+    async def test_workspace_owner_auth_fields_use_canonical_presenter(self):
+        owner = await self.session.get(Account, self.workspace.owner_account_id)
+        owner.auth_state = "oauth_required"
+        owner.access_token_encrypted = None
+        await self.session.commit()
+
+        workspace = (await workspaces_query(self.session))["items"][0]
+        self.assertEqual(workspace["owner_account_id"], owner.id)
+        self.assertEqual(workspace["owner_auth_state"], "oauth_required")
+        self.assertTrue(workspace["owner_needs_auth"])
+        self.assertEqual(workspace["owner_auth_action"], "authorize")
+        self.assertEqual(workspace["owner_auth_reason"], "missing_token")
+        account = (await accounts_query(self.session))["items"][0]
+        self.assertEqual(account["needs_auth"], workspace["owner_needs_auth"])
+        self.assertEqual(account["auth_action"], workspace["owner_auth_action"])
+
+        owner.auth_state = "healthy"
+        owner.access_token_encrypted = encrypt_secret("owner-token")
+        await self.session.commit()
+        healthy = (await workspaces_query(self.session))["items"][0]
+        self.assertEqual(healthy["owner_auth_state"], "healthy")
+        self.assertFalse(healthy["owner_needs_auth"])
+        self.assertIsNone(healthy["owner_auth_action"])
+        self.assertIsNone(healthy["owner_auth_reason"])
+
+    async def test_workspace_without_owner_has_explicit_missing_state(self):
+        self.workspace.owner_account_id = None
+        await self.session.commit()
+        workspace = (await workspaces_query(self.session))["items"][0]
+        self.assertIsNone(workspace["owner_account_id"])
+        self.assertEqual(workspace["owner_auth_state"], "owner_account_missing")
+        self.assertFalse(workspace["owner_needs_auth"])
+        self.assertIsNone(workspace["owner_auth_action"])
+        self.assertEqual(workspace["owner_auth_reason"], "owner_account_missing")
+        self.assertEqual(workspace["health"], "owner_account_missing")
 
 
 class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
@@ -575,18 +614,20 @@ class ConsoleLoopTests(unittest.IsolatedAsyncioTestCase):
 
 
 class UIActionMatrixTests(unittest.TestCase):
-    def test_success_sync_does_not_auto_open_operation_and_toast_has_counts(self):
+    def test_success_sync_uses_concise_feedback_without_task_link(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
             js = client.get("/static/js/app.js").text
             self.assertIn("handleActionResult", js)
-            self.assertIn("syncToastMessage", js)
-            self.assertIn("官方已加入", js)
-            self.assertIn("尚未接入", js)
+            self.assertIn("同步完成", js)
+            self.assertIn("未接入", js)
             self.assertNotIn("还没有子号", js)
-            self.assertLess(js.count("if (result.operation_id) await openOperationById(result.operation_id)"), 3)
-            self.assertIn("can_retry", js)
-            self.assertIn("chooseWorkspaceId", js)
-            self.assertIn("chooseWorkspaceId", js)
+            self.assertNotIn("syncToastMessage", js)
+            self.assertNotIn("chooseWorkspaceId", js)
+            self.assertNotIn("查看任务", js)
+            self.assertNotIn("if (result.operation_id) await openOperationById(result.operation_id)", js)
+            self.assertIn('label: "技术详情"', js)
+            self.assertIn('id: "workspace.manage"', js)
             html = client.get("/workspaces").text
             self.assertIn("席位", html)
+            self.assertNotIn("data-open-operations", html)

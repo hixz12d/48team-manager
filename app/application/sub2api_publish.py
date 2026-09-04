@@ -361,7 +361,15 @@ async def account_sub2api_push(
         credentials["organization_id"] = expected_ws
         credentials["workspace_id"] = expected_ws
 
-    account_name = canonical_name_for_account(account, workspace) if workspace is not None else canonical_name_for_account(account, type("WS", (), {"owner_account_id": None})())
+    owner_email = None
+    if workspace is not None and workspace.owner_account_id:
+        owner = await db.get(Account, int(workspace.owner_account_id))
+        owner_email = owner.email if owner is not None else None
+    account_name = canonical_name_for_account(
+        account,
+        workspace if workspace is not None else type("WS", (), {"owner_account_id": None})(),
+        owner_email=owner_email,
+    )
     body: dict[str, Any] = {
         "name": account_name,
         "platform": "openai",

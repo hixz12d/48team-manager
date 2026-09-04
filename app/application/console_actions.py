@@ -374,7 +374,7 @@ async def account_quota_probe(db: AsyncSession, account_id: int, workspace_id: i
 async def account_reauth(db: AsyncSession, account_id: int) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
-        return {"ok": False, "error": "account not found", "error_code": "not_found"}
+        return {"ok": False, "error": "account not found", "error_code": "account_not_found"}
     return await reauth_service.start_manual_reauth(db, account)
 
 
@@ -387,7 +387,7 @@ async def account_reauth_complete(
 ) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
-        return {"ok": False, "error": "account not found", "error_code": "not_found"}
+        return {"ok": False, "error": "account not found", "error_code": "account_not_found"}
     return await reauth_service.complete_manual_reauth(
         db,
         account,
