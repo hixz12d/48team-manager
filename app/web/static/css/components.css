@@ -899,6 +899,95 @@
   color: var(--warning-text);
 }
 
+/* 命令面板 Command Palette */
+.palette {
+  position: fixed;
+  inset: auto;
+  top: 15vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: 70vh;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text);
+  overflow: hidden;
+  z-index: 90;
+}
+
+.palette::backdrop {
+  background: var(--overlay);
+  backdrop-filter: blur(2px);
+  animation: fadeIn 0.15s ease;
+}
+
+.palette input {
+  width: 100%;
+  height: 48px;
+  padding: 0 var(--space-md);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+  font-size: 14px;
+  color: var(--text);
+  outline: none;
+  box-shadow: none;
+}
+
+.palette input::placeholder {
+  color: var(--muted);
+}
+
+.palette ul {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-xs);
+  max-height: calc(70vh - 48px);
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+}
+
+.palette li {
+  margin: 0;
+  padding: 0;
+}
+
+.palette li button {
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.palette li button:hover,
+.palette li button:focus {
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.palette li.is-active button,
+.palette li button.is-selected {
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  font-weight: 500;
+}
+
 /* 响应式断点适配 */
 @media (max-width: 1200px) {
   .overview-layout {
@@ -975,6 +1064,15 @@
   align-items: center;
   padding: 6px 0;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.team-member-row.is-selected {
+  background: var(--accent-bg);
+  border-bottom-color: var(--accent-border);
+  box-shadow: inset 3px 0 0 var(--accent);
+  padding-left: 6px;
+  padding-right: 6px;
+  border-radius: var(--radius-xs);
 }
 
 .team-member-identity,

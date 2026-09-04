@@ -157,6 +157,11 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("`workspace:${workspace.id}:member:${email}:link`", js)
             self.assertIn("`/api/operations?${query.toString()}`", js)
             self.assertNotIn('fetchEntity("operation-list"', js.split("async function bootOperations")[0])
+            components_css = client.get("/static/css/components.css").text
+            self.assertIn(".team-member-row.is-selected", components_css)
+            self.assertIn(".palette", components_css)
+            self.assertIn(".palette::backdrop", components_css)
+            self.assertIn('id="command-palette"', workspaces)
 
     def test_settings_never_returns_raw_secret(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

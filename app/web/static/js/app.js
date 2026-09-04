@@ -2539,7 +2539,16 @@ function hmeRow(item) {
         teamDetailState.stage = "workspace_detail";
         teamDetailState.view = "details";
         renderTeamDetails(teamDetailState.workspace);
-        if (panel) panel.scrollTop = teamDetailState.scrollTop || 0;
+        requestAnimationFrame(() => {
+          if (panel) panel.scrollTop = teamDetailState.scrollTop || 0;
+          const selected = panel?.querySelector(".team-member-row.is-selected");
+          if (selected) {
+            const focusTarget = selected.querySelector("button, summary, [tabindex]") || selected;
+            if (focusTarget && typeof focusTarget.focus === "function") {
+              try { focusTarget.focus(); } catch (_) {}
+            }
+          }
+        });
       });
       const form = document.createElement("form");
       form.className = "team-auth-form sheet-section";
