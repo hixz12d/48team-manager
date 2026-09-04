@@ -11,16 +11,11 @@ from app.application.connection_probe import probe_hme, probe_mail, probe_sub2ap
 from app.application.queries import console as console_query
 from app.application.queries.identity import identity_audit_query
 from app.application.resources.phones import phone_pool_service
-from app.application.resources.proxies import proxy_profile_service
-from app.application.resources.proxy_probe import proxy_probe_service
+from app.application.sub2api_proxy_catalog import sub2api_proxy_catalog
 from app.application.settings import save_console_settings
 from app.application.workspace_sync import workspace_sync_service
-from app.application.sub2api_proxy import sub2api_proxy_service
 from app.application.sub2api_usage import sub2api_usage_service
 from app.integrations.sub2api.client import sub2api_client
-from app.core.proxy import normalize_proxy_url
-from app.core.time import utcnow
-from app.persistence.models.resources import ProxyProfile
 from app.web.deps import require_admin
 from app.web.schemas.resources import (
     AccountProxyPatch,
@@ -30,12 +25,9 @@ from app.web.schemas.resources import (
     OperationBulkArchiveRequest,
     PhoneImportRequest,
     PhoneStatusPatch,
-    ProxyCreateRequest,
-    ProxyPatchRequest,
     RevokeInviteRequest,
     RotateRequest,
     Sub2ApiPushRequest,
-    Sub2ApiProxySyncRequest,
     Sub2ApiUsageSyncRequest,
     WorkspaceAddChildRequest,
     WorkspaceLinkMemberRequest,
@@ -446,12 +438,6 @@ def build_api_router(get_db) -> APIRouter:
             schedulable=payload.schedulable,
             confirm_mixed_channel_risk=payload.confirm_mixed_channel_risk,
             workspace_id=workspace_id,
-            template_id=payload.template_id,
-            template_overrides=payload.template_overrides,
-            proxy_source=payload.proxy_source,
-            proxy_profile_id=payload.proxy_profile_id,
-            reapply_template=payload.reapply_template,
-            test_proxy_before_push=payload.test_proxy_before_push,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
@@ -475,12 +461,6 @@ def build_api_router(get_db) -> APIRouter:
             schedulable=payload.schedulable,
             confirm_mixed_channel_risk=payload.confirm_mixed_channel_risk,
             workspace_id=workspace_id,
-            template_id=payload.template_id,
-            template_overrides=payload.template_overrides,
-            proxy_source=payload.proxy_source,
-            proxy_profile_id=payload.proxy_profile_id,
-            reapply_template=payload.reapply_template,
-            test_proxy_before_push=payload.test_proxy_before_push,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
@@ -504,12 +484,6 @@ def build_api_router(get_db) -> APIRouter:
             schedulable=payload.schedulable,
             confirm_mixed_channel_risk=payload.confirm_mixed_channel_risk,
             workspace_id=workspace_id,
-            template_id=payload.template_id,
-            template_overrides=payload.template_overrides,
-            proxy_source=payload.proxy_source,
-            proxy_profile_id=payload.proxy_profile_id,
-            reapply_template=payload.reapply_template,
-            test_proxy_before_push=payload.test_proxy_before_push,
             dry_run=True,
         )
         if result.get("error_code") == "not_found":
@@ -530,19 +504,6 @@ def build_api_router(get_db) -> APIRouter:
     ) -> dict:
         return await sub2api_client.integration_capabilities(db)
 
-    @router.get("/sub2api/templates")
-    async def sub2api_templates(
-        _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
-    ) -> dict:
-        capabilities = await sub2api_client.integration_capabilities(db)
-        supported = bool((capabilities.get("account_templates") or {}).get("crud"))
-        items = await sub2api_client.list_account_templates(db) if supported else []
-        return {
-            "supported": supported,
-            "items": items,
-            "capabilities": capabilities,
-            "message": None if supported else "当前 Sub2API 没有账号推送模板 API",
-        }
 
     @router.post("/sub2api/usage/sync")
     async def sync_all_sub2api_usage(
@@ -596,7 +557,6 @@ def build_api_router(get_db) -> APIRouter:
             db,
             account_id,
             proxy=payload.proxy,
-            proxy_profile_id=payload.proxy_profile_id,
             clear=payload.clear,
         )
         if result.get("error_code") == "not_found":
@@ -789,106 +749,33 @@ def build_api_router(get_db) -> APIRouter:
         return result
 
     @router.get("/resources/proxies")
-    async def proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-        return await console_query.proxies(db)
-
-
-    @router.get("/resources/proxies/{proxy_id}/bindings")
-    async def proxy_bindings(
-        proxy_id: int,
-        _: dict = Depends(require_admin),
-        db: AsyncSession = Depends(get_db),
-    ) -> dict:
-        result = await console_actions.proxy_bindings(db, proxy_id)
-        if result.get("error_code") == "not_found":
-            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
-        return result
-
-    @router.post("/resources/proxies")
-    async def create_proxy(
-        payload: ProxyCreateRequest,
+    async def proxies(
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
         try:
-            url = normalize_proxy_url(payload.url)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        if not url:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="代理地址不能为空")
-        name = str(payload.name or "").strip()
-        profile = await proxy_profile_service.upsert_from_url(
-            db,
-            url,
-            name=name,
-            name_source="user" if name else "auto",
-        )
-        await db.commit()
-        return {"ok": True, "item": proxy_profile_service.serialize(profile)}
+            return await sub2api_proxy_catalog.list(db)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "message": "无法读取 Sub2API 代理目录",
+                    "error_code": "remote_catalog_unavailable",
+                },
+            ) from exc
 
-    @router.patch("/resources/proxies/{proxy_id}")
-    async def patch_proxy(
-        proxy_id: int,
-        payload: ProxyPatchRequest,
-        _: dict = Depends(require_admin),
-        db: AsyncSession = Depends(get_db),
-    ) -> dict:
-        profile = await db.get(ProxyProfile, int(proxy_id))
-        if profile is None:
-            raise HTTPException(status_code=404, detail="proxy not found")
-        if payload.name is not None or payload.restore_auto_name:
-            await proxy_profile_service.rename(
-                db,
-                profile,
-                name=payload.name,
-                restore_auto_name=bool(payload.restore_auto_name) or (payload.name is not None and not str(payload.name).strip()),
-            )
-        if payload.status is not None:
-            profile.status = payload.status
-        profile.updated_at = utcnow()
-        await db.commit()
-        return {"ok": True, "item": proxy_profile_service.serialize(profile)}
-
-    @router.post("/resources/proxies/{proxy_id}/probe")
+    @router.post("/resources/proxies/{remote_id}/probe")
     async def probe_proxy(
-        proxy_id: int,
+        remote_id: int,
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
-        result = await proxy_probe_service.probe_profile(db, proxy_id)
+        result = await sub2api_proxy_catalog.probe(db, remote_id)
         if result.get("error_code") == "not_found":
-            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
-        return _accepted(result)
-
-    @router.post("/resources/proxies/{proxy_id}/sub2api/sync")
-    async def sync_proxy_to_sub2api(
-        proxy_id: int,
-        payload: Sub2ApiProxySyncRequest,
-        _: dict = Depends(require_admin),
-        db: AsyncSession = Depends(get_db),
-    ) -> dict:
-        result = await sub2api_proxy_service.sync_profile(
-            db, proxy_id, test_before_use=payload.test_before_use
-        )
-        if result.get("error_code") == "not_found":
-            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
-        return _accepted(result)
-
-    @router.post("/resources/proxies/probe-all")
-    async def probe_all_proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-        return _accepted(await proxy_probe_service.probe_all(db))
-
-    @router.post("/resources/proxies/repair")
-    async def repair_proxies(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
-        linked = await console_actions.repair_proxy_profiles_from_accounts(db)
-        names = await proxy_profile_service.repair_legacy_names(db)
-        await db.commit()
-        return {
-            "ok": True,
-            "linked": linked.get("linked", 0),
-            "renamed": names.get("changed", 0),
-            "skipped": names.get("skipped", 0),
-        }
+            raise HTTPException(status_code=404, detail=result)
+        if result.get("error_code") == "invalid_remote_id":
+            raise HTTPException(status_code=400, detail=result)
+        return result
 
     @router.get("/settings")
     async def settings_view(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:

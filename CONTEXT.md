@@ -12,5 +12,5 @@ Gmail、iCloud、姓名、Team 前缀都不是身份真理。最多当 migration
 
 - 本地用途：local DB
 - 官方 Workspace / role / 5h / 7d quota：OpenAI official APIs
-- Sub2API：verified binding + runtime
-- HME / Phone / Proxy：local lease 与健康检查
+- Sub2API：verified binding、计费用量与代理目录；代理目录以 Sub2API 为唯一真相来源
+- HME / Phone：local lease；本地 Proxy 仅保留浏览器自动化运行 URL 与历史任务冻结快照，不是可编辑的远端代理目录

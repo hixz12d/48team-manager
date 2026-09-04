@@ -299,6 +299,17 @@ class Sub2ApiClient:
         finally:
             await client.aclose()
 
+    async def list_proxies(
+        self,
+        db: AsyncSession,
+        cfg: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        client, headers, _cfg = await self._with_client(db, cfg)
+        try:
+            return await self._paginate_admin(client, headers, "/api/v1/admin/proxies")
+        finally:
+            await client.aclose()
+
     async def get_account(self, db: AsyncSession, account_id: int) -> dict[str, Any]:
         if not account_id:
             return {}
@@ -633,7 +644,7 @@ class Sub2ApiClient:
             await client.aclose()
 
     async def integration_capabilities(self, db: AsyncSession) -> dict[str, Any]:
-        """Detect optional cross-system contracts without claiming unsupported templates."""
+        """Detect the Sub2API contracts Team48 actively consumes."""
         fallback = {
             "schema_version": None,
             "detection": "legacy_fallback",
@@ -642,14 +653,7 @@ class Sub2ApiClient:
                 "batch_today": True,
                 "batch_exact_windows": False,
             },
-            "proxies": {"crud": True, "test": True},
-            "account_templates": {
-                "crud": False,
-                "schema": False,
-                "create_from_template": False,
-                "apply": False,
-                "preview": False,
-            },
+            "proxies": {"catalog": True, "test": True},
         }
         config = await self.load_config(db)
         if not config.get("configured"):
@@ -670,20 +674,13 @@ class Sub2ApiClient:
                 raise
             if not isinstance(data, dict):
                 return fallback
-            return {**fallback, **data, "detection": "remote"}
+            remote = dict(data)
+            remote.pop("account_templates", None)
+            return {**fallback, **remote, "detection": "remote"}
         finally:
             await client.aclose()
 
 
-    async def list_account_templates(self, db: AsyncSession) -> list[dict[str, Any]]:
-        client, headers, _cfg = await self._with_client(db)
-        try:
-            data = await self._request_json(
-                client, headers, "GET", "/api/v1/admin/account-templates", retries=1
-            )
-            return self._account_items(data)
-        finally:
-            await client.aclose()
 
     async def read_after_write(self, db: AsyncSession, account_id: int) -> dict[str, Any]:
         return await self.get_account(db, account_id)

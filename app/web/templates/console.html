@@ -46,8 +46,6 @@
           <button type="button" class="button primary" data-open-register>登记团队</button>
           {% elif page == 'hme' %}
           <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
-          {% elif page == 'proxies' %}
-          <button type="button" class="button" data-action-page="proxy-probe-all">检测全部</button>
           {% endif %}
         </div>
       </header>
@@ -259,8 +257,8 @@
         {% elif page == 'proxies' %}
         <section class="panel table-shell">
           <div class="toolbar">
-            <button type="button" class="button primary" data-open-proxy-add>添加代理</button>
-            <button type="button" class="button" data-action-page="proxy-probe-all">检测全部</button>
+            <span class="muted">只读</span>
+            <span class="muted">数据源 Sub2API</span>
             <span class="toolbar-count muted" id="proxies-count"></span>
           </div>
           <div class="table-scroll">
@@ -270,10 +268,10 @@
                   <th scope="col">名称</th>
                   <th scope="col">地区</th>
                   <th scope="col">出口 IP</th>
-                  <th scope="col">启用</th>
+                  <th scope="col">状态</th>
                   <th scope="col">健康</th>
                   <th scope="col">地址</th>
-                  <th scope="col">最后检测</th>
+                  <th scope="col">检测时间</th>
                   <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
@@ -304,10 +302,6 @@
                       <p class="hint" id="sub2api-usage-status">正在读取本地快照状态…</p>
                     </div>
                     <button class="button compact" id="sub2api-usage-sync-all" type="button">同步全部</button>
-                    <div>
-                      <span class="field-label">账号推送模板</span>
-                      <p class="hint" id="sub2api-template-status">正在探测远端能力…</p>
-                    </div>
                   </div>
                   <div class="service-edit" data-edit-panel="sub2api" hidden>
                     <label>地址<input name="sub2api_base_url" autocomplete="off"></label>
@@ -526,63 +520,23 @@
       </form>
     </div>
   </div>
-  <div class="sheet" id="proxy-add-sheet" hidden>
-    <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="proxy-add-title">
-      <header>
-        <div>
-          <strong id="proxy-add-title">添加代理</strong>
-          <p class="muted">写入代理档案。登记母号时填的代理也会自动进这里。</p>
-        </div>
-        <button type="button" class="button ghost" data-close-proxy-add>关掉</button>
-      </header>
-      <form id="proxy-add-form" class="sheet-body">
-        <div class="sheet-section">
-          <label>名称<input name="name" autocomplete="off" placeholder="可选，例如 美西母号"></label>
-          <label>代理地址<input name="url" autocomplete="off" placeholder="socks5://host:port 或 host:port:user:pass" required></label>
-          <p class="hint">支持 http / https / socks5 / socks5h。账号密码会加密保存，列表里只显示脱敏地址。</p>
-        </div>
-        <p id="proxy-add-status" class="muted" hidden></p>
-        <div class="settings-probe-actions">
-          <button class="button primary" type="submit" id="proxy-add-submit">添加</button>
-        </div>
-      </form>
-    </div>
-  </div>
   <div class="sheet" id="proxy-edit-sheet" hidden>
     <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="proxy-edit-title">
       <header>
         <div>
-          <strong id="proxy-edit-title">编辑代理</strong>
-          <p class="muted" id="proxy-edit-subtitle">可改名称或启停。留空名称会恢复自动名。</p>
+          <strong id="proxy-edit-title">修改母号代理</strong>
+          <p class="muted" id="proxy-edit-subtitle">仅母号可修改运行时代理 URL。</p>
         </div>
         <button type="button" class="button ghost" data-close-proxy-edit>关闭</button>
       </header>
       <form id="proxy-edit-form" class="sheet-body">
-        <input type="hidden" name="mode" value="account">
         <input type="hidden" name="account_id" value="">
-        <input type="hidden" name="proxy_id" value="">
-        <div class="sheet-section" data-proxy-edit-account>
+        <div class="sheet-section">
           <label>账号<input name="email" readonly></label>
           <label>当前代理<input name="current_proxy" readonly></label>
-          <label>绑定已有档案
-            <select name="proxy_profile_id">
-              <option value="">不改绑定，只填新 URL</option>
-            </select>
-          </label>
-          <label>新代理 URL<input name="proxy" autocomplete="off" placeholder="socks5://host:port；优先于档案选择"></label>
+          <label>新代理 URL<input name="proxy" autocomplete="off" placeholder="socks5://host:port"></label>
           <label class="check"><input name="clear" type="checkbox"> 清除代理</label>
-          <p class="hint">仅母号可改。新 URL 会入库并绑定；已有档案不会改端点。运行中任务继续使用已冻结的代理。</p>
-        </div>
-        <div class="sheet-section" data-proxy-edit-profile hidden>
-          <label>名称<input name="name" autocomplete="off" placeholder="留空并勾选恢复自动名"></label>
-          <label class="check"><input name="restore_auto_name" type="checkbox"> 恢复自动名称</label>
-          <label>状态
-            <select name="status">
-              <option value="active">启用</option>
-              <option value="disabled">停用</option>
-            </select>
-          </label>
-          <p class="hint">端点和凭据暂不在此抽屉内静默改写；运行中的任务继续使用已冻结的代理 URL。</p>
+          <p class="hint">仅母号可改。运行中任务继续使用已冻结的代理。</p>
         </div>
         <p id="proxy-edit-status" class="muted" hidden></p>
         <div class="settings-probe-actions">

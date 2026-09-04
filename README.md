@@ -13,8 +13,8 @@
 3. 查看官方额度
 4. 发现授权失效并重新授权
 5. 周额度满或封禁后安全轮转
-6. 管理 HME alias、手机号、静态 ISP / Proxy
-7. 与 Sub2API 同步
+6. 管理 HME alias、手机号与本地自动化运行代理
+7. 与 Sub2API 同步账号/用量，并只读查看其代理目录
 8. 查看后台 Operation
 
 官方计划、Workspace Role、本地用途三者永远不能互相推断。
@@ -117,6 +117,8 @@ Never touch:
 - `docker compose down` or `--remove-orphans`
 
 Sub2API is used only through its HTTP Admin API.
+
+Sub2API owns the proxy catalog and is its only source of truth. Team48 only lists and probes that remote catalog; it does not create, edit, or sync proxy records to Sub2API. Local proxy profiles remain solely as compatibility data for browser automation, account-specific runtime URLs, and frozen historical operation snapshots. Account pushes omit `proxy_id`, preserving an existing remote binding and leaving new remote accounts unbound.
 
 Do not run real kick, invite, or OpenAI billing/seat-changing actions without approval.
 

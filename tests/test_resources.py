@@ -288,7 +288,7 @@ class ProxyFreezeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ResourceApiTests(unittest.TestCase):
-    def test_phone_import_and_proxy_create_via_api(self):
+    def test_phone_import_and_proxy_writes_are_not_exposed(self):
         import tempfile
         from pathlib import Path
 
@@ -312,27 +312,6 @@ class ResourceApiTests(unittest.TestCase):
                 "/api/resources/proxies",
                 json={"url": "socks5://127.0.0.1:1080", "name": "lab"},
             )
-            self.assertEqual(created.status_code, 200, created.text)
-            item = created.json()["item"]
-            self.assertEqual(item["name"], "lab")
-            self.assertEqual(item["host"], "127.0.0.1")
-            self.assertEqual(item["port"], 1080)
-            proxies = client.get("/api/resources/proxies").json()["items"]
-            self.assertEqual(len(proxies), 1)
-
-            renamed = client.patch(
-                f"/api/resources/proxies/{item['id']}",
-                json={"name": "机房入口"},
-            )
-            self.assertEqual(renamed.status_code, 200, renamed.text)
-            self.assertEqual(renamed.json()["item"]["name"], "机房入口")
-            self.assertEqual(renamed.json()["item"]["name_source"], "user")
-            restored = client.patch(
-                f"/api/resources/proxies/{item['id']}",
-                json={"name": "", "restore_auto_name": True},
-            )
-            self.assertEqual(restored.status_code, 200, restored.text)
-            self.assertEqual(restored.json()["item"]["name_source"], "auto")
-            listed = client.get("/api/resources/proxies").json()["items"][0]
-            self.assertNotIn("pass", str(listed))
-            self.assertNotIn("password", listed)
+            self.assertEqual(created.status_code, 405)
+            renamed = client.patch("/api/resources/proxies/7", json={"name": "changed"})
+            self.assertEqual(renamed.status_code, 404)

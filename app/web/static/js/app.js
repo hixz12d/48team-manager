@@ -19,7 +19,6 @@
     ["register", document.getElementById("register-sheet")],
     ["reauth", document.getElementById("reauth-sheet")],
     ["phone-import", document.getElementById("phone-import-sheet")],
-    ["proxy-add", document.getElementById("proxy-add-sheet")],
     ["proxy-edit", document.getElementById("proxy-edit-sheet")],
   ]);
   const sheet = overlayRegistry.get("entity");
@@ -27,7 +26,6 @@
   const registerSheet = overlayRegistry.get("register");
   const reauthSheet = overlayRegistry.get("reauth");
   const phoneImportSheet = overlayRegistry.get("phone-import");
-  const proxyAddSheet = overlayRegistry.get("proxy-add");
   const proxyEditSheet = overlayRegistry.get("proxy-edit");
   let focusTrapRoot = null;
   let teamDetailState = null;
@@ -1019,6 +1017,13 @@
     return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(number);
   }
 
+  function formatCost(value) {
+    if (value === null || value === undefined || value === "") return "—";
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "—";
+    return `$${num.toFixed(4)}`;
+  }
+
   function usageWindowLine(label, windowData) {
     const line = document.createElement("div");
     line.className = "usage-window tabular";
@@ -1033,10 +1038,10 @@
       values.textContent = [
         windowData.requests == null ? null : `${compactMetric(windowData.requests)} req`,
         windowData.tokens == null ? null : `${compactMetric(windowData.tokens)} tok`,
-        windowData.user_cost == null ? null : `U $${windowData.user_cost}`,
-        windowData.account_cost == null ? null : `A $${windowData.account_cost}`,
       ].filter(Boolean).join(" · ") || "—";
       line.title = [
+        windowData.user_cost == null ? null : `用户计费 U $${windowData.user_cost}`,
+        windowData.account_cost == null ? null : `账号成本 A $${windowData.account_cost}`,
         windowData.standard_cost == null ? null : `标准计费 S $${windowData.standard_cost}`,
         windowData.billing_margin == null ? null : `计费毛差 Δ $${windowData.billing_margin}`,
         windowData.last_success_at ? `同步 ${relativeTime(windowData.last_success_at)}` : null,
@@ -1078,7 +1083,49 @@
     const quota = item.quota || {};
     const usage = item.usage || {};
     const windows = usage.windows || {};
+    const totals = usage.totals || {};
     const primaryWindow = windows.five_hour || windows.today;
+
+    const userCostVal = usage.user_cost ?? totals.user_cost ?? primaryWindow?.user_cost ?? null;
+    const accountCostVal = usage.account_cost ?? totals.account_cost ?? primaryWindow?.account_cost ?? null;
+    const standardCostVal = usage.standard_cost ?? totals.standard_cost ?? primaryWindow?.standard_cost ?? null;
+    const billingMarginVal = usage.billing_margin ?? totals.billing_margin ?? primaryWindow?.billing_margin ?? null;
+
+    const billingSummary = document.createElement("div");
+    billingSummary.className = "quota-billing-summary tabular";
+
+    const userCol = document.createElement("div");
+    userCol.className = "quota-billing-item";
+    const userLabel = document.createElement("span");
+    userLabel.className = "quota-billing-label";
+    userLabel.textContent = "用户计费";
+    const userValue = document.createElement("span");
+    userValue.className = "quota-billing-value";
+    userValue.textContent = formatCost(userCostVal);
+    userCol.append(userLabel, userValue);
+
+    const accountCol = document.createElement("div");
+    accountCol.className = "quota-billing-item";
+    const accountLabel = document.createElement("span");
+    accountLabel.className = "quota-billing-label";
+    accountLabel.textContent = "账号成本";
+    const accountValue = document.createElement("span");
+    accountValue.className = "quota-billing-value";
+    accountValue.textContent = formatCost(accountCostVal);
+    accountCol.append(accountLabel, accountValue);
+
+    billingSummary.append(userCol, accountCol);
+
+    const tooltipDetails = [
+      standardCostVal == null ? null : `标准计费 $${standardCostVal}`,
+      billingMarginVal == null ? null : `计费毛差 $${billingMarginVal}`,
+    ].filter(Boolean);
+    if (tooltipDetails.length > 0) {
+      billingSummary.title = tooltipDetails.join("；");
+    }
+
+    wrap.append(billingSummary);
+
     if (primaryWindow || windows.seven_day) {
       const usageBlock = document.createElement("div");
       usageBlock.className = "usage-window-list";
@@ -1232,13 +1279,14 @@ function hmeRow(item) {
   function proxyRow(item) {
     const row = document.createElement("tr");
     bindRow(row, "proxy", item);
-    cell(row, item.name);
+    cell(row, item.name || "—");
     cell(row, item.region || "—");
-    cell(row, item.last_exit_ip || "—");
-    cell(row, statusNode(item.status, item.status === "active" ? "启用" : item.status));
-    cell(row, statusNode(item.health_state || "unchecked", labelOf(statusLabels, item.health_state || "unchecked")));
-    cell(row, `${item.scheme}://${item.host}:${item.port}`);
-    cell(row, timeNode(item.last_checked_at));
+    cell(row, item.exit_ip || "—");
+    cell(row, statusNode(item.status, item.status === "active" ? "启用" : (item.status || "—")));
+    cell(row, statusNode(item.health, labelOf(statusLabels, item.health || "unchecked")));
+    const address = `${item.protocol || ""}://${item.host || ""}${item.port ? ":" + item.port : ""}`;
+    cell(row, address === "://" ? "—" : address);
+    cell(row, timeNode(item.checked_at));
     const actions = document.createElement("div");
     actions.className = "row-actions";
     const probe = document.createElement("button");
@@ -1251,23 +1299,14 @@ function hmeRow(item) {
       probe.disabled = true;
       try {
         const result = await postAction(`proxy-probe-${item.id}`, `/api/resources/proxies/${item.id}/probe`);
-        await handleActionResult(result, { successMessage: result.message || (result.last_exit_ip ? ("检测成功 " + result.last_exit_ip) : "检测完成") });
+        await handleActionResult(result, { successMessage: result.message || (result.exit_ip ? ("检测成功 " + result.exit_ip) : "检测完成") });
       } catch (error) {
         toast(friendlyError(error), "error");
       } finally {
         probe.disabled = false;
       }
     });
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "button ghost";
-    edit.textContent = "编辑";
-    edit.setAttribute("aria-label", "编辑代理");
-    edit.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openProxyProfileEdit(edit, item);
-    });
-    actions.append(edit, probe, menuButton("proxy", item));
+    actions.append(probe);
     cell(row, actions, "actions");
     return row;
   }
@@ -1513,30 +1552,19 @@ function hmeRow(item) {
         ])
       );
     } else if (kind === "proxy") {
-      title.textContent = item.name;
-      const sections = [
+      title.textContent = item.name || "远端代理";
+      body.append(
         kvSection("详情", [
+          ["协议", item.protocol],
+          ["主机", item.host],
+          ["端口", item.port],
           ["地区", item.region],
-          ["出口 IP", item.last_exit_ip],
+          ["出口 IP", item.exit_ip],
           ["状态", item.status],
-          ["健康", item.health_state],
-          ["地址", `${item.scheme}://${item.host}:${item.port}`],
-          ["最近检测", item.last_checked_at],
-          ["绑定数", item.binding_count ?? (item.bindings || []).length],
-        ]),
-      ];
-      const bindings = item.bindings || [];
-      if (bindings.length) {
-        sections.push(
-          kvSection(
-            "绑定账号",
-            bindings.map((row) => [row.email, [row.purpose, row.auth, row.state].filter(Boolean).join(" · ")])
-          )
-        );
-      } else if (item.binding_count === 0) {
-        sections.push(kvSection("绑定账号", [["账号", "当前没有账号绑定到这份代理"]]));
-      }
-      body.append(...sections);
+          ["健康", item.health],
+          ["检测时间", item.checked_at],
+        ])
+      );
     }
     openOverlay("entity", { returnFocus: trigger, context: { kind, item }, initialFocus: "[data-close-sheet]" });
   }
@@ -1823,73 +1851,7 @@ function hmeRow(item) {
         },
       },
     ],
-    proxy: [
-      { id: "proxy.view", label: "查看详情", run: (item, trigger) => openSheet("proxy", item, trigger) },
-      {
-        id: "proxy.edit",
-        label: "编辑",
-        run: (item, trigger) => openProxyProfileEdit(trigger, item),
-      },
-      {
-        id: "proxy.probe",
-        label: "检测",
-        run: async (item) => {
-          const result = await postAction(`proxy-probe-${item.id}`, `/api/resources/proxies/${item.id}/probe`);
-          await handleActionResult(result, { successMessage: result.message || (result.last_exit_ip ? ("检测成功 " + result.last_exit_ip) : "检测完成") });
-        },
-      },
-      {
-        id: "proxy.sub2api.sync",
-        label: "同步到 Sub2API",
-        run: async (item) => {
-          const result = await postAction(`proxy-sub2api-${item.id}`, `/api/resources/proxies/${item.id}/sub2api/sync`, {});
-          await handleActionResult(result, { successMessage: result.action === "unchanged" ? "远端代理已是最新" : "代理同步完成" });
-        },
-      },
-      {
-        id: "proxy.copy",
-        label: "复制脱敏地址",
-        run: async (item) => {
-          const ok = await copyText(item.url || `${item.scheme}://${item.host}:${item.port}`);
-          toast(ok ? "已复制" : "复制失败", ok ? "success" : "error");
-        },
-      },
-      {
-        id: "proxy.bindings",
-        label: "查看绑定账号",
-        run: async (item, trigger) => {
-          const payload = await fetchEntity(`proxy-bindings-${item.id}`, `/api/resources/proxies/${item.id}/bindings`);
-          const bound = payload.items || [];
-          openSheet("proxy", {
-            ...item,
-            bindings: bound,
-            binding_count: payload.count ?? bound.length,
-          }, trigger);
-        },
-      },
-      {
-        id: "proxy.disable",
-        label: "停用代理",
-        visible: (item) => item.status === "active",
-        run: async (item) => {
-          if (!confirmDanger(`确认停用代理 ${item.name || item.host}？不会删除档案。`)) return;
-          const result = await patchAction(`proxy-status-${item.id}`, `/api/resources/proxies/${item.id}`, { status: "disabled" });
-          toast(result.ok ? "代理已停用" : (result.error || "停用失败"), result.ok ? "success" : "error");
-          await bootPage();
-        },
-      },
-      {
-        id: "proxy.enable",
-        label: "启用代理",
-        visible: (item) => item.status !== "active",
-        run: async (item) => {
-          const result = await patchAction(`proxy-status-${item.id}`, `/api/resources/proxies/${item.id}`, { status: "active" });
-          toast(result.ok ? "代理已启用" : (result.error || "启用失败"), result.ok ? "success" : "error");
-          await bootPage();
-        },
-      },
-
-    ],
+    proxy: [],
   };
 
   function openMenu(button, kind, item) {
@@ -2664,81 +2626,20 @@ function hmeRow(item) {
       }
     }
 
-  async function fillProxyProfileOptions(selectedId) {
-    const form = document.getElementById("proxy-edit-form");
-    const select = form?.querySelector("[name='proxy_profile_id']");
-    if (!select) return;
-    select.replaceChildren();
-    const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = "不改绑定，只填新 URL";
-    select.append(blank);
-    try {
-      const payload = await fetchEntity("proxy-list-edit", "/api/resources/proxies");
-      (payload.items || []).forEach((item) => {
-        const option = document.createElement("option");
-        option.value = String(item.id);
-        option.textContent = `${item.name || item.host}:${item.port}`;
-        if (selectedId && Number(selectedId) === Number(item.id)) option.selected = true;
-        select.append(option);
-      });
-    } catch (error) {
-      toast(friendlyError(error), "error");
-    }
-  }
-
-  function setProxyEditMode(mode) {
-    const form = document.getElementById("proxy-edit-form");
-    if (!form) return;
-    form.mode.value = mode;
-    const accountBlock = form.querySelector("[data-proxy-edit-account]");
-    const profileBlock = form.querySelector("[data-proxy-edit-profile]");
-    if (accountBlock) accountBlock.hidden = mode !== "account";
-    if (profileBlock) profileBlock.hidden = mode !== "profile";
-    const title = document.getElementById("proxy-edit-title");
-    const subtitle = document.getElementById("proxy-edit-subtitle");
-    if (mode === "profile") {
-      if (title) title.textContent = "编辑代理档案";
-      if (subtitle) subtitle.textContent = "可改名称或启停。留空名称会恢复自动名。";
-    } else {
-      if (title) title.textContent = "修改母号代理";
-      if (subtitle) subtitle.textContent = "仅母号可改。可填 URL，或绑定已有代理档案。";
-    }
-  }
-
   async function openProxyEdit(trigger, account) {
-      if (!proxyEditSheet) return;
-      const form = document.getElementById("proxy-edit-form");
-      form?.reset();
-      setProxyEditMode("account");
-      if (form) {
-        form.account_id.value = account.id || "";
-        form.proxy_id.value = "";
-        form.email.value = account.email || "";
-        form.current_proxy.value = account.proxy_url || "";
-        form.proxy.value = "";
-        form.clear.checked = false;
-      }
-      await fillProxyProfileOptions(account.proxy_profile_id);
-      setFormStatus("proxy-edit-status", "", "muted");
-      openOverlay("proxy-edit", { returnFocus: trigger, context: { kind: "account-proxy", account }, initialFocus: "#proxy-edit-submit" });
+    if (!proxyEditSheet) return;
+    const form = document.getElementById("proxy-edit-form");
+    form?.reset();
+    if (form) {
+      form.account_id.value = account.id || "";
+      form.email.value = account.email || "";
+      form.current_proxy.value = account.proxy_url || "";
+      form.proxy.value = "";
+      form.clear.checked = false;
     }
-
-  function openProxyProfileEdit(trigger, proxy) {
-      if (!proxyEditSheet) return;
-      const form = document.getElementById("proxy-edit-form");
-      form?.reset();
-      setProxyEditMode("profile");
-      if (form) {
-        form.proxy_id.value = proxy.id || "";
-        form.account_id.value = "";
-        form.name.value = proxy.name || "";
-        form.status.value = proxy.status === "disabled" ? "disabled" : "active";
-        form.restore_auto_name.checked = false;
-      }
-      setFormStatus("proxy-edit-status", "", "muted");
-      openOverlay("proxy-edit", { returnFocus: trigger, context: { kind: "proxy-profile", proxy }, initialFocus: "#proxy-edit-submit" });
-    }
+    setFormStatus("proxy-edit-status", "", "muted");
+    openOverlay("proxy-edit", { returnFocus: trigger, context: { kind: "account-proxy", account }, initialFocus: "#proxy-edit-submit" });
+  }
 
   function closeProxyEdit() {
       closeOverlay();
@@ -2748,131 +2649,24 @@ function hmeRow(item) {
     event.preventDefault();
     const form = event.currentTarget;
     const button = form.querySelector("#proxy-edit-submit");
-    const mode = form.mode?.value || "account";
+    const accountId = Number(form.account_id.value || 0);
+    if (!accountId) return;
     if (button) button.disabled = true;
     setFormStatus("proxy-edit-status", "正在保存…", "muted");
     try {
-      let result;
-      if (mode === "profile") {
-        const proxyId = Number(form.proxy_id.value || 0);
-        if (!proxyId) return;
-        result = await patchAction(`proxy-edit-${proxyId}`, `/api/resources/proxies/${proxyId}`, {
-          name: form.name.value,
-          restore_auto_name: Boolean(form.restore_auto_name.checked),
-          status: form.status.value,
-        });
-        setFormStatus("proxy-edit-status", result.ok ? "已保存" : (result.error || "失败"), result.ok ? "muted" : "error");
-        toast(result.ok ? "代理已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
-      } else {
-        const accountId = Number(form.account_id.value || 0);
-        if (!accountId) return;
-        const url = (form.proxy.value || "").trim();
-        const body = {
-          clear: Boolean(form.clear.checked),
-          proxy: url || null,
-          proxy_profile_id: (!url && form.proxy_profile_id.value) ? Number(form.proxy_profile_id.value) : null,
-        };
-        result = await patchAction(`account-proxy-${accountId}`, `/api/accounts/${accountId}/proxy`, body);
-        setFormStatus("proxy-edit-status", result.ok ? "已保存" : (result.error || "失败"), result.ok ? "muted" : "error");
-        toast(result.ok ? "母号代理已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
-      }
+      const url = (form.proxy.value || "").trim();
+      const result = await patchAction(`account-proxy-${accountId}`, `/api/accounts/${accountId}/proxy`, {
+        proxy: url || null,
+        clear: Boolean(form.clear.checked),
+      });
+      setFormStatus("proxy-edit-status", result.ok ? "已保存" : (result.error || "失败"), result.ok ? "muted" : "error");
+      toast(result.ok ? "母号代理已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
       if (result?.ok) {
         closeProxyEdit();
         await bootPage();
       }
     } catch (error) {
       setFormStatus("proxy-edit-status", friendlyError(error), "error");
-      toast(friendlyError(error), "error");
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
-
-function openRegister(trigger) {
-    if (!registerSheet) return;
-    resetRegisterForm();
-    openOverlay("register", {
-      returnFocus: trigger || document.querySelector("[data-open-register]"),
-      context: { kind: "register" },
-      initialFocus: "[name='email']",
-    });
-  }
-
-  function closeRegister() {
-      closeOverlay();
-    }
-
-  function setReauthStatus(text, tone) {
-      const statusEl = document.getElementById("reauth-status");
-      if (!statusEl) return;
-      statusEl.hidden = !text;
-      statusEl.className = tone || "muted";
-      statusEl.setAttribute("role", tone === "error" ? "alert" : "status");
-      statusEl.textContent = text || "";
-    }
-
-  function closeReauth() {
-      closeOverlay();
-    }
-
-  async function openReauth(item, trigger) {
-    if (!reauthSheet || !item?.id) return;
-    const form = document.getElementById("reauth-form");
-    const authorize = document.getElementById("reauth-authorize-url");
-    const openLink = document.getElementById("reauth-open-link");
-    form?.reset();
-    if (form) {
-      form.account_id.value = item.id;
-      form.email.value = item.email || "";
-      form.ticket.value = "";
-    }
-    if (authorize) authorize.value = "";
-    if (openLink) openLink.href = "#";
-    setReauthStatus("正在生成授权链接…", "muted");
-    openOverlay("reauth", { returnFocus: trigger, context: { kind: "reauth", account: item }, initialFocus: "[name='callback_url']" });
-    try {
-      const started = await fetchEntity(`account:${item.id}:reauth:start`, `/api/accounts/${item.id}/reauth`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-      });
-      if (form) form.ticket.value = started.ticket || "";
-      if (authorize) authorize.value = started.authorize_url || "";
-      if (openLink) openLink.href = started.authorize_url || "#";
-      setReauthStatus(started.message || "打开授权链接，用这个邮箱登录 ChatGPT。登录后把跳转到 localhost:1455 的整段地址贴回来。", "muted");
-      form?.querySelector("[name='callback_url']")?.focus();
-    } catch (error) {
-      setReauthStatus(friendlyError(error), "error");
-      toast(friendlyError(error), "error");
-    }
-  }
-
-  async function submitReauth(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("#reauth-submit");
-    const accountId = String(form.account_id.value || "").trim();
-    const ticket = String(form.ticket.value || "").trim();
-    const callbackUrl = String(form.callback_url.value || "").trim();
-    if (!accountId || !ticket) {
-      setReauthStatus("还没有授权会话，请关掉后重新点重新授权。", "error");
-      return;
-    }
-    if (!callbackUrl) {
-      setReauthStatus("请把跳转到 localhost:1455 的整段回调地址贴回来。", "error");
-      return;
-    }
-    if (button) button.disabled = true;
-    setReauthStatus("正在用回调换票…", "muted");
-    try {
-      const result = await fetchEntity(`account:${accountId}:reauth:complete:${ticket}`, `/api/accounts/${accountId}/reauth/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ ticket, callback_url: callbackUrl }),
-      });
-      closeReauth();
-      await handleActionResult(result, { successMessage: result.message || "授权已更新" });
-    } catch (error) {
-      setReauthStatus(friendlyError(error), "error");
       toast(friendlyError(error), "error");
     } finally {
       if (button) button.disabled = false;
@@ -2901,22 +2695,6 @@ function openRegister(trigger) {
     }
 
   function closePhoneImport() {
-      closeOverlay();
-    }
-
-  function openProxyAdd(trigger) {
-      if (!proxyAddSheet) return;
-      const form = document.getElementById("proxy-add-form");
-      if (form) form.reset();
-      setFormStatus("proxy-add-status", "", "muted");
-      openOverlay("proxy-add", {
-        returnFocus: trigger || document.querySelector("[data-open-proxy-add]"),
-        context: { kind: "proxy-add" },
-        initialFocus: "[name='url']",
-      });
-    }
-
-  function closeProxyAdd() {
       closeOverlay();
     }
 
@@ -2950,31 +2728,6 @@ function openRegister(trigger) {
     }
   }
 
-  async function submitProxyAdd(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("#proxy-add-submit");
-    if (button) button.disabled = true;
-    setFormStatus("proxy-add-status", "正在添加…", "muted");
-    try {
-      const data = new FormData(form);
-      await fetchEntity("proxy-add", "/api/resources/proxies", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          url: String(data.get("url") || "").trim(),
-          name: String(data.get("name") || "").trim() || null,
-        }),
-      });
-      closeProxyAdd();
-      await bootPage();
-      toast("代理已添加", "success");
-    } catch (error) {
-      setFormStatus("proxy-add-status", friendlyError(error), "error");
-    } finally {
-      if (button) button.disabled = false;
-    }
-  }
 
   async function copyText(value) {
     const text = String(value || "");
@@ -3230,7 +2983,7 @@ function openRegister(trigger) {
     }
   }
 
-  function renderSub2ApiManagement(status, templates) {
+  function renderSub2ApiManagement(status) {
     const usageEl = document.getElementById("sub2api-usage-status");
     if (usageEl && status) {
       const snapshot = status.last_success_at ? relativeTime(status.last_success_at) : "尚无成功快照";
@@ -3238,32 +2991,19 @@ function openRegister(trigger) {
       usageEl.textContent = `${status.verified_bindings || 0} 个已验证绑定 · ${status.snapshot_count || 0} 个窗口 · ${snapshot}${failures}`;
       usageEl.className = status.failed_windows ? "hint error" : "hint";
     }
-    const templateEl = document.getElementById("sub2api-template-status");
-    if (templateEl && templates) {
-      templateEl.textContent = templates.supported
-        ? `${(templates.items || []).length} 个远端模板可用`
-        : (templates.message || "当前远端不支持账号推送模板");
-      templateEl.className = "hint";
-    }
   }
 
   async function loadSub2ApiManagement() {
-    const statusTask = fetchEntity("sub2api-status", "/api/sub2api/status")
-      .then((status) => renderSub2ApiManagement(status, null))
-      .catch((error) => {
-        const usageEl = document.getElementById("sub2api-usage-status");
-        if (usageEl) {
-          usageEl.textContent = friendlyError(error);
-          usageEl.className = "hint error";
-        }
-      });
-    const templateTask = fetchEntity("sub2api-templates", "/api/sub2api/templates")
-      .then((templates) => renderSub2ApiManagement(null, templates))
-      .catch((error) => renderSub2ApiManagement(null, {
-        supported: false,
-        message: friendlyError(error),
-      }));
-    await Promise.allSettled([statusTask, templateTask]);
+    try {
+      const status = await fetchEntity("sub2api-status", "/api/sub2api/status");
+      renderSub2ApiManagement(status);
+    } catch (error) {
+      const usageEl = document.getElementById("sub2api-usage-status");
+      if (usageEl) {
+        usageEl.textContent = friendlyError(error);
+        usageEl.className = "hint error";
+      }
+    }
   }
 
   async function syncAllSub2ApiUsage(button) {
@@ -3844,7 +3584,7 @@ function openRegister(trigger) {
       items,
       8,
       proxyRow,
-      emptyState("还没有代理", "点「添加代理」，或在登记母号时填写代理自动入库。")
+      emptyState("暂无远端代理", "Sub2API 尚未返回可用的远端代理目录。")
     );
     setCount("proxies-count", items.length, items.length);
   }
@@ -3932,11 +3672,6 @@ function openRegister(trigger) {
   });
   document.querySelector("[data-close-phone-import]")?.addEventListener("click", closePhoneImport);
   document.getElementById("phone-import-form")?.addEventListener("submit", submitPhoneImport);
-  document.querySelectorAll("[data-open-proxy-add]").forEach((button) => {
-    button.addEventListener("click", () => openProxyAdd(button));
-  });
-  document.querySelector("[data-close-proxy-add]")?.addEventListener("click", closeProxyAdd);
-  document.getElementById("proxy-add-form")?.addEventListener("submit", submitProxyAdd);
 
 
   document.getElementById("register-copy-link")?.addEventListener("click", async () => {
@@ -3967,9 +3702,6 @@ function openRegister(trigger) {
           }
           toast(`已重试 ${ok}/${pending.length} 个待同步标签`, ok === pending.length ? "success" : "warning");
           await bootPage();
-        } else if (action === "proxy-probe-all") {
-          const result = await postAction("proxy-probe-all", "/api/resources/proxies/probe-all");
-          await handleActionResult(result, { successMessage: result.message || ("检测完成：健康 " + (result.healthy ?? 0) + "/" + (result.total ?? 0)) });
         } else if (action === "workspace-sync-all") {
           const payload = await fetchEntity("workspace-list", "/api/workspaces");
           const items = payload.items || [];

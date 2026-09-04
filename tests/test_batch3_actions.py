@@ -134,13 +134,12 @@ class Batch3ApiTests(unittest.TestCase):
             self.assertEqual(missing_link.status_code, 404)
             self.assertEqual(missing_link.json()["detail"]["error_code"], "not_found")
 
-            created = client.post(
+            create_proxy = client.post(
                 "/api/resources/proxies",
                 json={"url": "http://127.0.0.1:8080", "name": "lab"},
-            ).json()["item"]
-            bindings = client.get(f"/api/resources/proxies/{created['id']}/bindings")
-            self.assertEqual(bindings.status_code, 200)
-            self.assertEqual(bindings.json()["count"], 0)
+            )
+            self.assertEqual(create_proxy.status_code, 405)
+            self.assertEqual(client.get("/api/resources/proxies/7/bindings").status_code, 404)
 
             imported = client.post(
                 "/api/resources/phones/import",

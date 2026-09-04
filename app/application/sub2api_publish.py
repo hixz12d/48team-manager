@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.identity import ensure_binding, verify_bindings
 from app.application.operations import operation_store
 from app.application.presenters import present_action_result
-from app.application.sub2api_proxy import sub2api_proxy_service
 from app.application.tokens import decrypt_secret
 from app.core.time import utcnow
 from app.domain.identity import BINDING_PENDING, BINDING_VERIFIED, PROVIDER_SUB2API
@@ -30,7 +29,6 @@ from app.domain.identity.binding import (
 from app.domain.identity.ids import normalize_email
 from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
-from app.persistence.models.sub2api import Sub2ApiProxyBinding
 from app.persistence.repositories import identity as identity_repo
 
 
@@ -281,12 +279,6 @@ async def account_sub2api_push(
     schedulable: bool | None = None,
     confirm_mixed_channel_risk: bool = False,
     workspace_id: int | None = None,
-    template_id: str | None = None,
-    template_overrides: dict[str, Any] | None = None,
-    proxy_source: str | None = None,
-    proxy_profile_id: int | None = None,
-    reapply_template: bool = False,
-    test_proxy_before_push: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
@@ -347,52 +339,6 @@ async def account_sub2api_push(
             }
         normalized_groups = [int(value) for value in group_ids]
 
-    if template_overrides and not template_id:
-        return {
-            "ok": False,
-            "status": "failed",
-            "error_code": "template_id_required",
-            "error": "template_overrides requires template_id",
-        }
-    if reapply_template and not template_id:
-        return {
-            "ok": False,
-            "status": "failed",
-            "error_code": "template_id_required",
-            "error": "reapply_template requires template_id",
-        }
-    if existing is not None and template_id and not reapply_template:
-        return {
-            "ok": False,
-            "status": "failed",
-            "error_code": "template_reapply_required",
-            "error": "updating an existing account from a template requires reapply_template=true",
-        }
-
-    template_requested = bool(template_id or template_overrides or reapply_template)
-    capabilities = None
-    if template_requested:
-        try:
-            capabilities = await sub2api_client.integration_capabilities(db)
-        except Exception as exc:
-            return {
-                "ok": False,
-                "status": "failed",
-                "error_code": "template_capability_unavailable",
-                "error": str(exc),
-                "message": "无法确认 Sub2API 账号模板能力",
-            }
-        template_caps = capabilities.get("account_templates") or {}
-        required = "apply" if reapply_template or existing is not None else "create_from_template"
-        if not template_caps.get(required):
-            return {
-                "ok": False,
-                "status": "unsupported",
-                "error_code": "account_templates_unsupported",
-                "error": "当前 Sub2API 不支持账号推送模板",
-                "message": "当前 Sub2API 没有账号模板 CRUD/apply 合约；未发送任何写请求",
-                "capabilities": capabilities,
-            }
 
     credentials = _build_credentials(account)
     if not credentials.get("access_token") and not credentials.get("refresh_token"):
@@ -421,29 +367,6 @@ async def account_sub2api_push(
     )
     account_name = str(name or "").strip() or canonical_name
 
-    effective_proxy_source = proxy_source or ("preserve" if existing is not None else "account")
-    selected_profile_id = int(proxy_profile_id) if proxy_profile_id else None
-    if selected_profile_id is None and effective_proxy_source == "account":
-        selected_profile_id = account.proxy_profile_id
-    proxy_preview = {
-        "source": "selected" if proxy_profile_id else effective_proxy_source,
-        "local_proxy_profile_id": selected_profile_id,
-        "remote_proxy_id": None,
-        "explicit": proxy_source is not None or proxy_profile_id is not None,
-    }
-    if selected_profile_id:
-        proxy_mapping = (
-            await db.execute(
-                select(Sub2ApiProxyBinding).where(
-                    Sub2ApiProxyBinding.local_proxy_profile_id == selected_profile_id
-                )
-            )
-        ).scalar_one_or_none()
-        if proxy_mapping is not None:
-            proxy_preview["remote_proxy_id"] = proxy_mapping.remote_proxy_id
-            proxy_preview["sync_state"] = proxy_mapping.sync_state
-        else:
-            proxy_preview["sync_state"] = "unbound"
     if dry_run:
         create_fields = ["name", "platform", "type", "credentials", "extra", "concurrency", "priority"]
         update_fields = ["credentials"]
@@ -451,8 +374,6 @@ async def account_sub2api_push(
             update_fields.append("name")
         if normalized_groups is not None:
             update_fields.append("group_ids")
-        if selected_profile_id or proxy_source == "none":
-            update_fields.append("proxy_id")
         if schedulable is not None:
             update_fields.append("schedulable")
         return {
@@ -465,10 +386,7 @@ async def account_sub2api_push(
             "remote_account_id": existing.remote_account_id if existing else None,
             "action": "update" if existing else "create",
             "effective_name": account_name,
-            "template_id": template_id,
-            "template_reapplied": bool(reapply_template),
             "group_ids": normalized_groups,
-            "proxy": proxy_preview,
             "would_update": update_fields if existing else create_fields,
             "would_preserve": [] if not existing else [
                 value for value in (
@@ -480,14 +398,10 @@ async def account_sub2api_push(
                     "expires_at",
                     "auto_pause_on_expired",
                     "group_ids" if normalized_groups is None else None,
-                    "proxy_id" if not selected_profile_id and proxy_source != "none" else None,
+                    "proxy_id",
                 ) if value
             ],
-            "warnings": (
-                ["远端代理清空需要 Sub2API clear_proxy 合约"]
-                if existing and proxy_source == "none"
-                else []
-            ),
+            "warnings": [],
         }
 
     operation = await operation_store.create(
@@ -499,78 +413,11 @@ async def account_sub2api_push(
         input_payload={
             "account_id": account.id,
             "workspace_id": scoped_workspace_id,
-            "mode": "reapply_template" if reapply_template else "credential_sync",
+            "mode": "credential_sync",
             "group_ids": normalized_groups,
             "schedulable": schedulable,
-            "template_id": template_id,
-            "template_override_keys": sorted((template_overrides or {}).keys()),
-            "proxy_source": proxy_source,
-            "proxy_profile_id": proxy_profile_id,
-            "test_proxy_before_push": test_proxy_before_push,
         },
     )
-
-    try:
-        if existing is not None and proxy_source is None and proxy_profile_id is None:
-            proxy_resolution = {
-                "source": "preserve",
-                "local_proxy_profile_id": None,
-                "remote_proxy_id": None,
-                "explicit": False,
-            }
-        else:
-            proxy_resolution = await sub2api_proxy_service.resolve_for_push(
-                db,
-                account,
-                proxy_source=proxy_source or "account",
-                proxy_profile_id=proxy_profile_id,
-                template_id=template_id,
-                test_before_use=test_proxy_before_push,
-            )
-    except Exception as exc:
-        payload = {
-            "success": False,
-            "ok": False,
-            "status": "failed",
-            "outcome": "proxy_sync_failed",
-            "error_code": "proxy_sync_failed",
-            "error": str(exc),
-            "message": f"推送前代理同步失败：{exc}",
-            "account_id": account.id,
-        }
-        await operation_store.finish(db, operation, payload)
-        await db.commit()
-        return present_action_result({"operation_id": operation.public_id, **payload})
-
-    if existing and proxy_source == "none":
-        try:
-            remote_before = await sub2api_client.get_account(db, int(existing.remote_account_id))
-        except Exception as exc:
-            remote_before = {} if _is_remote_missing(exc) else None
-            if remote_before is None:
-                payload = {
-                    "success": False,
-                    "ok": False,
-                    "status": "failed",
-                    "error_code": "remote_read_failed",
-                    "error": str(exc),
-                    "message": "无法确认远端代理状态，未执行代理清空",
-                }
-                await operation_store.finish(db, operation, payload)
-                await db.commit()
-                return present_action_result({"operation_id": operation.public_id, **payload})
-        if remote_before.get("proxy_id") not in (None, "", 0, "0"):
-            payload = {
-                "success": False,
-                "ok": False,
-                "status": "unsupported",
-                "error_code": "remote_proxy_clear_unsupported",
-                "error": "Sub2API update API cannot distinguish omitted proxy_id from null",
-                "message": "当前 Sub2API 不支持安全清空已有账号代理；未修改远端账号",
-            }
-            await operation_store.finish(db, operation, payload)
-            await db.commit()
-            return present_action_result({"operation_id": operation.public_id, **payload})
 
     create_body: dict[str, Any] = {
         "name": account_name,
@@ -595,18 +442,6 @@ async def account_sub2api_push(
     if normalized_groups is not None:
         create_body["group_ids"] = normalized_groups
         update_body["group_ids"] = normalized_groups
-    if proxy_resolution.get("remote_proxy_id"):
-        create_body["proxy_id"] = int(proxy_resolution["remote_proxy_id"])
-        update_body["proxy_id"] = int(proxy_resolution["remote_proxy_id"])
-    if template_id:
-        create_body["template_id"] = template_id
-        if template_overrides is not None:
-            create_body["template_overrides"] = template_overrides
-        if reapply_template:
-            update_body["template_id"] = template_id
-            update_body["reapply_template"] = True
-            if template_overrides is not None:
-                update_body["template_overrides"] = template_overrides
     if confirm_mixed_channel_risk:
         create_body["confirm_mixed_channel_risk"] = True
         update_body["confirm_mixed_channel_risk"] = True
@@ -793,12 +628,17 @@ async def account_sub2api_push(
         updated_fields.append("schedulable")
         updated_fields.sort()
     preserved_fields = [] if action != "update" else [
-        "concurrency", "priority", "rate_multiplier", "load_factor", "extra", "expires_at", "auto_pause_on_expired"
+        "concurrency",
+        "priority",
+        "rate_multiplier",
+        "load_factor",
+        "extra",
+        "expires_at",
+        "auto_pause_on_expired",
+        "proxy_id",
     ]
     if normalized_groups is None and action == "update":
         preserved_fields.append("group_ids")
-    if not proxy_resolution.get("remote_proxy_id") and proxy_source != "none" and action == "update":
-        preserved_fields.append("proxy_id")
 
     base_result = {
         "account_id": account.id,
@@ -811,11 +651,6 @@ async def account_sub2api_push(
         "effective_name": account_name,
         "workspace_id": scoped_workspace_id,
         "group_ids": normalized_groups,
-        "template_id": template_id,
-        "template_reapplied": bool(reapply_template),
-        "local_proxy_profile_id": proxy_resolution.get("local_proxy_profile_id"),
-        "remote_proxy_id": proxy_resolution.get("remote_proxy_id"),
-        "proxy_source": proxy_resolution.get("source"),
         "updated_fields": updated_fields,
         "preserved_fields": preserved_fields,
         "warnings": [],

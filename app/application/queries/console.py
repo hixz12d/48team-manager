@@ -12,7 +12,6 @@ from app.application.queries.portfolio import portfolio_query
 from app.application.quota import quota_service
 from app.application.resources.hme import list_leases
 from app.application.resources.phones import phone_pool_service
-from app.application.resources.proxies import proxy_profile_service
 from app.application.settings import load_console_settings
 from app.application.sub2api_usage import sub2api_usage_service
 from app.core.time import isoformat
@@ -157,19 +156,6 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
                 }
             )
 
-    for profile in await proxy_profile_service.list_profiles(db):
-        health = getattr(profile, "health_state", None) or "unchecked"
-        if health in {"failed", "unhealthy"} or profile.status == "disabled":
-            add_attention(
-                {
-                    "kind": "proxy",
-                    "email": profile.name or f"{profile.host}:{profile.port}",
-                    "result": health,
-                    "message": f"代理健康异常：{profile.name or profile.host}",
-                    "action": "检测代理",
-                    "href": "/resources/proxies",
-                }
-            )
 
     payload["attention"] = attention[:30]
     payload["running_operations"] = running[:4]
@@ -404,38 +390,6 @@ async def hme(db: AsyncSession) -> dict[str, Any]:
     }
 
 
-async def proxies(db: AsyncSession) -> dict[str, Any]:
-    # GET stays read-only. Sync and repair use explicit POST endpoints.
-    from collections import Counter
-
-    from sqlalchemy import select
-
-    from app.application.sub2api_proxy import sub2api_proxy_service
-    from app.persistence.models.identity import Account
-    from app.persistence.models.sub2api import Sub2ApiProxyBinding
-
-    rows = await proxy_profile_service.list_profiles(db)
-    counts = Counter()
-    bound = list(
-        (
-            await db.execute(
-                select(Account.proxy_profile_id).where(Account.proxy_profile_id.is_not(None))
-            )
-        ).all()
-    )
-    for (profile_id,) in bound:
-        if profile_id:
-            counts[int(profile_id)] += 1
-    mappings = {
-        row.local_proxy_profile_id: row
-        for row in (await db.execute(select(Sub2ApiProxyBinding))).scalars()
-    }
-    items = []
-    for row in rows:
-        item = proxy_profile_service.serialize(row, binding_count=int(counts.get(row.id, 0)))
-        item["sub2api"] = sub2api_proxy_service.serialize(mappings.get(row.id))
-        items.append(item)
-    return {"items": items, "next_cursor": None}
 
 
 async def settings_view(db: AsyncSession) -> dict[str, Any]:

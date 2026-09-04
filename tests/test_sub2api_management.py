@@ -3,17 +3,15 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.resources.proxies import proxy_profile_service
-from app.application.sub2api_proxy import sub2api_proxy_service
 from app.application.sub2api_publish import account_sub2api_push
 from app.application.sub2api_usage import sub2api_usage_service
 from app.persistence.database import Base
 from app.persistence.models.identity import Account, ExternalBinding
-from app.persistence.models.sub2api import Sub2ApiProxyBinding, Sub2ApiUsageSnapshot
+from app.persistence.models.sub2api import Sub2ApiUsageSnapshot
 
 
 class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
@@ -141,58 +139,6 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["snapshot_count"], 0)
         self.assertIsNone(status["last_success_at"])
 
-    async def test_proxy_sync_is_idempotent_and_recreates_missing_remote(self):
-        profile = await proxy_profile_service.upsert_from_url(
-            self.session,
-            "socks5://user:password@127.0.0.1:1080",
-            name="billing-proxy",
-        )
-        await self.session.commit()
-        create = AsyncMock(return_value={"id": 9})
-        update = AsyncMock(return_value={"id": 9})
-        get = AsyncMock(return_value={"id": 9})
-
-        with (
-            patch("app.application.sub2api_proxy.sub2api_client.create_proxy", new=create),
-            patch("app.application.sub2api_proxy.sub2api_client.update_proxy", new=update),
-            patch("app.application.sub2api_proxy.sub2api_client.get_proxy", new=get),
-        ):
-            first = await sub2api_proxy_service.sync_profile(self.session, profile.id)
-            second = await sub2api_proxy_service.sync_profile(self.session, profile.id)
-
-        self.assertEqual(first["action"], "create")
-        self.assertEqual(second["action"], "unchanged")
-        self.assertEqual(create.await_count, 1)
-        update.assert_not_awaited()
-        sent = create.await_args.args[1]
-        self.assertEqual(sent["protocol"], "socks5h")
-        self.assertEqual(sent["username"], "user")
-        self.assertEqual(sent["password"], "password")
-        self.assertTrue(create.await_args.kwargs["idempotency_key"].startswith("team48-proxy-"))
-
-        request = httpx.Request("GET", "https://sub2api.example/api/v1/admin/proxies/9")
-        response = httpx.Response(404, request=request)
-        missing = httpx.HTTPStatusError("not found", request=request, response=response)
-        recreate = AsyncMock(return_value={"id": 10})
-        with (
-            patch(
-                "app.application.sub2api_proxy.sub2api_client.get_proxy",
-                new=AsyncMock(side_effect=missing),
-            ),
-            patch("app.application.sub2api_proxy.sub2api_client.create_proxy", new=recreate),
-        ):
-            rebuilt = await sub2api_proxy_service.sync_profile(self.session, profile.id)
-
-        self.assertEqual(rebuilt["action"], "recreate")
-        self.assertEqual(rebuilt["remote_proxy_id"], 10)
-        mapping = (
-            await self.session.execute(
-                select(Sub2ApiProxyBinding).where(
-                    Sub2ApiProxyBinding.local_proxy_profile_id == profile.id
-                )
-            )
-        ).scalar_one()
-        self.assertEqual(mapping.remote_proxy_id, "10")
 
     async def test_existing_account_update_only_sends_explicit_fields(self):
         profile = await proxy_profile_service.upsert_from_url(
@@ -211,7 +157,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         }
         update = AsyncMock(return_value={"id": 42})
         schedulable = AsyncMock(return_value={"patched": True})
-        resolve_proxy = AsyncMock()
+        create_proxy = AsyncMock()
         with (
             patch(
                 "app.application.sub2api_publish.decrypt_secret",
@@ -227,8 +173,8 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
                 new=schedulable,
             ),
             patch(
-                "app.application.sub2api_publish.sub2api_proxy_service.resolve_for_push",
-                new=resolve_proxy,
+                "app.application.sub2api_publish.sub2api_client.create_proxy",
+                new=create_proxy,
             ),
         ):
             preview = await account_sub2api_push(
@@ -237,47 +183,67 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
             result = await account_sub2api_push(self.session, self.account.id)
 
         self.assertTrue(result["ok"])
-        self.assertEqual(preview["proxy"]["source"], "preserve")
+        self.assertIn("proxy_id", preview["would_preserve"])
         self.assertNotIn("proxy_id", preview["would_update"])
         sent = update.await_args.args[2]
         self.assertEqual(set(sent), {"credentials"})
         for field in ("concurrency", "priority", "extra", "group_ids", "proxy_id"):
             self.assertNotIn(field, sent)
         schedulable.assert_not_awaited()
-        resolve_proxy.assert_not_awaited()
+        create_proxy.assert_not_awaited()
         self.assertIn("concurrency", result["preserved_fields"])
         self.assertIn("priority", result["preserved_fields"])
         self.assertIn("extra", result["preserved_fields"])
 
-    async def test_template_reapply_requires_template_id(self):
-        result = await account_sub2api_push(
-            self.session, self.account.id, reapply_template=True, dry_run=True
-        )
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "template_id_required")
 
-    async def test_unsupported_template_contract_never_writes_remote(self):
-        update = AsyncMock()
+    async def test_new_account_never_publishes_local_proxy(self):
+        profile = await proxy_profile_service.upsert_from_url(
+            self.session, "http://127.0.0.1:8080", name="local-only"
+        )
+        self.account.proxy_profile_id = profile.id
+        self.account.proxy = "http://127.0.0.1:8080"
+        await self.session.delete(self.binding)
+        await self.session.commit()
+
+        remote = {
+            "id": 43,
+            "credentials": {
+                "email": self.account.email,
+                "chatgpt_account_id": self.account.official_account_id,
+            },
+            "extra": {"email": self.account.email},
+        }
+        create_account = AsyncMock(return_value={"id": 43})
+        create_proxy = AsyncMock()
         with (
             patch(
-                "app.application.sub2api_publish.sub2api_client.integration_capabilities",
-                new=AsyncMock(return_value={"account_templates": {"apply": False}}),
+                "app.application.sub2api_publish.decrypt_secret",
+                side_effect=lambda value: "decrypted" if value else "",
             ),
             patch(
-                "app.application.sub2api_publish.sub2api_client.update_account",
-                new=update,
+                "app.application.sub2api_publish.sub2api_client.list_status_accounts",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.application.sub2api_publish.sub2api_client.create_account",
+                new=create_account,
+            ),
+            patch(
+                "app.application.sub2api_publish.sub2api_client.create_proxy",
+                new=create_proxy,
+            ),
+            patch(
+                "app.application.sub2api_publish.sub2api_client.read_after_write",
+                new=AsyncMock(return_value=remote),
             ),
         ):
-            result = await account_sub2api_push(
-                self.session,
-                self.account.id,
-                template_id="template-1",
-                reapply_template=True,
-            )
+            preview = await account_sub2api_push(self.session, self.account.id, dry_run=True)
+            result = await account_sub2api_push(self.session, self.account.id)
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "account_templates_unsupported")
-        update.assert_not_awaited()
+        self.assertTrue(result["ok"])
+        self.assertNotIn("proxy_id", preview["would_update"])
+        self.assertNotIn("proxy_id", create_account.await_args.args[1])
+        create_proxy.assert_not_awaited()
 
 
 if __name__ == "__main__":

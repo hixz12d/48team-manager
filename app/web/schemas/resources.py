@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -11,15 +11,6 @@ class PhoneImportRequest(BaseModel):
     text: str = Field(min_length=1, max_length=200_000)
 
 
-class ProxyCreateRequest(BaseModel):
-    url: str = Field(min_length=3, max_length=500)
-    name: str | None = Field(default=None, max_length=120)
-
-
-class ProxyPatchRequest(BaseModel):
-    name: str | None = Field(default=None, max_length=120)
-    restore_auto_name: bool = False
-    status: Literal["active", "disabled"] | None = None
 
 
 class OnboardRequest(BaseModel):
@@ -55,7 +46,6 @@ class RevokeInviteRequest(BaseModel):
 
 class AccountProxyPatch(BaseModel):
     proxy: str | None = Field(default=None, max_length=500)
-    proxy_profile_id: int | None = None
     clear: bool = False
 
 
@@ -67,12 +57,6 @@ class Sub2ApiPushRequest(BaseModel):
     group_ids: list[int] | None = None
     name: str | None = Field(default=None, max_length=255)
     schedulable: bool | None = None
-    template_id: str | None = Field(default=None, max_length=100)
-    template_overrides: dict[str, Any] | None = None
-    proxy_source: Literal["account", "selected", "template", "none"] | None = None
-    proxy_profile_id: int | None = Field(default=None, gt=0)
-    reapply_template: bool = False
-    test_proxy_before_push: bool = False
     confirm_mixed_channel_risk: bool = False
 
 
@@ -80,8 +64,6 @@ class Sub2ApiUsageSyncRequest(BaseModel):
     force_usage: bool = False
 
 
-class Sub2ApiProxySyncRequest(BaseModel):
-    test_before_use: bool = False
 
 
 class OperationArchiveRequest(BaseModel):

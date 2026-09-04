@@ -45,7 +45,6 @@ class ConsoleActionsContractTests(unittest.TestCase):
                 "account.refresh",
                 "account.quota",
                 "account.sub2api",
-                "proxy.probe",
                 "hme.retry-label",
                 "operation.cancel",
                 "operation.retry",
@@ -56,13 +55,13 @@ class ConsoleActionsContractTests(unittest.TestCase):
             workspaces = client.get("/workspaces").text
             hme = client.get("/resources/hme").text
             self.assertIn("data-open-phone-import", phones)
-            self.assertIn("data-open-proxy-add", proxies)
-            self.assertIn("data-action-page=\"proxy-probe-all\"", proxies)
+            self.assertIn("只读", proxies)
+            self.assertIn("数据源 Sub2API", proxies)
             self.assertIn("data-action-page=\"workspace-sync-all\"", workspaces)
             self.assertIn("data-action-page=\"hme-reconcile\"", hme)
             self.assertNotIn("data-open-register", client.get("/accounts").text)
 
-    def test_phone_import_and_proxy_add_endpoints(self):
+    def test_phone_import_and_proxy_write_boundary(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
             imported = client.post(
@@ -77,7 +76,4 @@ class ConsoleActionsContractTests(unittest.TestCase):
                 "/api/resources/proxies",
                 json={"url": "socks5h://user:pass@127.0.0.1:1080", "name": "lab"},
             )
-            self.assertEqual(created.status_code, 200)
-            item = created.json()["item"]
-            self.assertEqual(item["name"], "lab")
-            self.assertNotIn("pass", item["url"])
+            self.assertEqual(created.status_code, 405)

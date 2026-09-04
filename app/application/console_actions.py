@@ -46,7 +46,6 @@ SAFE_RETRY_TYPES = {
     "sub2api_reconcile",
     "sub2api_push",
     "sub2api_usage_sync",
-    "sub2api_proxy_sync",
 }
 UNSAFE_RETRY_TYPES = {
     "onboard",
@@ -185,12 +184,6 @@ async def _dispatch_retry(db: AsyncSession, row) -> dict[str, Any]:
             workspace_id=row.workspace_id,
             account_id=row.account_id,
             source="retry",
-        )
-    if op_type == "sub2api_proxy_sync" and row.resolved_proxy_profile_id:
-        from app.application.sub2api_proxy import sub2api_proxy_service
-
-        return await sub2api_proxy_service.sync_profile(
-            db, int(row.resolved_proxy_profile_id), source="retry"
         )
     if op_type == "proxy_check" and row.resolved_proxy_profile_id:
         from app.application.resources.proxy_probe import proxy_probe_service
@@ -455,12 +448,6 @@ async def account_sub2api_push(
     schedulable: bool | None = None,
     confirm_mixed_channel_risk: bool = False,
     workspace_id: int | None = None,
-    template_id: str | None = None,
-    template_overrides: dict[str, Any] | None = None,
-    proxy_source: str | None = None,
-    proxy_profile_id: int | None = None,
-    reapply_template: bool = False,
-    test_proxy_before_push: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     from app.application.sub2api_publish import account_sub2api_push as _push
@@ -473,12 +460,6 @@ async def account_sub2api_push(
         schedulable=schedulable,
         confirm_mixed_channel_risk=confirm_mixed_channel_risk,
         workspace_id=workspace_id,
-        template_id=template_id,
-        template_overrides=template_overrides,
-        proxy_source=proxy_source,
-        proxy_profile_id=proxy_profile_id,
-        reapply_template=reapply_template,
-        test_proxy_before_push=test_proxy_before_push,
         dry_run=dry_run,
     )
 
