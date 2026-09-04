@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.operations import operation_store
 from app.application.workspaces import workspace_service
 from app.core.time import utcnow
+from app.domain.identity import MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
 from app.integrations.openai.member_adapter import (
     adapt_collection,
@@ -306,6 +307,17 @@ class WorkspaceSyncService:
             if remote is None:
                 continue
             membership.official_role = normalize_official_role(remote.get("role")) or membership.official_role
+            membership.official_user_id = remote.get("user_id") or membership.official_user_id
+            remote_state = remote.get("state") or "joined"
+            if membership.membership_state == MEMBERSHIP_STATE_REMOVED:
+                continue
+            if remote_state == "joined":
+                membership.membership_state = MEMBERSHIP_STATE_JOINED
+                membership.joined_at = membership.joined_at or stamp
+                membership.removed_at = None
+            elif remote_state == "invited":
+                membership.membership_state = MEMBERSHIP_STATE_INVITED
+                membership.removed_at = None
 
         seat_meta = dict(members.get("seat_metadata") or {})
         invite_meta = dict(invites.get("seat_metadata") or {})

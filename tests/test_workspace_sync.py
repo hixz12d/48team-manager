@@ -6,10 +6,13 @@ from unittest.mock import AsyncMock
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.application.identity import upsert_mother_account, upsert_workspace
+from app.application.identity import ensure_membership, upsert_child_account, upsert_mother_account, upsert_workspace
+from app.application.queries.identity import workspaces_query
+from app.application.queries.portfolio import portfolio_query
 from app.application.workspace_sync import WorkspaceSyncService
+from app.domain.identity import LOCAL_PURPOSE_CHILD, MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED
 from app.persistence.database import Base
-from app.persistence.models.identity import Account, Workspace, WorkspaceOfficialMemberSnapshot
+from app.persistence.models.identity import Account, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 from tests.helpers import make_client
 
 
@@ -121,6 +124,57 @@ class WorkspaceSyncTests(unittest.IsolatedAsyncioTestCase):
         count_after = len(list((await self.session.execute(select(WorkspaceOfficialMemberSnapshot))).scalars()))
         self.assertEqual(before, after)
         self.assertEqual(count_before, count_after)
+
+    async def test_sync_promotes_local_invited_membership_when_official_has_joined(self):
+        child, _ = await upsert_child_account(self.session, email="blimp_digging.1u@icloud.com", status="invited")
+        await ensure_membership(
+            self.session,
+            workspace_id=self.workspace.id,
+            account_id=child.id,
+            official_role="member",
+            membership_state=MEMBERSHIP_STATE_INVITED,
+            local_purpose=LOCAL_PURPOSE_CHILD,
+        )
+        await self.session.commit()
+        service = WorkspaceSyncService(
+            workspaces=_FakeWorkspaces(
+                members={
+                    "success": True,
+                    "members": [
+                        {"email": "owner@example.com", "role": "account-owner", "id": "u-owner"},
+                        {"email": "blimp_digging.1u@icloud.com", "role": "standard-user", "id": "u-child"},
+                    ],
+                    "total": 2,
+                    "reported_total": 2,
+                    "raw_item_count": 2,
+                },
+                invites={"success": True, "items": [], "total": 0},
+            )
+        )
+        result = await service.sync_workspace(self.session, self.workspace.id)
+        self.assertTrue(result["ok"])
+        membership = (
+            await self.session.execute(
+                select(WorkspaceMembership).where(
+                    WorkspaceMembership.workspace_id == self.workspace.id,
+                    WorkspaceMembership.account_id == child.id,
+                )
+            )
+        ).scalar_one()
+        self.assertEqual(membership.membership_state, MEMBERSHIP_STATE_JOINED)
+        self.assertIsNotNone(membership.joined_at)
+        payload = await workspaces_query(self.session)
+        item = payload["items"][0]
+        recon = next(row for row in item["reconciliation"]["items"] if row["email"] == "blimp_digging.1u@icloud.com")
+        self.assertEqual(recon["status"], "managed")
+        self.assertEqual(recon["remote_state"], "joined")
+        local = next(row for row in item["managed"]["accounts"] if row["email"] == "blimp_digging.1u@icloud.com")
+        self.assertEqual(local["membership_state"], MEMBERSHIP_STATE_JOINED)
+        portfolio = await portfolio_query(self.session)
+        child_card = portfolio["groups"][0]["current_children"][0]
+        self.assertEqual(child_card["email"], "blimp_digging.1u@icloud.com")
+        self.assertEqual(child_card["kind"], "child")
+        self.assertEqual(child_card["membership_state"], MEMBERSHIP_STATE_JOINED)
 
 
 class WorkspaceSyncApiTests(unittest.TestCase):

@@ -1538,7 +1538,7 @@ function hmeRow(item) {
       },
       {
         id: "team.member.official-remove",
-        label: ({ row }) => (row.kind || row.status || row.membership_state) === "invited" ? "撤回邀请" : "移出官方席位",
+        label: ({ row }) => presentTeamMember(row).code === "invited" ? "撤回邀请" : "移出官方席位",
         danger: true,
         visible: ({ row }) => Boolean(row.email),
         run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "official"),
@@ -1890,7 +1890,7 @@ function hmeRow(item) {
     }
 
     function presentTeamMember(row) {
-      const kind = row.kind || row.status || row.membership_state;
+      const kind = teamMemberKind(row);
       const auth = authStatus(row);
       const accountId = row.id || row.local_account_id || row.candidate_account_id || null;
       if (kind === "owner" || row.purpose === "mother" || row.is_owner) {
@@ -1904,7 +1904,7 @@ function hmeRow(item) {
       if (kind === "unmanaged" || kind === "remote_only") {
         return { code: "remote_only", label: "官方已加入，未接入本地", primaryId: "team.member.link", secondaryIds: [] };
       }
-      if (kind === "invited" || row.membership_state === "invited") {
+      if (kind === "invited") {
         return { code: "invited", label: "等待接受邀请", primaryId: null, secondaryIds: ["team.member.official-remove"] };
       }
       if (kind === "conflict") {
@@ -1934,9 +1934,25 @@ function hmeRow(item) {
       return { code: presented.code === "remote_only" ? "warning" : presented.code, label: presented.label };
     }
 
+  function teamMemberKind(row) {
+    const remoteState = String(row?.remote_state || "").trim().toLowerCase();
+    const status = String(row?.status || "").trim().toLowerCase();
+    const kind = String(row?.kind || "").trim().toLowerCase();
+    const membership = String(row?.membership_state || "").trim().toLowerCase();
+    if (kind === "owner" || status === "owner" || row?.purpose === "mother" || row?.is_owner) return "owner";
+    if (remoteState === "joined" || status === "managed" || status === "remote_only") {
+      if (status === "remote_only" || kind === "unmanaged" || kind === "remote_only") return "remote_only";
+      return kind === "conflict" ? "conflict" : "managed";
+    }
+    if (remoteState === "invited" || status === "invited" || kind === "invited" || membership === "invited") return "invited";
+    if (kind === "unmanaged" || kind === "remote_only" || status === "remote_only") return "remote_only";
+    if (kind === "conflict" || status === "conflict") return "conflict";
+    if (kind === "local_only" || status === "local_only" || membership === "local_only") return "local_only";
+    return kind || status || membership || "managed";
+  }
+
   function teamMemberIsJoined(row) {
-    const kind = row.kind || row.status || row.membership_state;
-    return !["invited", "local_only", "unmanaged", "remote_only"].includes(kind);
+    return !["invited", "local_only", "unmanaged", "remote_only"].includes(teamMemberKind(row));
   }
 
     function teamMemberMenu(workspace, row) {
@@ -2379,7 +2395,7 @@ function hmeRow(item) {
     async function removeTeamMember(workspace, row, button, mode) {
       const email = String(row.email || "").trim();
       const accountId = row.id || row.local_account_id;
-      const kind = row.kind || row.status || row.membership_state;
+      const kind = presentTeamMember(row).code;
       const copy = mode === "purge"
         ? `永久删除 ${email}？这会移出官方席位、下架 Sub2API 并清理本地档案，且不可恢复。`
         : mode === "official"

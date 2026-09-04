@@ -126,13 +126,28 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 continue
             assigned_ids.add(account["id"])
             quota = _quota_payload(latest_by_context.get((account["id"], ws_id)) or latest.get(account["id"]))
-            kind = "mother" if is_owner else ("history" if row.membership_state == MEMBERSHIP_STATE_REMOVED else ("invited" if row.membership_state == MEMBERSHIP_STATE_INVITED else "child"))
+            remote = next(
+                (
+                    item
+                    for item in workspace.get("official_members") or []
+                    if normalize_email(item.get("email")) == email
+                ),
+                None,
+            )
+            membership_state = row.membership_state
+            if (
+                row.membership_state != MEMBERSHIP_STATE_REMOVED
+                and remote
+                and remote.get("state") in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
+            ):
+                membership_state = remote["state"]
+            kind = "mother" if is_owner else ("history" if membership_state == MEMBERSHIP_STATE_REMOVED else ("invited" if membership_state == MEMBERSHIP_STATE_INVITED else "child"))
             card = _account_card(
                 {
                     **account,
                     "workspace_id": ws_id,
-                    "official_role": row.official_role,
-                    "membership_state": row.membership_state,
+                    "official_role": (remote or {}).get("role") or row.official_role,
+                    "membership_state": membership_state,
                     "management_role": "mother" if is_owner else "child",
                     "managed": True,
                     "quota": quota,
@@ -144,11 +159,9 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
             members.append(card)
             if is_owner:
                 mother = card
-            elif row.membership_state == MEMBERSHIP_STATE_REMOVED:
+            elif membership_state == MEMBERSHIP_STATE_REMOVED:
                 history.append(card)
-            elif row.membership_state == MEMBERSHIP_STATE_JOINED:
-                current_children.append(card)
-            elif row.membership_state == MEMBERSHIP_STATE_INVITED:
+            elif membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}:
                 current_children.append(card)
         if mother is None and owner_email:
             owner_item = next(

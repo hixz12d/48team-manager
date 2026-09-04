@@ -14,6 +14,7 @@ from app.domain.identity import (
     AUDIT_CONFLICT,
     MEMBERSHIP_STATE_INVITED,
     MEMBERSHIP_STATE_JOINED,
+    MEMBERSHIP_STATE_REMOVED,
 )
 from app.domain.identity.audit import build_audit_report
 from app.domain.identity.ids import normalize_email
@@ -303,20 +304,30 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             account = accounts_by_id.get(row.account_id)
             if account is None:
                 continue
+            email = normalize_email(account.email)
+            remote = official_by_email.get(email)
+            membership_state = row.membership_state
+            if (
+                row.membership_state != MEMBERSHIP_STATE_REMOVED
+                and remote
+                and remote.get("state") in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
+            ):
+                membership_state = remote["state"]
             payload = {
                 "id": account.id,
                 "email": account.email,
                 "purpose": account.local_purpose,
-                "official_role": row.official_role,
-                "official_user_id": row.official_user_id,
-                "user_id": row.official_user_id,
-                "membership_state": row.membership_state,
+                "official_role": (remote or {}).get("role") or row.official_role,
+                "official_user_id": (remote or {}).get("user_id") or row.official_user_id,
+                "user_id": (remote or {}).get("user_id") or row.official_user_id,
+                "membership_state": membership_state,
+                "remote_state": (remote or {}).get("state"),
                 "auth": account.auth_state,
                 **build_auth_status(account),
                 "state": _account_state(account, findings_by_id.get(account.id)),
             }
             member_items.append(payload)
-            local_by_email[normalize_email(account.email)] = payload
+            local_by_email[email] = payload
         member_items.sort(key=lambda item: ((item.get("email") or "").lower(), item.get("id") or 0))
 
         reconciliation = []
@@ -326,17 +337,18 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             remote = official_by_email.get(email)
             local = local_by_email.get(email)
             is_owner = bool(owner_email) and email == owner_email
+            remote_state = (remote or {}).get("state")
             if is_owner:
                 status = "owner"
+            elif remote_state == MEMBERSHIP_STATE_INVITED:
+                status = "invited"
+                pending_invites += 1
             elif remote and local:
                 status = "managed"
                 matched += 1
             elif remote and not local:
-                status = "invited" if remote.get("state") == "invited" else "remote_only"
-                if status == "remote_only":
-                    remote_only += 1
-                else:
-                    pending_invites += 1
+                status = "remote_only"
+                remote_only += 1
             else:
                 status = "local_only"
                 local_only += 1
@@ -345,6 +357,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 {
                     "email": email,
                     "status": status,
+                    "remote_state": remote_state,
                     "status_label": membership_status_label(status),
                     "name": (remote or {}).get("name"),
                     "role": (remote or {}).get("role") or (local or {}).get("official_role"),
