@@ -82,8 +82,8 @@ def _account_card(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
 async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
     workspaces_payload = await workspaces_query(db)
     accounts_payload = await accounts_query(db, purpose="all", include_archived=True)
-    latest = await quota_service.latest_official_by_accounts(db)
-    latest_by_context = await quota_service.latest_official_by_contexts(db)
+    latest = await quota_service.latest_official_by_accounts(db, success_only=True)
+    latest_by_context = await quota_service.latest_official_by_contexts(db, success_only=True)
     accounts_by_id = {item["id"]: item for item in accounts_payload.get("items") or []}
     usage_by_context = await sub2api_usage_service.payloads_by_context(db)
 

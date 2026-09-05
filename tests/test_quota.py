@@ -209,6 +209,51 @@ class QuotaProbeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refreshed.operational_state, "active")
         self.assertFalse(official_overrides_sub2api_stale(snap, "429"))
 
+    async def test_display_keeps_last_successful_snapshot_after_failed_probe(self):
+        account = await self._seed_account()
+        now = datetime(2026, 3, 29, 12, 0, 0)
+        from app.application.quota import snapshot_from_result
+        from app.domain.quota import QuotaResult
+
+        self.session.add(
+            snapshot_from_result(
+                account.id,
+                QuotaResult(
+                    success=True,
+                    five_hour_used_percent=12,
+                    seven_day_used_percent=34,
+                    queried_at=now,
+                ),
+                now,
+                workspace_id=1,
+            )
+        )
+        later = now + timedelta(hours=1)
+        self.session.add(
+            snapshot_from_result(
+                account.id,
+                QuotaResult(
+                    success=False,
+                    error_code="token_revoked",
+                    error_message="Encountered invalidated oauth token",
+                    queried_at=later,
+                ),
+                later,
+                workspace_id=1,
+            )
+        )
+        await self.session.commit()
+        service = QuotaService()
+        latest = await service.latest_official_by_accounts(self.session)
+        displayed = await service.latest_official_by_accounts(self.session, success_only=True)
+        self.assertFalse(latest[account.id].success)
+        self.assertEqual(latest[account.id].error_code, "token_revoked")
+        self.assertTrue(displayed[account.id].success)
+        self.assertEqual(displayed[account.id].five_hour_used_percent, 12)
+        self.assertEqual(displayed[account.id].seven_day_used_percent, 34)
+        scoped = await service.latest_official_by_contexts(self.session, success_only=True)
+        self.assertEqual(scoped[(account.id, 1)].seven_day_used_percent, 34)
+
 
 class QuotaConsoleTests(unittest.TestCase):
     def test_accounts_api_shows_official_quota(self):

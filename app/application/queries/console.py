@@ -48,7 +48,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
     payload = await overview_query(db)
     operations = await operation_store.list_recent(db, limit=40)
     running = [serialize_operation(row) for row in operations if row.state in ACTIVE_STATES]
-    latest = await quota_service.latest_official_by_accounts(db)
+    latest = await quota_service.latest_official_by_accounts(db, success_only=True)
     latest_quota_at = None
     for snap in latest.values():
         if snap.success and snap.queried_at and (latest_quota_at is None or snap.queried_at > latest_quota_at):
@@ -184,7 +184,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
 
 async def workspaces(db: AsyncSession) -> dict[str, Any]:
     payload = await workspaces_query(db)
-    latest_quota = await quota_service.latest_official_by_accounts(db)
+    latest_quota = await quota_service.latest_official_by_accounts(db, success_only=True)
     for item in payload["items"]:
         owner_snapshot = latest_quota.get(item.get("owner_account_id"))
         item["owner_quota_updated_at"] = isoformat(owner_snapshot.queried_at) if owner_snapshot else None
@@ -198,7 +198,7 @@ async def workspaces(db: AsyncSession) -> dict[str, Any]:
 
 async def accounts(db: AsyncSession, purpose: str = "all", include_archived: bool = False) -> dict[str, Any]:
     payload = await accounts_query(db, purpose=purpose, include_archived=include_archived)
-    latest = await quota_service.latest_official_by_accounts(db)
+    latest = await quota_service.latest_official_by_accounts(db, success_only=True)
     usage_by_context = await sub2api_usage_service.payloads_by_context(db)
     for item in payload["items"]:
         snap = latest.get(item["id"])

@@ -138,19 +138,33 @@ class QuotaService:
         )
         return result.scalar_one_or_none()
 
-    async def latest_official_by_accounts(self, db: AsyncSession) -> dict[int, QuotaSnapshot]:
+    async def latest_official_by_accounts(
+        self,
+        db: AsyncSession,
+        *,
+        success_only: bool = False,
+    ) -> dict[int, QuotaSnapshot]:
         rows = list((await db.execute(select(QuotaSnapshot).where(QuotaSnapshot.source == SOURCE_OFFICIAL))).scalars())
         latest: dict[int, QuotaSnapshot] = {}
         for row in rows:
+            if success_only and not row.success:
+                continue
             current = latest.get(row.account_id)
             if current is None or (row.queried_at, row.id) > (current.queried_at, current.id):
                 latest[row.account_id] = row
         return latest
 
-    async def latest_official_by_contexts(self, db: AsyncSession) -> dict[tuple[int, int | None], QuotaSnapshot]:
+    async def latest_official_by_contexts(
+        self,
+        db: AsyncSession,
+        *,
+        success_only: bool = False,
+    ) -> dict[tuple[int, int | None], QuotaSnapshot]:
         rows = list((await db.execute(select(QuotaSnapshot).where(QuotaSnapshot.source == SOURCE_OFFICIAL))).scalars())
         latest: dict[tuple[int, int | None], QuotaSnapshot] = {}
         for row in rows:
+            if success_only and not row.success:
+                continue
             key = (row.account_id, getattr(row, "workspace_id", None))
             current = latest.get(key)
             if current is None or (row.queried_at, row.id) > (current.queried_at, current.id):

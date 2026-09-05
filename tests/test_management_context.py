@@ -289,6 +289,19 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         latest = await QuotaService().latest_official_by_contexts(self.session)
         self.assertEqual(latest[(self.alice.id, self.ws_a.id)].seven_day_used_percent, 20)
         self.assertEqual(latest[(self.alice.id, self.ws_b.id)].seven_day_used_percent, 90)
+        failed_at = now.replace(hour=13)
+        self.session.add(
+            snapshot_from_result(
+                self.alice.id,
+                QuotaResult(success=False, error_code="token_revoked", queried_at=failed_at),
+                failed_at,
+                workspace_id=self.ws_a.id,
+            )
+        )
+        await self.session.commit()
+        displayed = await QuotaService().latest_official_by_contexts(self.session, success_only=True)
+        self.assertEqual(displayed[(self.alice.id, self.ws_a.id)].seven_day_used_percent, 20)
+        self.assertEqual(displayed[(self.alice.id, self.ws_b.id)].seven_day_used_percent, 90)
 
 
 if __name__ == "__main__":
