@@ -22,6 +22,7 @@ class ConnectionSettings(BaseModel):
 
 class AutomationSettings(BaseModel):
     official_quota_probe: bool | None = None
+    auto_reauth: bool | None = None
 
 
 class ConnectionProbeRequest(BaseModel):

@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -25,6 +26,11 @@ from app.persistence.models.identity import Account, ExternalBinding, Workspace,
 
 
 WORKSPACE_UUID = "11111111-1111-1111-1111-111111111111"
+
+
+def callback_url(started: dict, code: str) -> str:
+    state = parse_qs(urlparse(started["authorize_url"]).query)["state"][0]
+    return f"http://localhost:1455/auth/callback?{urlencode({'code': code, 'state': state})}"
 
 
 class ReauthPolicyTests(unittest.TestCase):
@@ -349,7 +355,7 @@ class ManualReauthLinkTests(unittest.IsolatedAsyncioTestCase):
             self.session,
             account,
             ticket=started["ticket"],
-            callback_url="http://localhost:1455/auth/callback?code=abc",
+            callback_url=callback_url(started, "abc"),
             client=client,
         )
         self.assertTrue(result.get("ok"), result)
@@ -378,7 +384,7 @@ class ManualReauthLinkTests(unittest.IsolatedAsyncioTestCase):
             self.session,
             account,
             ticket=started["ticket"],
-            callback_url="http://localhost:1455/auth/callback?code=bad",
+            callback_url=callback_url(started, "bad"),
             client=client,
         )
         self.assertFalse(failed["ok"])
@@ -431,7 +437,7 @@ class ManualReauthLinkTests(unittest.IsolatedAsyncioTestCase):
             self.session,
             owner,
             ticket=started["ticket"],
-            callback_url="http://localhost:1455/auth/callback?code=ok",
+            callback_url=callback_url(started, "ok"),
             client=client,
         )
         self.assertTrue(completed["ok"])

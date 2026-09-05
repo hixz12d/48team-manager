@@ -61,13 +61,36 @@ class Sub2ApiProxyCatalog:
             "region": _safe_text(remote.get("region"), limit=120),
         }
 
-    async def list(self, db: AsyncSession) -> dict[str, Any]:
+    async def list(
+        self,
+        db: AsyncSession,
+        *,
+        q: str = "",
+        cursor: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
         remotes = await sub2api_client.list_proxies(db)
         items = [item for remote in remotes if (item := self.serialize(remote)) is not None]
+        query = str(q or "").strip().casefold()
+        if query:
+            items = [
+                item
+                for item in items
+                if query in " ".join(
+                    str(item.get(key) or "")
+                    for key in ("id", "name", "protocol", "host", "port", "region", "status")
+                ).casefold()
+            ]
+        start = max(0, int(cursor or 0))
+        page_size = min(200, max(1, int(limit or 100)))
+        page = items[start : start + page_size]
+        next_cursor = start + len(page) if start + len(page) < len(items) else None
         return {
-            "items": items,
-            "next_cursor": None,
+            "items": page,
+            "next_cursor": next_cursor,
             "source": "sub2api",
+            "complete": len(remotes) < 800,
+            "total_loaded": len(items),
         }
 
     async def probe(self, db: AsyncSession, remote_id: int) -> dict[str, Any]:

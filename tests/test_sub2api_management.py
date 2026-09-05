@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.resources.proxies import proxy_profile_service
-from app.application.sub2api_publish import account_sub2api_push
+from app.application.sub2api_publish import account_sub2api_push, push_refreshed_tokens_to_bound_sub2api
 from app.application.sub2api_usage import sub2api_usage_service
 from app.persistence.database import Base
 from app.persistence.models.identity import Account, ExternalBinding
@@ -244,6 +244,42 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("proxy_id", preview["would_update"])
         self.assertNotIn("proxy_id", create_account.await_args.args[1])
         create_proxy.assert_not_awaited()
+
+    async def test_refreshed_token_push_requires_verified_exact_binding(self):
+        remote = {
+            "id": 42,
+            "credentials": {
+                "email": self.account.email,
+                "chatgpt_account_id": self.account.official_account_id,
+            },
+        }
+        update = AsyncMock(return_value={"id": 42})
+        with (
+            patch("app.application.sub2api_publish.decrypt_secret", return_value="new-token"),
+            patch("app.application.sub2api_publish.sub2api_client.get_account", new=AsyncMock(return_value=remote)),
+            patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
+            patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=remote)),
+        ):
+            result = await push_refreshed_tokens_to_bound_sub2api(self.session, self.account)
+        self.assertTrue(result["ok"])
+        self.assertEqual(set(update.await_args.args[2]), {"credentials"})
+        self.assertEqual(self.account.sub2api_token_sync_state, "synced")
+
+    async def test_refreshed_token_push_refuses_binding_drift(self):
+        drifted = {
+            "id": 42,
+            "credentials": {"email": "someone-else@example.com", "chatgpt_account_id": "different"},
+        }
+        update = AsyncMock()
+        with (
+            patch("app.application.sub2api_publish.sub2api_client.get_account", new=AsyncMock(return_value=drifted)),
+            patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
+        ):
+            result = await push_refreshed_tokens_to_bound_sub2api(self.session, self.account)
+        self.assertFalse(result["ok"])
+        update.assert_not_awaited()
+        self.assertEqual(self.binding.binding_state, "conflict")
+        self.assertEqual(self.account.sub2api_token_sync_state, "failed")
 
 
 if __name__ == "__main__":

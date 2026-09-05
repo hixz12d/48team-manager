@@ -8,6 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application import console_actions
 from app.application.commands.workspaces import RegisterWorkspaceError, complete_workspace_oauth, start_workspace_oauth
 from app.application.connection_probe import probe_hme, probe_mail, probe_sub2api
+from app.application.mailbox import mailbox_readiness_snapshot, probe_account_mailbox
+from app.application.operations import operation_store
+from app.application.reauth import reauth_service
 from app.application.queries import console as console_query
 from app.application.queries.identity import identity_audit_query
 from app.application.resources.phones import phone_pool_service
@@ -16,9 +19,11 @@ from app.application.settings import save_console_settings
 from app.application.workspace_sync import workspace_sync_service
 from app.application.sub2api_usage import sub2api_usage_service
 from app.integrations.sub2api.client import sub2api_client
+from app.persistence.models.identity import Account
 from app.web.deps import require_admin
 from app.web.schemas.resources import (
     AccountProxyPatch,
+    AccountAutomationPatch,
     KickRequest,
     OnboardRequest,
     OperationArchiveRequest,
@@ -69,7 +74,12 @@ def build_api_router(get_db) -> APIRouter:
         db: AsyncSession = Depends(get_db),
     ) -> dict:
         try:
-            return await start_workspace_oauth(db, email=payload.email, proxy=payload.proxy)
+            return await start_workspace_oauth(
+                db,
+                email=payload.email,
+                proxy=payload.proxy,
+                proxy_selection=payload.proxy_selection.model_dump() if payload.proxy_selection else None,
+            )
         except RegisterWorkspaceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
@@ -369,6 +379,103 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
+    @router.get("/accounts/{account_id}/reauth/readiness")
+    async def account_reauth_readiness(
+        account_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        account = await db.get(Account, account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        settings = await reauth_service.load_settings(db)
+        mailbox = mailbox_readiness_snapshot(account)
+        blocked = []
+        if not account.auto_reauth_opt_in:
+            blocked.append("account_not_opted_in")
+        if not settings.get("deployment_allowed"):
+            blocked.append("deployment_disabled")
+        if not mailbox["ready"]:
+            blocked.append("mailbox_unverified")
+        if not account.proxy:
+            blocked.append("proxy_missing")
+        active = await operation_store.active_for_email(db, account.email, actions=("reauth",))
+        if active:
+            blocked.append("already_running")
+        return {
+            "account_id": account.id,
+            "eligible": not blocked,
+            "effective_enabled": bool(settings.get("effective")) and not blocked,
+            "blocked_reasons": blocked,
+            "mailbox": mailbox,
+            "proxy": {
+                "source": account.proxy_source,
+                "remote_id": account.sub2api_proxy_id,
+                "resolution_state": "ready" if account.proxy else "missing",
+            },
+            "active_operation_id": active.public_id if active else None,
+            "next_eligible_at": account.next_eligible_at.isoformat() if account.next_eligible_at else None,
+        }
+
+    @router.post("/accounts/{account_id}/mailbox/probe")
+    async def account_mailbox_probe(
+        account_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await probe_account_mailbox(db, account_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result)
+        return result
+
+    @router.patch("/accounts/{account_id}/automation")
+    async def patch_account_automation(
+        account_id: int,
+        payload: AccountAutomationPatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        account = await db.get(Account, account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        account.auto_reauth_opt_in = payload.auto_reauth_opt_in
+        await db.commit()
+        return {"ok": True, "account_id": account.id, "auto_reauth_opt_in": account.auto_reauth_opt_in}
+
+    @router.post("/accounts/{account_id}/reauth/auto", status_code=status.HTTP_202_ACCEPTED)
+    async def queue_account_auto_reauth(
+        account_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        account = await db.get(Account, account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="account not found")
+        settings = await reauth_service.load_settings(db)
+        if not settings.get("effective"):
+            raise HTTPException(
+                status_code=409,
+                detail={"error_code": "automation_disabled", "blocked_reasons": settings.get("blocked_reasons", [])},
+            )
+        result = await reauth_service.start_auto_reauth(db, account)
+        if result.get("error_code") == "already_running":
+            return {
+                "ok": True,
+                "status": "queued",
+                "operation_id": result.get("job_id"),
+                "reused_existing": True,
+                "message": "已有自动授权任务",
+            }
+        if not result.get("success"):
+            raise HTTPException(status_code=409, detail=result)
+        return {
+            "ok": True,
+            "status": "queued",
+            "operation_id": result.get("job_id"),
+            "reused_existing": False,
+            "message": "已进入自动授权队列",
+        }
+
     @router.post("/accounts/{account_id}/reauth")
     async def reauth_account(
         account_id: int,
@@ -557,6 +664,7 @@ def build_api_router(get_db) -> APIRouter:
             db,
             account_id,
             proxy=payload.proxy,
+            proxy_selection=payload.proxy_selection.model_dump() if payload.proxy_selection else None,
             clear=payload.clear,
         )
         if result.get("error_code") == "not_found":
@@ -752,9 +860,12 @@ def build_api_router(get_db) -> APIRouter:
     async def proxies(
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
+        q: str = Query(default="", max_length=120),
+        cursor: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=200),
     ) -> dict:
         try:
-            return await sub2api_proxy_catalog.list(db)
+            return await sub2api_proxy_catalog.list(db, q=q, cursor=cursor, limit=limit)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -776,6 +887,12 @@ def build_api_router(get_db) -> APIRouter:
         if result.get("error_code") == "invalid_remote_id":
             raise HTTPException(status_code=400, detail=result)
         return result
+
+    @router.get("/runtime/reauth")
+    async def reauth_runtime(_: dict = Depends(require_admin)) -> dict:
+        from app.application.jobs.dispatcher import reauth_dispatcher
+
+        return await reauth_dispatcher.summary()
 
     @router.get("/settings")
     async def settings_view(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:

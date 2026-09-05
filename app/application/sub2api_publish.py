@@ -690,5 +690,120 @@ async def account_sub2api_push(
 
 
 # Backward-compatible alias used by typed retry of old operations.
+
+
+async def push_refreshed_tokens_to_bound_sub2api(
+    db: AsyncSession,
+    account: Account,
+    *,
+    operation=None,
+) -> dict[str, Any]:
+    """Update credentials only when one verified binding still matches exactly."""
+    bindings = list(
+        (
+            await db.execute(
+                select(ExternalBinding).where(
+                    ExternalBinding.provider == PROVIDER_SUB2API,
+                    ExternalBinding.local_account_id == account.id,
+                    ExternalBinding.binding_state == BINDING_VERIFIED,
+                )
+            )
+        ).scalars()
+    )
+    if not bindings:
+        account.sub2api_token_sync_state = "not_bound"
+        account.sub2api_token_sync_error = None
+        return {"ok": True, "skipped": True, "outcome": "not_bound"}
+    if len(bindings) != 1 or not bindings[0].remote_account_id:
+        account.sub2api_token_sync_state = "failed"
+        account.sub2api_token_sync_error = "verified binding is ambiguous"
+        return {"ok": False, "error_code": "binding_ambiguous", "error": account.sub2api_token_sync_error}
+
+    binding = bindings[0]
+    remote_id = int(binding.remote_account_id)
+    expected_ws = await _expected_workspace(db, account, binding.workspace_id)
+    owns_operation = operation is None
+    if operation is None:
+        operation = await operation_store.create(
+            db,
+            op_type="sub2api_push",
+            account_id=account.id,
+            workspace_id=binding.workspace_id or 0,
+            email=account.email,
+            input_payload={"account_id": account.id, "mode": "token_refresh", "remote_id": remote_id},
+            source="oauth_callback",
+        )
+    try:
+        before = await sub2api_client.get_account(db, remote_id)
+        state, reason = cross_check_binding(
+            local_email=account.email,
+            local_official_account_id=account.official_account_id,
+            expected_workspace=expected_ws,
+            remote=before,
+        )
+        if state != BINDING_VERIFIED:
+            binding.binding_state = "conflict"
+            binding.last_error = str(reason or "binding drift before token update")
+            binding.last_observed_at = utcnow()
+            raise RuntimeError(binding.last_error)
+        await sub2api_client.update_account(db, remote_id, {"credentials": _build_credentials(account)})
+        after = await sub2api_client.read_after_write(db, remote_id)
+        after_state, after_reason = cross_check_binding(
+            local_email=account.email,
+            local_official_account_id=account.official_account_id,
+            expected_workspace=expected_ws,
+            remote=after,
+        )
+        if after_state != BINDING_VERIFIED:
+            binding.binding_state = "conflict"
+            binding.last_error = str(after_reason or "binding drift after token update")
+            binding.last_observed_at = utcnow()
+            raise RuntimeError(binding.last_error)
+        account.sub2api_token_sync_state = "synced"
+        account.sub2api_token_sync_error = None
+        binding.last_error = None
+        binding.last_observed_at = utcnow()
+        if operation is not None:
+            await operation_store.mark_step(
+                db,
+                operation,
+                "sub2api_token_push",
+                state="success",
+                result={"remote_id": remote_id, "updated_fields": ["credentials"]},
+            )
+        if owns_operation:
+            await operation_store.finish(
+                db,
+                operation,
+                {"success": True, "status": "success", "outcome": "synced", "remote_id": remote_id},
+            )
+        return {"ok": True, "outcome": "synced", "remote_id": remote_id}
+    except Exception as exc:  # noqa: BLE001
+        account.sub2api_token_sync_state = "failed"
+        account.sub2api_token_sync_error = str(exc)[:500]
+        if operation is not None:
+            await operation_store.mark_step(
+                db,
+                operation,
+                "sub2api_token_push",
+                state="failed",
+                error_code="sub2api_token_push_failed",
+                error_message=str(exc),
+                result={"remote_id": remote_id, "error": str(exc)},
+            )
+        if owns_operation:
+            await operation_store.finish(
+                db,
+                operation,
+                {
+                    "success": False,
+                    "status": "partial",
+                    "partial": True,
+                    "error_code": "sub2api_token_push_failed",
+                    "error": str(exc),
+                    "remote_id": remote_id,
+                },
+            )
+        return {"ok": False, "error_code": "sub2api_token_push_failed", "error": str(exc), "remote_id": remote_id}
 async def account_sub2api_sync(db: AsyncSession, account_id: int) -> dict[str, Any]:
     return await account_sub2api_reconcile(db, account_id)

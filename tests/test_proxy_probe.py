@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.resources.proxies import proxy_profile_service
+from app.application.proxy_resolution import _runtime_url
 from app.application.resources.proxy_probe import ProxyProbeService
 from app.application.sub2api_proxy_catalog import sub2api_proxy_catalog
 from app.persistence.database import Base
@@ -87,6 +88,31 @@ class ProxyProbeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["items"][0]["health"], "healthy")
         self.assertNotIn("secret-pass", str(payload))
         self.assertNotIn("private-user", str(payload))
+
+    async def test_catalog_search_and_pagination_are_explicit(self):
+        remotes = [
+            {"id": 1, "name": "Los Angeles", "protocol": "http", "host": "one.example", "port": 80},
+            {"id": 2, "name": "Tokyo", "protocol": "socks5", "host": "two.example", "port": 1080},
+        ]
+        with patch(
+            "app.application.sub2api_proxy_catalog.sub2api_client.list_proxies",
+            new=AsyncMock(return_value=remotes),
+        ):
+            payload = await sub2api_proxy_catalog.list(self.session, q="tokyo", cursor=0, limit=1)
+        self.assertEqual([item["id"] for item in payload["items"]], [2])
+        self.assertTrue(payload["complete"])
+        self.assertIsNone(payload["next_cursor"])
+
+    def test_runtime_url_encodes_remote_credentials(self):
+        url = _runtime_url({
+            "protocol": "socks5",
+            "host": "proxy.example",
+            "port": 1080,
+            "username": "user@name",
+            "password": "p:a/s%",
+        })
+        self.assertIn("user%40name", url)
+        self.assertIn("p%3Aa%2Fs%25", url)
 
 
 class ProxyProbeApiTests(unittest.TestCase):

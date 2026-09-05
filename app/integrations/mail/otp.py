@@ -266,6 +266,9 @@ def list_mailbox_codes(
     cf_base_url: str = "",
     cf_address: str = "",
     cf_admin_password: str = "",
+    hme_base_url: str = "",
+    hme_service_token: str = "",
+    hme_account_id: str = "",
 ) -> list[str]:
     from app.integrations.mail.cloudflare import cloudflare_mail_client
 
@@ -276,6 +279,19 @@ def list_mailbox_codes(
         if value and value not in codes:
             codes.append(value)
 
+    use_hme = bool(hme_base_url and hme_service_token and hme_account_id)
+    if use_hme:
+        from app.application.mailbox import fetch_hme_mailbox
+
+        inbox = fetch_hme_mailbox(
+            base_url=hme_base_url,
+            service_token=hme_service_token,
+            account_id=hme_account_id,
+            alias=email,
+        )
+        for message in inbox["messages"]:
+            add(extract_code("\n".join([message.get("subject", ""), message.get("preview", "")])))
+        return codes
     use_cf = bool(cf_base_url and cf_address and cf_admin_password and not pickup_url)
     if use_cf:
         for message in cloudflare_mail_client.fetch_messages(
@@ -304,6 +320,9 @@ def wait_for_mailbox_item(
     cf_base_url: str = "",
     cf_address: str = "",
     cf_admin_password: str = "",
+    hme_base_url: str = "",
+    hme_service_token: str = "",
+    hme_account_id: str = "",
     ignore_values: Optional[set[str]] = None,
 ) -> Optional[str]:
     from app.integrations.mail.cloudflare import cloudflare_mail_client
@@ -311,7 +330,8 @@ def wait_for_mailbox_item(
     deadline = time.time() + timeout_sec
     last_error: Optional[Exception] = None
     ignore = {str(item).strip() for item in (ignore_values or set()) if str(item).strip()}
-    use_cf = bool(cf_base_url and cf_address and cf_admin_password and not pickup_url)
+    use_hme = bool(hme_base_url and hme_service_token and hme_account_id)
+    use_cf = bool(cf_base_url and cf_address and cf_admin_password and not pickup_url and not use_hme)
     while time.time() < deadline:
         try:
             if kind == "code":
@@ -325,8 +345,28 @@ def wait_for_mailbox_item(
                             cf_base_url=cf_base_url,
                             cf_address=cf_address,
                             cf_admin_password=cf_admin_password,
+                            hme_base_url=hme_base_url,
+                            hme_service_token=hme_service_token,
+                            hme_account_id=hme_account_id,
                         )
                         if code not in ignore
+                    ),
+                    None,
+                )
+            elif use_hme:
+                from app.application.mailbox import fetch_hme_mailbox
+
+                inbox = fetch_hme_mailbox(
+                    base_url=hme_base_url,
+                    service_token=hme_service_token,
+                    account_id=hme_account_id,
+                    alias=email,
+                )
+                found = next(
+                    (
+                        extract_invite_url("\n".join([item.get("subject", ""), item.get("preview", "")]))
+                        for item in inbox["messages"]
+                        if extract_invite_url("\n".join([item.get("subject", ""), item.get("preview", "")]))
                     ),
                     None,
                 )

@@ -72,6 +72,9 @@ def run_browser_oauth_reauth(
     cf_base_url: str = "",
     cf_address: str = "",
     cf_admin_password: str = "",
+    hme_base_url: str = "",
+    hme_service_token: str = "",
+    hme_account_id: str = "",
     allow_signup: bool = False,
     on_stage: StageCallback = None,
     phone_source=None,
@@ -150,6 +153,9 @@ def run_browser_oauth_reauth(
                     cf_base_url=cf_base_url,
                     cf_address=cf_address,
                     cf_admin_password=cf_admin_password,
+                    hme_base_url=hme_base_url,
+                    hme_service_token=hme_service_token,
+                    hme_account_id=hme_account_id,
                 )
             )
             otp_submits = 0
@@ -347,6 +353,9 @@ def run_browser_oauth_reauth(
                         cf_base_url=cf_base_url,
                         cf_address=cf_address,
                         cf_admin_password=cf_admin_password,
+                        hme_base_url=hme_base_url,
+                        hme_service_token=hme_service_token,
+                        hme_account_id=hme_account_id,
                         ignore=known_codes,
                         resends=otp_resends,
                         report=report,

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import token_cipher
@@ -255,15 +255,15 @@ class OperationStore:
             source=source or "manual",
             state=state or "running",
             current_step="queued",
-            locked_by=WORKER_ID,
-            lease_expires_at=stamp + timedelta(seconds=lease_seconds),
+            locked_by=None if (state or "running") == "queued" else WORKER_ID,
+            lease_expires_at=None if (state or "running") == "queued" else stamp + timedelta(seconds=lease_seconds),
             cancel_requested=False,
             input_json=pack_input(input_payload),
             log_json=_dumps([{"ts": _now_text(stamp), "stage": "queued", "message": "queued"}]),
             resolved_proxy=str(resolved_proxy or "").strip() or None,
             resolved_proxy_profile_id=resolved_proxy_profile_id,
             created_at=stamp,
-            started_at=stamp,
+            started_at=None if (state or "running") == "queued" else stamp,
             updated_at=stamp,
         )
         session.add(row)
@@ -420,7 +420,66 @@ class OperationStore:
         return list((await session.execute(stmt)).scalars().all())
 
     async def browser_busy(self, session: AsyncSession) -> Operation | None:
-        return await self.any_running(session, BROWSER_ACTIONS)
+        stmt = (
+            select(Operation)
+            .where(Operation.state.in_(("running", "waiting")), Operation.op_type.in_(BROWSER_ACTIONS))
+            .order_by(Operation.started_at.desc(), Operation.id.desc())
+        )
+        return (await session.execute(stmt)).scalars().first()
+
+    async def claim_next_reauth(
+        self,
+        session: AsyncSession,
+        *,
+        worker_id: str = WORKER_ID,
+        now: datetime | None = None,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    ) -> Operation | None:
+        stamp = now or utcnow()
+        candidate = await session.scalar(
+            select(Operation.id)
+            .where(Operation.op_type == "reauth", Operation.state == "queued")
+            .order_by(Operation.created_at.asc(), Operation.id.asc())
+            .limit(1)
+        )
+        if candidate is None:
+            return None
+        claimed = await session.execute(
+            update(Operation)
+            .where(Operation.id == int(candidate), Operation.state == "queued", Operation.locked_by.is_(None))
+            .values(
+                state="running",
+                current_step="preflight",
+                locked_by=worker_id,
+                lease_expires_at=stamp + timedelta(seconds=lease_seconds),
+                started_at=stamp,
+                updated_at=stamp,
+            )
+        )
+        if claimed.rowcount != 1:
+            await session.rollback()
+            return None
+        await session.commit()
+        return await session.get(Operation, int(candidate))
+
+    async def runtime_summary(self, session: AsyncSession) -> dict[str, Any]:
+        queued = int(await session.scalar(select(func.count()).select_from(Operation).where(Operation.op_type == "reauth", Operation.state == "queued")) or 0)
+        stale = int(
+            await session.scalar(
+                select(func.count()).select_from(Operation).where(
+                    Operation.op_type == "reauth",
+                    Operation.state.in_(("running", "waiting")),
+                    Operation.lease_expires_at < utcnow(),
+                )
+            )
+            or 0
+        )
+        active = await self.browser_busy(session)
+        return {
+            "queued_count": queued,
+            "stale_lease_count": stale,
+            "active_browser_operation": active.public_id if active else None,
+        }
 
     async def check_cancel(self, session: AsyncSession, row: Operation, *, destructive_started: bool = False) -> dict[str, Any] | None:
         if not row.cancel_requested:
@@ -452,6 +511,30 @@ class OperationStore:
         row.locked_by = WORKER_ID
         row.lease_expires_at = stamp + timedelta(seconds=lease_seconds)
         row.updated_at = stamp
+
+    async def heartbeat_active(
+        self,
+        session: AsyncSession,
+        public_id: str,
+        *,
+        worker_id: str = WORKER_ID,
+        now: datetime | None = None,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    ) -> bool:
+        stamp = now or utcnow()
+        result = await session.execute(
+            update(Operation)
+            .where(
+                Operation.public_id == public_id,
+                Operation.state.in_(("running", "waiting")),
+            )
+            .values(
+                locked_by=worker_id,
+                lease_expires_at=stamp + timedelta(seconds=lease_seconds),
+                updated_at=stamp,
+            )
+        )
+        return result.rowcount == 1
 
     async def note(
         self,
@@ -594,10 +677,10 @@ class OperationStore:
     ) -> list[Operation]:
         stamp = now or utcnow()
         if reclaim_all_active:
-            stmt = select(Operation).where(Operation.state.in_(ACTIVE_STATES))
+            stmt = select(Operation).where(Operation.state.in_(("running", "waiting")))
         else:
             stmt = select(Operation).where(
-                Operation.state.in_(ACTIVE_STATES),
+                Operation.state.in_(("running", "waiting")),
                 or_(
                     Operation.locked_by == worker_id,
                     Operation.locked_by.is_(None),

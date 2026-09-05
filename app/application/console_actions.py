@@ -20,6 +20,7 @@ from app.application.resources.hme import (
 )
 from app.application.resources.phones import phone_pool_service
 from app.application.resources.proxies import proxy_profile_service
+from app.application.proxy_resolution import ProxyResolutionError, resolve_sub2api_proxy
 from app.application.rotate import rotate_service
 from app.application.tokens import auth_service
 from app.application.workspaces import workspace_service
@@ -798,6 +799,7 @@ async def update_account_proxy(
     account_id: int,
     *,
     proxy: str | None = None,
+    proxy_selection: dict[str, Any] | None = None,
     proxy_profile_id: int | None = None,
     clear: bool = False,
 ) -> dict[str, Any]:
@@ -807,19 +809,46 @@ async def update_account_proxy(
     if account.local_purpose != "mother":
         return {"ok": False, "error": "only mother accounts can change proxy here", "error_code": "not_mother"}
 
+    if sum((bool(str(proxy or "").strip()), proxy_selection is not None, proxy_profile_id is not None, clear)) != 1:
+        return {"ok": False, "error": "choose exactly one proxy source", "error_code": "proxy_choice_conflict"}
+
     if clear:
         account.proxy = None
         account.proxy_profile_id = None
+        account.proxy_source = None
+        account.sub2api_proxy_id = None
+        account.proxy_instance_key = None
+    elif proxy_selection is not None:
+        if str(proxy_selection.get("source") or "") != "sub2api":
+            return {"ok": False, "error": "unsupported proxy source", "error_code": "invalid_proxy_source"}
+        try:
+            resolved = await resolve_sub2api_proxy(db, int(proxy_selection.get("remote_id") or 0))
+        except ProxyResolutionError as exc:
+            return {"ok": False, "error": str(exc), "error_code": exc.error_code}
+        except Exception:
+            return {"ok": False, "error": "Sub2API proxy catalog unavailable", "error_code": "remote_catalog_unavailable"}
+        profile = await proxy_profile_service.upsert_from_url(
+            db,
+            resolved.url,
+            name=f"Sub2API #{resolved.remote_id}",
+            bound_account=account,
+        )
+        account.proxy = resolved.url
+        account.proxy_profile_id = profile.id
+        account.proxy_source = resolved.source
+        account.sub2api_proxy_id = resolved.remote_id
+        account.proxy_instance_key = resolved.instance_key
     elif proxy_profile_id is not None:
         profile = await db.get(ProxyProfile, int(proxy_profile_id))
         if profile is None:
             return {"ok": False, "error": "proxy profile not found", "error_code": "proxy_not_found"}
         account.proxy = proxy_profile_service.compose(profile)
         account.proxy_profile_id = profile.id
+        account.proxy_source = "legacy"
+        account.sub2api_proxy_id = None
+        account.proxy_instance_key = None
     else:
         raw = str(proxy or "").strip()
-        if not raw:
-            return {"ok": False, "error": "proxy required", "error_code": "proxy_required"}
         try:
             url = normalize_proxy_url(raw)
         except ValueError as exc:
@@ -838,6 +867,9 @@ async def update_account_proxy(
         )
         account.proxy = url
         account.proxy_profile_id = profile.id
+        account.proxy_source = "legacy"
+        account.sub2api_proxy_id = None
+        account.proxy_instance_key = None
 
     account.updated_at = utcnow()
     from app.integrations.openai.chatgpt import chatgpt_client
@@ -850,6 +882,8 @@ async def update_account_proxy(
         "proxy": "set" if account.proxy else "none",
         "proxy_url": mask_proxy_url(account.proxy) if account.proxy else None,
         "proxy_profile_id": account.proxy_profile_id,
+        "proxy_source": account.proxy_source,
+        "sub2api_proxy_id": account.sub2api_proxy_id,
     }
 
 

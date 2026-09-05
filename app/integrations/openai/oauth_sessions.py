@@ -81,6 +81,9 @@ def create_session(
     proxy: str = "",
     password: str = "",
     team_name: str = "",
+    proxy_source: str = "",
+    sub2api_proxy_id: int | None = None,
+    proxy_instance_key: str = "",
 ) -> Dict[str, Any]:
     ticket = secrets.token_urlsafe(24)
     now = utcnow()
@@ -92,6 +95,9 @@ def create_session(
         "mode": "auto" if mode == "auto" else "manual",
         "job_id": "",
         "proxy": (proxy or "").strip(),
+        "proxy_source": (proxy_source or "").strip(),
+        "sub2api_proxy_id": sub2api_proxy_id,
+        "proxy_instance_key": (proxy_instance_key or "").strip(),
         "login_password": password or "",
         "team_name": (team_name or "").strip(),
         "authorize_url": authorize.get("authorize_url") or "",

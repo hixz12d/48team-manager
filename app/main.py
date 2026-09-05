@@ -61,10 +61,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.session_factory = session_factory
         app.state.settings = settings
         from app.application.jobs.scheduler import start_scheduler, stop_scheduler
+        from app.application.jobs.dispatcher import reauth_dispatcher
 
         start_scheduler(settings)
+        reauth_dispatcher.start(session_factory, deployment_allowed=settings.auto_reauth_enabled)
         yield
         stop_scheduler()
+        await reauth_dispatcher.stop()
         await engine.dispose()
 
     app = FastAPI(
@@ -102,10 +105,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health():
+        from app.application.jobs.dispatcher import reauth_dispatcher
+
+        runtime = await reauth_dispatcher.summary()
         return {
             "status": "healthy",
             "app": "48 Team Manager",
             "version": __version__,
+            "runtime": runtime,
         }
 
     @app.get("/favicon.ico", include_in_schema=False)

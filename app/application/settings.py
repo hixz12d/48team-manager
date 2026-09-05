@@ -70,6 +70,9 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     hme_cfg = await load_hme_config(db)
     sub2api_cfg = await sub2api_client.load_config(db)
     phones_cfg = await phone_pool_service.get_config(db)
+    from app.application.reauth import reauth_service
+
+    reauth_cfg = await reauth_service.load_settings(db)
     stored_quota = as_bool(
         await get_setting_value(db, "official_quota_probe_enabled", str(bool(env.official_quota_probe_enabled)).lower()),
         bool(env.official_quota_probe_enabled),
@@ -99,6 +102,7 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
         },
         "automation": {
             "official_quota_probe": stored_quota,
+            "auto_reauth": reauth_cfg,
         },
         "resources": {
             "sms_max_uses_per_phone": phones_cfg.max_uses,
@@ -146,6 +150,12 @@ async def save_console_settings(db: AsyncSession, payload) -> dict[str, Any]:
             db,
             "official_quota_probe_enabled",
             "true" if payload.automation.official_quota_probe else "false",
+        )
+    if payload.automation is not None and payload.automation.auto_reauth is not None:
+        await upsert_setting(
+            db,
+            "auto_reauth_enabled",
+            "true" if payload.automation.auto_reauth else "false",
         )
     if payload.resources is not None:
         res = payload.resources

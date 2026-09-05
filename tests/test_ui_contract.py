@@ -187,7 +187,12 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("sms_cooldown_min", page)
             self.assertIn('name="official_quota_probe"', page)
             settings_form = page.split('id="settings-form"', 1)[1].split('id="password-form"', 1)[0]
-            self.assertNotIn('name="auto_reauth"', settings_form)
+            self.assertIn('name="auto_reauth"', settings_form)
+            self.assertTrue(
+                {"requested", "deployment_allowed", "effective"}.issubset(
+                    payload["automation"]["auto_reauth"]
+                )
+            )
             self.assertNotIn('name="auto_rotate"', settings_form)
             self.assertNotIn('name="force_refill"', settings_form)
             self.assertNotIn('id="rotate-sheet"', page)

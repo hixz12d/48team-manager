@@ -1,16 +1,23 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import jwt
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.application.identity import upsert_child_account
+from app.application.proxy_resolution import RuntimeProxy
 from app.core.jwt import jwt_parser
 from app.persistence.database import Base
 from tests.helpers import make_client
 from tests.test_identity import WORKSPACE_UUID
+
+
+def callback_url(started: dict, code: str) -> str:
+    state = parse_qs(urlparse(started["authorize_url"]).query)["state"][0]
+    return f"http://localhost:1455/auth/callback?{urlencode({'code': code, 'state': state})}"
 
 
 def fake_access_token(email="owner@icloud.com", workspace_id=WORKSPACE_UUID, role="account-owner"):
@@ -86,7 +93,7 @@ class RegisterWorkspaceTests(unittest.TestCase):
                     "/api/workspaces/oauth/complete",
                     json={
                         "ticket": body["ticket"],
-                        "callback_url": "http://localhost:1455/auth/callback?code=oauth-code",
+                        "callback_url": callback_url(body, "oauth-code"),
                     },
                 )
             self.assertEqual(completed.status_code, 200, completed.text)
@@ -120,6 +127,59 @@ class RegisterWorkspaceTests(unittest.TestCase):
             )
             self.assertEqual(again.status_code, 409)
 
+    def test_sub2api_proxy_selection_is_resolved_server_side_and_persisted(self):
+        resolved = RuntimeProxy(
+            source="sub2api",
+            remote_id=7,
+            instance_key="instance-key",
+            url="socks5h://user:secret@127.0.0.1:1080",
+        )
+        with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
+            client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
+            with patch(
+                "app.application.commands.workspaces.resolve_sub2api_proxy",
+                new=AsyncMock(return_value=resolved),
+            ) as resolver:
+                started = client.post(
+                    "/api/workspaces/oauth/start",
+                    json={
+                        "email": "owner@icloud.com",
+                        "proxy_selection": {"source": "sub2api", "remote_id": 7},
+                    },
+                )
+            self.assertEqual(started.status_code, 200, started.text)
+            self.assertEqual(started.json()["proxy_source"], "sub2api")
+            self.assertNotIn("secret", started.text)
+            resolver.assert_awaited_once()
+
+            fake = FakeOAuthClient()
+            with patch("app.application.commands.workspaces.chatgpt_client", fake):
+                completed = client.post(
+                    "/api/workspaces/oauth/complete",
+                    json={
+                        "ticket": started.json()["ticket"],
+                        "callback_url": callback_url(started.json(), "oauth-code"),
+                    },
+                )
+            self.assertEqual(completed.status_code, 200, completed.text)
+            account = client.get("/api/accounts").json()["items"][0]
+            self.assertEqual(account["proxy_source"], "sub2api")
+            self.assertEqual(account["sub2api_proxy_id"], 7)
+            self.assertNotIn("secret", str(account))
+
+    def test_workspace_proxy_modes_are_mutually_exclusive(self):
+        with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
+            client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
+            response = client.post(
+                "/api/workspaces/oauth/start",
+                json={
+                    "email": "owner@icloud.com",
+                    "proxy": "http://127.0.0.1:8080",
+                    "proxy_selection": {"source": "sub2api", "remote_id": 7},
+                },
+            )
+            self.assertEqual(response.status_code, 422)
+
     def test_oauth_rejects_missing_code_and_duplicate_workspace(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
@@ -138,7 +198,7 @@ class RegisterWorkspaceTests(unittest.TestCase):
                     "/api/workspaces/oauth/complete",
                     json={
                         "ticket": ticket,
-                        "callback_url": "http://localhost:1455/auth/callback?code=oauth-code",
+                        "callback_url": callback_url(first.json(), "oauth-code"),
                     },
                 )
             self.assertEqual(created.status_code, 200, created.text)
@@ -150,7 +210,7 @@ class RegisterWorkspaceTests(unittest.TestCase):
                     "/api/workspaces/oauth/complete",
                     json={
                         "ticket": second.json()["ticket"],
-                        "callback_url": "http://localhost:1455/auth/callback?code=oauth-code-2",
+                        "callback_url": callback_url(second.json(), "oauth-code-2"),
                     },
                 )
             self.assertEqual(again_id.status_code, 409)

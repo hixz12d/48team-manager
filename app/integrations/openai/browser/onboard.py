@@ -789,6 +789,9 @@ def _mail_kwargs(
     cf_base_url: str,
     cf_address: str,
     cf_admin_password: str,
+    hme_base_url: str = "",
+    hme_service_token: str = "",
+    hme_account_id: str = "",
 ) -> dict[str, str]:
     return {
         "email": email,
@@ -797,11 +800,14 @@ def _mail_kwargs(
         "cf_base_url": cf_base_url if use_cloudflare else "",
         "cf_address": cf_address if use_cloudflare else "",
         "cf_admin_password": cf_admin_password if use_cloudflare else "",
+        "hme_base_url": hme_base_url,
+        "hme_service_token": hme_service_token,
+        "hme_account_id": hme_account_id,
     }
 
 
 def _snapshot_mailbox_codes(**kwargs: str) -> set[str]:
-    if not (kwargs.get("pickup_url") or kwargs.get("cf_admin_password")):
+    if not (kwargs.get("pickup_url") or kwargs.get("cf_admin_password") or kwargs.get("hme_service_token")):
         return set()
     try:
         return set(list_mailbox_codes(**kwargs))
@@ -823,10 +829,13 @@ def _wait_mailbox_code(
     cf_base_url: str,
     cf_address: str,
     cf_admin_password: str,
+    hme_base_url: str = "",
+    hme_service_token: str = "",
+    hme_account_id: str = "",
     ignore: Optional[set[str]] = None,
     timeout_sec: float = OTP_WAIT_SEC,
 ) -> str:
-    if not (pickup_url or use_cloudflare):
+    if not (pickup_url or use_cloudflare or hme_service_token):
         return ""
     return (
         wait_for_mailbox_item(
@@ -838,6 +847,9 @@ def _wait_mailbox_code(
             cf_base_url=cf_base_url if use_cloudflare else "",
             cf_address=cf_address if use_cloudflare else "",
             cf_admin_password=cf_admin_password if use_cloudflare else "",
+            hme_base_url=hme_base_url,
+            hme_service_token=hme_service_token,
+            hme_account_id=hme_account_id,
             ignore_values=ignore,
         )
         or ""
@@ -890,6 +902,9 @@ def wait_email_otp_with_resend(
     cf_base_url: str,
     cf_address: str,
     cf_admin_password: str,
+    hme_base_url: str = "",
+    hme_service_token: str = "",
+    hme_account_id: str = "",
     ignore: Optional[set[str]] = None,
     resends: int = 0,
     report: StageCallback = None,
@@ -904,6 +919,9 @@ def wait_email_otp_with_resend(
         cf_base_url=cf_base_url,
         cf_address=cf_address,
         cf_admin_password=cf_admin_password,
+        hme_base_url=hme_base_url,
+        hme_service_token=hme_service_token,
+        hme_account_id=hme_account_id,
     )
     try:
         code = _wait_mailbox_code(
@@ -914,6 +932,9 @@ def wait_email_otp_with_resend(
             cf_base_url=cf_base_url,
             cf_address=cf_address,
             cf_admin_password=cf_admin_password,
+            hme_base_url=hme_base_url,
+            hme_service_token=hme_service_token,
+            hme_account_id=hme_account_id,
             ignore=known,
             timeout_sec=OTP_WAIT_SEC,
         )
@@ -934,7 +955,7 @@ def wait_email_otp_with_resend(
         if report:
             report("email_otp", "没读到验证码，但页面已经过了验证")
         return "", resends, ""
-    if not (pickup_url or use_cloudflare):
+    if not (pickup_url or use_cloudflare or hme_service_token):
         return "", resends, "email OTP not found"
     resends, resent = _resend_email_otp(
         page, resends=resends, report=report, known_codes=known, mail_kw=mail_kw

@@ -12,6 +12,7 @@ from app.persistence.models import (  # noqa: F401
     HmeAliasLease,
     Operation,
     OperationStep,
+    OAuthSession,
     PhoneAttempt,
     PhonePool,
     ProxyProfile,
@@ -62,6 +63,20 @@ QUOTA_COLUMNS = (
 
 BINDING_COLUMNS = (
     ("workspace_id", "INTEGER"),
+)
+
+ACCOUNT_COLUMNS = (
+    ("proxy_source", "VARCHAR(20)"),
+    ("sub2api_proxy_id", "INTEGER"),
+    ("proxy_instance_key", "VARCHAR(64)"),
+    ("mailbox_provider", "VARCHAR(20)"),
+    ("hme_account_id", "VARCHAR(100)"),
+    ("mailbox_binding_verified_at", "DATETIME"),
+    ("mailbox_read_state", "VARCHAR(20) DEFAULT 'unknown' NOT NULL"),
+    ("mailbox_checked_at", "DATETIME"),
+    ("mailbox_method", "VARCHAR(20)"),
+    ("auto_reauth_opt_in", "BOOLEAN DEFAULT 0 NOT NULL"),
+    ("credential_revision", "INTEGER DEFAULT 1 NOT NULL"),
 )
 
 
@@ -153,6 +168,7 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
         await _ensure_sqlite_columns(conn, "workspaces", WORKSPACE_COLUMNS)
         await _ensure_sqlite_columns(conn, "quota_snapshots", QUOTA_COLUMNS)
         await _ensure_sqlite_columns(conn, "external_bindings", BINDING_COLUMNS)
+        await _ensure_sqlite_columns(conn, "accounts", ACCOUNT_COLUMNS)
         await _rebuild_external_bindings(conn)
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_workspace_queried "

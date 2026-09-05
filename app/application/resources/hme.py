@@ -111,7 +111,10 @@ class HmeClient:
             raise HmeError("HME service token invalid", "hme_auth")
         if response.status_code < 200 or response.status_code >= 300:
             raise HmeError(f"HME HTTP {response.status_code}", "hme_http")
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise HmeError("HME returned a non-JSON response", "hme_protocol") from exc
         if isinstance(payload, dict) and payload.get("success") is False:
             raise HmeError(str(payload.get("message") or "HME failed"), str(payload.get("code") or "hme_http"))
         if isinstance(payload, dict) and "data" in payload:
@@ -126,6 +129,38 @@ class HmeClient:
         data = self._request("GET", cfg, "/api/aliases", params={"account_id": account_id})
         aliases = data.get("aliases") if isinstance(data, dict) else data
         return [item for item in (aliases or []) if isinstance(item, dict)]
+
+    def list_inbox(
+        self,
+        cfg: HmeConfig,
+        account_id: str,
+        alias: str,
+        *,
+        folder: str = "all",
+        limit: int = 20,
+        days: int = 1,
+    ) -> dict[str, Any]:
+        data = self._request(
+            "GET",
+            cfg,
+            "/api/inbox",
+            params={
+                "account_id": account_id,
+                "alias": normalize_email(alias),
+                "folder": folder,
+                "limit": min(100, max(1, int(limit))),
+                "days": min(7, max(1, int(days))),
+            },
+        )
+        if not isinstance(data, dict):
+            raise HmeError("HME inbox response is not an object", "hme_protocol")
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            raise HmeError("HME inbox response has no messages list", "hme_protocol")
+        return {
+            "method": str(data.get("method") or "unknown"),
+            "messages": [item for item in messages if isinstance(item, dict)],
+        }
 
     def set_local_label(self, cfg: HmeConfig, account_id: str, anonymous_id: str, label: str) -> None:
         self._request(

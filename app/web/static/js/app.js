@@ -1484,6 +1484,14 @@ function hmeRow(item) {
           ["核对邮箱", item.binding?.verified_email],
           ["最近错误", item.binding?.last_error],
         ]),
+        kvSection("自动重授权", [
+          ["账号许可", item.auto_reauth_opt_in ? "已允许" : "未允许"],
+          ["邮箱", `${item.mailbox?.provider || "未绑定"} · ${item.mailbox?.read_state || "未验证"}`],
+          ["读信方式", item.mailbox?.method],
+          ["邮箱检测", item.mailbox?.checked_at],
+          ["代理来源", item.proxy_source],
+          ["凭证版本", item.credential_revision],
+        ]),
         kvSection("技术信息", [
           ["Official user ID", item.official_user_id],
           ["Official account ID", item.official_account_id],
@@ -1605,6 +1613,41 @@ function hmeRow(item) {
     });
   }
 
+  async function queueAutoReauth(item) {
+    let readiness = await fetchEntity(
+      `account-reauth-readiness-${item.id}`,
+      `/api/accounts/${item.id}/reauth/readiness`,
+    );
+    if ((readiness.blocked_reasons || []).includes("account_not_opted_in")) {
+      if (!window.confirm(`允许 ${item.email} 使用自动重授权？`)) return;
+      await patchAction(`account-auto-opt-in-${item.id}`, `/api/accounts/${item.id}/automation`, {
+        auto_reauth_opt_in: true,
+      });
+      readiness = await fetchEntity(
+        `account-reauth-readiness-refresh-${item.id}`,
+        `/api/accounts/${item.id}/reauth/readiness`,
+      );
+    }
+    if (!readiness.eligible || !readiness.effective_enabled) {
+      const reasons = (readiness.blocked_reasons || []).join("、") || "当前条件未就绪";
+      toast(`不能自动重授权：${reasons}`, "error");
+      return;
+    }
+    const mailbox = readiness.mailbox || {};
+    const detail = [
+      `邮箱：${mailbox.provider || "未绑定"} / ${mailbox.read_state || "未验证"}`,
+      `代理：${readiness.proxy?.source || "未设置"}`,
+      readiness.next_eligible_at ? `下次可执行：${readiness.next_eligible_at}` : null,
+    ].filter(Boolean).join("\n");
+    if (!window.confirm(`确认将 ${item.email} 加入自动重授权队列？\n${detail}`)) return;
+    const result = await postAction(
+      `account-auto-reauth-${item.id}`,
+      `/api/accounts/${item.id}/reauth/auto`,
+    );
+    toast(result.message || "已进入自动重授权队列", "success");
+    await bootPage();
+  }
+
   const entityActions = {
     workspace: [
       { id: "workspace.manage", label: "管理", run: (item, trigger) => openWorkspaceDetails(trigger, item) },
@@ -1667,8 +1710,24 @@ function hmeRow(item) {
       { id: "account.view", label: "查看详情", run: (item, trigger) => openSheet("account", item, trigger) },
       {
         id: "account.reauth",
-        label: "授权",
+        label: "手动授权",
         run: (item, trigger) => openReauth(item, trigger),
+      },
+      {
+        id: "account.auto-reauth",
+        label: "自动重授权",
+        visible: (item) => item.purpose === "child",
+        run: (item) => queueAutoReauth(item),
+      },
+      {
+        id: "account.mailbox-probe",
+        label: "检测邮箱",
+        visible: (item) => item.purpose === "child" && item.mailbox?.provider === "hme",
+        run: async (item) => {
+          const result = await postAction(`account-mailbox-probe-${item.id}`, `/api/accounts/${item.id}/mailbox/probe`);
+          toast(result.ok ? `邮箱可读 · ${result.method || "已验证"}` : (result.error || "邮箱检测失败"), result.ok ? "success" : "error");
+          await bootPage();
+        },
       },
       {
         id: "account.refresh",
@@ -2911,6 +2970,7 @@ function hmeRow(item) {
       cf_mail_address: data.get("cf_mail_address"),
       cf_mail_admin_password: data.get("cf_mail_admin_password"),
       official_quota_probe: form.official_quota_probe.checked,
+      auto_reauth: form.auto_reauth.checked,
       sms_max_uses_per_phone: data.get("sms_max_uses_per_phone"),
       sms_cooldown_min: data.get("sms_cooldown_min"),
       sms_reserve_min: data.get("sms_reserve_min"),
@@ -2951,6 +3011,17 @@ function hmeRow(item) {
     form.hme_service_token.value = "";
     form.cf_mail_admin_password.value = "";
     form.official_quota_probe.checked = Boolean(automation.official_quota_probe);
+    form.auto_reauth.checked = Boolean(automation.auto_reauth?.requested);
+    const autoReauthHint = document.getElementById("auto-reauth-effective");
+    if (autoReauthHint) {
+      const state = automation.auto_reauth || {};
+      autoReauthHint.textContent = state.effective
+        ? "实际生效 · dispatcher 会执行已就绪账号"
+        : state.requested && !state.deployment_allowed
+          ? "已请求但部署总闸关闭 · 设置 AUTO_REAUTH_ENABLED=true 后生效"
+          : "未启用";
+      autoReauthHint.className = `hint ${state.effective ? "text-ok" : state.requested ? "text-warn" : ""}`.trim();
+    }
     form.sms_max_uses_per_phone.value = resources.sms_max_uses_per_phone ?? "";
     form.sms_cooldown_min.value = resources.sms_cooldown_sec ? Math.round(resources.sms_cooldown_sec / 60) : "";
     form.sms_reserve_min.value = resources.sms_reserve_sec ? Math.round(resources.sms_reserve_sec / 60) : "";
@@ -3120,7 +3191,10 @@ function hmeRow(item) {
     const saveButton = document.getElementById("settings-save");
     const payload = {
       connections: connectionsPayload(form),
-      automation: { official_quota_probe: form.official_quota_probe.checked },
+      automation: {
+        official_quota_probe: form.official_quota_probe.checked,
+        auto_reauth: form.auto_reauth.checked,
+      },
       resources: {
         sms_max_uses_per_phone: numberOrNull(form.sms_max_uses_per_phone.value),
         sms_cooldown_sec: minutesToSeconds(form.sms_cooldown_min.value),

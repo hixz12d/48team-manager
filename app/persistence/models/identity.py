@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.persistence.database import Base
@@ -24,6 +24,9 @@ class Account(Base):
     operational_state: Mapped[str] = mapped_column(String(20), default="available", nullable=False)
     local_purpose: Mapped[str] = mapped_column(String(20), nullable=False)
     proxy: Mapped[str | None] = mapped_column(String(500))
+    proxy_source: Mapped[str | None] = mapped_column(String(20))
+    sub2api_proxy_id: Mapped[int | None] = mapped_column(Integer)
+    proxy_instance_key: Mapped[str | None] = mapped_column(String(64))
     proxy_profile_id: Mapped[int | None] = mapped_column(ForeignKey("proxy_profiles.id"))
     access_token_encrypted: Mapped[str | None] = mapped_column(Text)
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text)
@@ -32,6 +35,14 @@ class Account(Base):
     client_id: Mapped[str | None] = mapped_column(String(100))
     password_encrypted: Mapped[str | None] = mapped_column(Text)
     mail_raw: Mapped[str | None] = mapped_column(Text)
+    mailbox_provider: Mapped[str | None] = mapped_column(String(20))
+    hme_account_id: Mapped[str | None] = mapped_column(String(100))
+    mailbox_binding_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mailbox_read_state: Mapped[str] = mapped_column(String(20), default="unknown", nullable=False)
+    mailbox_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mailbox_method: Mapped[str | None] = mapped_column(String(20))
+    auto_reauth_opt_in: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    credential_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     phone: Mapped[str | None] = mapped_column(String(64))
     sms_url: Mapped[str | None] = mapped_column(String(500))
     next_reauth_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

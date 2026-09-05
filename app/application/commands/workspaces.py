@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import ensure_membership
 from app.application.resources.proxies import proxy_profile_service
+from app.application.proxy_resolution import ProxyResolutionError, resolve_sub2api_proxy
+from app.application.oauth_sessions import OAuthSessionError, oauth_session_store
 from app.application.tokens import auth_service
 from app.core.jwt import jwt_parser
 from app.core.proxy import normalize_proxy_url
@@ -24,7 +26,6 @@ from app.domain.identity.ids import looks_like_user_id, normalize_email, workspa
 from app.domain.identity.policy import normalize_official_plan, normalize_operational_state, normalize_workspace_status
 from app.integrations.openai import oauth_sessions
 from app.integrations.openai.chatgpt import chatgpt_client
-from app.integrations.openai.oauth_sessions import parse_oauth_callback
 from app.persistence.models.identity import Account, Workspace
 
 
@@ -125,9 +126,33 @@ async def _existing_account(db: AsyncSession, email: str) -> Account | None:
     return (await db.execute(select(Account).where(Account.email == email))).scalar_one_or_none()
 
 
-async def start_workspace_oauth(db: AsyncSession, *, email: str, proxy: str | None = None) -> dict[str, Any]:
+async def start_workspace_oauth(
+    db: AsyncSession,
+    *,
+    email: str,
+    proxy: str | None = None,
+    proxy_selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     email_n = _require_email(email)
+    if proxy and proxy_selection:
+        raise RegisterWorkspaceError("代理 URL 与 Sub2API 代理不能同时选择")
     proxy_value = _optional_proxy(proxy)
+    proxy_source = "legacy" if proxy_value else ""
+    sub2api_proxy_id = None
+    proxy_instance_key = ""
+    if proxy_selection:
+        if str(proxy_selection.get("source") or "") != "sub2api":
+            raise RegisterWorkspaceError("不支持的代理来源")
+        try:
+            resolved = await resolve_sub2api_proxy(db, int(proxy_selection.get("remote_id") or 0))
+        except ProxyResolutionError as exc:
+            raise RegisterWorkspaceError(str(exc)) from exc
+        except Exception as exc:
+            raise RegisterWorkspaceError("无法读取所选 Sub2API 代理", status_code=502) from exc
+        proxy_value = resolved.url
+        proxy_source = resolved.source
+        sub2api_proxy_id = resolved.remote_id
+        proxy_instance_key = resolved.instance_key
     if await _existing_account(db, email_n) is not None:
         raise RegisterWorkspaceError("这个邮箱已经在本地账号里，不能再登记成新母号", status_code=409)
     authorize = chatgpt_client.create_oauth_authorize_url(
@@ -142,15 +167,25 @@ async def start_workspace_oauth(db: AsyncSession, *, email: str, proxy: str | No
         role="owner",
         mode="manual",
         proxy=proxy_value or "",
+        proxy_source=proxy_source,
+        sub2api_proxy_id=sub2api_proxy_id,
+        proxy_instance_key=proxy_instance_key,
         password="",
         team_name="",
     )
+    stored_session = oauth_sessions.get_session(session["ticket"])
+    if stored_session is None:
+        raise RegisterWorkspaceError("无法保存 OAuth 会话")
+    await oauth_session_store.persist(db, stored_session, purpose="workspace_register")
+    await db.commit()
     return {
         "ok": True,
         "ticket": session["ticket"],
         "authorize_url": session["authorize_url"],
         "redirect_uri": session.get("redirect_uri") or oauth_sessions.REDIRECT_URI,
         "email": email_n,
+        "proxy_source": proxy_source or None,
+        "sub2api_proxy_id": sub2api_proxy_id,
     }
 
 
@@ -161,6 +196,9 @@ async def register_workspace(
     official_workspace_id: str,
     name: str | None = None,
     proxy: str | None = None,
+    proxy_source: str | None = None,
+    sub2api_proxy_id: int | None = None,
+    proxy_instance_key: str | None = None,
     access_token: str | None = None,
     refresh_token: str | None = None,
     id_token: str | None = None,
@@ -205,6 +243,9 @@ async def register_workspace(
         operational_state=normalize_operational_state("active"),
         local_purpose=LOCAL_PURPOSE_MOTHER,
         proxy=proxy_value,
+        proxy_source=_clean(proxy_source, limit=20) or ("legacy" if proxy_value else None),
+        sub2api_proxy_id=sub2api_proxy_id,
+        proxy_instance_key=_clean(proxy_instance_key, limit=64) or None,
         proxy_profile_id=proxy_profile_id,
         password_encrypted=None,
         client_id=client,
@@ -281,48 +322,55 @@ async def complete_workspace_oauth(
     callback_url: str,
     client=None,
 ) -> dict[str, Any]:
-    session = oauth_sessions.get_session(ticket)
-    if session is None:
-        raise RegisterWorkspaceError("认证会话不存在或已过期")
-    parsed = parse_oauth_callback(callback_url)
-    if parsed.get("error"):
-        raise RegisterWorkspaceError(parsed.get("error_description") or parsed["error"])
-    if not parsed.get("code"):
-        raise RegisterWorkspaceError("回调地址里没有授权码，请把跳转到 localhost:1455 的整段地址贴回来")
-    expected_state = str(session.get("state") or "")
-    got_state = str(parsed.get("state") or "")
-    if expected_state and got_state and got_state != expected_state:
-        raise RegisterWorkspaceError("回调 state 不匹配，请重新生成授权链接")
+    try:
+        stored, parsed = await oauth_session_store.begin_exchange(
+            db,
+            ticket,
+            callback_url,
+            purpose="workspace_register",
+        )
+    except OAuthSessionError as exc:
+        raise RegisterWorkspaceError(str(exc), status_code=409 if exc.error_code == "callback_consumed" else 400) from exc
+    context = oauth_session_store.exchange_context(stored)
     exchanger = client or chatgpt_client
     exchanged = await exchanger.exchange_oauth_code(
         code=parsed["code"],
-        client_id=str(session.get("client_id") or DEFAULT_OAUTH_CLIENT_ID),
-        redirect_uri=str(session.get("redirect_uri") or OAUTH_REDIRECT_URI),
-        code_verifier=str(session.get("code_verifier") or ""),
+        client_id=context["client_id"] or DEFAULT_OAUTH_CLIENT_ID,
+        redirect_uri=context["redirect_uri"] or OAUTH_REDIRECT_URI,
+        code_verifier=context["code_verifier"],
         db_session=db,
-        identifier=str(session.get("email") or "oauth_exchange"),
+        identifier=stored.email or "oauth_exchange",
     )
     if not exchanged.get("success") or not exchanged.get("access_token"):
+        await oauth_session_store.finish(db, stored, success=False)
+        await db.commit()
         raise RegisterWorkspaceError(str(exchanged.get("error") or "换票失败"))
     identity = identity_from_tokens(exchanged.get("access_token"), exchanged.get("id_token"))
-    session_email = normalize_email(session.get("email"))
     token_email = identity.get("email")
-    if token_email and token_email != session_email:
-        raise RegisterWorkspaceError(f"登录邮箱是 {token_email}，和填写的 {session_email} 不一致")
+    if token_email and token_email != stored.email:
+        await oauth_session_store.finish(db, stored, success=False)
+        await db.commit()
+        raise RegisterWorkspaceError(f"登录邮箱是 {token_email}，和填写的 {stored.email} 不一致")
     workspace_id = identity.get("workspace_id")
     if not workspace_id:
+        await oauth_session_store.finish(db, stored, success=False)
+        await db.commit()
         raise RegisterWorkspaceError("授权成功，但令牌里没有 ChatGPT Team Workspace。请确认这是母号。")
+    await oauth_session_store.finish(db, stored, success=True)
     oauth_sessions.pop_session(ticket)
     return await register_workspace(
         db,
-        email=session_email,
+        email=stored.email,
         official_workspace_id=str(workspace_id),
         name=identity.get("workspace_name"),
-        proxy=str(session.get("proxy") or "") or None,
+        proxy=context["proxy"] or None,
+        proxy_source=stored.proxy_source,
+        sub2api_proxy_id=stored.sub2api_proxy_id,
+        proxy_instance_key=stored.proxy_instance_key,
         access_token=exchanged.get("access_token"),
         refresh_token=exchanged.get("refresh_token"),
         id_token=exchanged.get("id_token"),
-        client_id=str(session.get("client_id") or "") or None,
+        client_id=context["client_id"] or None,
         official_user_id=identity.get("official_user_id"),
         official_account_id=identity.get("official_account_id"),
         official_plan=identity.get("official_plan"),

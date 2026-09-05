@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.web.schemas.workspaces import ProxySelection
 
 
 class PhoneImportRequest(BaseModel):
@@ -46,7 +48,21 @@ class RevokeInviteRequest(BaseModel):
 
 class AccountProxyPatch(BaseModel):
     proxy: str | None = Field(default=None, max_length=500)
+    proxy_selection: ProxySelection | None = None
     clear: bool = False
+
+
+class AccountAutomationPatch(BaseModel):
+    auto_reauth_opt_in: bool
+
+    @model_validator(mode="after")
+    def validate_proxy_choice(self):
+        if self.requested_modes() != 1:
+            raise ValueError("必须且只能选择 proxy、proxy_selection 或 clear 之一")
+        return self
+
+    def requested_modes(self) -> int:
+        return sum((bool(self.proxy), self.proxy_selection is not None, self.clear))
 
 
 class PhoneStatusPatch(BaseModel):
