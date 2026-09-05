@@ -6,8 +6,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.application.tokens import auth_service, decrypt_secret, set_auth_state
 from app.application.presenters import build_auth_status
@@ -46,7 +47,7 @@ from app.integrations.mail.cloudflare import (
 from app.integrations.mail.otp import parse_mail_line
 from app.integrations.openai import oauth_sessions
 from app.integrations.openai.chatgpt import chatgpt_client
-from app.persistence.models.identity import Account
+from app.persistence.models.identity import Account, Workspace, WorkspaceMembership
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,62 @@ async def load_cf_config(db: AsyncSession) -> dict[str, str]:
 
 
 class ReauthService:
+    async def execution_context(self, db: AsyncSession, account: Account) -> dict[str, Any]:
+        proxy_account = account
+        proxy_origin = "account"
+        if not str(account.proxy or "").strip() and account.local_purpose == "child":
+            owner = aliased(Account)
+            proxy_account = (
+                await db.execute(
+                    select(owner)
+                    .select_from(WorkspaceMembership)
+                    .join(Workspace, Workspace.id == WorkspaceMembership.workspace_id)
+                    .join(owner, owner.id == Workspace.owner_account_id)
+                    .where(
+                        WorkspaceMembership.account_id == account.id,
+                        WorkspaceMembership.membership_state.in_(("joined", "invited")),
+                        Workspace.status == "active",
+                        owner.proxy.is_not(None),
+                        func.trim(owner.proxy) != "",
+                    )
+                    .order_by(
+                        case((WorkspaceMembership.membership_state == "joined", 0), else_=1),
+                        Workspace.id,
+                    )
+                )
+            ).scalars().first()
+            proxy_origin = "workspace_owner"
+        if proxy_account is None:
+            proxy_account = account
+            proxy_origin = "account"
+
+        mailbox = mailbox_readiness_snapshot(account)
+        pickup_url = parse_mail_line(account.mail_raw or "").get("pickup_url") or ""
+        cf_config = await load_cf_config(db)
+        if pickup_url:
+            mailbox_route = "pickup"
+        elif mailbox["ready"]:
+            mailbox_route = "hme"
+        elif cf_config["admin_password"]:
+            mailbox_route = "cloudflare"
+        else:
+            mailbox_route = "missing"
+        return {
+            "proxy": {
+                "url": str(proxy_account.proxy or "").strip(),
+                "source": proxy_account.proxy_source or ("workspace_owner" if proxy_origin == "workspace_owner" else "legacy"),
+                "origin": proxy_origin,
+                "account_id": proxy_account.id if proxy_origin == "workspace_owner" else account.id,
+                "remote_id": proxy_account.sub2api_proxy_id,
+            },
+            "mailbox": {
+                **mailbox,
+                "effective_ready": mailbox_route != "missing",
+                "route": mailbox_route,
+            },
+            "pickup_url": pickup_url,
+        }
+
     async def load_settings(self, db: AsyncSession) -> dict[str, Any]:
         env = load_settings()
         enabled_raw = await get_setting_value(
@@ -134,17 +191,15 @@ class ReauthService:
                 "status": reauth_terminal_status(success=False, error_code=str(gate.get("error_code") or "")),
             }
         password = decrypt_secret(account.password_encrypted)
-        pickup = parse_mail_line(account.mail_raw or "").get("pickup_url") or ""
-        cf_config = await load_cf_config(db)
-        mailbox_ready = mailbox_readiness_snapshot(account)["ready"]
-        use_cloudflare = (not pickup) and (not mailbox_ready) and bool(cf_config["admin_password"])
-        proxy = (account.proxy or "").strip()
+        context = await self.execution_context(db, account)
+        pickup = context["pickup_url"]
+        proxy = context["proxy"]["url"]
         plan = auto_reauth_plan(
             email=email,
             role="child",
             password=password,
             pickup_url=pickup,
-            cf_ready=mailbox_ready or use_cloudflare,
+            cf_ready=context["mailbox"]["effective_ready"],
             proxy=proxy,
         )
         if not plan.get("auto"):
@@ -169,6 +224,8 @@ class ReauthService:
             role="child",
             mode="auto",
             proxy=proxy,
+            proxy_source=context["proxy"]["source"],
+            sub2api_proxy_id=context["proxy"]["remote_id"],
             password=password,
         )
         row = await operation_store.create(
@@ -530,16 +587,14 @@ class ReauthService:
                     stats["conflict"] += 1
                     await self.mark_outcome(db, account, success=False, error_code="identity_conflict", now=stamp)
                 continue
-            pickup = parse_mail_line(account.mail_raw or "").get("pickup_url") or ""
-            cf_config = await load_cf_config(db)
-            mailbox_ready = mailbox_readiness_snapshot(account)["ready"]
+            context = await self.execution_context(db, account)
             plan = auto_reauth_plan(
                 email=account.email,
                 role="child",
                 password=decrypt_secret(account.password_encrypted),
-                pickup_url=pickup,
-                cf_ready=mailbox_ready or ((not pickup) and bool(cf_config["admin_password"])),
-                proxy=account.proxy or "",
+                pickup_url=context["pickup_url"],
+                cf_ready=context["mailbox"]["effective_ready"],
+                proxy=context["proxy"]["url"],
             )
             if not plan.get("auto"):
                 stats["skipped"] += 1

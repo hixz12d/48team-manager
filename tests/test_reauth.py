@@ -23,6 +23,7 @@ from app.domain.reauth import (
 )
 from app.persistence.database import Base
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
+from app.persistence.models.settings import SystemSetting
 
 
 WORKSPACE_UUID = "11111111-1111-1111-1111-111111111111"
@@ -257,6 +258,58 @@ class ReauthGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(owner_blocked["error_code"], "owner_manual")
         refreshed = await self.session.get(Account, child.id)
         self.assertEqual(refreshed.auth_state, "manual_required")
+
+    async def test_execution_context_inherits_owner_proxy_and_uses_cloudflare_mail(self):
+        owner = Account(
+            email="owner@gmail.com",
+            official_plan="team",
+            local_purpose="mother",
+            operational_state="active",
+            auth_state="healthy",
+            proxy="socks5h://owner-proxy.example:1080",
+            proxy_source="legacy",
+        )
+        child = Account(
+            email="child@icloud.com",
+            official_plan="team",
+            local_purpose="child",
+            operational_state="active",
+            auth_state="oauth_required",
+            mailbox_read_state="unknown",
+        )
+        self.session.add_all([owner, child])
+        await self.session.flush()
+        workspace = Workspace(
+            official_workspace_id=WORKSPACE_UUID,
+            owner_account_id=owner.id,
+            status="active",
+        )
+        self.session.add(workspace)
+        await self.session.flush()
+        self.session.add_all([
+            WorkspaceMembership(
+                workspace_id=workspace.id,
+                account_id=child.id,
+                official_role="member",
+                membership_state="invited",
+                local_purpose="child",
+            ),
+            SystemSetting(key="cf_mail_admin_password", value="configured-secret"),
+        ])
+        await self.session.commit()
+
+        context = await reauth_service.execution_context(self.session, child)
+
+        self.assertEqual(context["proxy"]["url"], owner.proxy)
+        self.assertEqual(context["proxy"]["origin"], "workspace_owner")
+        self.assertEqual(context["proxy"]["account_id"], owner.id)
+        self.assertTrue(context["mailbox"]["effective_ready"])
+        self.assertEqual(context["mailbox"]["route"], "cloudflare")
+
+        started = await reauth_service.start_auto_reauth(self.session, child)
+        self.assertTrue(started["success"])
+        operation = await operation_store.get_by_public_id(self.session, started["job_id"])
+        self.assertEqual(operation.resolved_proxy, owner.proxy)
 
     async def test_browser_busy_does_not_start_second_job(self):
         first = Account(

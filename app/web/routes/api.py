@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application import console_actions
 from app.application.commands.workspaces import RegisterWorkspaceError, complete_workspace_oauth, start_workspace_oauth
 from app.application.connection_probe import probe_hme, probe_mail, probe_sub2api
-from app.application.mailbox import mailbox_readiness_snapshot, probe_account_mailbox
+from app.application.mailbox import probe_account_mailbox
 from app.application.operations import operation_store
 from app.application.reauth import reauth_service
 from app.application.queries import console as console_query
@@ -394,15 +394,19 @@ def build_api_router(get_db) -> APIRouter:
         if account is None:
             raise HTTPException(status_code=404, detail="account not found")
         settings = await reauth_service.load_settings(db)
-        mailbox = mailbox_readiness_snapshot(account)
+        context = await reauth_service.execution_context(db, account)
+        mailbox = context["mailbox"]
+        proxy = context["proxy"]
         blocked = []
         if not account.auto_reauth_opt_in:
             blocked.append("account_not_opted_in")
         if not settings.get("deployment_allowed"):
             blocked.append("deployment_disabled")
-        if not mailbox["ready"]:
+        elif not settings.get("requested"):
+            blocked.append("automation_not_requested")
+        if not mailbox["effective_ready"]:
             blocked.append("mailbox_unverified")
-        if not account.proxy:
+        if not proxy["url"]:
             blocked.append("proxy_missing")
         active = await operation_store.active_for_email(db, account.email, actions=("reauth",))
         if active:
@@ -414,9 +418,10 @@ def build_api_router(get_db) -> APIRouter:
             "blocked_reasons": blocked,
             "mailbox": mailbox,
             "proxy": {
-                "source": account.proxy_source,
-                "remote_id": account.sub2api_proxy_id,
-                "resolution_state": "ready" if account.proxy else "missing",
+                "source": proxy["source"],
+                "origin": proxy["origin"],
+                "remote_id": proxy["remote_id"],
+                "resolution_state": "ready" if proxy["url"] else "missing",
             },
             "active_operation_id": active.public_id if active else None,
             "next_eligible_at": account.next_eligible_at.isoformat() if account.next_eligible_at else None,

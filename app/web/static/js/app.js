@@ -1680,6 +1680,7 @@ function hmeRow(item) {
   const autoReauthBlockedLabels = {
     account_not_opted_in: "账号尚未允许自动授权",
     deployment_disabled: "自动授权总开关未启用",
+    automation_not_requested: "请先在设置中启用自动授权",
     mailbox_unverified: "邮箱尚未通过读取检测",
     proxy_missing: "账号尚未配置代理",
     already_running: "该账号已有授权任务在运行",
