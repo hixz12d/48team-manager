@@ -1921,6 +1921,101 @@ function hmeRow(item) {
     setRegisterStatus("", "muted");
   }
 
+  function openRegister(trigger) {
+    if (!registerSheet) return;
+    resetRegisterForm();
+    openOverlay("register", {
+      returnFocus: trigger || document.querySelector("[data-open-register]"),
+      context: { kind: "register" },
+      initialFocus: "[name='email']",
+    });
+  }
+
+  function closeRegister() {
+    closeOverlay();
+  }
+
+  function setReauthStatus(text, tone) {
+    const statusEl = document.getElementById("reauth-status");
+    if (!statusEl) return;
+    statusEl.hidden = !text;
+    statusEl.className = tone || "muted";
+    statusEl.setAttribute("role", tone === "error" ? "alert" : "status");
+    statusEl.textContent = text || "";
+  }
+
+  function closeReauth() {
+    closeOverlay();
+  }
+
+  async function openReauth(item, trigger) {
+    if (!reauthSheet || !item?.id) return;
+    const form = document.getElementById("reauth-form");
+    const authorize = document.getElementById("reauth-authorize-url");
+    const openLink = document.getElementById("reauth-open-link");
+    form?.reset();
+    if (form) {
+      form.account_id.value = item.id;
+      form.email.value = item.email || "";
+      form.ticket.value = "";
+    }
+    if (authorize) authorize.value = "";
+    if (openLink) openLink.href = "#";
+    setReauthStatus("正在生成授权链接…", "muted");
+    openOverlay("reauth", {
+      returnFocus: trigger,
+      context: { kind: "reauth", account: item },
+      initialFocus: "[name='callback_url']",
+    });
+    try {
+      const started = await fetchEntity(`account-reauth-${item.id}`, `/api/accounts/${item.id}/reauth`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      if (form) form.ticket.value = started.ticket || "";
+      if (authorize) authorize.value = started.authorize_url || "";
+      if (openLink) openLink.href = started.authorize_url || "#";
+      setReauthStatus(started.message || "打开授权链接，登录后把回调地址贴回来。", "muted");
+      form?.querySelector("[name='callback_url']")?.focus();
+    } catch (error) {
+      setReauthStatus(friendlyError(error), "error");
+      toast(friendlyError(error), "error");
+    }
+  }
+
+  async function submitReauth(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("#reauth-submit");
+    const accountId = String(form.account_id.value || "").trim();
+    const ticket = String(form.ticket.value || "").trim();
+    const callbackUrl = String(form.callback_url.value || "").trim();
+    if (!accountId || !ticket) {
+      setReauthStatus("还没有授权会话，请关掉后重新点重新授权。", "error");
+      return;
+    }
+    if (!callbackUrl) {
+      setReauthStatus("请把跳转到 localhost:1455 的整段回调地址贴回来。", "error");
+      return;
+    }
+    if (button) button.disabled = true;
+    setReauthStatus("正在用回调换票…", "muted");
+    try {
+      const result = await fetchEntity(`account-reauth-complete-${accountId}`, `/api/accounts/${accountId}/reauth/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ ticket, callback_url: callbackUrl }),
+      });
+      closeReauth();
+      await handleActionResult(result, { successMessage: result.message || "授权已更新" });
+    } catch (error) {
+      setReauthStatus(friendlyError(error), "error");
+      toast(friendlyError(error), "error");
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   function teamMemberRows(workspace) {
       const rows = [];
       const indexes = new Map();
