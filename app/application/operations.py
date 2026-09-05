@@ -436,9 +436,14 @@ class OperationStore:
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ) -> Operation | None:
         stamp = now or utcnow()
+        leftover_lock = or_(
+            Operation.locked_by.is_(None),
+            Operation.lease_expires_at.is_(None),
+            Operation.lease_expires_at <= stamp,
+        )
         candidate = await session.scalar(
             select(Operation.id)
-            .where(Operation.op_type == "reauth", Operation.state == "queued")
+            .where(Operation.op_type == "reauth", Operation.state == "queued", leftover_lock)
             .order_by(Operation.created_at.asc(), Operation.id.asc())
             .limit(1)
         )
@@ -446,7 +451,7 @@ class OperationStore:
             return None
         claimed = await session.execute(
             update(Operation)
-            .where(Operation.id == int(candidate), Operation.state == "queued", Operation.locked_by.is_(None))
+            .where(Operation.id == int(candidate), Operation.state == "queued", leftover_lock)
             .values(
                 state="running",
                 current_step="preflight",

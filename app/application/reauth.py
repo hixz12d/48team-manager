@@ -249,7 +249,7 @@ class ReauthService:
             proxy = frozen
             oauth_sessions.mark_session(session["ticket"], proxy=proxy)
         oauth_sessions.mark_session(session["ticket"], job_id=row.public_id, status="queued", message=plan["reason"])
-        await operation_store.note(db, row, "queued", plan["reason"])
+        await operation_store.note(db, row, "queued", plan["reason"], touch_lease=False)
         stored_session = oauth_sessions.get_session(session["ticket"])
         if stored_session is None:
             raise OAuthSessionError("无法保存 OAuth 会话", error_code="oauth_session_invalid")

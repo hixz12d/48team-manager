@@ -310,6 +310,11 @@ class ReauthGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(started["success"])
         operation = await operation_store.get_by_public_id(self.session, started["job_id"])
         self.assertEqual(operation.resolved_proxy, owner.proxy)
+        self.assertIsNone(operation.locked_by)
+        self.assertIsNone(operation.lease_expires_at)
+        claimed = await operation_store.claim_next_reauth(self.session)
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed.id, operation.id)
 
     async def test_browser_busy_does_not_start_second_job(self):
         first = Account(

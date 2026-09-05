@@ -1,12 +1,14 @@
 import unittest
 import asyncio
 from unittest.mock import patch
+from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.application.jobs.dispatcher import ReauthDispatcher
 from app.application.operations import operation_store
+from app.core.time import utcnow
 from app.persistence.database import Base
 from app.persistence.models.operations import Operation
 
@@ -112,3 +114,39 @@ class ReauthDispatcherTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(recovered, [])
             await db.refresh(row)
             self.assertEqual(row.state, "queued")
+
+    async def test_claim_reclaims_queued_job_with_expired_leftover_lock(self):
+        async with self.factory() as db:
+            row = await operation_store.create(
+                db,
+                op_type="reauth",
+                email="child@icloud.com",
+                input_payload={"ticket": "ticket-leftover"},
+                state="queued",
+            )
+            row.locked_by = "old-host:1"
+            row.lease_expires_at = utcnow() - timedelta(minutes=1)
+            await db.commit()
+            claimed = await operation_store.claim_next_reauth(db, worker_id="worker-b:2")
+            self.assertIsNotNone(claimed)
+            self.assertEqual(claimed.id, row.id)
+            self.assertEqual(claimed.state, "running")
+            self.assertEqual(claimed.locked_by, "worker-b:2")
+
+    async def test_claim_skips_queued_job_with_unexpired_foreign_lock(self):
+        async with self.factory() as db:
+            row = await operation_store.create(
+                db,
+                op_type="reauth",
+                email="child@icloud.com",
+                input_payload={"ticket": "ticket-live"},
+                state="queued",
+            )
+            row.locked_by = "old-host:1"
+            row.lease_expires_at = utcnow() + timedelta(minutes=10)
+            await db.commit()
+            claimed = await operation_store.claim_next_reauth(db, worker_id="worker-b:2")
+            self.assertIsNone(claimed)
+            await db.refresh(row)
+            self.assertEqual(row.state, "queued")
+            self.assertEqual(row.locked_by, "old-host:1")

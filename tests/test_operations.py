@@ -76,6 +76,21 @@ class OperationStoreTests(unittest.IsolatedAsyncioTestCase):
         await operation_store.recover_stale(self.session)
         self.assertTrue(await operation_store.step_succeeded(self.session, row, "kicked"))
 
+    async def test_note_on_queued_job_does_not_take_a_lease(self):
+        row = await operation_store.create(
+            self.session,
+            op_type="reauth",
+            email="kid@icloud.com",
+            input_payload={"ticket": "ticket-note"},
+            state="queued",
+        )
+        await operation_store.note(self.session, row, "queued", "iCloud queued", touch_lease=False)
+        await self.session.commit()
+        refreshed = await self.session.get(Operation, row.id)
+        self.assertEqual(refreshed.state, "queued")
+        self.assertIsNone(refreshed.locked_by)
+        self.assertIsNone(refreshed.lease_expires_at)
+
 
 class OperationConsoleTests(unittest.TestCase):
     def test_operations_api_lists_persisted_jobs(self):
