@@ -620,13 +620,20 @@
 
 .portfolio-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.8fr) minmax(180px, 1.4fr) minmax(0, 0.8fr);
+  grid-template-columns: minmax(0, 1.6fr) minmax(140px, 0.9fr) minmax(180px, 1.4fr) minmax(0, 0.8fr);
   gap: var(--space-xs);
   align-items: center;
   padding: 8px 12px 8px 32px;
   min-height: 46px;
   border-bottom: 1px solid var(--border-subtle);
   position: relative;
+}
+
+.portfolio-auth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .portfolio-row::before {
@@ -884,6 +891,19 @@
   height: 28px;
   padding: 0;
   font-size: 18px;
+}
+
+.account-auto-reauth-button {
+  min-width: 112px;
+  height: 28px;
+  margin-left: 8px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.account-auto-reauth-button[aria-busy="true"] {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .is-interactive:hover .row-actions-contextual,

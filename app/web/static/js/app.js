@@ -727,6 +727,66 @@
     return 4000;
   }
 
+  function autoReauthStableKey(accountId) {
+    return `account-auto-reauth-${accountId}`;
+  }
+
+  function currentAutoReauth(accountId) {
+    return Array.from(currentOperations.values()).find((entry) => (
+      entry.entityType === "account"
+      && String(entry.entityId) === String(accountId)
+      && entry.action === "auto-reauth"
+    )) || null;
+  }
+
+  function autoReauthProgressLabel(state) {
+    return ({ queued: "排队中", running: "授权中", waiting: "等待中" })[String(state || "").toLowerCase()] || "授权处理中";
+  }
+
+  function applyAutoReauthButtonState(button, entry) {
+    if (!button) return;
+    const active = Boolean(entry);
+    button.disabled = false;
+    button.textContent = active ? autoReauthProgressLabel(entry.state) : "开始自动授权";
+    if (active) button.setAttribute("aria-busy", "true");
+    else button.removeAttribute("aria-busy");
+    if (entry?.operationId) button.dataset.operationId = entry.operationId;
+    else delete button.dataset.operationId;
+  }
+
+  function syncAutoReauthButtons(accountId) {
+    const entry = currentAutoReauth(accountId);
+    document.querySelectorAll(`[data-auto-reauth-account="${accountId}"]`).forEach((button) => {
+      applyAutoReauthButtonState(button, entry);
+    });
+  }
+
+  function createAutoReauthButton(item) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button ghost compact account-auto-reauth-button";
+    button.dataset.autoReauthAccount = String(item.id);
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const active = currentAutoReauth(item.id);
+      if (active) {
+        await openOperationById(active.operationId);
+        return;
+      }
+      applyAutoReauthButtonState(button, { state: "waiting" });
+      button.textContent = "检查条件";
+      try {
+        await queueAutoReauth(item);
+      } catch (error) {
+        toast(friendlyError(error), "error");
+      } finally {
+        syncAutoReauthButtons(item.id);
+      }
+    });
+    applyAutoReauthButtonState(button, currentAutoReauth(item.id));
+    return button;
+  }
+
   function startCurrentOperation(stableKey, response, context = {}) {
     const operationId = response?.operation_id || response?.id;
     const state = String(response?.status || response?.state || "").toLowerCase();
@@ -746,6 +806,7 @@
     };
     currentOperations.set(stableKey, entry);
     persistCurrentOperations();
+    if (entry.entityType === "account" && entry.action === "auto-reauth") syncAutoReauthButtons(entry.entityId);
     pollCurrentOperation(stableKey);
     return true;
   }
@@ -788,6 +849,7 @@
       const state = String(detail.state || detail.status || "").toLowerCase();
       entry.state = state;
       persistCurrentOperations();
+      if (entry.entityType === "account" && entry.action === "auto-reauth") syncAutoReauthButtons(entry.entityId);
       if (TERMINAL_OPERATION_STATES.has(state)) {
         await finishCurrentOperation(stableKey, detail);
         return;
@@ -1165,6 +1227,7 @@
     const state = cell(row, statusNode(item.state, labelOf(stateLabels, item.state)), "row-action-host");
     const actions = document.createElement("div");
     actions.className = "row-actions row-actions-contextual";
+    if (item.purpose === "child") state.append(createAutoReauthButton(item));
     actions.append(menuButton("account", item));
     state.append(actions);
     return row;
@@ -1614,13 +1677,20 @@ function hmeRow(item) {
     });
   }
 
+  const autoReauthBlockedLabels = {
+    account_not_opted_in: "账号尚未允许自动授权",
+    deployment_disabled: "自动授权总开关未启用",
+    mailbox_unverified: "邮箱尚未通过读取检测",
+    proxy_missing: "账号尚未配置代理",
+    already_running: "该账号已有授权任务在运行",
+  };
+
   async function queueAutoReauth(item) {
     let readiness = await fetchEntity(
       `account-reauth-readiness-${item.id}`,
       `/api/accounts/${item.id}/reauth/readiness`,
     );
     if ((readiness.blocked_reasons || []).includes("account_not_opted_in")) {
-      if (!window.confirm(`允许 ${item.email} 使用自动重授权？`)) return;
       await patchAction(`account-auto-opt-in-${item.id}`, `/api/accounts/${item.id}/automation`, {
         auto_reauth_opt_in: true,
       });
@@ -1630,23 +1700,57 @@ function hmeRow(item) {
       );
     }
     if (!readiness.eligible || !readiness.effective_enabled) {
-      const reasons = (readiness.blocked_reasons || []).join("、") || "当前条件未就绪";
-      toast(`不能自动重授权：${reasons}`, "error");
-      return;
+      if (readiness.active_operation_id) {
+        const stableKey = autoReauthStableKey(item.id);
+        startCurrentOperation(stableKey, {
+          operation_id: readiness.active_operation_id,
+          status: "running",
+        }, {
+          entityType: "account",
+          entityId: item.id,
+          action: "auto-reauth",
+          successMessage: `${item.email} 自动授权完成`,
+        });
+        syncAutoReauthButtons(item.id);
+        toast("该账号已有自动授权任务，正在显示其进度", "success", {
+          label: "查看进度",
+          onClick: () => openOperationById(readiness.active_operation_id),
+        });
+        return { ok: true, operation_id: readiness.active_operation_id, reused_existing: true };
+      }
+      const reasons = (readiness.blocked_reasons || [])
+        .map((reason) => autoReauthBlockedLabels[reason] || reason)
+        .join("、") || "当前条件未就绪";
+      toast(`不能开始自动授权：${reasons}`, "error");
+      return null;
     }
-    const mailbox = readiness.mailbox || {};
-    const detail = [
-      `邮箱：${mailbox.provider || "未绑定"} / ${mailbox.read_state || "未验证"}`,
-      `代理：${readiness.proxy?.source || "未设置"}`,
-      readiness.next_eligible_at ? `下次可执行：${readiness.next_eligible_at}` : null,
-    ].filter(Boolean).join("\n");
-    if (!window.confirm(`确认将 ${item.email} 加入自动重授权队列？\n${detail}`)) return;
+    const stableKey = autoReauthStableKey(item.id);
     const result = await postAction(
-      `account-auto-reauth-${item.id}`,
+      stableKey,
       `/api/accounts/${item.id}/reauth/auto`,
     );
-    toast(result.message || "已进入自动重授权队列", "success");
+    await handleActionResult(result, {
+      stableKey,
+      refresh: false,
+      context: {
+        entityType: "account",
+        entityId: item.id,
+        action: "auto-reauth",
+        successMessage: `${item.email} 自动授权完成`,
+      },
+    });
+    const tracked = currentOperations.get(stableKey);
+    if (tracked) {
+      syncAutoReauthButtons(item.id);
+      toast(
+        result.reused_existing ? "已有自动授权任务，继续显示其进度" : "自动授权已启动，当前正在排队",
+        "success",
+        { label: "查看进度", onClick: () => openOperationById(tracked.operationId) },
+      );
+      return result;
+    }
     await bootPage();
+    return result;
   }
 
   const entityActions = {
@@ -1716,7 +1820,7 @@ function hmeRow(item) {
       },
       {
         id: "account.auto-reauth",
-        label: "自动重授权",
+        label: "开始自动授权",
         visible: (item) => item.purpose === "child",
         run: (item) => queueAutoReauth(item),
       },
@@ -3351,6 +3455,9 @@ function hmeRow(item) {
     const authCol = document.createElement("div");
     authCol.className = "portfolio-cell portfolio-auth";
     authCol.append(statusNode(account.auth || account.membership_state, labelOf(statusLabels, account.auth || account.membership_state)));
+    if (canOpen && (kind === "child" || account.purpose === "child")) {
+      authCol.append(createAutoReauthButton(account));
+    }
     row.append(authCol);
 
     const quotaCol = document.createElement("div");
