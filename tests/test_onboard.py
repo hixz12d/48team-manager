@@ -1,8 +1,11 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.application import console_actions
+from app.application.proxy_resolution import RuntimeProxy
 
 from app.application.onboard import OnboardService
 from app.application.rotate import RotateService
@@ -11,6 +14,7 @@ from app.application.workspaces import WorkspaceService
 from app.domain.vacancy import parse_policy_notice
 from app.persistence.database import Base
 from app.persistence.models.identity import Account, Workspace, WorkspaceMembership
+from app.persistence.models.operations import Operation
 
 
 WORKSPACE_UUID = "11111111-1111-1111-1111-111111111111"
@@ -98,6 +102,10 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
             self.session,
             workspace_id=workspace.id,
             email_line="kid@icloud.com----https://mail.example/pickup",
+            proxy=PROXY,
+            proxy_source="sub2api",
+            sub2api_proxy_id=7,
+            proxy_instance_key="instance-key",
             in_test=True,
         )
         self.assertTrue(result["success"])
@@ -106,6 +114,9 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.invites, [{"email": "kid@icloud.com", "role": "owner"}])
         child = (await self.session.get(Account, result["child"]["id"]))
         self.assertEqual(child.operational_state, "active")
+        self.assertEqual(child.proxy_source, "sub2api")
+        self.assertEqual(child.sub2api_proxy_id, 7)
+        self.assertEqual(child.proxy_instance_key, "instance-key")
         membership = (
             await self.session.execute(
                 select(WorkspaceMembership).where(WorkspaceMembership.account_id == child.id)
@@ -113,6 +124,32 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
         ).scalar_one_or_none()
         self.assertIsNotNone(membership)
         self.assertEqual(membership.official_role, "owner")
+
+    async def test_console_onboard_resolves_sub2api_id_without_persisting_secret_input(self):
+        workspace = await self._seed_workspace()
+        resolved = RuntimeProxy(
+            source="sub2api",
+            remote_id=7,
+            instance_key="instance-key",
+            url="socks5h://user:secret@127.0.0.1:1080",
+        )
+        onboard = AsyncMock(return_value={"success": True, "status": "success"})
+        with (
+            patch("app.application.console_actions.resolve_sub2api_proxy", new=AsyncMock(return_value=resolved)),
+            patch.object(console_actions.onboard_service, "invite_and_onboard", new=onboard),
+        ):
+            result = await console_actions.start_workspace_onboard(
+                self.session,
+                workspace.id,
+                email_line="kid@icloud.com----https://mail.example/pickup",
+                proxy_selection={"source": "sub2api", "remote_id": 7},
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(onboard.await_args.kwargs["proxy"], resolved.url)
+        self.assertEqual(onboard.await_args.kwargs["sub2api_proxy_id"], 7)
+        operation = await self.session.get(Operation, 1)
+        self.assertNotIn("secret", operation.input_json)
+        self.assertIn('\"sub2api_proxy_id\": 7', operation.input_json)
 
     async def test_empty_email_claims_hme_then_onboards(self):
         workspace = await self._seed_workspace()

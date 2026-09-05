@@ -3,6 +3,9 @@ import unittest
 from pathlib import Path
 
 from tests.helpers import make_client
+from pydantic import ValidationError
+
+from app.web.schemas.resources import AccountAutomationPatch, AccountProxyPatch, OnboardRequest
 
 
 FORBIDDEN_UI = (
@@ -31,6 +34,19 @@ PAGES = (
 
 
 class UIContractTests(unittest.TestCase):
+    def test_proxy_and_automation_payload_contracts(self):
+        self.assertTrue(AccountAutomationPatch(auto_reauth_opt_in=True).auto_reauth_opt_in)
+        selected = AccountProxyPatch(proxy_selection={"source": "sub2api", "remote_id": 7})
+        self.assertEqual(selected.proxy_selection.remote_id, 7)
+        onboard = OnboardRequest(proxy_selection={"source": "sub2api", "remote_id": 9})
+        self.assertEqual(onboard.proxy_selection.remote_id, 9)
+        with self.assertRaises(ValidationError):
+            AccountProxyPatch(proxy="socks5://127.0.0.1:1080", clear=True)
+        with self.assertRaises(ValidationError):
+            OnboardRequest(
+                proxy="socks5://127.0.0.1:1080",
+                proxy_selection={"source": "sub2api", "remote_id": 7},
+            )
     def test_console_has_one_product_and_no_legacy_assets(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
@@ -70,6 +86,10 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("callback_url", workspaces)
             self.assertNotIn("official_workspace_id", workspaces)
             self.assertNotIn("Access Token", workspaces)
+            self.assertIn('name="proxy_remote_id"', workspaces)
+            self.assertNotIn('name="proxy"', workspaces)
+            self.assertIn("proxy_selection", js)
+            self.assertNotIn("socks5://host:port", js)
 
             phones = client.get("/resources/phones").text
             self.assertIn('data-open-phone-import', phones)

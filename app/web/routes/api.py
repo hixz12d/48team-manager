@@ -119,6 +119,7 @@ def build_api_router(get_db) -> APIRouter:
             email_line=payload.email_line,
             phone_line=payload.phone_line,
             proxy=payload.proxy,
+            proxy_selection=payload.proxy_selection.model_dump() if payload.proxy_selection else None,
             password=payload.password,
             force=payload.force,
             skip_invite=payload.skip_invite,
@@ -126,6 +127,10 @@ def build_api_router(get_db) -> APIRouter:
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if result.get("error_code") in {"proxy_choice_conflict", "invalid_proxy_source", "invalid_remote_id", "proxy_not_found", "proxy_disabled", "proxy_unresolvable"}:
+            raise HTTPException(status_code=400, detail=result.get("error") or "proxy selection invalid")
+        if result.get("error_code") == "remote_catalog_unavailable":
+            raise HTTPException(status_code=502, detail=result.get("error") or "proxy catalog unavailable")
         return _accepted(result)
 
     @router.post("/workspaces/{workspace_id}/rotate", status_code=status.HTTP_202_ACCEPTED)

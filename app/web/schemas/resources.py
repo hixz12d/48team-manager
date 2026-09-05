@@ -19,10 +19,17 @@ class OnboardRequest(BaseModel):
     email_line: str = Field(default="", max_length=500)
     phone_line: str = Field(default="", max_length=500)
     proxy: str = Field(default="", max_length=500)
+    proxy_selection: ProxySelection | None = None
     password: str = Field(default="", max_length=200)
     force: bool = False
     skip_invite: bool = False
     role: Literal["owner", "member"] = "owner"
+
+    @model_validator(mode="after")
+    def validate_proxy_choice(self):
+        if self.proxy and self.proxy_selection is not None:
+            raise ValueError("proxy 与 proxy_selection 不能同时提交")
+        return self
 
 
 class RotateRequest(BaseModel):
@@ -51,10 +58,6 @@ class AccountProxyPatch(BaseModel):
     proxy_selection: ProxySelection | None = None
     clear: bool = False
 
-
-class AccountAutomationPatch(BaseModel):
-    auto_reauth_opt_in: bool
-
     @model_validator(mode="after")
     def validate_proxy_choice(self):
         if self.requested_modes() != 1:
@@ -63,6 +66,11 @@ class AccountAutomationPatch(BaseModel):
 
     def requested_modes(self) -> int:
         return sum((bool(self.proxy), self.proxy_selection is not None, self.clear))
+
+
+class AccountAutomationPatch(BaseModel):
+    auto_reauth_opt_in: bool
+
 
 
 class PhoneStatusPatch(BaseModel):

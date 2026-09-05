@@ -565,6 +565,7 @@ async def start_workspace_onboard(
     email_line: str = "",
     phone_line: str = "",
     proxy: str = "",
+    proxy_selection: dict[str, Any] | None = None,
     password: str = "",
     force: bool = False,
     skip_invite: bool = False,
@@ -573,6 +574,27 @@ async def start_workspace_onboard(
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
         return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    if proxy and proxy_selection:
+        return {"ok": False, "error": "choose exactly one proxy source", "error_code": "proxy_choice_conflict"}
+
+    proxy_value = str(proxy or "").strip()
+    proxy_source = "legacy" if proxy_value else ""
+    sub2api_proxy_id = None
+    proxy_instance_key = ""
+    if proxy_selection is not None:
+        if str(proxy_selection.get("source") or "") != "sub2api":
+            return {"ok": False, "error": "unsupported proxy source", "error_code": "invalid_proxy_source"}
+        try:
+            resolved = await resolve_sub2api_proxy(db, int(proxy_selection.get("remote_id") or 0))
+        except ProxyResolutionError as exc:
+            return {"ok": False, "error": str(exc), "error_code": exc.error_code}
+        except Exception:
+            return {"ok": False, "error": "Sub2API proxy catalog unavailable", "error_code": "remote_catalog_unavailable"}
+        proxy_value = resolved.url
+        proxy_source = resolved.source
+        sub2api_proxy_id = resolved.remote_id
+        proxy_instance_key = resolved.instance_key
+
     operation = await operation_store.create(
         db,
         op_type="onboard",
@@ -583,12 +605,13 @@ async def start_workspace_onboard(
             "workspace_id": workspace.id,
             "email_line": email_line,
             "phone_line": phone_line,
-            "proxy": mask_proxy_url(proxy) if proxy else "",
+            "proxy_source": proxy_source or None,
+            "sub2api_proxy_id": sub2api_proxy_id,
             "force": bool(force),
             "skip_invite": bool(skip_invite),
             "requested_role": parse_invite_role(role),
         },
-        resolved_proxy=str(proxy or "").strip(),
+        resolved_proxy=proxy_value,
     )
     await db.commit()
     result = await onboard_service.invite_and_onboard(
@@ -596,7 +619,10 @@ async def start_workspace_onboard(
         workspace_id=workspace.id,
         email_line=email_line,
         phone_line=phone_line,
-        proxy=proxy,
+        proxy=proxy_value,
+        proxy_source=proxy_source,
+        sub2api_proxy_id=sub2api_proxy_id,
+        proxy_instance_key=proxy_instance_key,
         password=password,
         force=force,
         skip_invite=skip_invite,

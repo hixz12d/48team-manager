@@ -461,8 +461,8 @@
         <input type="hidden" name="ticket" value="">
         <div class="sheet-section">
           <label>母号邮箱<input name="email" type="email" autocomplete="off" required></label>
-          <label>代理<input name="proxy" autocomplete="off" placeholder="socks5://host:port"></label>
-          <p class="hint">代理可选。生成链接后在浏览器登录母号，把跳转到 localhost:1455 的整段地址贴回来。</p>
+          <label>Sub2API 代理<select name="proxy_remote_id" data-proxy-select><option value="">正在读取代理目录…</option></select></label>
+          <p class="hint">代理可选，只保存所选 Sub2API 代理 ID；完整地址和认证信息由服务器解析。</p>
         </div>
         <div class="sheet-section" id="register-oauth" hidden>
           <label>授权链接<textarea id="register-authorize-url" rows="4" readonly></textarea></label>
@@ -542,9 +542,9 @@
         <div class="sheet-section">
           <label>账号<input name="email" readonly></label>
           <label>当前代理<input name="current_proxy" readonly></label>
-          <label>新代理 URL<input name="proxy" autocomplete="off" placeholder="socks5://host:port"></label>
+          <label>Sub2API 代理<select name="proxy_remote_id" data-proxy-select><option value="">正在读取代理目录…</option></select></label>
           <label class="check"><input name="clear" type="checkbox"> 清除代理</label>
-          <p class="hint">仅母号可改。运行中任务继续使用已冻结的代理。</p>
+          <p class="hint">仅母号可改。只提交远端代理 ID，运行中任务继续使用已冻结的代理。</p>
         </div>
         <p id="proxy-edit-status" class="muted" hidden></p>
         <div class="settings-probe-actions">

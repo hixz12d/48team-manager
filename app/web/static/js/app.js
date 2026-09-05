@@ -31,6 +31,7 @@
   let teamDetailState = null;
   const SECRET_MASK = "••••••";
   const pageCache = { items: [], kind: "", portfolio: null };
+  let proxySelectRequestId = 0;
   let settingsBaseline = "";
   let settingsDirty = false;
   let searchTimer = null;
@@ -1973,6 +1974,7 @@ function hmeRow(item) {
     const openLink = document.getElementById("register-open-link");
     const submit = document.getElementById("register-submit");
     if (form) form.reset();
+    if (form?.elements.proxy_remote_id) void loadProxySelect(form.elements.proxy_remote_id);
     if (oauth) oauth.hidden = true;
     if (authorize) authorize.value = "";
     if (openLink) openLink.href = "#";
@@ -2269,11 +2271,13 @@ function hmeRow(item) {
     phone.placeholder = "可选，通常由号池分配";
     phoneLabel.append(phone);
     const proxyLabel = document.createElement("label");
-    proxyLabel.textContent = "代理";
-    const proxy = document.createElement("input");
-    proxy.name = "proxy";
-    proxy.placeholder = "可选 socks5://host:port";
+    proxyLabel.textContent = "Sub2API 代理";
+    const proxy = document.createElement("select");
+    proxy.name = "proxy_remote_id";
+    proxy.dataset.proxySelect = "";
+    proxy.append(new Option("正在读取代理目录…", ""));
     proxyLabel.append(proxy);
+    void loadProxySelect(proxy);
     const forceLabel = document.createElement("label");
     forceLabel.className = "check";
     const force = document.createElement("input");
@@ -2538,7 +2542,9 @@ function hmeRow(item) {
       const result = await postAction(`workspace-invite-${workspace.id}`, `/api/workspaces/${workspace.id}/onboard`, {
         email_line: String(values.email_line || "").trim(),
         phone_line: String(values.phone_line || "").trim(),
-        proxy: String(values.proxy || "").trim(),
+        proxy_selection: Number(values.proxy_remote_id || 0) > 0
+          ? { source: "sub2api", remote_id: Number(values.proxy_remote_id) }
+          : null,
         role: values.role === "member" ? "member" : "owner",
         force: Boolean(values.force),
         skip_invite: Boolean(values.skip_invite),
@@ -2780,6 +2786,37 @@ function hmeRow(item) {
       }
     }
 
+  function proxyOptionLabel(item) {
+    const name = item.name || `Sub2API #${item.id}`;
+    const meta = [item.region, item.protocol, item.exit_ip].filter(Boolean).join(" · ");
+    return meta ? `${name} · ${meta}` : name;
+  }
+
+  async function loadProxySelect(select, selectedId = null) {
+    if (!select) return false;
+    select.disabled = true;
+    select.replaceChildren(new Option("正在读取代理目录…", ""));
+    try {
+      const requestId = ++proxySelectRequestId;
+      const payload = await fetchEntity(`proxy-select-${requestId}`, "/api/resources/proxies?limit=200");
+      const empty = new Option("不使用代理", "");
+      const options = (payload.items || []).map((item) => {
+        const option = new Option(proxyOptionLabel(item), String(item.id));
+        option.disabled = ["disabled", "inactive", "deleted"].includes(String(item.status || "").toLowerCase());
+        return option;
+      });
+      select.replaceChildren(empty, ...options);
+      if (selectedId != null && selectedId !== "") select.value = String(selectedId);
+      select.disabled = false;
+      return true;
+    } catch (error) {
+      select.replaceChildren(new Option("代理目录读取失败", ""));
+      select.disabled = true;
+      toast(friendlyError(error), "error");
+      return false;
+    }
+  }
+
   async function openProxyEdit(trigger, account) {
     if (!proxyEditSheet) return;
     const form = document.getElementById("proxy-edit-form");
@@ -2788,11 +2825,13 @@ function hmeRow(item) {
       form.account_id.value = account.id || "";
       form.email.value = account.email || "";
       form.current_proxy.value = account.proxy_url || "";
-      form.proxy.value = "";
       form.clear.checked = false;
     }
     setFormStatus("proxy-edit-status", "", "muted");
     openOverlay("proxy-edit", { returnFocus: trigger, context: { kind: "account-proxy", account }, initialFocus: "#proxy-edit-submit" });
+    if (form?.elements.proxy_remote_id) {
+      await loadProxySelect(form.elements.proxy_remote_id, account.sub2api_proxy_id);
+    }
   }
 
   function closeProxyEdit() {
@@ -2808,11 +2847,12 @@ function hmeRow(item) {
     if (button) button.disabled = true;
     setFormStatus("proxy-edit-status", "正在保存…", "muted");
     try {
-      const url = (form.proxy.value || "").trim();
-      const result = await patchAction(`account-proxy-${accountId}`, `/api/accounts/${accountId}/proxy`, {
-        proxy: url || null,
-        clear: Boolean(form.clear.checked),
-      });
+      const remoteId = Number(form.proxy_remote_id.value || 0);
+      const clear = Boolean(form.clear.checked);
+      if (!clear && remoteId <= 0) throw new Error("请选择 Sub2API 代理，或勾选清除代理");
+      const result = await patchAction(`account-proxy-${accountId}`, `/api/accounts/${accountId}/proxy`, clear
+        ? { clear: true }
+        : { proxy_selection: { source: "sub2api", remote_id: remoteId } });
       setFormStatus("proxy-edit-status", result.ok ? "已保存" : (result.error || "失败"), result.ok ? "muted" : "error");
       toast(result.ok ? "母号代理已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
       if (result?.ok) {
@@ -2896,9 +2936,10 @@ function hmeRow(item) {
 
   async function startRegisterOAuth(form) {
     const data = new FormData(form);
+    const remoteId = Number(data.get("proxy_remote_id") || 0);
     const payload = {
       email: String(data.get("email") || "").trim(),
-      proxy: String(data.get("proxy") || "").trim() || null,
+      proxy_selection: remoteId > 0 ? { source: "sub2api", remote_id: remoteId } : null,
     };
     const started = await fetchEntity("register-oauth-start", "/api/workspaces/oauth/start", {
       method: "POST",

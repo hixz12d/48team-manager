@@ -136,6 +136,10 @@ class OnboardService:
         phone: str = "",
         sms_url: str = "",
         proxy: str = "",
+        proxy_source: str = "",
+        sub2api_proxy_id: int | None = None,
+        proxy_instance_key: str = "",
+        proxy_profile_id: int | None = None,
         status: str = "invited",
     ) -> Account:
         target = normalize_email(email)
@@ -159,6 +163,10 @@ class OnboardService:
             child.sms_url = sms_url
         if proxy:
             child.proxy = proxy
+            child.proxy_source = proxy_source or "legacy"
+            child.sub2api_proxy_id = sub2api_proxy_id
+            child.proxy_instance_key = proxy_instance_key or None
+            child.proxy_profile_id = proxy_profile_id
         if child.local_purpose != "mother":
             child.local_purpose = LOCAL_PURPOSE_CHILD if status != "standby" else child.local_purpose
         await db.flush()
@@ -172,6 +180,9 @@ class OnboardService:
         email_line: str,
         phone_line: str = "",
         proxy: str = "",
+        proxy_source: str = "",
+        sub2api_proxy_id: int | None = None,
+        proxy_instance_key: str = "",
         password: str = "",
         reuse_existing: bool = True,
         skip_invite: bool = False,
@@ -197,6 +208,9 @@ class OnboardService:
                 email_line=email_line,
                 phone_line=phone_line,
                 proxy=proxy,
+                proxy_source=proxy_source,
+                sub2api_proxy_id=sub2api_proxy_id,
+                proxy_instance_key=proxy_instance_key,
                 password=password,
                 reuse_existing=reuse_existing,
                 skip_invite=skip_invite,
@@ -229,6 +243,9 @@ class OnboardService:
         email_line: str,
         phone_line: str = "",
         proxy: str = "",
+        proxy_source: str = "",
+        sub2api_proxy_id: int | None = None,
+        proxy_instance_key: str = "",
         password: str = "",
         reuse_existing: bool = True,
         skip_invite: bool = False,
@@ -303,6 +320,18 @@ class OnboardService:
                     return {"success": False, "error": error, "error_code": "kick_cooldown", "status": "blocked"}
 
         phone, sms_url, phone_source = self._bind_phone(phone_line, job_id, existing.id if existing else None)
+        if proxy:
+            effective_proxy_source = proxy_source or "legacy"
+            effective_sub2api_proxy_id = sub2api_proxy_id
+            effective_proxy_instance_key = proxy_instance_key
+        elif existing and existing.proxy:
+            effective_proxy_source = existing.proxy_source or "legacy"
+            effective_sub2api_proxy_id = existing.sub2api_proxy_id
+            effective_proxy_instance_key = existing.proxy_instance_key or ""
+        else:
+            effective_proxy_source = (owner.proxy_source if owner else None) or "legacy"
+            effective_sub2api_proxy_id = owner.sub2api_proxy_id if owner else None
+            effective_proxy_instance_key = (owner.proxy_instance_key if owner else None) or ""
         child_proxy = proxy or (existing.proxy if existing else "") or (owner.proxy if owner else "")
         frozen, _profile_id = await proxy_profile_service.freeze(
             db,
@@ -321,6 +350,10 @@ class OnboardService:
             phone=phone or (existing.phone if existing else "") or "",
             sms_url=sms_url or (existing.sms_url if existing else "") or "",
             proxy=child_proxy,
+            proxy_source=effective_proxy_source,
+            sub2api_proxy_id=effective_sub2api_proxy_id,
+            proxy_instance_key=effective_proxy_instance_key,
+            proxy_profile_id=_profile_id,
         )
         password = password or decrypt_secret(child.password_encrypted)
         await self._progress(db, job_id=job_id, stage="checking", message="正在检查母号和占用")
