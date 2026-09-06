@@ -59,6 +59,14 @@ WORKSPACE_COLUMNS = (
 
 QUOTA_COLUMNS = (
     ("workspace_id", "INTEGER"),
+    ("http_status", "INTEGER"),
+    ("request_count", "INTEGER"),
+    ("error_source", "VARCHAR(30)"),
+    ("credential_revision", "INTEGER"),
+    ("check_id", "VARCHAR(32)"),
+    ("started_at", "DATETIME"),
+    ("retry_after_at", "DATETIME"),
+    ("accepted", "BOOLEAN DEFAULT 1 NOT NULL"),
 )
 
 BINDING_COLUMNS = (
@@ -162,6 +170,10 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
     if not str(engine.url).startswith("sqlite"):
         return
     async with engine.begin() as conn:
+        quota_existing = {str(row[1]) for row in (await conn.execute(text("PRAGMA table_info(quota_snapshots)"))).fetchall()}
+        if "http_status" not in quota_existing:
+            # Legacy fallback was effectively off. Preserve it unless explicitly persisted.
+            await conn.execute(text("INSERT OR IGNORE INTO system_settings (key, value) VALUES ('official_quota_probe_enabled', 'false')"))
         await _ensure_sqlite_columns(conn, "proxy_profiles", PROXY_PROFILE_COLUMNS)
         await _ensure_sqlite_columns(conn, "workspace_official_member_snapshots", SNAPSHOT_COLUMNS)
         await _ensure_sqlite_columns(conn, "operations", OPERATION_COLUMNS)

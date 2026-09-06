@@ -69,7 +69,7 @@ class QuotaParseTests(unittest.TestCase):
     def test_success_slot_is_next_hour_plus_jitter(self):
         now = datetime(2026, 3, 29, 12, 10, 0)
         nxt = success_next_quota_probe_at(now, 3, jitter_seconds=0)
-        self.assertEqual(nxt, datetime(2026, 3, 29, 13, 3, 0))
+        self.assertEqual(nxt, datetime(2026, 3, 29, 13, 10, 0))
 
     def test_failure_backoff_is_5_15_30_then_60(self):
         now = datetime(2026, 3, 29, 12, 0, 0)

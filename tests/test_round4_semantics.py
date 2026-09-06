@@ -403,7 +403,10 @@ class Round4ApiContractTests(unittest.TestCase):
             self.assertIn("/api/accounts/${item.id}/sub2api/push", js)
             self.assertIn("/api/accounts/${item.id}/sub2api/reconcile", js)
             self.assertIn("operations-search", client.get("/operations").text)
-            self.assertIn("官方 / 本地", client.get("/workspaces").text)
+            self.assertIn("账号与团队", client.get("/workspaces").text)
+            redirect = client.get("/workspaces?workspace=7", follow_redirects=False)
+            self.assertEqual(redirect.status_code, 303)
+            self.assertIn("workspace=7", redirect.headers["location"])
             # endpoints exist
             missing = client.post("/api/accounts/999/sub2api/reconcile")
             self.assertEqual(missing.status_code, 404)

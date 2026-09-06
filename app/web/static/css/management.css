@@ -1,0 +1,131 @@
+/* Management surface, based on the supplied offline prototype. */
+body[data-page="accounts"] { --bg:#f6f8fb; --text:#192638; --muted:#64758a; --accent:#345bdd; --sidebar-w:216px; --content-max:1700px; }
+body[data-page="accounts"] .topbar { min-height:84px; height:auto; gap:16px; padding:20px 30px; }
+body[data-page="accounts"] .topbar h1 { font-size:24px; letter-spacing:0; }
+body[data-page="accounts"] #page-subtitle:empty { display:none; }
+body[data-page="accounts"] .workspace { grid-template-columns:minmax(0,1fr); }
+body[data-page="accounts"] .page { width:100%; padding:24px 30px 40px; }
+body[data-page="accounts"] .button.primary { background:var(--accent); border-color:var(--accent); }
+body[data-page="accounts"] .button.primary:hover { background:#284dcc; }
+.management-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); background:#fff; border-block:1px solid var(--border); margin-bottom:24px; }
+.management-summary button { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; min-width:0; text-align:left; background:none; border:0; border-right:1px solid var(--border); padding:18px 20px; color:var(--text); cursor:pointer; }
+.management-summary button:last-child { border-right:0; }
+.management-summary button:hover { background:#f9fbff; }
+.management-summary button>span { grid-column:1 / -1; color:var(--muted); font-size:12px; }
+.management-summary strong { font-size:28px; line-height:1.4; font-weight:650; font-variant-numeric:tabular-nums; }
+.management-summary small { align-self:end; padding-bottom:7px; font-size:12px; color:var(--muted); }
+.management-summary .is-error strong { color:#b63b49; }
+.management-summary .is-warning strong { color:#8c621a; }
+.management-viewbar { display:flex; align-items:center; gap:20px; margin-bottom:16px; }
+.management-tabs { display:flex; gap:24px; flex:1; border-bottom:1px solid var(--border); }
+.management-tabs button { background:none; border:0; border-bottom:2px solid transparent; padding:10px 0 12px; cursor:pointer; color:var(--muted); font-size:13px; white-space:nowrap; }
+.management-tabs button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); font-weight:650; }
+#probe-runtime { font-size:12px; max-width:42%; overflow-wrap:anywhere; text-align:right; }
+.management-content { min-width:0; }
+.management-content>.toolbar { padding:0; margin-bottom:18px; border:0; gap:10px; background:none; flex-wrap:wrap; }
+.management-content .search { flex:1 1 300px; max-width:400px; }
+.management-content .filter { flex:0 1 165px; width:165px; }
+.management-content>.table-scroll { display:none !important; }
+.management-list { display:block; min-width:0; }
+.management-group { margin-bottom:20px; background:white; border-block:1px solid #dfe6f0; }
+.management-group-head { display:flex; align-items:center; gap:10px; padding:16px 14px; background:#fcfdff; }
+.management-expand { flex:0 0 32px; padding:0; width:32px; height:36px; font-size:22px; }
+.management-team-icon { width:34px; height:34px; flex:0 0 34px; display:grid; place-items:center; border-radius:7px; background:#edf2fc; color:#4363af; font-weight:650; }
+.management-group-title { min-width:0; flex:1; }
+.management-group-name { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+.management-group-name h2 { margin:0; font-size:14px; font-weight:650; overflow-wrap:anywhere; }
+.management-group-title>small { display:block; margin-top:5px; font-size:12px; }
+.management-group-money { text-align:right; margin-right:12px; font-size:12px; }
+.management-group-money small { display:block; font-size:12px; }
+.management-group-head>.button:last-child { flex-shrink:0; }
+.management-table-scroll { overflow:auto; max-width:100%; background:white; }
+.management-table { width:100%; min-width:1100px; table-layout:fixed; border-collapse:collapse; font-size:13px; }
+.management-table th { background:#f7f9fc; color:#64758a; font-size:12px; text-align:left; font-weight:500; border-block:1px solid var(--border); padding:9px 14px; }
+.management-table td { padding:17px 14px; border-bottom:1px solid #edf1f6; vertical-align:middle; overflow-wrap:anywhere; }
+.management-table tr:last-child td { border-bottom:0; }
+.management-table tbody tr:hover { background:#fafcff; }
+.management-table .num { text-align:right; }
+.management-table td>small { display:block; margin-top:5px; font-size:12px; line-height:1.5; }
+.management-identity { display:flex; gap:10px; align-items:center; min-width:0; }
+.management-identity>div { min-width:0; flex:1; }
+.management-avatar { width:30px; height:30px; flex:0 0 30px; border:1px solid #e7edf5; border-radius:6px; background:#f0f3f8; display:grid; place-items:center; color:#5c6c82; font-size:12px; }
+.management-email { display:block; max-width:100%; min-width:0; min-height:26px; text-align:left; border:0; background:none; padding:0; color:#243349; font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+button.management-email:hover { color:var(--accent); }
+.management-identity small { display:block; font-size:12px; margin-top:3px; }
+.management-badge { display:inline-flex; max-width:100%; align-items:center; border-radius:4px; padding:4px 7px; font-size:12px; line-height:1.4; font-weight:500; overflow-wrap:anywhere; }
+.tone-success { color:#167257; background:#ebf7f1; }
+.tone-error { color:#b63b49; background:#fff0f1; }
+.tone-warning { color:#8c621a; background:#fff7e5; }
+.tone-info { color:#345bdd; background:#edf2ff; }
+.tone-muted { color:#64758a; background:#f0f3f7; }
+.text-warning { color:#8c621a; }
+.management-quota { display:grid; gap:6px; }
+.management-meter { display:grid; grid-template-columns:21px minmax(50px,1fr) 35px; align-items:center; gap:7px; font-size:12px; color:var(--muted); }
+.management-meter>span:last-child { text-align:right; color:#3c4d65; }
+.management-bar { height:4px; background:#eaf0f8; border-radius:3px; overflow:hidden; }
+.management-bar>span { display:block; height:100%; background:#6383e4; }
+.management-bar.is-stale>span { background:#b4c0d4; }
+.management-quota small { font-size:12px; margin-top:2px; }
+.management-money { text-align:right; }
+.management-money strong { font-weight:600; }
+.management-money small { display:block; font-size:12px; margin-top:4px; }
+.management-actions { display:flex; justify-content:flex-end; align-items:center; gap:8px; }
+.management-actions>.button { height:34px; min-width:58px; padding:0 10px; }
+.management-actions>[data-menu-trigger] { min-width:32px; width:32px; padding:0; font-size:20px; }
+.management-section-title { font-size:13px; color:var(--muted); font-weight:500; margin:24px 0 12px; }
+.management-empty { padding:48px 16px; text-align:center; border-block:1px solid var(--border); }
+.management-empty h2 { font-size:16px; font-weight:600; }
+.management-health-details { display:grid; gap:20px; margin:8px 0 24px; }
+.management-health-details .management-quota { gap:12px; }
+.management-health-details .management-meter { font-size:13px; }
+.management-health-details .management-bar { height:6px; }
+.management-advanced { border-top:1px solid var(--border); padding-top:16px; }
+.management-advanced>summary { cursor:pointer; font-size:13px; font-weight:600; margin-bottom:12px; }
+.management-detail-actions { display:flex; gap:8px; flex-wrap:wrap; margin:20px 0; }
+.management-context { display:flex; width:100%; height:auto; min-height:38px; margin:8px 0; text-align:left; justify-content:flex-start; white-space:normal; overflow-wrap:anywhere; line-height:1.5; padding:8px 12px; }
+.management-back { margin-bottom:18px; max-width:100%; height:auto; min-height:36px; white-space:normal; text-align:left; line-height:1.5; }
+.sheet-panel h3 { letter-spacing:0; }
+.sheet-panel .kv dd { overflow-wrap:anywhere; }
+.management-action-cell .row-actions-contextual { position:static; transform:none; opacity:1; }
+.management-action-cell .row-actions-contextual>.button { width:auto; min-width:32px; font-size:13px; }
+:where(button, a, summary, [tabindex]):focus-visible { outline:3px solid #89a5ff; outline-offset:3px; }
+@media (max-width:1280px) {
+  body[data-page="accounts"] .page { padding:22px 20px 36px; }
+  .management-group-money { display:none; }
+  .management-summary button { padding:16px; }
+  .management-summary small { grid-column:1/-1; padding:0; }
+  .management-viewbar { flex-wrap:wrap; gap:8px; }
+  #probe-runtime { max-width:100%; }
+}
+@media (max-width:768px) {
+  body[data-page="accounts"] .topbar { padding:16px; align-items:center; }
+  body[data-page="accounts"] .page { padding:16px 12px 32px; }
+  body[data-page="accounts"] .topbar h1 { font-size:21px; }
+  .management-summary { margin-bottom:18px; }
+  .management-tabs { gap:20px; }
+  .management-summary strong { font-size:25px; }
+  .management-group-head { flex-wrap:wrap; padding:12px 8px; gap:8px; }
+  .management-group-title { flex-basis:calc(100% - 96px); }
+  .management-group-head>.button:last-child { margin-left:auto; }
+  .management-group-name .management-badge { font-size:12px; }
+  .management-content .filter { flex:1 1 130px; max-width:100%; }
+  .management-content .search { flex-basis:100%; max-width:none; }
+}
+@media (max-width:540px) {
+  .management-summary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .management-summary button { padding:14px; }
+  .management-summary button:nth-child(2) { border-right:0; }
+  .management-summary button:nth-child(-n+2) { border-bottom:1px solid var(--border); }
+  body[data-page="accounts"] .topbar { flex-wrap:wrap; }
+  body[data-page="accounts"] .topbar-actions { width:100%; justify-content:flex-end; }
+  .management-viewbar { display:block; }
+  #probe-runtime { display:block; text-align:left; margin-top:10px; }
+  .management-tabs { gap:18px; justify-content:space-between; }
+  .management-tabs button { font-size:13px; }
+  .sheet-panel .kv { grid-template-columns:90px minmax(0,1fr); }
+}
+@media (pointer:coarse) {
+  .management-actions>.button, .management-expand, .management-tabs button, .management-detail-actions .button, .management-group-head>.button { min-height:44px; }
+  .management-actions>[data-menu-trigger], .management-expand { min-width:44px; }
+}
+@media (prefers-reduced-motion:reduce) { .management-list * { transition:none !important; } }

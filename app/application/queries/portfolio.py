@@ -67,6 +67,7 @@ def _account_card(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
     return {
         **item,
         **auth_status,
+        **({"needs_auth": item["health"]["needs_auth"], "auth_action": item.get("auth_action")} if item.get("health") else {}),
         "kind": kind,
         "has_access_token": bool(item.get("has_access_token")),
         "quota_risk": _quota_risk(quota),
@@ -82,17 +83,18 @@ def _account_card(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
 async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
     workspaces_payload = await workspaces_query(db)
     accounts_payload = await accounts_query(db, purpose="all", include_archived=True)
-    latest = await quota_service.latest_official_by_accounts(db, success_only=True)
-    latest_by_context = await quota_service.latest_official_by_contexts(db, success_only=True)
+    read_health = await quota_service.health_reader(db)
     accounts_by_id = {item["id"]: item for item in accounts_payload.get("items") or []}
     usage_by_context = await sub2api_usage_service.payloads_by_context(db)
 
     def usage_for(account_id: int, workspace_id: int | None) -> dict[str, Any] | None:
-        return usage_by_context.get((int(account_id), workspace_id)) or usage_by_context.get((int(account_id), None))
+        exact = usage_by_context.get((int(account_id), workspace_id))
+        if exact is not None:
+            return exact
+        if len(account_contexts.get(int(account_id), set())) <= 1:
+            return usage_by_context.get((int(account_id), None))
+        return None
     accounts_by_email = {normalize_email(item.get("email")): item for item in accounts_by_id.values()}
-    for item in accounts_by_id.values():
-        snap = latest.get(item["id"])
-        item["quota"] = _quota_payload(snap)
 
     memberships = await identity_repo.list_memberships(db)
     memberships_by_workspace: dict[int, list] = defaultdict(list)
@@ -100,6 +102,12 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         memberships_by_workspace[row.workspace_id].append(row)
     accounts_raw = {row.id: row for row in await identity_repo.list_accounts(db)}
     workspaces_raw = {row.id: row for row in await identity_repo.list_workspaces(db)}
+    account_contexts = defaultdict(set)
+    for row in memberships:
+        account_contexts[row.account_id].add(row.workspace_id)
+    for row in workspaces_raw.values():
+        if row.owner_account_id:
+            account_contexts[row.owner_account_id].add(row.id)
 
     groups = []
     assigned_ids: set[int] = set()
@@ -116,7 +124,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
             raw = accounts_raw.get(row.account_id)
             email = normalize_email((account or {}).get("email") or (raw.email if raw else ""))
             role = management_role(workspace_row, row.account_id)
-            is_owner = role == "mother" or (bool(owner_email) and email == owner_email)
+            is_owner = role == "mother"
             if account is None and raw is not None:
                 account = {
                     "id": raw.id,
@@ -124,7 +132,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                     "purpose": raw.local_purpose,
                     "auth": raw.auth_state,
                     "state": raw.operational_state,
-                    "quota": _quota_payload(latest_by_context.get((raw.id, ws_id)) or latest.get(raw.id)),
+                    **read_health(raw, ws_id),
                     "sub2api": "unbound",
                     "proxy": "set" if raw.proxy else "none",
                     "proxy_url": mask_proxy_url(raw.proxy) if raw.proxy else None,
@@ -133,8 +141,9 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 }
             if account is None:
                 continue
-            assigned_ids.add(account["id"])
-            quota = _quota_payload(latest_by_context.get((account["id"], ws_id)) or latest.get(account["id"]))
+            if row.membership_state != MEMBERSHIP_STATE_REMOVED:
+                assigned_ids.add(account["id"])
+            health = read_health(raw, ws_id)
             remote = next(
                 (
                     item
@@ -159,7 +168,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                     "membership_state": membership_state,
                     "management_role": "mother" if is_owner else "child",
                     "managed": True,
-                    "quota": quota,
+                    **health,
                     "usage": usage_for(account["id"], ws_id),
                     "joined_at": isoformat(row.joined_at),
                     "removed_at": isoformat(row.removed_at),
@@ -173,14 +182,11 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 history.append(card)
             elif membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}:
                 current_children.append(card)
-        if mother is None and owner_email:
-            owner_item = next(
-                (item for item in accounts_by_id.values() if normalize_email(item.get("email")) == owner_email),
-                None,
-            )
+        if mother is None and workspace.get("owner_account_id"):
+            owner_item = accounts_by_id.get(workspace["owner_account_id"])
             if owner_item is not None:
                 assigned_ids.add(owner_item["id"])
-                quota = _quota_payload(latest_by_context.get((owner_item["id"], ws_id)) or latest.get(owner_item["id"]))
+                health = read_health(accounts_raw[owner_item["id"]], ws_id)
                 mother = _account_card(
                     {
                         **owner_item,
@@ -189,7 +195,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                         "membership_state": MEMBERSHIP_STATE_JOINED,
                         "management_role": "mother",
                         "managed": True,
-                        "quota": quota,
+                        **health,
                         "usage": usage_for(owner_item["id"], ws_id),
                     },
                     kind="mother",
@@ -237,17 +243,22 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
             {
                 **workspace,
                 "mother": mother,
+                "owner_detection": {key: mother.get(key) for key in ("health", "latest_check", "last_success_quota", "quota")} if mother else None,
+                "owner_needs_auth": mother.get("needs_auth", False) if mother else workspace.get("owner_needs_auth", False),
+                "owner_auth_action": mother.get("auth_action") if mother else workspace.get("owner_auth_action"),
                 "current_children": current_children,
                 "history": history,
                 "unmanaged": unmanaged,
                 "invited": invited,
                 "members": members,
                 "counts": {
-                    "joined_people": joined_people if joined_people is not None else (1 if mother else 0) + len(current_children) + len(unmanaged),
+                    "joined_people": joined_people,
+                    "health_auth": sum(bool(item.get("health", {}).get("needs_auth")) for item in ([mother] if mother else []) + current_children),
+                    "health_retry": sum(item.get("health", {}).get("code") in {"rate_limited", "temporary_failure", "parse_error"} for item in ([mother] if mother else []) + current_children),
                     "managed_children": len(current_children),
                     "current_children": len(current_children),
                     "unmanaged": len(unmanaged),
-                    "invited": len(invited),
+                    "invited": len(invited) + sum(item.get("membership_state") == MEMBERSHIP_STATE_INVITED for item in current_children),
                     "history": len(history),
                 },
                 "quota_risk": "danger" if "danger" in risks else ("warning" if "warning" in risks else ("ok" if risks else None)),
@@ -263,9 +274,44 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         if not item.get("include_reason") and item.get("state") in HIDDEN_ACCOUNT_STATES:
             continue
         item["usage"] = usage_for(item["id"], None)
+        item.update(read_health(accounts_raw[item["id"]], None))
         unassigned.append(_account_card(item, kind="unassigned"))
 
+    unique = {}
+    for group in groups:
+        for item in group["members"]:
+            if not item.get("managed") or item.get("membership_state") == MEMBERSHIP_STATE_REMOVED:
+                continue
+            if item.get("state") in HIDDEN_ACCOUNT_STATES:
+                continue
+            entry = unique.setdefault(item["id"], {**item, "contexts": []})
+            entry["contexts"].append({**item, "workspace_name": group.get("display_name") or group.get("name")})
+    for item in unassigned:
+        if item.get("state") not in HIDDEN_ACCOUNT_STATES:
+            unique.setdefault(item["id"], {**item, "contexts": []})
+    for item in unique.values():
+        contexts = item["contexts"]
+        if len(contexts) > 1:
+            item["usage"] = sub2api_usage_service.aggregate([c.get("usage") for c in contexts])
+            item["queued"] = any(c.get("queued") for c in contexts)
+            item["next_check_at"] = min((c["next_check_at"] for c in contexts if c.get("next_check_at")), default=None)
+            needs = any(c["health"]["needs_auth"] for c in contexts)
+            bad = sum(c["health"]["code"] not in {"healthy", "quota_exhausted"} for c in contexts)
+            item.update(workspace_id=None, quota={}, last_success_quota=None, latest_check=None,
+                health={"code": "partial" if bad else "healthy", "label": f"{bad}/{len(contexts)} 个工作区待处理" if bad else "所有工作区检测正常",
+                        "severity": "warning" if bad else "success", "action": "details", "needs_auth": needs},
+                needs_auth=needs, auth_action="reauthorize" if needs else None)
+    account_items = list(unique.values())
+    def has_state(item, codes):
+        return any(c.get("health", {}).get("code") in codes for c in item.get("contexts") or [item])
+    summary = {"teams": len(groups), "accounts": len(account_items),
+               "needs_auth": sum(bool(item.get("needs_auth")) for item in account_items),
+               "retry": sum(has_state(item, {"rate_limited", "temporary_failure", "parse_error"}) for item in account_items),
+               "attention": sum(item["health"]["code"] not in {"healthy", "disabled"} for item in account_items)}
     return {
+        "accounts": account_items,
+        "summary": summary,
+        "probe_runtime": await quota_service.runtime_summary(db),
         "groups": groups,
         "unassigned": unassigned,
         "usage_available": any(item.get("available") for item in usage_by_context.values()),

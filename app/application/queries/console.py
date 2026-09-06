@@ -69,7 +69,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
         if item.get("account_id") and not item.get("href"):
             item["href"] = f"/accounts?account={item['account_id']}"
 
-    accounts_payload = await accounts_query(db, purpose="all", include_archived=False)
+    accounts_payload = await accounts(db, purpose="all", include_archived=False)
     for account in accounts_payload.get("items") or []:
         if account.get("needs_auth"):
             add_attention(
@@ -80,7 +80,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
                     "workspace": account.get("workspace"),
                     "workspace_id": account.get("workspace_id"),
                     "result": "warning",
-                    "message": f"{account.get('email') or '账号'}还没授权，读不了额度",
+                    "message": f"{account.get('email') or '账号'} · {(account.get('health') or {}).get('label', '待授权')}",
                     "action": "去授权",
                     "href": f"/accounts?account={account.get('id')}",
                 }
@@ -184,11 +184,17 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
 
 async def workspaces(db: AsyncSession) -> dict[str, Any]:
     payload = await workspaces_query(db)
-    latest_quota = await quota_service.latest_official_by_accounts(db, success_only=True)
+    read_health = await quota_service.health_reader(db)
+    from app.persistence.models.identity import Account
     for item in payload["items"]:
-        owner_snapshot = latest_quota.get(item.get("owner_account_id"))
-        item["owner_quota_updated_at"] = isoformat(owner_snapshot.queried_at) if owner_snapshot else None
-        item["owner_quota"] = _quota_payload(owner_snapshot)
+        owner = await db.get(Account, item["owner_account_id"]) if item.get("owner_account_id") else None
+        health = read_health(owner, item["id"]) if owner else None
+        item["owner_detection"] = health
+        item["owner_quota"] = health["quota"] if health else {}
+        item["owner_quota_updated_at"] = item["owner_quota"].get("queried_at")
+        if health:
+            item["owner_needs_auth"] = health["needs_auth"]
+            item["owner_auth_action"] = health["auth_action"]
         item.setdefault("quota", None)
         item.setdefault("quota_available", False)
         item.setdefault("automation", None)
@@ -197,20 +203,25 @@ async def workspaces(db: AsyncSession) -> dict[str, Any]:
 
 
 async def accounts(db: AsyncSession, purpose: str = "all", include_archived: bool = False) -> dict[str, Any]:
-    payload = await accounts_query(db, purpose=purpose, include_archived=include_archived)
-    latest = await quota_service.latest_official_by_accounts(db, success_only=True)
-    usage_by_context = await sub2api_usage_service.payloads_by_context(db)
+    payload = await accounts_query(db, purpose="all" if purpose in {"needs_auth", "quota_full"} else purpose, include_archived=include_archived)
+    portfolio = await portfolio_query(db)
+    by_id = {item["id"]: item for item in portfolio["accounts"]}
+    read_health = await quota_service.health_reader(db)
+    from app.persistence.models.identity import Account
     for item in payload["items"]:
-        snap = latest.get(item["id"])
-        item["quota_7d"] = _quota_label(snap)
-        item["quota"] = _quota_payload(snap)
-        item["usage"] = usage_by_context.get((item["id"], item.get("workspace_id"))) or usage_by_context.get((item["id"], None))
+        card = by_id.get(item["id"])
+        if card:
+            for key in ("health", "latest_check", "last_success_quota", "quota", "contexts", "needs_auth", "auth_action", "queued", "next_check_at", "credential_revision", "usage"):
+                item[key] = card.get(key)
+        else:
+            raw = await db.get(Account, item["id"])
+            item.update(read_health(raw, item.get("workspace_id")))
+        quota = item.get("quota") or {}
+        item["quota_7d"] = f"{quota['seven_day_used_percent']}%" if quota.get("seven_day_used_percent") is not None else None
+    if purpose == "needs_auth":
+        payload["items"] = [item for item in payload["items"] if item.get("needs_auth")]
     if purpose == "quota_full":
-        payload["items"] = [
-            item
-            for item in payload["items"]
-            if (item.get("quota") or {}).get("seven_day_used_percent") == 100
-        ]
+        payload["items"] = [item for item in payload["items"] if (item.get("quota") or {}).get("seven_day_used_percent") == 100]
     return payload
 
 

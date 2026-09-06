@@ -35,7 +35,8 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(settings.status_code, 200)
             self.assertEqual(settings.json()["secrets"]["sub2api_api_key"], "")
             self.assertEqual(settings.json()["secret_state"]["sub2api_api_key"], "missing")
-            self.assertTrue(settings.json()["automation"]["official_quota_probe"])
+            self.assertFalse(settings.json()["automation"]["official_quota_probe"])
+            self.assertFalse(settings.json()["automation"]["quota_runtime"]["effective_enabled"])
             self.assertEqual(settings.json()["secrets"]["hme_token"], "")
             saved = client.patch(
                 "/api/settings",

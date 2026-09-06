@@ -824,7 +824,7 @@
       operationTone(result),
       failed && result?.operation_id ? { label: "技术详情", onClick: () => openOperationById(result.operation_id) } : undefined,
     );
-    if (teamDetailState?.workspaceId) {
+    if (teamDetailState?.workspaceId && overlayState.context?.kind !== "account") {
       try {
         await reloadTeamDetails();
         return;
@@ -1027,9 +1027,10 @@
     cell(row, item.owner_email);
     cell(row, twoLine(summary.main, summary.sub), "num");
     cell(row, statusNode(healthCode, healthLabel));
-    const lastSync = cell(row, timeNode(item.last_sync), "row-action-host");
+    cell(row, timeNode(item.last_sync));
+    const lastSync = cell(row, "", "management-action-cell");
     const actions = document.createElement("div");
-    actions.className = "row-actions row-actions-contextual";
+    actions.className = "management-actions";
     const primary = workspacePrimaryAction(item);
     const primaryButton = document.createElement("button");
     primaryButton.type = "button";
@@ -1081,11 +1082,8 @@
   }
 
   function formatCost(value) {
-    if (value === null || value === undefined || value === "") return "—";
-    const num = Number(value);
-    if (!Number.isFinite(num)) return "—";
-    return `$${num.toFixed(4)}`;
-  }
+      return window.Team48Format.formatCost(value);
+    }
 
   function usageWindowLine(label, windowData) {
     const line = document.createElement("div");
@@ -1119,26 +1117,15 @@
   }
 
   function workspaceUsageSummary(usage) {
-    const windows = usage?.windows || {};
-    const entry = windows.seven_day || windows.today || windows.five_hour;
-    if (!entry?.last_success_at) return null;
-    const label = entry === windows.seven_day ? "7d" : (entry === windows.today ? "今日" : "5h");
-    const node = document.createElement("span");
-    node.className = "workspace-usage-summary tabular";
-    node.textContent = [
-      label,
-      entry.user_cost == null ? null : `U $${entry.user_cost}`,
-      entry.account_cost == null ? null : `A $${entry.account_cost}`,
-    ].filter(Boolean).join(" · ");
-    const coverage = entry.coverage;
-    node.title = [
-      entry.standard_cost == null ? null : `标准计费 S $${entry.standard_cost}`,
-      entry.billing_margin == null ? null : `计费毛差 Δ $${entry.billing_margin}`,
-      coverage ? `覆盖 ${coverage.synced}/${coverage.total} 个已管理账号` : null,
-      entry.stale ? "包含旧快照" : null,
-    ].filter(Boolean).join("；");
-    return node;
-  }
+      const entry = window.Team48Format.usageWindow(usage);
+      if (!entry) return null;
+      const node = document.createElement("span");
+      node.className = "workspace-usage-summary tabular";
+      node.textContent = `${entry.label} · 用户计费 ${formatCost(entry.user_cost)} · 成本 ${formatCost(entry.account_cost)}`;
+      if (entry.coverage) node.textContent += ` · 覆盖 ${entry.coverage.synced}/${entry.coverage.total}`;
+      if (entry.stale) node.textContent += " · 含旧快照";
+      return node;
+    }
 
   function quotaCell(item) {
     const wrap = document.createElement("div");
@@ -1638,10 +1625,12 @@ function hmeRow(item) {
         ])
       );
     }
+    if (kind === "account" && document.body.dataset.page === "accounts") window.Team48Accounts.decorateDetails(item, body, trigger);
     openOverlay("entity", { returnFocus: trigger, context: { kind, item }, initialFocus: "[data-close-sheet]" });
   }
 
   function closeSheet() {
+      if (document.body.dataset.page === "accounts") window.Team48Accounts.closeSelection();
       if (teamDetailState) teamDetailState = null;
       closeOverlay();
     }
@@ -1855,8 +1844,16 @@ function hmeRow(item) {
         id: "account.quota",
         label: "刷新额度",
         run: async (item) => {
-          const result = await postAction(`account-quota-${item.id}`, `/api/accounts/${item.id}/quota/probe`);
-          await handleActionResult(result, { successMessage: result.message || "额度刷新完成" });
+          if (item.contexts?.length > 1 && !item.workspace_id) {
+            openSheet("account", item, document.activeElement);
+            toast("请选择要检查的工作区", "warning");
+            return;
+          }
+          const query = item.workspace_id ? `?workspace_id=${encodeURIComponent(item.workspace_id)}` : "";
+          const stableKey = `quota:${item.id}:${item.workspace_id || 'none'}`;
+          const result = await postAction(stableKey, `/api/accounts/${item.id}/quota/probe${query}`);
+          await handleActionResult(result, { successMessage: "额度检查完成", stableKey, context: { entityType: "account", entityId: item.id, workspaceId: item.workspace_id } });
+          await bootPage();
         },
       },
       {
@@ -2601,6 +2598,7 @@ function hmeRow(item) {
       dangerBody.append(warning, deleteButton);
       danger.append(dangerSummary, dangerBody);
       body.append(danger);
+      if (document.body.dataset.page === "accounts") window.Team48Accounts.decorateTeam(workspace, body);
     }
 
     function openWorkspaceDetails(trigger, workspace) {
@@ -3157,6 +3155,9 @@ function hmeRow(item) {
     form.hme_service_token.value = "";
     form.cf_mail_admin_password.value = "";
     form.official_quota_probe.checked = Boolean(automation.official_quota_probe);
+    const quotaRuntime = automation.quota_runtime;
+    const quotaHint = document.getElementById("settings-automation-hint");
+    if (quotaRuntime && quotaHint) quotaHint.textContent = `${quotaRuntime.effective_enabled ? '已启用' : quotaRuntime.disabled_reason} · ${quotaRuntime.queued_count} 个排队 · 最近一小时 ${quotaRuntime.requests_last_hour} 次检查 · ${quotaRuntime.uncovered_contexts} 个未覆盖`;
     form.auto_reauth.checked = Boolean(automation.auto_reauth?.requested);
     const autoReauthHint = document.getElementById("auto-reauth-effective");
     if (autoReauthHint) {
@@ -3480,6 +3481,7 @@ function hmeRow(item) {
   }
 
   function renderPortfolio(payload) {
+    if (window.Team48Accounts) return window.Team48Accounts.render(payload);
     const root = document.getElementById("accounts-portfolio");
     const table = document.querySelector("#accounts-body")?.closest(".table-scroll");
     if (!root) return;
@@ -3603,7 +3605,7 @@ function hmeRow(item) {
       renderRows(
         "workspaces-body",
         items,
-        5,
+        6,
         workspaceRow,
         items.length === 0 && pageCache.items.length
           ? emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。")
@@ -3646,54 +3648,12 @@ function hmeRow(item) {
   }
 
   async function bootAccounts() {
-    const filter = document.querySelector("[data-filter='purpose']");
-    const params = currentQuery();
-    if (filter && params.get("purpose")) filter.value = params.get("purpose");
-    if (filter && !filter.dataset.bound) {
-      filter.dataset.bound = "1";
-      filter.addEventListener("change", () => {
-        const next = currentQuery();
-        if (filter.value && filter.value !== "all") next.set("purpose", filter.value);
-        else next.delete("purpose");
-        writeQuery(next);
-        bootPage();
+      return window.Team48Accounts.boot({
+        fetchEntity, postAction, startCurrentOperation, entityActions, menuButton,
+        openSheet, openWorkspaceDetails, openOverlay, openRegister, relativeTime, toast, friendlyError, showPageError,
+        cache: pageCache,
       });
     }
-    document.querySelectorAll("[data-accounts-view]").forEach((button) => {
-      if (button.dataset.bound) return;
-      button.dataset.bound = "1";
-      button.addEventListener("click", () => {
-        const next = currentQuery();
-        const view = button.dataset.accountsView || "portfolio";
-        if (view === "portfolio") next.delete("view");
-        else next.set("view", view);
-        writeQuery(next);
-        bootPage();
-      });
-    });
-    const view = params.get("view") || "portfolio";
-    document.querySelectorAll("[data-accounts-view]").forEach((button) => {
-      button.classList.toggle("is-active", button.dataset.accountsView === view);
-    });
-    bindSearch(document.getElementById("accounts-search"), "account");
-    if (view !== "flat") {
-      const payload = await fetchEntity("account-portfolio", "/api/accounts/portfolio");
-      pageCache.kind = "account";
-      pageCache.items = [];
-      pageCache.portfolio = payload;
-      renderPortfolio(payload);
-      return;
-    }
-    const purpose = filter?.value || params.get("purpose") || "all";
-    const includeArchived = purpose === "archived";
-    const payload = await fetchEntity(
-      "account-list",
-      `/api/accounts?purpose=${encodeURIComponent(purpose)}&include_archived=${includeArchived}`
-    );
-    pageCache.kind = "account";
-    pageCache.items = payload.items || [];
-    paintList("account");
-  }
 
   function operationsQueryFromUI() {
     const params = currentQuery();
@@ -4082,6 +4042,10 @@ function hmeRow(item) {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") stopPolling();
+    else {
+      resumeCurrentOperations();
+      if (document.body.dataset.page === "accounts") void bootPage();
+    }
   });
   document.querySelector("[data-close-proxy-edit]")?.addEventListener("click", closeProxyEdit);
   document.getElementById("proxy-edit-form")?.addEventListener("submit", submitProxyEdit);
@@ -4097,6 +4061,7 @@ function hmeRow(item) {
     closeOverlay,
     restoreOverlayContext,
     getActiveOverlay,
+    bootPage,
     presentTeamMember,
     workspacePrimaryAction,
   };

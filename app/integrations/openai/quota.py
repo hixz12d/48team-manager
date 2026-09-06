@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+
+from app.core.time import utcnow
+from app.domain.quota_health import LABELS, result_state, retry_after
 from typing import Any
 
 from app.domain.quota import (
@@ -56,12 +59,22 @@ class OpenAIQuotaClient:
                 error_message="quota transport returned non-dict",
                 queried_at=now,
             )
+        status = response.get("status_code")
+        status = status if isinstance(status, int) and 100 <= status <= 599 else None
         if not response.get("success"):
-            return QuotaResult(
+            result = QuotaResult(
                 success=False,
                 error_code=http_error_code(response.get("status_code"), response.get("error_code")),
-                error_message=str(response.get("error") or "official quota request failed")[:500],
+                http_status=status,
+                request_count=int(response.get("attempts") or 1),
+                retry_after_at=retry_after(response.get("retry_after"), now or utcnow()),
+                error_source="proxy" if status == 407 else "official_quota",
                 queried_at=now,
                 raw=response.get("data") if isinstance(response.get("data"), dict) else {},
             )
-        return parse_wham_usage(response.get("data") or {}, now=now)
+            result.error_message = LABELS[result_state(result)][0]
+            return result
+        result = parse_wham_usage(response.get("data") or {}, now=now)
+        result.http_status = status
+        result.request_count = int(response.get("attempts") or 1)
+        return result

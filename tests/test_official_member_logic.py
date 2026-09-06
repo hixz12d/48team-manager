@@ -629,5 +629,6 @@ class UIActionMatrixTests(unittest.TestCase):
             self.assertIn('label: "技术详情"', js)
             self.assertIn('id: "workspace.manage"', js)
             html = client.get("/workspaces").text
-            self.assertIn("席位", html)
+            self.assertIn("席位", js)
+            self.assertIn('data-management-view="teams"', html)
             self.assertNotIn("data-open-operations", html)

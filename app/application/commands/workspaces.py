@@ -296,6 +296,9 @@ async def register_workspace(
     await db.commit()
     await db.refresh(account)
     await db.refresh(workspace)
+    if access_token:
+        from app.application.quota import quota_service
+        await quota_service.enqueue(db, account, workspace.id, source="credential_update")
     return {
         "ok": True,
         "workspace": {

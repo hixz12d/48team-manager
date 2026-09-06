@@ -27,7 +27,7 @@ class OperationApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_detail_cancel_and_retry_whitelist(self):
         async with self.session_maker() as session:
-            safe = await operation_store.create(session, op_type="quota_probe", email="a@example.com", account_id=1)
+            safe = await operation_store.create(session, op_type="quota_probe", email="a@example.com", account_id=1, workspace_id=7)
             unsafe = await operation_store.create(session, op_type="rotate", email="b@example.com")
             await operation_store.mark_step(session, safe, "probe", state="running")
             await session.commit()
@@ -53,7 +53,8 @@ class OperationApiTests(unittest.IsolatedAsyncioTestCase):
             await operation_store.finish(session, bad, {"success": False, "error": "boom", "error_code": "x"})
             await session.commit()
 
-        async def _probe(db, account_id):
+        async def _probe(db, account_id, workspace_id=None):
+            self.assertEqual(workspace_id, 7)
             return {"ok": True, "operation_id": "retry1", "account_id": account_id}
 
         with patch("app.application.console_actions.account_quota_probe", new=_probe):

@@ -329,7 +329,7 @@ class ChatGPTClient:
                         data = response.json()
                     except Exception:
                         data = {}
-                    return {"success": True, "status_code": status_code, "data": data, "error": None}
+                    return {"success": True, "status_code": status_code, "data": data, "error": None, "attempts": attempt + 1}
                 error_msg = response.text
                 error_code = None
                 try:
@@ -355,6 +355,8 @@ class ChatGPTClient:
                         "status_code": status_code,
                         "error": error_msg,
                         "error_code": error_code,
+                        "retry_after": response.headers.get("Retry-After"),
+                        "attempts": attempt + 1,
                     }
                 last_error = error_msg
             except Exception as exc:  # noqa: BLE001
@@ -364,11 +366,12 @@ class ChatGPTClient:
                     if rebuilt is not None:
                         session = rebuilt
                     continue
-                return {"success": False, "status_code": 0, "error": last_error, "error_code": "transport"}
+                return {"success": False, "status_code": 0, "error": last_error, "error_code": "transport", "attempts": attempt + 1}
             else:
                 if attempt < self.MAX_RETRIES - 1:
                     continue
-                return {"success": False, "status_code": status_code, "error": last_error, "error_code": error_code}
+                return {"success": False, "status_code": status_code, "error": last_error, "error_code": error_code,
+                        "retry_after": response.headers.get("Retry-After"), "attempts": attempt + 1}
         return {"success": False, "status_code": 0, "error": "request failed", "error_code": "transport"}
 
     async def get_wham_usage(
@@ -423,6 +426,8 @@ class ChatGPTClient:
                 "refresh_token": data.get("refresh_token"),
                 "data": data,
             }
+        if primary.get("status_code") in {0, 403, 429} or int(primary.get("status_code") or 0) >= 500:
+            return primary
         fallback = await self._make_request(
             "POST",
             "https://auth0.openai.com/oauth/token",
@@ -455,7 +460,8 @@ class ChatGPTClient:
                 f"fallback={fallback.get('error')}"
             ),
             "status_code": fallback.get("status_code") or primary.get("status_code"),
-            "error_code": fallback.get("error_code") or primary.get("error_code") or "token_refresh_failed",
+            "error_code": fallback.get("error_code") or "token_refresh_failed",
+            "retry_after": fallback.get("retry_after"),
         }
 
     def create_oauth_authorize_url(

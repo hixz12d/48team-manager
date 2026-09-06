@@ -168,7 +168,7 @@ async def _dispatch_retry(db: AsyncSession, row) -> dict[str, Any]:
     if op_type == "auth_probe" and row.account_id:
         return await account_auth_probe(db, int(row.account_id))
     if op_type == "quota_probe" and row.account_id:
-        return await account_quota_probe(db, int(row.account_id))
+        return await account_quota_probe(db, int(row.account_id), workspace_id=row.workspace_id)
     if op_type in {"sub2api_sync", "sub2api_reconcile"} and row.account_id:
         from app.application.sub2api_publish import account_sub2api_reconcile
 
@@ -343,64 +343,33 @@ async def account_auth_probe(db: AsyncSession, account_id: int) -> dict[str, Any
     return {"ok": ok, "operation_id": operation.public_id, **payload}
 
 
+async def register_local_account(db: AsyncSession, *, email: str, purpose: str) -> dict[str, Any]:
+    from sqlalchemy.dialects.sqlite import insert
+    from app.domain.quota_health import present_context
+    created = await db.execute(insert(Account).values(email=email, local_purpose=purpose,
+        operational_state="available", auth_state="unknown").on_conflict_do_nothing(index_elements=["email"]).returning(Account.id))
+    account_id = created.scalar_one_or_none()
+    if account_id is None:
+        await db.rollback()
+        return {"ok": False, "error_code": "account_exists", "error": "账号已登记，请在列表中打开现有档案"}
+    await db.commit()
+    account = await db.get(Account, account_id)
+    return {"ok": True, "account": {"id": account.id, "email": account.email,
+        "purpose": account.local_purpose, "state": account.operational_state, "kind": "unassigned",
+        "has_access_token": False, **present_context(account)}}
+
+
 async def account_quota_probe(db: AsyncSession, account_id: int, workspace_id: int | None = None) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
         return {"ok": False, "error": "account not found", "error_code": "not_found"}
     from app.domain.identity.binding import AmbiguousWorkspaceContext
-
-    operation = await operation_store.create(
-        db,
-        op_type="quota_probe",
-        account_id=account.id,
-        email=account.email,
-        workspace_id=workspace_id,
-        input_payload={"account_id": account.id, "workspace_id": workspace_id},
-    )
     try:
-        snap = await quota_service.probe_account(db, account, workspace_id=workspace_id)
+        return await quota_service.enqueue(db, account, workspace_id)
     except AmbiguousWorkspaceContext as exc:
-        payload = {
-            "ok": False,
-            "success": False,
-            "status": "failed",
-            "error_code": "ambiguous_workspace_context",
-            "error": str(exc),
-            "message": "该账号属于多个 Workspace，请先选择要刷新额度的上下文",
-            "account_id": account.id,
-        }
-        await operation_store.finish(db, operation, payload)
-        await db.commit()
-        return payload
-    ok = bool(getattr(snap, "success", False))
-    error = getattr(snap, "error_message", None) or getattr(snap, "error", None)
-    error_code = getattr(snap, "error_code", None)
-    if not ok:
-        error = quota_probe_user_message(error_code, error)
-        if error_code == "missing_token" or "还没授权" in error:
-            error_code = error_code or "missing_token"
-    payload = {
-        "success": ok,
-        "status": "success" if ok else "failed",
-        "account_id": account.id,
-        "five_hour_used_percent": getattr(snap, "five_hour_used_percent", None),
-        "seven_day_used_percent": getattr(snap, "seven_day_used_percent", None),
-        "queried_at": isoformat(getattr(snap, "queried_at", None)),
-        "error": error,
-        "error_code": error_code,
-        "message": None if ok else error,
-    }
-    await operation_store.mark_step(
-        db,
-        operation,
-        "quota_probe",
-        state="success" if ok else "failed",
-        result=payload,
-        error_message=str(payload.get("error") or ""),
-    )
-    await operation_store.finish(db, operation, payload)
-    await db.commit()
-    return {"ok": ok, "operation_id": operation.public_id, **payload}
+        return {"ok": False, "error_code": exc.error_code, "error": str(exc)}
+    except ValueError as exc:
+        return {"ok": False, "error_code": "invalid_workspace_context", "error": str(exc)}
 
 
 async def account_reauth(db: AsyncSession, account_id: int) -> dict[str, Any]:

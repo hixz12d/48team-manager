@@ -57,7 +57,7 @@ See `.env.example` and `deploy.env.example`.
 
 Safe defaults:
 
-- official quota probe: on
+- official quota probe: off unless explicitly enabled in persisted settings or environment
 - auto reauth: off
 - auto rotate: off
 - force refill: always false unless explicitly enabled
@@ -65,6 +65,14 @@ Safe defaults:
 Secrets are stored hashed or encrypted. API responses return `secret_state` (`stored` / `missing`) and never echo raw secrets.
 
 `IDENTITY_GMAIL_POLICY` is a local policy (`owner_only` / `warn` / `unrestricted`). The identity engine itself never maps Gmail to owner.
+
+## Unified Management
+
+`/accounts` is the canonical account/team console. `/workspaces` redirects while preserving detail parameters. Team membership, local account purpose, official quota and Sub2API billing remain separate concepts.
+
+Quota checks return queued Operations. Latest check evidence and the last successful quota snapshot are displayed independently, scoped to account and workspace. A failed check never kicks a member, changes seats, pauses Sub2API, or changes local purpose.
+
+Implementation, configuration, verification and rollback notes: [docs/unified-management.md](docs/unified-management.md).
 
 ## Database
 
@@ -126,4 +134,5 @@ Do not run real kick, invite, or OpenAI billing/seat-changing actions without ap
 
 ```powershell
 python -m unittest discover -s tests -v
+node --test tests/management_ui.test.cjs
 ```

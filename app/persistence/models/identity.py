@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func, inspect
+from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.persistence.database import Base
 
@@ -62,6 +62,8 @@ class Account(Base):
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
+    __mapper_args__ = {"version_id_col": credential_revision, "version_id_generator": False}
+
     owned_workspaces: Mapped[list[Workspace]] = relationship("Workspace", back_populates="owner_account")
     memberships: Mapped[list[WorkspaceMembership]] = relationship("WorkspaceMembership", back_populates="account")
     external_bindings: Mapped[list[ExternalBinding]] = relationship("ExternalBinding", back_populates="account")
@@ -76,6 +78,22 @@ class Account(Base):
         Index("idx_accounts_next_reauth", "next_reauth_at"),
         Index("idx_accounts_auth_state", "auth_state"),
     )
+
+
+@event.listens_for(Session, "before_flush")
+def advance_credential_revision(session, flush_context, instances):
+    # Covers OAuth, refresh, and direct import/upsert credential replacements.
+    for account in session.dirty:
+        if not isinstance(account, Account):
+            continue
+        state = inspect(account)
+        if any(state.attrs[name].history.has_changes() for name in (
+            "access_token_encrypted", "refresh_token_encrypted", "session_token_encrypted", "id_token_encrypted",
+        )):
+            if not state.attrs.credential_revision.history.has_changes():
+                account.credential_revision = int(account.credential_revision or 1) + 1
+            from app.core.time import utcnow
+            account.next_quota_probe_at = utcnow()
 
 
 class Workspace(Base):

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import asyncio
+import uuid
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update, or_
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import automation_gate
@@ -15,6 +18,8 @@ from app.application.settings import as_bool, get_setting_value
 from app.core.crypto import token_cipher
 from app.core.jwt import jwt_parser
 from app.core.time import utcnow
+from app.domain.quota_health import retry_after
+from app.persistence.models.quota import CredentialLease
 from app.domain.automation import (
     DEFAULT_AUTH_PROBE_ENABLED,
     DEFAULT_AUTH_PROBE_INTERVAL_MINUTES,
@@ -87,6 +92,8 @@ class AuthService:
         return remaining <= window_hours * 3600
 
     async def apply_tokens(self, account: Account, payload: dict[str, Any]) -> None:
+        if any(payload.get(key) for key in ("access_token", "refresh_token", "id_token", "session_token")):
+            account.credential_revision = int(account.credential_revision or 1) + 1
         if payload.get("access_token"):
             account.access_token_encrypted = encrypt_secret(payload.get("access_token"))
         if payload.get("refresh_token"):
@@ -100,21 +107,61 @@ class AuthService:
         set_auth_state(account, "healthy")
 
     async def refresh_account(
+        self, db: AsyncSession, account: Account, *, client_id: str = "", now: datetime | None = None, schedule_checks: bool = True,
+    ) -> dict[str, Any]:
+        stamp = now or utcnow()
+        account_id = account.id
+        ticket = uuid.uuid4().hex
+        await db.execute(insert(CredentialLease).values(account_id=account_id).on_conflict_do_nothing())
+        claimed = await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(
+            CredentialLease.account_id == account_id,
+            or_(CredentialLease.expires_at.is_(None), CredentialLease.expires_at <= stamp),
+            or_(CredentialLease.next_attempt_at.is_(None), CredentialLease.next_attempt_at <= stamp),
+        ).values(token=ticket, expires_at=stamp + timedelta(seconds=180)))
+        await db.commit()
+        if claimed.rowcount != 1:
+            return {"success": False, "error_code": "refresh_deferred", "allow_oauth": False}
+        try:
+            await db.refresh(account)
+            return await self._refresh_claimed(db, account, client_id=client_id, now=now, schedule_checks=schedule_checks)
+        finally:
+            await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(CredentialLease.account_id == account_id,
+                CredentialLease.token == ticket).values(token=None, expires_at=None))
+            await db.commit()
+
+    async def _refresh_claimed(
         self,
         db: AsyncSession,
         account: Account,
         *,
         client_id: str = "",
         now: datetime | None = None,
+        schedule_checks: bool = True,
     ) -> dict[str, Any]:
         stamp = now or utcnow()
         refresh = decrypt_secret(account.refresh_token_encrypted)
         cid = str(account.client_id or client_id or DEFAULT_OAUTH_CLIENT_ID).strip() or DEFAULT_OAUTH_CLIENT_ID
+        if not refresh and account.refresh_token_encrypted:
+            await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(
+                CredentialLease.account_id == account.id).values(next_attempt_at=stamp + timedelta(minutes=15)))
+            return {"success": False, "error_code": "credential_error", "allow_oauth": False, "error": "本地刷新凭证无法解密"}
         if not refresh:
             set_auth_state(account, "oauth_required")
             return {"success": False, "error_code": "missing_refresh_token", "error": "refresh token missing"}
-        set_auth_state(account, "refreshing")
-        result = await self.client.refresh_access_token(refresh, cid, db, identifier=account.email or "default")
+        revision = int(account.credential_revision or 1)
+        identifier = account.email or "default"
+        await db.commit()
+        try:
+            result = await asyncio.wait_for(self.client.refresh_access_token(refresh, cid, db, identifier=identifier), timeout=90)
+        except Exception:
+            result = {"success": False, "error_code": "transport"}
+        await db.commit()
+        # Acquire a short write transaction before comparing and storing credentials.
+        guard = await db.execute(update(Account).where(Account.id == account.id,
+            Account.credential_revision == revision).values(credential_revision=revision))
+        if guard.rowcount != 1:
+            await db.refresh(account)
+            return {"success": False, "error_code": "credential_revision_conflict", "allow_oauth": False}
         if result.get("success") and result.get("access_token"):
             new_email = jwt_parser.extract_email(str(result.get("access_token") or ""))
             if new_email and new_email != str(account.email or "").strip().lower():
@@ -125,16 +172,27 @@ class AuthService:
                     "error": f"refreshed token email {new_email} != {account.email}",
                 }
             await self.apply_tokens(account, result)
+            await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(CredentialLease.account_id == account.id).values(next_attempt_at=None))
             account.updated_at = stamp
+            await db.commit()
+            from app.application.quota import quota_service
+            if schedule_checks:
+                await quota_service.enqueue_after_credentials(db, account)
             return {"success": True, "error_code": "", "refreshed": True}
         code = str(result.get("error_code") or "token_refresh_failed")
-        if http_401_is_not_ban(code, result.get("status_code")):
-            code = "token_refresh_failed"
+        status = result.get("status_code")
+        rejected = status == 401 or code in {"invalid_grant", "invalid_token", "token_revoked", "token_invalidated"}
+        if not rejected:
+            retry_at = retry_after(result.get("retry_after"), stamp) or stamp + timedelta(minutes=15)
+            await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(CredentialLease.account_id == account.id).values(next_attempt_at=retry_at))
+            return {"success": False, "error_code": code, "error": "令牌刷新暂时失败，等待重试", "allow_oauth": False}
         set_auth_state(account, "oauth_required")
+        if http_401_is_not_ban(code, status):
+            code = "token_refresh_failed"
         return {
             "success": False,
             "error_code": code,
-            "error": str(result.get("error") or "token refresh failed"),
+            "error": "当前刷新凭证被拒绝",
             "allow_oauth": owner_refresh_allows_oauth(code),
         }
 
@@ -167,7 +225,7 @@ class AuthService:
             if str(account.operational_state or "") in SKIP_OPERATIONAL_STATES:
                 stats["skipped"] += 1
                 continue
-            if str(account.auth_state or "") in {"deactivated", "manual_required"}:
+            if str(account.auth_state or "") in {"deactivated", "manual_required", "oauth_required", "phone_required"}:
                 stats["skipped"] += 1
                 continue
             if not self.access_token_due(account, now=stamp, window_hours=int(cfg["window_hours"])):
@@ -179,7 +237,15 @@ class AuthService:
                 set_auth_state(account, "manual_required")
                 stats["failed"] += 1
                 continue
+            lease = await db.get(CredentialLease, account.id)
+            from app.core.time import as_utc
+            if lease and lease.next_attempt_at and as_utc(lease.next_attempt_at) > as_utc(stamp):
+                stats["skipped"] += 1
+                continue
             result = await self.refresh_account(db, account, client_id=str(cfg.get("client_id") or ""), now=stamp)
+            lease = await db.get(CredentialLease, account.id)
+            if lease and not lease.next_attempt_at:
+                lease.next_attempt_at = stamp + timedelta(minutes=int(cfg["interval_minutes"]))
             if result.get("success"):
                 stats["refreshed"] += 1
             elif result.get("error_code") in HTTP_401_CODES | {"token_refresh_failed", "missing_refresh_token"}:

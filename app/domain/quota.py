@@ -50,6 +50,13 @@ class QuotaResult:
     error_message: str | None = None
     queried_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    request_count: int = 0
+    http_status: int | None = None
+    error_source: str = "official_quota"
+    retry_after_at: datetime | None = None
+    credential_revision: int | None = None
+    check_id: str | None = None
+    started_at: datetime | None = None
 
     def can_drive_automation(self) -> bool:
         return self.success and self.source == SOURCE_OFFICIAL and self.seven_day_used_percent is not None
@@ -72,7 +79,7 @@ def clamp_percent(value: Any) -> int | None:
         return None
     try:
         return max(0, min(100, int(round(float(value)))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -86,7 +93,10 @@ def reset_at_from_window(window: dict[str, Any], now: datetime) -> datetime | No
         else:
             if ts > 10**12:
                 ts //= 1000
-            return datetime.fromtimestamp(ts, tz=timezone.utc)
+            try:
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                return None
     after = window.get("reset_after_seconds")
     if after in (None, ""):
         return None
@@ -135,6 +145,8 @@ def parse_wham_usage(payload: Any, *, now: datetime | None = None) -> QuotaResul
             queried_at=queried_at,
             raw=data,
         )
+    if all(clamp_percent((window or {}).get("used_percent")) is None for window in (five, seven)):
+        return QuotaResult(success=False, error_code="parse_error", queried_at=queried_at)
     return QuotaResult(
         success=True,
         source=SOURCE_OFFICIAL,
@@ -192,10 +204,8 @@ def success_next_quota_probe_at(
 ) -> datetime:
     import random
 
-    slot = int(slot_minute) % 60
-    next_slot = now.replace(minute=slot, second=0, microsecond=0)
-    if next_slot <= now:
-        next_slot += timedelta(hours=1)
+    del slot_minute
+    next_slot = now + timedelta(minutes=60)
     spread = max(0, int(jitter_seconds))
     dice = rng or random
     jitter = dice.randint(0, spread) if spread else 0
@@ -250,7 +260,7 @@ def quota_probe_user_message(error_code: Any = None, error_message: Any = None) 
     ):
         return "官方登录已失效，点「授权」用这个邮箱重新登录后再读额度。"
     if code == "http_403":
-        return "官方拒绝读取额度，点「授权」重新登录后再试。"
+        return "官方拒绝读取额度，请核对工作区和访问权限。"
     if code == "http_429":
         return "官方额度接口太频繁，稍后再试。"
     if code == "http_5xx":

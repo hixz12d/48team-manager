@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/components.css">
+  <link rel="stylesheet" href="/static/css/management.css">
   <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
 </head>
 <body data-page="{{ page }}">
@@ -21,8 +22,8 @@
       </div>
       <nav class="nav">
         <a href="/" class="nav-link{% if page == 'overview' %} is-active{% endif %}">总览</a>
-        <a href="/workspaces" class="nav-link{% if page == 'workspaces' %} is-active{% endif %}">团队</a>
-        <a href="/accounts" class="nav-link{% if page == 'accounts' %} is-active{% endif %}">账号</a>
+        <a href="/accounts" class="nav-link{% if page == 'accounts' %} is-active{% endif %}">账号与团队</a>
+        <a href="/operations" class="nav-link{% if page == 'operations' %} is-active{% endif %}">任务记录</a>
         <p class="nav-label">资源</p>
         <a href="/resources/phones" class="nav-link{% if page == 'phones' %} is-active{% endif %}">手机号</a>
         <a href="/resources/hme" class="nav-link{% if page == 'hme' %} is-active{% endif %}">HME</a>
@@ -42,7 +43,10 @@
           <p class="muted" id="page-subtitle">{{ subtitle }}</p>
         </div>
         <div class="topbar-actions">
-          {% if page == 'workspaces' %}
+          {% if page == 'accounts' %}
+          <button type="button" class="button" id="check-all-accounts"><span aria-hidden="true">↻</span> 立即检查</button>
+          <button type="button" class="button primary" data-open-register><span aria-hidden="true">＋</span> 登记团队</button>
+          {% elif page == 'workspaces' %}
           <button type="button" class="button primary" data-open-register>登记团队</button>
           {% elif page == 'hme' %}
           <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
@@ -92,14 +96,30 @@
                   <th scope="col" class="num">官方 / 本地</th>
                   <th scope="col">健康</th>
                   <th scope="col">最近同步</th>
+                  <th scope="col">操作</th>
                 </tr>
               </thead>
-              <tbody id="workspaces-body"><tr><td colspan="5" class="muted">正在加载工作区…</td></tr></tbody>
+              <tbody id="workspaces-body"><tr><td colspan="6" class="muted">正在加载工作区…</td></tr></tbody>
             </table>
           </div>
         </section>
         {% elif page == 'accounts' %}
-        <section class="panel table-shell">
+        <section class="management-summary" aria-label="账号与团队摘要">
+          <button type="button" data-management-view="teams"><span>团队</span><strong id="summary-teams">—</strong><small>已登记团队</small></button>
+          <button type="button" data-management-view="all"><span>已管理账号</span><strong id="summary-accounts">—</strong><small>跨团队去重</small></button>
+          <button type="button" data-management-health="auth" class="is-error"><span>需要授权</span><strong id="summary-needs_auth">—</strong><small>在用账号</small></button>
+          <button type="button" data-management-health="retry" class="is-warning"><span>等待重试</span><strong id="summary-retry">—</strong><small>限流或暂时失败</small></button>
+        </section>
+        <div class="management-viewbar">
+          <div class="management-tabs" role="group" aria-label="管理视图">
+            <button type="button" data-management-view="teams" aria-pressed="true">按团队</button>
+            <button type="button" data-management-view="all" aria-pressed="false">全部账号</button>
+            <button type="button" data-management-view="unassigned" aria-pressed="false">未分配</button>
+            <button type="button" data-management-view="attention" aria-pressed="false">待处理</button>
+          </div>
+          <span id="probe-runtime" class="muted" role="status"></span>
+        </div>
+        <section class="management-content">
           <div class="toolbar">
             <input class="search" id="accounts-search" placeholder="搜邮箱、团队、Workspace ID、远端 ID" data-entity="account" autocomplete="off">
             <select class="filter" data-filter="purpose">
@@ -112,13 +132,17 @@
               <option value="conflict">有冲突</option>
               <option value="archived">已归档</option>
             </select>
-            <div class="view-toggle" role="group" aria-label="账号视图">
-              <button type="button" class="button ghost is-active" data-accounts-view="portfolio">按工作区</button>
-              <button type="button" class="button ghost" data-accounts-view="flat">平铺排障</button>
-            </div>
+            <select class="filter" id="management-health" aria-label="检测状态">
+              <option value="all">全部检测状态</option><option value="auth">需要授权</option>
+              <option value="401">仅实际 401</option><option value="retry">等待重试</option>
+              <option value="healthy">检测正常</option><option value="forbidden">访问被拒绝</option>
+              <option value="credential_error">本地凭证异常</option><option value="pending">待验证</option>
+            </select>
+            <select class="filter" id="management-workspace" aria-label="团队"><option value="">全部团队</option></select>
+            <button type="button" class="button" data-action-page="workspace-sync-all" title="同步全部团队的官方成员"><span aria-hidden="true">↻</span> 同步成员</button>
             <span class="toolbar-count muted" id="accounts-count"></span>
           </div>
-          <div id="accounts-portfolio" class="portfolio-shell" hidden></div>
+          <div id="accounts-portfolio" class="management-list" aria-live="polite"></div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
@@ -360,7 +384,7 @@
                   <label class="setting-row">
                     <span>
                       <strong>官方额度探测</strong>
-                      <span class="hint">定时读取账号的官方 5h / 7d 用量。默认开启。</span>
+                      <span class="hint">目标约每 60 分钟检查；未启用时仅执行手动任务。</span>
                       <span class="hint" id="settings-automation-hint">尚无执行记录。</span>
                     </span>
                     <input type="checkbox" name="official_quota_probe">
@@ -558,6 +582,8 @@
     <input id="command-input" placeholder="去哪…">
     <ul id="command-list"></ul>
   </dialog>
+  <script src="/static/js/formatters.js"></script>
+  <script src="/static/js/accounts-view.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

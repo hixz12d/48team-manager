@@ -21,6 +21,7 @@ from app.application.sub2api_usage import sub2api_usage_service
 from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account
 from app.web.deps import require_admin
+from app.web.schemas.accounts import RegisterAccountRequest
 from app.web.schemas.resources import (
     AccountProxyPatch,
     AccountAutomationPatch,
@@ -332,9 +333,26 @@ def build_api_router(get_db) -> APIRouter:
     ) -> dict:
         return await console_query.accounts(db, purpose=purpose, include_archived=include_archived)
 
+    @router.post("/accounts", status_code=201)
+    async def register_account(payload: RegisterAccountRequest, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        result = await console_actions.register_local_account(db, email=payload.email, purpose=payload.purpose)
+        if not result["ok"]:
+            raise HTTPException(status_code=409, detail=_error_detail(result, "account exists"))
+        return result
+
     @router.get("/accounts/portfolio")
     async def accounts_portfolio(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.portfolio(db)
+
+    @router.get("/quota/runtime")
+    async def quota_runtime(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.quota import quota_service
+        return await quota_service.runtime_summary(db)
+
+    @router.post("/accounts/probe-all", status_code=202)
+    async def quota_probe_all(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.quota import quota_service
+        return await quota_service.enqueue_all(db)
 
     @router.post("/accounts/{account_id}/refresh")
     async def refresh_account(
@@ -358,7 +376,7 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
-    @router.post("/accounts/{account_id}/quota/probe")
+    @router.post("/accounts/{account_id}/quota/probe", status_code=202)
     async def probe_account_quota(
         account_id: int,
         _: dict = Depends(require_admin),
@@ -368,11 +386,11 @@ def build_api_router(get_db) -> APIRouter:
         result = await console_actions.account_quota_probe(db, account_id, workspace_id=workspace_id)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
-        if result.get("error_code") == "ambiguous_workspace_context":
+        if result.get("error_code") in {"ambiguous_workspace_context", "invalid_workspace_context", "account_disabled"}:
             raise HTTPException(status_code=400, detail=result.get("error") or "ambiguous workspace")
         return _accepted(result)
 
-    @router.post("/workspaces/{workspace_id}/accounts/{account_id}/quota/probe")
+    @router.post("/workspaces/{workspace_id}/accounts/{account_id}/quota/probe", status_code=202)
     async def probe_workspace_account_quota(
         workspace_id: int,
         account_id: int,
@@ -382,6 +400,8 @@ def build_api_router(get_db) -> APIRouter:
         result = await console_actions.account_quota_probe(db, account_id, workspace_id=workspace_id)
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=_error_detail(result, "quota probe rejected"))
         return _accepted(result)
 
     @router.get("/accounts/{account_id}/reauth/readiness")

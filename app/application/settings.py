@@ -73,10 +73,9 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     from app.application.reauth import reauth_service
 
     reauth_cfg = await reauth_service.load_settings(db)
-    stored_quota = as_bool(
-        await get_setting_value(db, "official_quota_probe_enabled", str(bool(env.official_quota_probe_enabled)).lower()),
-        bool(env.official_quota_probe_enabled),
-    )
+    from app.application.quota import quota_service
+    quota_runtime = await quota_service.runtime_summary(db)
+    stored_quota = quota_runtime["effective_enabled"]
     mail_password = await get_setting_value(db, CF_SETTING_ADMIN_PASSWORD, "") or ""
     mail_configured = bool(mail_password)
     secret_state = {
@@ -102,6 +101,7 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
         },
         "automation": {
             "official_quota_probe": stored_quota,
+            "quota_runtime": quota_runtime,
             "auto_reauth": reauth_cfg,
         },
         "resources": {

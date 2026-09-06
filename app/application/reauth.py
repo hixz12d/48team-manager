@@ -377,11 +377,12 @@ class ReauthService:
                 "error_code": "token_identity_mismatch",
             }
         await auth_service.apply_tokens(account, exchanged)
-        account.credential_revision = int(account.credential_revision or 1) + 1
         await self.mark_outcome(db, account, success=True)
         await oauth_session_store.finish(db, stored, success=True)
         oauth_sessions.pop_session(ticket)
         await db.commit()
+        from app.application.quota import quota_service
+        await quota_service.enqueue_after_credentials(db, account)
         token_sync = await push_refreshed_tokens_to_bound_sub2api(db, account)
         await db.commit()
         return {
@@ -516,11 +517,12 @@ class ReauthService:
             await db.commit()
             return {"success": False, "error_code": code, "status": status}
         await auth_service.apply_tokens(account, exchanged)
-        account.credential_revision = int(account.credential_revision or 1) + 1
         await oauth_session_store.finish(db, stored, success=True)
         oauth_sessions.pop_session(ticket)
         await self.mark_outcome(db, account, success=True)
         await db.commit()
+        from app.application.quota import quota_service
+        await quota_service.enqueue_after_credentials(db, account)
         token_sync = await push_refreshed_tokens_to_bound_sub2api(db, account, operation=row)
         await operation_store.finish(
             db,

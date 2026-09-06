@@ -20,9 +20,9 @@ PAGES = {
         "subtitle": "登记已有 ChatGPT Team 母号，查看席位、健康和最近同步。",
     },
     "accounts": {
-        "title": "账号",
+        "title": "账号与团队",
         "path": "/accounts",
-        "subtitle": "默认按 Workspace 分组查看母号、当前子号和历史成员；可切回平铺排障。",
+        "subtitle": "",
     },
     "operations": {
         "title": "任务",
@@ -52,8 +52,7 @@ PAGES = {
 }
 NAV = (
     ("overview", "总览"),
-    ("workspaces", "团队"),
-    ("accounts", "账号"),
+    ("accounts", "账号与团队"),
     ("operations", "任务"),
     ("phones", "手机号"),
     ("hme", "HME"),
@@ -97,7 +96,12 @@ def build_pages_router(templates: Jinja2Templates, version: str) -> APIRouter:
 
     @router.get("/workspaces", response_class=HTMLResponse)
     async def workspaces(request: Request, user: dict = Depends(require_admin)):
-        return render(request, "workspaces", user)
+        from urllib.parse import urlencode
+        query = dict(request.query_params)
+        if "id" in query and "workspace" not in query:
+            query["workspace"] = query.pop("id")
+        query.setdefault("view", "teams")
+        return RedirectResponse(url="/accounts?" + urlencode(query), status_code=303)
 
     @router.get("/accounts", response_class=HTMLResponse)
     async def accounts(request: Request, user: dict = Depends(require_admin)):

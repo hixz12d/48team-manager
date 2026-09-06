@@ -59,7 +59,7 @@ class ConsoleActionsContractTests(unittest.TestCase):
             self.assertIn("数据源 Sub2API", proxies)
             self.assertIn("data-action-page=\"workspace-sync-all\"", workspaces)
             self.assertIn("data-action-page=\"hme-reconcile\"", hme)
-            self.assertNotIn("data-open-register", client.get("/accounts").text)
+            self.assertIn("data-open-register", client.get("/accounts").text)
 
     def test_phone_import_and_proxy_write_boundary(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:

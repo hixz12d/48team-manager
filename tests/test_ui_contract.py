@@ -66,7 +66,7 @@ class UIContractTests(unittest.TestCase):
                 for needle in FORBIDDEN_UI:
                     self.assertNotIn(needle, body, f"{path} still mentions {needle}")
                 self.assertNotIn('id="operations-drawer"', body)
-                self.assertNotIn('href="/operations" class="nav-link', body)
+                self.assertIn('href="/operations" class="nav-link', body)
                 self.assertNotIn("data-open-operations", body)
                 self.assertIn("hidden", body)
 
@@ -75,7 +75,7 @@ class UIContractTests(unittest.TestCase):
             self.assertNotIn(">Archive<", accounts)
             self.assertNotIn("danger-archive", accounts)
             self.assertIn('id="register-form"', accounts)  # shared overlay still present
-            self.assertNotIn("data-open-register", accounts)
+            self.assertIn("data-open-register", accounts)
             self.assertIn('id="reauth-sheet"', accounts)
             self.assertIn("reauth-authorize-url", accounts)
             workspaces = client.get("/workspaces").text
@@ -106,13 +106,13 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("overview-layout", overview)
             self.assertIn("overview-health", overview)
             accounts = client.get("/accounts").text
-            self.assertIn('data-accounts-view="portfolio"', accounts)
+            self.assertIn('data-management-view="teams"', accounts)
             self.assertIn('id="accounts-portfolio"', accounts)
             js = client.get("/static/js/app.js").text
             self.assertIn('"account-owner": "所有者"', js)
             self.assertNotIn('"account-owner": "成员"', js)
             self.assertIn("quota-meter", js)
-            self.assertIn("/api/accounts/portfolio", js)
+            self.assertIn("/api/accounts/portfolio", client.get("/static/js/accounts-view.js").text)
             self.assertNotIn("/api/workspaces/${item.id}/sync-name", js)
             self.assertNotIn("同步官方名称", js)
             self.assertIn("is-collapsed", js)
