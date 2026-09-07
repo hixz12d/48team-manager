@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as DBAsyncSession
 
 from app.core.config import load_settings
 from app.core.proxy import build_curl_cffi_proxies, mask_proxy_url, normalize_proxy_url
-from app.integrations.openai.member_adapter import extract_item_list, extract_reported_total, extract_seat_metadata, invite_role_payload
+from app.integrations.openai.member_adapter import extract_item_list, extract_reported_total, extract_seat_metadata, invite_role_payload, parse_invite_seat_type
 from app.persistence.models.identity import Account
 
 logger = logging.getLogger(__name__)
@@ -628,6 +628,7 @@ class ChatGPTClient:
         db_session: DBAsyncSession | None,
         identifier: str = "default",
         role: str = "owner",
+        seat_type: str = "premium",
     ) -> dict[str, Any]:
         url = f"{self.BASE_URL}/accounts/{account_id}/invites"
         headers = {
@@ -636,13 +637,19 @@ class ChatGPTClient:
             "chatgpt-account-id": account_id,
         }
         payload_role = invite_role_payload(role)
+        payload_seat = parse_invite_seat_type(seat_type)
         return await self._make_request(
             "POST",
             url,
             headers,
             db_session=db_session,
             identifier=identifier,
-            json_data={"email_addresses": [email], "role": payload_role, "resend_emails": True},
+            json_data={
+                "email_addresses": [email],
+                "role": payload_role,
+                "seat_type": payload_seat,
+                "resend_emails": True,
+            },
         )
 
     async def delete_member(

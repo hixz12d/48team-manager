@@ -659,6 +659,7 @@ async def start_workspace_replenish(
     workspace_id: int,
     *,
     role: str = "owner",
+    phone_line: str = "",
 ) -> dict[str, Any]:
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
@@ -667,10 +668,12 @@ async def start_workspace_replenish(
         db,
         op_type="replenish",
         workspace_id=workspace.id,
+        phone=str(phone_line or "").strip(),
         input_payload={
             "workspace_id": workspace.id,
             "requested_role": parse_invite_role(role),
             "mode": "replenish_one",
+            "phone_line": phone_line,
         },
     )
     await db.commit()
@@ -679,6 +682,7 @@ async def start_workspace_replenish(
         workspace_id=workspace.id,
         job_id=operation.public_id,
         role=role,
+        phone_line=phone_line,
         in_test=False,
     )
     await operation_store.finish(db, operation, result)

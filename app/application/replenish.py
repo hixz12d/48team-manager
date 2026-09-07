@@ -96,6 +96,7 @@ class ReplenishService:
         workspace_id: int,
         job_id: str | None = None,
         role: str = "owner",
+        phone_line: str = "",
         in_test: bool = False,
     ) -> dict[str, Any]:
         workspace = await self._load_workspace(db, workspace_id)
@@ -147,6 +148,7 @@ class ReplenishService:
             db,
             workspace_id=workspace.id,
             email_line="",
+            phone_line=phone_line,
             reuse_existing=True,
             job_id=job_id,
             in_test=in_test,

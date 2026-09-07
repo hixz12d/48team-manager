@@ -30,6 +30,9 @@ INVITE_ROLE_PAYLOAD = {
     DOMAIN_ROLE_OWNER: "account-owner",
     DOMAIN_ROLE_MEMBER: "standard-user",
 }
+INVITE_SEAT_TYPE_PREMIUM = "premium"
+INVITE_SEAT_TYPE_STANDARD = "default"
+DEFAULT_INVITE_SEAT_TYPE = INVITE_SEAT_TYPE_PREMIUM
 JOINED_STATES = {"joined", "active", "member", "accepted"}
 INVITED_STATES = {"invited", "pending", "invite", "invitation"}
 
@@ -276,6 +279,15 @@ def parse_invite_role(value: str | None, *, default: str = DOMAIN_ROLE_OWNER) ->
 
 def invite_role_payload(role: str | None, *, default: str = DOMAIN_ROLE_OWNER) -> str:
     return INVITE_ROLE_PAYLOAD[parse_invite_role(role, default=default)]
+
+
+def parse_invite_seat_type(value: str | None, *, default: str = DEFAULT_INVITE_SEAT_TYPE) -> str:
+    raw = str(value or default or "").strip().lower()
+    if raw in {"premium", "premium-user", "premium_user"}:
+        return INVITE_SEAT_TYPE_PREMIUM
+    if raw in {"default", "standard", "standard-user", "member"}:
+        return INVITE_SEAT_TYPE_STANDARD
+    raise ValueError("invite seat type must be premium or standard")
 
 
 def official_roles_equivalent(left: str | None, right: str | None) -> bool:

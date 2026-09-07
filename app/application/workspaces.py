@@ -473,6 +473,7 @@ class WorkspaceService:
         workspace_id: int,
         email: str,
         role: str = "owner",
+        seat_type: str = "premium",
     ) -> dict[str, Any]:
         workspace = await self.load_workspace(db, workspace_id)
         if workspace is None:
@@ -494,6 +495,7 @@ class WorkspaceService:
             db,
             identifier=owner.email if owner else "default",
             role=requested_role,
+            seat_type=seat_type,
         )
         if not result.get("success") and is_access_token_error(result):
             refreshed = await self.ensure_access_token(db, workspace, force_refresh=True)
@@ -505,6 +507,7 @@ class WorkspaceService:
                     db,
                     identifier=owner.email if owner else "default",
                     role=requested_role,
+                    seat_type=seat_type,
                 )
         if not result.get("success"):
             return {

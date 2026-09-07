@@ -100,6 +100,7 @@ class ReplenishTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.get("pushed"))
         onboard.assert_awaited_once()
         self.assertEqual(onboard.await_args.kwargs["email_line"], "")
+        self.assertEqual(onboard.await_args.kwargs.get("phone_line"), "")
         reauth.run_immediate_reauth.assert_awaited_once()
         await self.session.refresh(child)
         self.assertTrue(child.auto_reauth_opt_in)
@@ -140,6 +141,32 @@ class ReplenishTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error_code"], "not_found")
         count = list((await self.session.execute(select(Operation))).scalars())
         self.assertEqual(len(count), 0)
+
+    async def test_replenish_passes_phone_line_into_onboard(self):
+        workspace = await self._seed_workspace()
+        child = Account(
+            email="alias@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            proxy=PROXY,
+        )
+        self.session.add(child)
+        await self.session.commit()
+        phone_line = "+17822063428----https://api668.com/sms/by_key?key=test"
+        onboard = AsyncMock(
+            return_value={"success": True, "status": "active", "child": {"id": child.id, "email": child.email}, "pushed": False}
+        )
+        reauth = AsyncMock()
+        reauth.run_immediate_reauth = AsyncMock(return_value={"success": True, "status": "success"})
+        service = ReplenishService(onboard=type("Onb", (), {"invite_and_onboard": onboard})(), reauth=reauth)
+        with (
+            patch("app.application.replenish.hme_service.load_config", new=AsyncMock(return_value=HmeConfig(base_url="http://hme", service_token="t"))),
+            patch("app.application.replenish.probe_account_mailbox", new=AsyncMock(return_value={"ok": True})),
+        ):
+            result = await service.run(self.session, workspace_id=workspace.id, phone_line=phone_line, in_test=True)
+        self.assertTrue(result["success"])
+        self.assertEqual(onboard.await_args.kwargs["phone_line"], phone_line)
 
     async def test_bind_account_phone_stores_number(self):
         child = Account(

@@ -27,6 +27,7 @@ from app.web.schemas.resources import (
     AccountAutomationPatch,
     KickRequest,
     OnboardRequest,
+    ReplenishRequest,
     OperationArchiveRequest,
     OperationBulkArchiveRequest,
     PhoneImportRequest,
@@ -152,10 +153,17 @@ def build_api_router(get_db) -> APIRouter:
     @router.post("/workspaces/{workspace_id}/replenish", status_code=status.HTTP_202_ACCEPTED)
     async def replenish_workspace(
         workspace_id: int,
+        payload: ReplenishRequest | None = None,
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
-        result = await console_actions.start_workspace_replenish(db, workspace_id)
+        body = payload or ReplenishRequest()
+        result = await console_actions.start_workspace_replenish(
+            db,
+            workspace_id,
+            role=body.role,
+            phone_line=body.phone_line,
+        )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)

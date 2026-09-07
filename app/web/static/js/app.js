@@ -1816,7 +1816,7 @@ function hmeRow(item) {
       {
         id: "team.replenish",
         label: "补充 Team",
-        run: ({ workspace }, trigger) => replenishTeam(workspace, trigger),
+        run: ({ workspace, values }, trigger) => replenishTeam(workspace, trigger, values),
       },
       {
         id: "team.member.invite",
@@ -2455,6 +2455,9 @@ function hmeRow(item) {
       role.append(option);
     });
     roleLabelEl.append(role);
+    const seatHint = document.createElement("p");
+    seatHint.className = "muted";
+    seatHint.textContent = "官方席位固定邀请 Premium，不走 Standard。";
     const more = document.createElement("details");
     more.className = "team-detail-disclosure";
     const moreSummary = document.createElement("summary");
@@ -2503,7 +2506,7 @@ function hmeRow(item) {
     submit.className = "button primary";
     submit.textContent = "发送邀请";
     actions.append(cancel, submit);
-    form.append(emailLabel, roleLabelEl, more, status, actions);
+    form.append(emailLabel, roleLabelEl, seatHint, more, status, actions);
     const setOpen = (open) => {
       form.hidden = !open;
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -2523,7 +2526,8 @@ function hmeRow(item) {
       status.setAttribute("role", "status");
       status.textContent = "正在发送邀请…";
       try {
-        await action.run({ workspace, values }, submit);
+        const result = await action.run({ workspace, values }, submit);
+        if (result) status.textContent = result.message || "邀请已提交";
       } catch (error) {
         status.className = "error";
         status.setAttribute("role", "alert");
@@ -2534,10 +2538,80 @@ function hmeRow(item) {
     return wrapper;
   }
 
-  async function replenishTeam(workspace, button) {
+  function renderTeamReplenishControls(workspace) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "team-invite-controls";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "button primary compact";
+    toggle.textContent = "补充 Team";
+    toggle.setAttribute("aria-expanded", "false");
+    const form = document.createElement("form");
+    form.className = "team-invite-form stack";
+    form.hidden = true;
+    const hint = document.createElement("p");
+    hint.className = "muted";
+    hint.textContent = "自动领取未占用 HME，邀请为 Owner · Premium 席位，并当场授权。建议填接码号，避免 OpenAI 要手机时停在半路。";
+    const phoneLabel = document.createElement("label");
+    phoneLabel.textContent = "接码号";
+    const phone = document.createElement("input");
+    phone.name = "phone_line";
+    phone.placeholder = "+1xxxxxxxxxx----https://api668.com/sms/by_key?key=...";
+    phone.autocomplete = "off";
+    phoneLabel.append(phone);
+    const status = document.createElement("p");
+    status.className = "muted";
+    status.hidden = true;
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "button ghost";
+    cancel.textContent = "取消";
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.className = "button primary";
+    submit.textContent = "开始补充";
+    actions.append(cancel, submit);
+    form.append(hint, phoneLabel, status, actions);
+    const setOpen = (open) => {
+      form.hidden = !open;
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      toggle.textContent = open ? "收起补充" : "补充 Team";
+      if (open) phone.focus();
+    };
+    toggle.addEventListener("click", () => setOpen(form.hidden));
+    cancel.addEventListener("click", () => setOpen(false));
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const action = (entityActions.team || []).find((candidate) => candidate.id === "team.replenish");
+      const values = Object.fromEntries(new FormData(form).entries());
+      status.hidden = false;
+      status.className = "muted";
+      status.setAttribute("role", "status");
+      status.textContent = "正在补充 Team：领号、邀请 Premium、当场授权，可能要几分钟…";
+      try {
+        const result = await action.run({ workspace, values }, submit);
+        if (!result) return;
+        status.className = result.partial ? "error" : "muted";
+        status.textContent = result.message || (result.partial ? "已入组，授权未完成" : "补充完成");
+      } catch (error) {
+        status.className = "error";
+        status.setAttribute("role", "alert");
+        status.textContent = friendlyError(error);
+      }
+    });
+    wrapper.append(toggle, form);
+    return wrapper;
+  }
+
+  async function replenishTeam(workspace, button, values) {
+    const phoneLine = String(values?.phone_line || "").trim();
     setButtonBusy(button, true, "补充中");
     try {
-      const result = await postAction(`workspace-replenish-${workspace.id}`, `/api/workspaces/${workspace.id}/replenish`);
+      const result = await postAction(`workspace-replenish-${workspace.id}`, `/api/workspaces/${workspace.id}/replenish`, {
+        phone_line: phoneLine,
+      });
       await handleActionResult(result, {
         successMessage: result.message || "补充 Team 已完成",
         refresh: false,
@@ -2669,17 +2743,9 @@ function hmeRow(item) {
       list.className = "team-member-list";
       if (!rows.length) list.append(emptyState("没有子成员", "同步官方成员后，这里会显示当前 Team 成员。", true));
       else rows.forEach((row) => list.append(renderTeamMember(workspace, row)));
-      const replenish = document.createElement("button");
-      replenish.type = "button";
-      replenish.className = "button primary compact";
-      replenish.textContent = "补充 Team";
-      replenish.addEventListener("click", () => {
-        const action = (entityActions.team || []).find((candidate) => candidate.id === "team.replenish");
-        return action?.run({ workspace }, replenish);
-      });
       const memberToolbar = document.createElement("div");
       memberToolbar.className = "team-invite-controls";
-      memberToolbar.append(replenish, renderTeamInviteControls(workspace));
+      memberToolbar.append(renderTeamReplenishControls(workspace), renderTeamInviteControls(workspace));
       members.append(membersTitle, memberToolbar, list);
       body.append(members);
       if (workspace.former_members?.length) {

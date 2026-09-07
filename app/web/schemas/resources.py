@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.web.schemas.workspaces import ProxySelection
+from app.integrations.sms.client import parse_phone_line
 
 
 class PhoneImportRequest(BaseModel):
@@ -30,6 +31,22 @@ class OnboardRequest(BaseModel):
         if self.proxy and self.proxy_selection is not None:
             raise ValueError("proxy 与 proxy_selection 不能同时提交")
         return self
+
+
+class ReplenishRequest(BaseModel):
+    phone_line: str = Field(default="", max_length=500)
+    role: Literal["owner", "member"] = "owner"
+
+    @field_validator("phone_line")
+    @classmethod
+    def valid_phone_line(cls, value):
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        number, sms_url = parse_phone_line(raw)
+        if not number or not sms_url:
+            raise ValueError("手机号格式应为 +1xxxxxxxxxx----https://...")
+        return f"{number}----{sms_url}"
 
 
 class RotateRequest(BaseModel):

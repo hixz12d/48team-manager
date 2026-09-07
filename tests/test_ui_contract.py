@@ -5,7 +5,7 @@ from pathlib import Path
 from tests.helpers import make_client
 from pydantic import ValidationError
 
-from app.web.schemas.resources import AccountAutomationPatch, AccountProxyPatch, OnboardRequest
+from app.web.schemas.resources import AccountAutomationPatch, AccountProxyPatch, OnboardRequest, ReplenishRequest
 
 
 FORBIDDEN_UI = (
@@ -47,6 +47,13 @@ class UIContractTests(unittest.TestCase):
                 proxy="socks5://127.0.0.1:1080",
                 proxy_selection={"source": "sub2api", "remote_id": 7},
             )
+        self.assertEqual(
+            ReplenishRequest(phone_line="+17822063428----https://api668.com/sms/by_key?key=test").phone_line,
+            "+17822063428----https://api668.com/sms/by_key?key=test",
+        )
+        self.assertEqual(ReplenishRequest().phone_line, "")
+        with self.assertRaises(ValidationError):
+            ReplenishRequest(phone_line="+17822063428")
     def test_console_has_one_product_and_no_legacy_assets(self):
         with tempfile.TemporaryDirectory() as tmp, make_client(Path(tmp)) as client:
             client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
@@ -141,6 +148,9 @@ class UIContractTests(unittest.TestCase):
             self.assertIn("邀请加入 Team", js)
             self.assertIn("补充 Team", js)
             self.assertIn("/api/workspaces/${workspace.id}/replenish", js)
+            self.assertIn("renderTeamReplenishControls", js)
+            self.assertIn("官方席位固定邀请 Premium", js)
+            self.assertNotIn("askReplenishPhoneLine", js)
             self.assertIn("改成 Owner", js)
             self.assertIn("改成 Member", js)
             self.assertIn("永久删除", js)
