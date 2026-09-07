@@ -369,8 +369,7 @@ class WorkspaceService:
             except Exception:
                 logger.exception("保存席位阈值失败")
                 vacancy = present_vacancy(vacancy)
-        if email:
-            await self.mark_membership_removed(db, workspace.id, email)
+        # The caller reconciles membership only after readback confirms departure.
         await db.flush()
         return _delete_member_success("成员已删除", vacancy, already_removed=bool(delete_result.get("already_removed")))
 
@@ -542,7 +541,7 @@ class WorkspaceService:
             result.get("status_code"), result.get("error"), result.get("error_code")
         ):
             return {"success": False, "error": result.get("error") or "撤回邀请失败", "error_code": result.get("error_code") or "revoke_failed"}
-        await self.mark_membership_removed(db, workspace.id, email)
+        # Do not mark local departure until the caller verifies the invitation is gone.
         return {"success": True, "message": f"{normalize_email(email)} 已撤回邀请"}
 
 

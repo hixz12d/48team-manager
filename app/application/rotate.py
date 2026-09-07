@@ -291,10 +291,13 @@ class RotateService:
                     "error": "官方踢人已经发出，但成员列表还对不上，没法确认这个邮箱是否踢掉。本地没有改成待命。请先同步，还在的话再踢一次。",
                     "error_code": "kick_unverified",
                 }
-            if still is None or still.get("status") == "invited":
+            if still is None and live.get("success"):
                 last["verified"] = True
                 last["kicked_user_id"] = candidate
                 return last
+            if still and still.get("status") == "invited":
+                return {"success": False, "status": "partial", "error_code": "invite_still_present",
+                        "error": "成员已移出，但仍有待接受邀请；请核实后撤回邀请"}
         return {
             "success": False,
             "error": f"{email} 没有踢掉，ChatGPT 里还在。不要信刚才的成功提示。",
@@ -312,6 +315,7 @@ class RotateService:
         next_eligible_at: datetime | None = None,
         unbind_sub2api: bool = False,
         purge_local: bool = False,
+        invitation_only: bool = False,
         job_id: str | None = None,
     ) -> dict[str, Any]:
         busy = await operation_store.active_for_workspace(
@@ -368,17 +372,16 @@ class RotateService:
             if live_id:
                 user_id = live_id
         should_revoke = live_status == "invited"
+        if invitation_only and live_status == "joined":
+            return {"success": False, "error_code": "already_joined", "error": "该账号已经加入团队，未执行撤回或踢人"}
         if should_revoke:
             result = await self.workspaces.revoke_invite(db, workspace.id, target)
             if not result.get("success"):
                 return {"success": False, "error": result.get("error") or "撤回邀请失败", "error_code": "revoke_failed"}
-            if not purge_local:
-                if child:
-                    child.operational_state = "unused"
-                    child.updated_at = utcnow()
-                    await db.flush()
-                    return {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请，子号回到未使用"}
-                return {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请"}
+            after, remaining = await self.workspaces.lookup_live_member(db, workspace, target)
+            if not after.get("success") or remaining is not None:
+                return {"success": False, "status": "partial", "error_code": "revoke_unverified",
+                        "error": "撤回已提交，但尚未确认官方记录消失；保留本地状态，请同步后核实"}
             result = {"success": True, "status": "revoked", "message": f"{target} 已撤回邀请"}
         elif lookup_state == "absent_confirmed" and live_item is None:
             result = {"success": True, "message": f"{target} 官方成员和邀请都不存在", "already_absent": True}
@@ -391,7 +394,10 @@ class RotateService:
                 user_id=user_id,
             )
         if not result.get("success"):
-            return {"success": False, "error": result.get("error") or "踢人失败", "error_code": result.get("error_code") or "kick_failed"}
+            return {**result, "success": False, "error": result.get("error") or "踢人失败", "error_code": result.get("error_code") or "kick_failed"}
+        from app.application.member_lifecycle import has_other_active_context, record_confirmed_departure
+        await record_confirmed_departure(db, workspace, target)
+        other_context = bool(child and await has_other_active_context(db, child, workspace.id))
         unbind = bool(unbind_sub2api or should_unbind_sub2api(reason) or purge_local)
         deleted_sub = None
         remote_unbind_confirmed = False
@@ -415,7 +421,7 @@ class RotateService:
                 }
             purged = True
             child = None
-        elif child:
+        elif child and not other_context:
             await self.workspaces.mark_standby(
                 db,
                 child,
@@ -430,8 +436,8 @@ class RotateService:
             message = f"{target} 已永久删除：官方席位已处理，本地档案已清除"
             status = "purged"
         elif child:
-            message = f"{target} 已踢出，子号进入待命"
-            status = "standby"
+            message = f"{target} 已离开本团队，账号档案已保留" + ("，其他团队不受影响" if other_context else "，可重新邀请")
+            status = "departed" if other_context else "standby"
         else:
             message = f"{target} 已踢出官方席位"
             status = "kicked"

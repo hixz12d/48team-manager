@@ -132,6 +132,10 @@
 
   const ERROR_CODE_MESSAGES = {
     missing_token: "该账号尚未授权，请先完成授权。",
+    credentials_missing: "缺少母号访问凭据，请先手动授权。",
+    workspace_unavailable: "团队或母号已停用，未提交同步。",
+    invite_lookup_unknown: "官方读取失败，未发送邀请。请同步后重试。",
+    account_unavailable: "团队或账号已停用，未发送邀请。",
     token_revoked: "账号授权已失效，请重新授权。",
     token_invalidated: "账号授权已失效，请重新授权。",
     callback_invalid: "授权回调无效，请重新复制完整回调地址。",
@@ -1748,10 +1752,19 @@ function hmeRow(item) {
       { id: "workspace.manage", label: "管理", run: (item, trigger) => openWorkspaceDetails(trigger, item) },
       {
         id: "workspace.sync",
-        label: "同步",
-        run: async (item) => {
-          const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
-          await handleActionResult(result, { successMessage: "同步完成" });
+        label: "同步本团队",
+        run: async (item, trigger) => {
+          if (trigger?.disabled || item.sync_operation) return;
+          setButtonBusy(trigger, true, "提交中");
+          try {
+            const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
+            toast(result.reused ? "已有同步任务，继续等待结果" : "本团队同步已排队", "success");
+            await bootPage();
+          } catch (error) {
+            toast(friendlyError(error), "error");
+          } finally {
+            setButtonBusy(trigger, false);
+          }
         },
       },
     ],
@@ -1760,6 +1773,12 @@ function hmeRow(item) {
         id: "team.member.invite",
         label: "邀请加入 Team",
         run: ({ workspace, values }, trigger) => inviteTeamMember(workspace, values, trigger),
+      },
+      {
+        id: "team.member.reinvite",
+        label: "重新邀请",
+        visible: ({ row }) => row.can_reinvite !== false && Boolean(row.email),
+        run: ({ workspace, row }, trigger) => openReinviteForm(workspace, row, trigger),
       },
       {
         id: "team.member.link",
@@ -1781,14 +1800,14 @@ function hmeRow(item) {
       },
       {
         id: "team.member.local-remove",
-        label: "仅移出本地",
+        label: "仅解除本地关联",
         danger: true,
         visible: ({ row }) => Boolean(row.id || row.local_account_id),
         run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "local"),
       },
       {
         id: "team.member.official-remove",
-        label: ({ row }) => presentTeamMember(row).code === "invited" ? "撤回邀请" : "移出官方席位",
+        label: ({ row }) => presentTeamMember(row).code === "invited" ? "撤回邀请" : "移出团队，保留账号",
         danger: true,
         visible: ({ row }) => Boolean(row.email),
         run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "official"),
@@ -2226,8 +2245,11 @@ function hmeRow(item) {
       if (kind === "conflict") {
         return { code: "conflict", label: "身份冲突", primaryId: null, secondaryIds: ["team.member.local-remove"] };
       }
+      if (["departed", "removed", "history"].includes(kind)) {
+        return { code: "departed", label: "已离队，账号已保留", primaryId: row.can_reinvite !== false ? "team.member.reinvite" : null, secondaryIds: [] };
+      }
       if (kind === "local_only") {
-        return { code: "local_only", label: "本地有记录，官方未找到", primaryId: null, secondaryIds: ["team.member.local-remove"] };
+        return { code: "local_only", label: "本地有记录，官方未找到", primaryId: accountId ? "team.member.reinvite" : null, secondaryIds: ["team.member.local-remove"] };
       }
       if (auth.needsAuth && accountId) {
         return {
@@ -2268,7 +2290,7 @@ function hmeRow(item) {
   }
 
   function teamMemberIsJoined(row) {
-    return !["invited", "local_only", "unmanaged", "remote_only"].includes(teamMemberKind(row));
+    return !["invited", "local_only", "unmanaged", "remote_only", "departed", "removed", "history"].includes(teamMemberKind(row));
   }
 
     function teamMemberMenu(workspace, row) {
@@ -2556,6 +2578,15 @@ function hmeRow(item) {
       else rows.forEach((row) => list.append(renderTeamMember(workspace, row)));
       members.append(membersTitle, renderTeamInviteControls(workspace), list);
       body.append(members);
+      if (workspace.former_members?.length) {
+        const former = document.createElement("section");
+        former.className = "sheet-section team-former-members";
+        const heading = document.createElement("h3");
+        heading.textContent = `已离队账号（${workspace.former_members.length}）`;
+        former.append(heading);
+        workspace.former_members.forEach(row => former.append(renderTeamMember(workspace, row)));
+        body.append(former);
+      }
 
       if (canRotateWorkspace(workspace)) {
         const advanced = document.createElement("details");
@@ -2639,6 +2670,49 @@ function hmeRow(item) {
       }
     }
 
+  function openReinviteForm(workspace, row, trigger) {
+    const item = trigger.closest(".team-member-row");
+    if (!item) return;
+    const existing = item.querySelector(".team-reinvite-form");
+    if (existing) { existing.querySelector("select").focus(); return; }
+    const form = document.createElement("form");
+    form.className = "team-reinvite-form";
+    const target = document.createElement("p");
+    target.textContent = `重新邀请：${row.email}`;
+    const label = document.createElement("label");
+    label.textContent = "邀请角色";
+    const role = document.createElement("select");
+    role.name = "role";
+    role.append(new Option("Member", "member"), new Option("Owner", "owner"));
+    role.value = ["owner", "account-owner"].includes(row.role || row.official_role) ? "owner" : "member";
+    label.append(role);
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.className = "button ghost"; cancel.textContent = "取消";
+    cancel.addEventListener("click", () => { form.remove(); trigger.focus(); });
+    const submit = document.createElement("button");
+    submit.type = "submit"; submit.className = "button primary"; submit.textContent = "发送邀请";
+    const errorBox = document.createElement("p");
+    errorBox.className = "text-warning"; errorBox.setAttribute("role", "alert"); errorBox.hidden = true;
+    actions.append(cancel, submit); form.append(target, label, actions, errorBox);
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      submit.disabled = true; cancel.disabled = true; errorBox.hidden = true;
+      try {
+        const result = await postAction(`workspace:${workspace.id}:member:${row.email}:reinvite`, `/api/workspaces/${workspace.id}/members/add`, { email: row.email, role: role.value });
+        toast(result.message || "邀请已发送，等待接受", "success");
+        await reloadTeamDetails();
+        if (document.body.dataset.page === "accounts") await bootAccounts();
+      } catch (error) {
+        errorBox.hidden = false; errorBox.textContent = friendlyError(error);
+      } finally {
+        submit.disabled = false; cancel.disabled = false;
+      }
+    });
+    item.append(form); role.focus();
+  }
+
   async function inviteTeamMember(workspace, values, button) {
     setButtonBusy(button, true, "发送中");
     try {
@@ -2720,7 +2794,7 @@ function hmeRow(item) {
       const copy = mode === "purge"
         ? `永久删除 ${email}？这会移出官方席位、下架 Sub2API 并清理本地档案，且不可恢复。`
         : mode === "official"
-          ? `${kind === "invited" ? "撤回" : "移出"} ${email} 的官方席位？这会修改官方 Team。`
+          ? `${kind === "invited" ? "撤回邀请" : "移出团队"}：${email}？保留本地账号与凭据，之后可重新邀请；不调整已购买席位数量。`
           : `只从本地移除 ${email}？官方 Team 不会改变。`;
       if (!confirmDanger(copy)) return;
       setButtonBusy(button, true, "处理中");
@@ -2736,6 +2810,7 @@ function hmeRow(item) {
         }
         await handleActionResult(result, { successMessage: mode === "purge" ? "已永久删除" : "成员已更新", refresh: false });
         await reloadTeamDetails();
+        if (document.body.dataset.page === "accounts") await bootAccounts();
       } catch (error) {
         toast(friendlyError(error), "error");
         setButtonBusy(button, false);
@@ -3981,15 +4056,10 @@ function hmeRow(item) {
           toast(`已重试 ${ok}/${pending.length} 个待同步标签`, ok === pending.length ? "success" : "warning");
           await bootPage();
         } else if (action === "workspace-sync-all") {
-          const payload = await fetchEntity("workspace-list", "/api/workspaces");
-          const items = payload.items || [];
-          let ok = 0;
-          for (const item of items) {
-            const result = await postAction(`workspace-sync-${item.id}`, `/api/workspaces/${item.id}/sync`);
-            if (result.ok) ok += 1;
-          }
-          toast(`同步全部完成：${ok}/${items.length}`, ok === items.length ? "success" : "warning");
+          const result = await postAction("workspace-sync-all", "/api/workspaces/sync");
           await bootPage();
+          toast(`已排队 ${result.queued || 0} 个团队${result.reused ? `，复用 ${result.reused} 个任务` : ""}${result.failed ? `，${result.failed} 个未能提交` : ""}`, result.failed ? "warning" : "success");
+          window.Team48Accounts.reportSyncErrors(result.items || []);
         }
       } catch (error) {
         toast(friendlyError(error), "error");

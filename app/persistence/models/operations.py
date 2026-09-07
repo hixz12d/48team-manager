@@ -59,6 +59,11 @@ class Operation(Base):
         Index("idx_operations_type_state", "type", "state"),
         Index("idx_operations_archived_created", "archived_at", "created_at"),
         Index("idx_operations_workspace_created", "workspace_id", "created_at"),
+        Index("idx_operations_archived_finished", "archived_at", "finished_at", "id"),
+        Index(
+            "uq_workspace_sync_active_key", "idempotency_key", unique=True,
+            sqlite_where=(op_type == "workspace_sync") & state.in_(("queued", "running", "waiting")) & idempotency_key.is_not(None),
+        ),
     )
 
 

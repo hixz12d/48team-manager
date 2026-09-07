@@ -160,13 +160,14 @@ class WorkspaceSyncService:
             }
         return local_by_email
 
-    async def sync_workspace(self, db: AsyncSession, workspace_id: int) -> dict[str, Any]:
+    async def sync_workspace(self, db: AsyncSession, workspace_id: int, *, operation=None) -> dict[str, Any]:
         workspace = await self.workspaces.load_workspace(db, workspace_id)
         if workspace is None:
             return {"success": False, "error": "workspace not found", "error_code": "not_found"}
 
         owner = await self.workspaces.owner_account(db, workspace)
-        operation = await operation_store.create(
+        queued_execution = operation is not None
+        operation = operation or await operation_store.create(
             db,
             op_type="workspace_sync",
             workspace_id=workspace.id,
@@ -176,7 +177,11 @@ class WorkspaceSyncService:
             source="manual",
         )
         await operation_store.note(db, operation, "fetch_members", "fetching official members")
-        members_raw = await self.workspaces.get_members(db, workspace)
+        if queued_execution:
+            await db.commit()
+            members_raw = await self._read_only_collection(db, workspace, owner, "members")
+        else:
+            members_raw = await self.workspaces.get_members(db, workspace)
         members = _counts_from_fetch(members_raw, default_state="joined")
         if not members["success"]:
             result = {
@@ -224,7 +229,11 @@ class WorkspaceSyncService:
             },
         )
         await operation_store.note(db, operation, "fetch_invites", "fetching official invites")
-        invites_raw = await self.workspaces.get_invites(db, workspace)
+        if queued_execution:
+            await db.commit()
+            invites_raw = await self._read_only_collection(db, workspace, owner, "invites")
+        else:
+            invites_raw = await self.workspaces.get_invites(db, workspace)
         invites = _counts_from_fetch(invites_raw, default_state="invited")
         if not invites["success"]:
             result = {
@@ -270,6 +279,13 @@ class WorkspaceSyncService:
             },
         )
 
+        if queued_execution:
+            await db.refresh(operation, ["cancel_requested"])
+            if operation.cancel_requested:
+                result = {"success": False, "status": "cancelled", "error_code": "cancelled", "error": "Sync cancelled before snapshot update"}
+                await operation_store.finish(db, operation, result)
+                await db.commit()
+                return {"ok": False, "operation_id": operation.public_id, **result}
         stamp = utcnow()
         remote_rows = self._merge_remote_rows(members, invites)
         local_by_email = await self._local_by_email(db, workspace.id)
@@ -343,7 +359,8 @@ class WorkspaceSyncService:
             if isinstance(invites_raw, dict):
                 extra.append(("invites", invites_raw))
                 extra.append(("invites_seat_metadata", invites_raw.get("seat_metadata") or {}))
-            name_result = await workspace_metadata_resolver.refresh(db, workspace, owner, extra=extra, persist=False)
+            # Queued member reads do not refresh OAuth or fetch unrelated metadata.
+            name_result = {"ok": True} if queued_execution else await workspace_metadata_resolver.refresh(db, workspace, owner, extra=extra, persist=False)
             if isinstance(name_result, dict) and not name_result.get("ok", True):
                 name_warning = name_result.get("error") or "Team 名称获取失败，已保留现有名称"
         except Exception as exc:
@@ -404,6 +421,15 @@ class WorkspaceSyncService:
         await operation_store.finish(db, operation, result)
         await db.commit()
         return {"ok": True, "operation_id": operation.public_id, **result}
+
+    async def _read_only_collection(self, db, workspace, owner, kind):
+        from app.application.tokens import decrypt_secret
+
+        token = decrypt_secret(owner.access_token_encrypted) if owner else None
+        if not token:
+            return {"success": False, "error_code": "credentials_missing", "error": "Owner access token is missing"}
+        reader = self.workspaces.client.get_members if kind == "members" else self.workspaces.client.get_invites
+        return await reader(token, workspace.official_workspace_id, db, identifier=owner.email)
 
     async def list_snapshots(self, db: AsyncSession, workspace_id: int) -> list[WorkspaceOfficialMemberSnapshot]:
         return list(

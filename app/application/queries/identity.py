@@ -245,6 +245,21 @@ async def overview_query(db: AsyncSession) -> dict[str, Any]:
 
 
 async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
+    from sqlalchemy import func, select
+    from app.application.queries.runtime_status import runtime_operation
+    from app.domain.automation import ACTIVE_STATES
+    from app.persistence.models.operations import Operation
+
+    active_syncs = {row.workspace_id: runtime_operation(row) for row in await db.scalars(
+        select(Operation).where(Operation.op_type == "workspace_sync", Operation.state.in_(ACTIVE_STATES))
+    )}
+    last_ids = select(func.max(Operation.id)).where(
+        Operation.op_type == "workspace_sync", Operation.state.not_in(ACTIVE_STATES),
+        Operation.archived_at.is_(None),
+    ).group_by(Operation.workspace_id)
+    last_syncs = {row.workspace_id: runtime_operation(row) for row in await db.scalars(
+        select(Operation).where(Operation.id.in_(last_ids))
+    )}
     accounts = await identity_repo.list_accounts(db)
     memberships = await identity_repo.list_memberships(db)
     bindings = await identity_repo.list_bindings(db)
@@ -343,6 +358,9 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             elif remote_state == MEMBERSHIP_STATE_INVITED:
                 status = "invited"
                 pending_invites += 1
+            elif remote is None and (local or {}).get("membership_state") == MEMBERSHIP_STATE_INVITED:
+                status = "invited"
+                pending_invites += 1
             elif remote and local:
                 status = "managed"
                 matched += 1
@@ -375,11 +393,25 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                     "note": {
                         "remote_only": "官方已加入，本地尚未接入。点接入会按该邮箱建立本地子号，完成授权后才能读额度。",
                         "local_only": "本地有账号记录，但官方成员列表未找到对应邮箱。",
-                        "invited": "官方邀请仍待接受。",
+                        "invited": "官方邀请仍待接受。" if remote else "邀请已提交，等待官方同步确认。",
                         "conflict": "身份冲突，需人工核对。",
                     }.get(status),
                 }
             )
+        former_members = []
+        for membership in members:
+            if membership.membership_state != MEMBERSHIP_STATE_REMOVED or is_workspace_owner(workspace, membership.account_id):
+                continue
+            account = accounts_by_id.get(membership.account_id)
+            if account is None or normalize_email(account.email) in official_by_email:
+                continue
+            former_members.append({
+                "id": account.id, "local_account_id": account.id, "email": account.email,
+                "workspace_id": workspace.id, "membership_state": "removed", "kind": "departed",
+                "official_role": membership.official_role, "removed_at": isoformat(membership.removed_at),
+                "purpose": account.local_purpose, "can_reinvite": account.operational_state not in {"archived", "disabled"},
+                **build_auth_status(account),
+            })
         actionable_items = [row for row in reconciliation if row.get("actionable")]
         has_snapshot = bool(snaps) or bool(workspace.last_official_sync_at)
         sync_state = _sync_state_for(workspace, has_snapshot=has_snapshot)
@@ -427,6 +459,14 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "managed_count": matched,
                 "member_accounts": member_items,
                 "official_members": official_members,
+                "sync_operation": active_syncs.get(workspace.id),
+                "last_sync_operation": last_syncs.get(workspace.id),
+                "former_members": former_members,
+                "subscription_plan": workspace.subscription_plan,
+                "subscription": {"plan_family": workspace.subscription_plan if workspace.subscription_plan in {"business", "team"} else "unknown",
+                                 "seat_tier": "unknown", "status": "unverified", "observed_at": None},
+                "seat_distribution": {"standard": 0, "premium": 0, "unknown": sum(s.remote_state == "joined" for s in snaps)},
+                "plan_sync": {"status": "skipped", "reason": "contract_unverified"},
                 "official": {
                     "sync_state": sync_state,
                     "synced_at": isoformat(workspace.last_official_sync_at),

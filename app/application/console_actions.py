@@ -162,9 +162,9 @@ async def retry_operation(db: AsyncSession, public_id: str) -> dict[str, Any]:
 async def _dispatch_retry(db: AsyncSession, row) -> dict[str, Any]:
     op_type = row.op_type
     if op_type == "workspace_sync" and row.workspace_id:
-        from app.application.workspace_sync import workspace_sync_service
+        from app.application.jobs.workspace_sync import enqueue_workspace_sync
 
-        return await workspace_sync_service.sync_workspace(db, int(row.workspace_id))
+        return await enqueue_workspace_sync(db, int(row.workspace_id), source="retry")
     if op_type == "auth_probe" and row.account_id:
         return await account_auth_probe(db, int(row.account_id))
     if op_type == "quota_probe" and row.account_id:
@@ -783,7 +783,10 @@ async def revoke_workspace_invite(
         input_payload={"workspace_id": workspace.id, "email": target, "mode": "revoke_invite"},
     )
     await db.commit()
-    result = await workspace_service.revoke_invite(db, workspace.id, target)
+    result = await rotate_service.kick_to_standby(
+        db, workspace_id=workspace.id, email=target, invitation_only=True,
+        reason="console_revoke", job_id=operation.public_id,
+    )
     await operation_store.finish(db, operation, result)
     await db.commit()
     return _ok_result(result, operation_id=operation.public_id)
@@ -932,6 +935,7 @@ async def invite_workspace_child(
     )
     await db.commit()
     result = await add_local_child(db, workspace.id, email=target, job_id=operation.public_id, role=role)
+    result = {**result, "success": bool(result.get("ok"))}
     await operation_store.finish(db, operation, result)
     await db.commit()
     return _ok_result(result, operation_id=operation.public_id)

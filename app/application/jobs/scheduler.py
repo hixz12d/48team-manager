@@ -13,6 +13,7 @@ from app.core.config import Settings
 logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 _session_factory = None
+last_heartbeat_at = None
 
 
 def in_test_process() -> bool:
@@ -81,10 +82,25 @@ async def dispatch_quota_queue() -> None:
             await quota_service.run_queued_once(session)
 
 
+async def record_runtime_heartbeat() -> None:
+    global last_heartbeat_at
+    from app.core.time import utcnow
+    last_heartbeat_at = utcnow()
+
+
+async def dispatch_workspace_queue() -> None:
+    from app.application.jobs.workspace_sync import dispatch_workspace_sync
+    if _session_factory is not None:
+        async with _session_factory() as session:
+            await dispatch_workspace_sync(session)
+
+
 def configure_jobs(settings: Settings) -> None:
     job_ids = (
         "official_quota_probe_scan",
         "quota_queue_dispatch",
+        "workspace_queue_dispatch",
+        "runtime_heartbeat",
         "auth_probe_scan",
         "auto_reauth_scan",
         "auto_rotate_scan",
@@ -93,8 +109,10 @@ def configure_jobs(settings: Settings) -> None:
     for job_id in job_ids:
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
+    scheduler.add_job(record_runtime_heartbeat, IntervalTrigger(seconds=5), id="runtime_heartbeat", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_quota_probe, IntervalTrigger(minutes=1), id="official_quota_probe_scan", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(dispatch_quota_queue, IntervalTrigger(seconds=2), id="quota_queue_dispatch", replace_existing=True, max_instances=1, coalesce=True)
+    scheduler.add_job(dispatch_workspace_queue, IntervalTrigger(seconds=2), id="workspace_queue_dispatch", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_auth_probe, IntervalTrigger(minutes=1), id="auth_probe_scan", replace_existing=True)
     scheduler.add_job(scheduled_auto_reauth, IntervalTrigger(minutes=30), id="auto_reauth_scan", replace_existing=True)
     scheduler.add_job(scheduled_auto_rotate, IntervalTrigger(minutes=30), id="auto_rotate_scan", replace_existing=True)
@@ -113,7 +131,8 @@ def configure_jobs(settings: Settings) -> None:
 
 
 def start_scheduler(settings: Settings, session_factory=None) -> None:
-    global _session_factory
+    global _session_factory, last_heartbeat_at
+    last_heartbeat_at = None
     _session_factory = session_factory
     configure_jobs(settings)
     if in_test_process():

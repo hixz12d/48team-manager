@@ -129,3 +129,21 @@ button.management-email:hover { color:var(--accent); }
   .management-actions>[data-menu-trigger], .management-expand { min-width:44px; }
 }
 @media (prefers-reduced-motion:reduce) { .management-list * { transition:none !important; } }
+
+.management-team-controls { display:flex; flex:0 0 auto; gap:8px; }
+.team-sync-button { min-width:108px; height:36px; }
+.team-sync-button[aria-busy="true"] { opacity:1; color:#345bdd; background:#edf2ff; border-color:#cfdbfa; }
+.group-sync-outcome { display:block; font-size:12px; margin-top:5px; overflow-wrap:anywhere; }
+.management-subscription { color:#466a62; font-size:12px; }
+.management-sync-status { color:#a3433a; font-size:12px; margin:0 0 14px; overflow-wrap:anywhere; }
+.team-reinvite-form { grid-column:1/-1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; padding:12px 0; border-top:1px solid var(--border); }
+.team-reinvite-form>p { grid-column:1/-1; margin:0; overflow-wrap:anywhere; font-size:12px; }
+.team-reinvite-form>label { min-width:0; display:grid; gap:5px; font-size:12px; }
+.team-reinvite-form>.row-actions { position:static; transform:none; opacity:1; align-self:end; }
+.team-former-members .team-member-state { font-size:12px; white-space:normal; }
+.team-member-identity>strong { overflow-wrap:anywhere; }
+@media(max-width:768px) {
+  .management-team-controls { margin-left:auto; }
+  .team-reinvite-form { grid-template-columns:minmax(0,1fr); }
+  .team-reinvite-form>.row-actions { grid-column:1; justify-content:flex-end; }
+}

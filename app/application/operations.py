@@ -725,13 +725,17 @@ async def recover_stale_operations(session: AsyncSession) -> dict[str, Any]:
     stats = {"recovered": len(recovered), "manual": 0, "ids": []}
     for row in recovered:
         stats["ids"].append(row.public_id)
-        if row.op_type in {"reauth", "onboard", "rotate", "free_register", "reregister", "free"}:
+        if row.op_type == "workspace_sync" and row.idempotency_key:
+            row.state = "queued"
+            row.current_step = "queued"
+            row.started_at = None
+        elif row.op_type in {"workspace_sync", "reauth", "onboard", "rotate", "free_register", "reregister", "free"}:
             await operation_store.finish(
                 session,
                 row,
                 {
                     "success": False,
-                    "error": "process restarted; browser tickets are invalid, resume is manual",
+                    "error": "process restarted; legacy sync requires manual resubmission" if row.op_type == "workspace_sync" else "process restarted; browser tickets are invalid, resume is manual",
                     "error_code": "resume_manual",
                     "status": "manual_required",
                 },

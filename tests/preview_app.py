@@ -80,6 +80,18 @@ async def preview_lifespan(app):
                     if not await db.get(SystemSetting, key):
                         db.add(SystemSetting(key=key, value="false"))
                 await db.commit()
+            for workspace in await db.scalars(select(Workspace)):
+                workspace.subscription_plan = "business"
+            standby = await db.scalar(select(Account).where(Account.email == "standby.new@example.com"))
+            first_team = await db.scalar(select(Workspace).order_by(Workspace.id).limit(1))
+            if standby and first_team:
+                membership = await db.scalar(select(WorkspaceMembership).where(
+                    WorkspaceMembership.workspace_id == first_team.id, WorkspaceMembership.account_id == standby.id,
+                ))
+                if membership is None:
+                    db.add(WorkspaceMembership(workspace_id=first_team.id, account_id=standby.id,
+                                              membership_state="removed", official_role="member", local_purpose="child", removed_at=utcnow()))
+            await db.commit()
         yield
 
 
@@ -88,7 +100,7 @@ app.router.lifespan_context = preview_lifespan
 
 @app.middleware("http")
 async def preview_write_guard(request, call_next):
-    local_reads = {"/api/accounts", "/api/accounts/portfolio", "/api/workspaces", "/api/overview", "/api/quota/runtime"}
+    local_reads = {"/api/accounts", "/api/accounts/portfolio", "/api/workspaces", "/api/overview", "/api/quota/runtime", "/api/runtime/status"}
     blocked_read = request.url.path.startswith("/api/") and request.url.path not in local_reads
     blocked_write = request.method not in {"GET", "HEAD", "OPTIONS"} and request.url.path not in {"/auth/login", "/auth/logout"}
     if blocked_read or blocked_write:

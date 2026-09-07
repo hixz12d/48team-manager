@@ -166,6 +166,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                     "workspace_id": ws_id,
                     "official_role": (remote or {}).get("role") or row.official_role,
                     "membership_state": membership_state,
+                    "can_reinvite": membership_state == MEMBERSHIP_STATE_REMOVED and remote is None and account.get("state") not in {"archived", "disabled"},
                     "management_role": "mother" if is_owner else "child",
                     "managed": True,
                     **health,
@@ -239,6 +240,13 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         joined_people = workspace.get("official", {}).get("joined_people_total")
         managed_usage = [item.get("usage") for item in ([mother] if mother else []) + current_children]
         workspace_usage = sub2api_usage_service.aggregate(managed_usage)
+        for member in members:
+            member["subscription"] = {
+                **workspace["subscription"], "scope": "membership",
+                "workspace_id": ws_id, "account_id": member.get("id"),
+                "pending_seat_tier": None, "pending_effective_at": None,
+                "source": None, "source_field": None,
+            }
         groups.append(
             {
                 **workspace,

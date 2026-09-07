@@ -183,6 +183,15 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
         await _ensure_sqlite_columns(conn, "accounts", ACCOUNT_COLUMNS)
         await _rebuild_external_bindings(conn)
         await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_operations_archived_finished "
+            "ON operations (archived_at, finished_at, id)"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_sync_active_key "
+            "ON operations (idempotency_key) WHERE type = 'workspace_sync' "
+            "AND state IN ('queued', 'running', 'waiting') AND idempotency_key IS NOT NULL"
+        ))
+        await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_workspace_queried "
             "ON quota_snapshots (account_id, workspace_id, queried_at)"
         ))

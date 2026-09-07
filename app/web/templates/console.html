@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/components.css">
   <link rel="stylesheet" href="/static/css/management.css">
+  {% if page == 'overview' %}<link rel="stylesheet" href="/static/css/runtime.css">{% endif %}
   <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
 </head>
 <body data-page="{{ page }}">
@@ -65,6 +66,21 @@
           <a class="summary-item" href="/accounts"><span class="summary-label">账号</span><strong class="tabular" data-summary="accounts">—</strong></a>
           <a class="summary-item" href="/"><span class="summary-label">待处理</span><strong class="tabular" data-summary="attention">—</strong></a>
           <a class="summary-item" href="/accounts?purpose=conflict"><span class="summary-label">身份冲突</span><strong class="tabular" data-summary="conflicts">—</strong></a>
+        </section>
+        <section class="runtime-status" id="runtime-status" aria-labelledby="runtime-title">
+          <header class="runtime-header">
+            <h2 id="runtime-title">后台运行状态</h2>
+            <span id="runtime-counts" role="status">正在读取状态</span>
+            <a href="/operations">任务详情</a>
+            <button type="button" class="button ghost" id="runtime-refresh" title="刷新运行状态" aria-label="刷新运行状态">↻</button>
+          </header>
+          <div class="runtime-health"><span id="runtime-runner">执行状态未知</span><span id="runtime-browser">浏览器状态未知</span><time id="runtime-updated"></time></div>
+          <p id="runtime-error" role="status" hidden></p>
+          <div class="runtime-content">
+            <div class="runtime-current"><div id="runtime-active"></div><p id="runtime-idle" hidden>当前没有待执行任务</p><a id="runtime-more" href="/operations?state=running,queued,waiting,manual_required" hidden></a></div>
+            <div id="runtime-policies" aria-label="自动化策略"></div>
+          </div>
+          <div class="runtime-recent"><h3>最近记录</h3><ul id="runtime-recent"></ul><p id="runtime-recent-empty" hidden>暂无任务记录</p></div>
         </section>
         <div class="overview-layout">
           <div class="overview-main">
@@ -139,9 +155,10 @@
               <option value="credential_error">本地凭证异常</option><option value="pending">待验证</option>
             </select>
             <select class="filter" id="management-workspace" aria-label="团队"><option value="">全部团队</option></select>
-            <button type="button" class="button" data-action-page="workspace-sync-all" title="同步全部团队的官方成员"><span aria-hidden="true">↻</span> 同步成员</button>
+            <button type="button" class="button" data-action-page="workspace-sync-all" title="同步全部团队的官方成员"><span aria-hidden="true">↻</span> 同步全部团队</button>
             <span class="toolbar-count muted" id="accounts-count"></span>
           </div>
+          <p id="management-sync-status" class="management-sync-status" role="status" hidden></p>
           <div id="accounts-portfolio" class="management-list" aria-live="polite"></div>
           <div class="table-scroll">
             <table class="data-table">
@@ -583,7 +600,9 @@
     <ul id="command-list"></ul>
   </dialog>
   <script src="/static/js/formatters.js"></script>
+  <script src="/static/js/polling.js"></script>
   <script src="/static/js/accounts-view.js"></script>
+  {% if page == 'overview' %}<script src="/static/js/runtime-status.js"></script>{% endif %}
   <script src="/static/js/app.js"></script>
 </body>
 </html>

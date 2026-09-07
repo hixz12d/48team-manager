@@ -279,6 +279,9 @@ async def add_local_child(
     from app.application.workspaces import workspace_service as default_workspaces
 
     service = workspaces or default_workspaces
+    existing = await db.scalar(select(Account).where(Account.email == target))
+    if workspace.status in {"archived", "disabled"} or (existing and existing.operational_state in {"archived", "disabled"}):
+        return {"ok": False, "error_code": "account_unavailable", "error": "团队或账号已停用，未发送邀请"}
     live, live_item = await service.lookup_live_member(db, workspace, target)
     already_joined = bool(live_item and live_item.get("status") == "joined")
     already_invited = bool(live_item and live_item.get("status") == "invited")
@@ -302,6 +305,9 @@ async def add_local_child(
             "requested_role": requested_role,
         }
     if not already_joined and not already_invited:
+        if not live.get("success") or live.get("lookup_state") == "unknown_due_to_error":
+            return {"ok": False, "error_code": "invite_lookup_unknown",
+                    "error": "官方成员或邀请读取失败，未发送邀请；请同步后重试"}
         invite = await service.invite_member(db, workspace.id, target, role=requested_role)
         if not invite.get("success"):
             return {

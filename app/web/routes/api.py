@@ -60,6 +60,11 @@ def _error_detail(payload: dict, fallback: str) -> dict[str, str]:
 def build_api_router(get_db) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["api"])
 
+    @router.get("/runtime/status")
+    async def runtime_status(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.queries.runtime_status import runtime_status as query_runtime_status
+        return await query_runtime_status(db)
+
     @router.get("/overview")
     async def overview(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.overview(db)
@@ -95,13 +100,23 @@ def build_api_router(get_db) -> APIRouter:
         except RegisterWorkspaceError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    @router.post("/workspaces/{workspace_id}/sync")
+    @router.post("/workspaces/sync", status_code=status.HTTP_202_ACCEPTED)
+    async def sync_all_workspaces(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.jobs.workspace_sync import enqueue_all_workspace_syncs
+        return await enqueue_all_workspace_syncs(db)
+
+    @router.post("/workspaces/{workspace_id}/sync", status_code=status.HTTP_202_ACCEPTED)
     async def sync_workspace(
         workspace_id: int,
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
-        result = await workspace_sync_service.sync_workspace(db, workspace_id)
+        from app.application.jobs.workspace_sync import enqueue_workspace_sync
+        result = await enqueue_workspace_sync(db, workspace_id)
+        if result.get("error_code") == "credentials_missing":
+            raise HTTPException(status_code=400, detail=_error_detail(result, "credentials missing"))
+        if result.get("error_code") == "workspace_unavailable":
+            raise HTTPException(status_code=409, detail=_error_detail(result, "workspace unavailable"))
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result.get("error") or "not found")
         return _accepted(result)

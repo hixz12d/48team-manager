@@ -4,7 +4,13 @@
   const purposeLabels = { mother: "母号", child: "子号", standby: "待命", free: "空闲", disabled: "停用" };
   const kindLabels = { invited: "待接受邀请", unmanaged: "官方已加入 · 未接入", history: "历史成员", unassigned: "未分配" };
   const retryCodes = new Set(["rate_limited", "temporary_failure", "parse_error"]);
-  let api, payload, bound = false, deepLinked = false, refreshTimer;
+  let api, payload, bound = false, deepLinked = false, poller;
+  let lastUpdated = null, syncErrors = "";
+  function reportSyncErrors(items = []) {
+    syncErrors = items.filter(item => !item.ok).map(item => `团队 #${item.workspace_id}：${item.error_code === "credentials_missing" ? "缺少母号凭据" : "暂时无法同步"}`).join("；");
+    const node = document.getElementById("management-sync-status");
+    if (node) { node.hidden = !syncErrors; node.textContent = syncErrors ? `上次批量提交：${syncErrors}` : ""; }
+  }
   let collapsed = new Set();
   try { collapsed = new Set(JSON.parse(localStorage.getItem("team48:collapsed-teams") || "[]")); } catch (_) {}
   const el = (tag, cls, text) => {
@@ -99,6 +105,14 @@
     const label = canOpen ? button(account.email || account.name, b => openAccount(account, b, group), "management-email", `account:${id}`) : el("span", "management-email", account.email || account.name || "未知账号");
     label.title = account.email || "";
     identityText.append(label, el("small", "muted", [purposeLabels[account.purpose], kindLabels[account.kind], !group ? account.workspace || account.workspace_name : null].filter(Boolean).join(" · ")));
+    const subscription = subscriptionLabel(account, group);
+    if (subscription) {
+      const tier = el("small", "management-subscription", subscription);
+      tier.title = account.subscription?.observed_at
+        ? `观察于 ${account.subscription.observed_at} · ${account.subscription.source || "来源未知"}`
+        : "席位档位尚无已验证证据";
+      identityText.append(tier);
+    }
     identityWrap.append(avatar, identityText); identity.append(identityWrap);
     const health = el("td"); health.append(status(account));
     if (account.queued) health.append(el("small", "muted", "检查已排队 / 运行中"));
@@ -133,8 +147,17 @@
     head.append(tr); const body = el("tbody"); items.forEach(a => body.append(accountRow(a, group)));
     table.append(colgroup, head, body); scroll.append(table); return scroll;
   }
+  function subscriptionLabel(account, group) {
+    if (!group && !account.workspace_id && account.contexts?.length > 1) return "席位按团队查看";
+    const info = account.subscription || group?.subscription;
+    if (!info || info.plan_family !== "business") return "";
+    const verified = ["verified", "fresh", "stale"].includes(info.status) && Boolean(info.observed_at);
+    const tier = verified ? ({ standard: "Standard", premium: "Premium" }[info.seat_tier] || "档位未识别") : "档位未识别";
+    return `Business · ${tier}${info.status === "stale" ? " · 数据待刷新" : ""}`;
+  }
   function groupNode(group, items, params) {
     const section = el("section", "management-group");
+    section.dataset.workspace = String(group.id);
     const header = el("header", "management-group-head");
     const closed = collapsed.has(String(group.id)) && !params.get("q");
     const toggle = button(closed ? "›" : "⌄", () => {
@@ -158,8 +181,23 @@
       money.append(el("small", "muted", `${usage.label} · Sub2API`), el("span", "tabular", `用户计费 ${fmt.formatCost(usage.user_cost)} / 成本 ${fmt.formatCost(usage.account_cost)}`));
       if (usage.stale || usage.coverage?.synced < usage.coverage?.total) money.append(el("small", "text-warning", `${usage.coverage ? `覆盖 ${usage.coverage.synced}/${usage.coverage.total}` : ""}${usage.stale ? " · 含旧快照" : ""}`));
     }
-    header.append(toggle, el("span", "management-team-icon", String(group.display_name || group.name || "T").slice(0, 1)), title, money,
-      button("管理团队", b => { setQuery("workspace", group.id); api.openWorkspaceDetails(b, group); }, "button", `team:${group.id}`));
+    const activeSync = group.sync_operation;
+    const sync = button(activeSync ? (activeSync.state === "queued" ? "已排队" : "同步中") : "同步本团队", b => api.entityActions.workspace.find(a => a.id === "workspace.sync").run(group, b), "button team-sync-button", `sync:${group.id}`);
+    sync.dataset.workspaceSync = String(group.id);
+    sync.disabled = Boolean(activeSync);
+    sync.setAttribute("aria-busy", String(Boolean(activeSync)));
+    sync.setAttribute("aria-label", `${group.display_name || group.name}：${activeSync ? "同步已排队或运行中" : "同步本团队"}`);
+    sync.title = activeSync ? "等待后台同步完成" : "同步本团队的官方成员";
+    if (activeSync || group.last_sync_operation) {
+      const op = activeSync || group.last_sync_operation;
+      const outcome = el("a", `group-sync-outcome${["failed", "partial"].includes(op.state) ? " text-warning" : ""}`,
+        activeSync ? (activeSync.state === "queued" ? "同步已排队" : op.stage_label) : ({ success: "最近同步成功", failed: "最近同步失败，保留上次快照", partial: "最近同步部分完成", cancelled: "最近同步已取消", manual_required: "同步需人工确认" }[op.state] || "最近同步记录"));
+      outcome.href = `/operations?op=${encodeURIComponent(op.id)}`;
+      title.append(outcome);
+    }
+    const controls = el("div", "management-team-controls");
+    controls.append(sync, button("管理团队", b => { setQuery("workspace", group.id); api.openWorkspaceDetails(b, group); }, "button", `team:${group.id}`));
+    header.append(toggle, el("span", "management-team-icon", String(group.display_name || group.name || "T").slice(0, 1)), title, money, controls);
     const body = el("div"); body.id = `management-team-${group.id}`; body.hidden = closed; body.append(table(items, group));
     section.append(header, body); return section;
   }
@@ -170,6 +208,7 @@
     const focusKey = document.activeElement?.dataset.focusKey;
     const scrolls = new Map([...root.querySelectorAll("[data-scroll-key]")].map(n => [n.dataset.scrollKey, n.scrollLeft]));
     const scrollY = window.scrollY;
+    const previousGroups = new Map([...root.querySelectorAll(".management-group")].map(n => [n.dataset.workspace, n]));
     root.replaceChildren();
     document.querySelectorAll(".management-tabs [data-management-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.managementView === view)));
     for (const [key, value] of Object.entries(data.summary || {})) { const node = document.getElementById(`summary-${key}`); if (node) node.textContent = value; }
@@ -192,7 +231,11 @@
         const items = (group.members || []).filter(a => matches(a, group, params));
         if (!items.length && ((group.members || []).length || params.get("q") || params.get("health"))) continue;
         if (params.get("team") && String(group.id) !== params.get("team")) continue;
-        root.append(groupNode(group, items, params)); shown += items.length;
+        const renderKey = JSON.stringify([group, params.toString(), collapsed.has(String(group.id))]);
+        const old = previousGroups.get(String(group.id));
+        const node = old?._renderKey === renderKey ? old : groupNode(group, items, params);
+        node._renderKey = renderKey;
+        root.append(node); shown += items.length;
       }
       const free = (data.unassigned || []).filter(a => matches(a, null, params));
       if (free.length) { root.append(el("h2", "management-section-title", `未分配 · ${free.length}`), table(free)); shown += free.length; }
@@ -237,6 +280,15 @@
   function decorateDetails(account, body, trigger) {
     const advanced = el("details", "management-advanced"); advanced.append(el("summary", "", "身份、凭证与 Sub2API 详情"));
     while (body.firstChild) advanced.append(body.firstChild);
+    if (account.subscription) {
+      const section = el("section", "sheet-section"); section.append(el("h3", "", "订阅与席位"));
+      const info = account.subscription;
+      const facts = el("dl", "kv");
+      for (const [label, value] of [["档位", subscriptionLabel(account) || "未识别"], ["来源", info.source || "未知"], ["观察时间", info.observed_at ? api.relativeTime(info.observed_at) : "尚未验证"], ["Sub2API 计划", account.plan_sync?.status === "success" ? "已同步" : "未验证，未写入"]]) {
+        facts.append(el("dt", "", label), el("dd", "", value));
+      }
+      section.append(facts); body.append(section);
+    }
     const block = el("section"); block.id = "account-health-content";
     block.dataset.account = account.id; block.dataset.workspace = account.workspace_id || ""; block.append(healthDetails(account));
     body.append(block);
@@ -320,12 +372,28 @@
           api.toast(`已排队 ${result.queued} 个检查任务`, "success"); await boot(api);
         } catch (error) { api.toast(api.friendlyError(error), "error"); } finally { b.disabled = false; }
       });
-      refreshTimer = setInterval(() => {
-        if (document.visibilityState === "visible" && document.getElementById("action-menu")?.hidden) boot(api).catch(error => api.showPageError(api.friendlyError(error)));
-      }, 45000);
-      window.addEventListener("pageshow", event => { if (event.persisted) boot(api).catch(error => api.showPageError(api.friendlyError(error))); });
     }
-    const data = await api.fetchEntity("account-portfolio", "/api/accounts/portfolio");
+    if (!poller) poller = window.Team48Polling.createPoller({
+      read: async signal => {
+        const response = await fetch("/api/accounts/portfolio", { headers: { Accept: "application/json" }, signal, cache: "no-store" });
+        if (!response.ok) throw new Error("账号状态暂时无法刷新");
+        return response.json();
+      },
+      onData: acceptData,
+      onError: error => {
+        const status = document.getElementById("management-sync-status");
+        status.hidden = false;
+        status.textContent = `${api.friendlyError(error)}${lastUpdated ? `，上次更新于 ${lastUpdated}` : ""}`;
+      },
+      delay: data => data.groups.some(g => g.sync_operation) ? 2000 : 15000,
+    });
+    return poller.refresh();
+  }
+  function acceptData(data) {
+    lastUpdated = new Date().toLocaleTimeString("zh-CN");
+    const status = document.getElementById("management-sync-status");
+    status.hidden = !syncErrors;
+    status.textContent = syncErrors ? `上次批量提交：${syncErrors}` : "";
     api.cache.portfolio = data; api.cache.items = data.accounts || []; api.cache.kind = "account";
     render(data);
     if (!deepLinked) {
@@ -337,5 +405,5 @@
     }
   }
   const closeSelection = () => { setQuery("account", ""); setQuery("workspace", ""); };
-  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, closeSelection };
+  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, closeSelection, subscriptionLabel, reportSyncErrors, refresh: () => poller?.refresh() };
 })();
