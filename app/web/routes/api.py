@@ -149,6 +149,17 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=502, detail=result.get("error") or "proxy catalog unavailable")
         return _accepted(result)
 
+    @router.post("/workspaces/{workspace_id}/replenish", status_code=status.HTTP_202_ACCEPTED)
+    async def replenish_workspace(
+        workspace_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.start_workspace_replenish(db, workspace_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
     @router.post("/workspaces/{workspace_id}/rotate", status_code=status.HTTP_202_ACCEPTED)
     async def rotate_workspace_member(
         workspace_id: int,

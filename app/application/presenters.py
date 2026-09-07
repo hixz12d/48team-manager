@@ -50,6 +50,7 @@ OPERATION_TYPE_LABELS = {
     "auth_probe": "检查授权",
     "reauth": "授权",
     "onboard": "拉人",
+    "replenish": "补充 Team",
     "rotate": "轮转",
     "kick_member": "踢出成员",
     "purge_child": "永久删除子号",
@@ -89,6 +90,13 @@ BUSINESS_STEP_LABELS = {
     "auth": "刷新授权",
     "quota": "刷新额度",
     "probe": "检测",
+    "hme": "领取邮箱",
+    "mailbox": "绑定邮箱",
+    "authorizing": "自动授权",
+    "authorized": "已授权",
+    "auth_failed": "授权失败",
+    "blocked": "已拦截",
+    "hme_failed": "领取邮箱失败",
 }
 
 

@@ -40,6 +40,7 @@ class ConsoleActionsContractTests(unittest.TestCase):
             for action in (
                 "workspace.sync",
                 "workspace.manage",
+                "team.replenish",
                 "team.member.invite",
                 "team.member.link",
                 "account.refresh",

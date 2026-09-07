@@ -102,6 +102,13 @@ class Batch3ApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 404)
 
             with patch(
+                "app.application.console_actions.replenish_service.run",
+                new=AsyncMock(return_value={"success": True, "status": "success"}),
+            ):
+                response = client.post("/api/workspaces/999/replenish")
+            self.assertEqual(response.status_code, 404)
+
+            with patch(
                 "app.application.console_actions.rotate_service.run_rotate_saga",
                 new=AsyncMock(return_value={"success": True, "status": "success"}),
             ):
@@ -159,6 +166,7 @@ class Batch3ApiTests(unittest.TestCase):
             self.assertIn("attention", payload)
 
             js = client.get("/static/js/app.js").text
+            self.assertIn("team.replenish", js)
             self.assertIn("team.member.invite", js)
             self.assertIn("team.member.link", js)
             self.assertIn("phone.reset-cooldown", js)

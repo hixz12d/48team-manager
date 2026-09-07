@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import verify_bindings
 from app.application.onboard import onboard_service
+from app.application.replenish import replenish_service
 from app.application.operations import operation_store, serialize_operation
 from app.application.quota import quota_service
 from app.application.reauth import reauth_service
@@ -50,6 +51,7 @@ SAFE_RETRY_TYPES = {
 }
 UNSAFE_RETRY_TYPES = {
     "onboard",
+    "replenish",
     "rotate",
     "reauth",
     "free_register",
@@ -597,6 +599,38 @@ async def start_workspace_onboard(
         skip_invite=skip_invite,
         role=role,
         job_id=operation.public_id,
+        in_test=False,
+    )
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
+async def start_workspace_replenish(
+    db: AsyncSession,
+    workspace_id: int,
+    *,
+    role: str = "owner",
+) -> dict[str, Any]:
+    workspace = await db.get(Workspace, int(workspace_id))
+    if workspace is None:
+        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
+    operation = await operation_store.create(
+        db,
+        op_type="replenish",
+        workspace_id=workspace.id,
+        input_payload={
+            "workspace_id": workspace.id,
+            "requested_role": parse_invite_role(role),
+            "mode": "replenish_one",
+        },
+    )
+    await db.commit()
+    result = await replenish_service.run(
+        db,
+        workspace_id=workspace.id,
+        job_id=operation.public_id,
+        role=role,
         in_test=False,
     )
     await operation_store.finish(db, operation, result)

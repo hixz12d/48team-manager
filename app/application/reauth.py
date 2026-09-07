@@ -269,6 +269,187 @@ class ReauthService:
             "proxy_profile_id": profile_id,
         }
 
+    async def run_immediate_reauth(
+        self,
+        db: AsyncSession,
+        account: Account,
+        *,
+        now: datetime | None = None,
+        progress_job_id: str | None = None,
+        skip_browser_busy: bool = False,
+    ) -> dict[str, Any]:
+        """Run auto reauth in this request. Do not queue the disabled dispatcher."""
+        stamp = now or utcnow()
+        email = normalize_email(account.email)
+        gate = await automation_gate(db, email=email)
+        if not gate.get("allow"):
+            await self.mark_outcome(db, account, success=False, error_code=str(gate.get("error_code") or "identity_unbound"), now=stamp)
+            await db.commit()
+            return {
+                "success": False,
+                "skipped": True,
+                "error_code": gate.get("error_code") or "identity_unbound",
+                "error": gate.get("reason") or "身份不准，停止自动重授权",
+                "status": reauth_terminal_status(success=False, error_code=str(gate.get("error_code") or "")),
+            }
+        password = decrypt_secret(account.password_encrypted)
+        context = await self.execution_context(db, account)
+        pickup = context["pickup_url"]
+        proxy = context["proxy"]["url"]
+        plan = auto_reauth_plan(
+            email=email,
+            role="child",
+            password=password,
+            pickup_url=pickup,
+            cf_ready=context["mailbox"]["effective_ready"],
+            proxy=proxy,
+        )
+        if not plan.get("auto"):
+            set_auth_state(account, "oauth_required")
+            await db.commit()
+            return {"success": False, "skipped": True, "error_code": "reauth_manual", "error": plan.get("reason")}
+        if not skip_browser_busy:
+            busy = await operation_store.browser_busy(db)
+            if busy and busy.public_id != progress_job_id:
+                return {
+                    "success": False,
+                    "skipped": True,
+                    "job_id": busy.public_id,
+                    "error_code": "browser_busy",
+                    "error": f"已有浏览器任务 {busy.email or busy.public_id}",
+                }
+        auth = chatgpt_client.create_oauth_authorize_url(
+            client_id=oauth_sessions.CLIENT_ID or DEFAULT_OAUTH_CLIENT_ID,
+            redirect_uri=oauth_sessions.REDIRECT_URI or OAUTH_REDIRECT_URI,
+            login_hint=email,
+        )
+        session = oauth_sessions.create_session(
+            team_id=int(account.source_team_id or 0),
+            email=email,
+            authorize=auth,
+            role="child",
+            mode="auto",
+            proxy=proxy,
+            proxy_source=context["proxy"]["source"],
+            sub2api_proxy_id=context["proxy"]["remote_id"],
+            password=password,
+        )
+        if progress_job_id:
+            frozen, _profile_id = await proxy_profile_service.freeze(
+                db,
+                job_id=progress_job_id,
+                form_proxy=proxy,
+                child_proxy=proxy,
+                mother_proxy="",
+            )
+            if frozen:
+                proxy = frozen
+                oauth_sessions.mark_session(session["ticket"], proxy=proxy)
+        oauth_sessions.mark_session(
+            session["ticket"],
+            job_id=progress_job_id or "",
+            status="running",
+            message=plan["reason"],
+        )
+        stored_session = oauth_sessions.get_session(session["ticket"])
+        if stored_session is None:
+            raise OAuthSessionError("无法保存 OAuth 会话", error_code="oauth_session_invalid")
+        await oauth_session_store.persist(
+            db,
+            stored_session,
+            purpose="account_reauth",
+            account_id=account.id,
+            credential_revision=int(account.credential_revision or 1),
+        )
+        await db.commit()
+        ticket = session["ticket"]
+
+        def on_stage(stage: str, message: str) -> None:
+            oauth_sessions.mark_session(ticket, status="running", message=message)
+
+        cf_config = await load_cf_config(db)
+        hme_config = await load_hme_config(db)
+        mailbox_ready = mailbox_readiness_snapshot(account)["ready"]
+        use_cloudflare = (not pickup) and (not mailbox_ready) and bool(cf_config["admin_password"])
+        browser = await browser_slot.run_reauth_isolated(
+            email=account.email,
+            password=password,
+            authorize_url=str(session.get("authorize_url") or ""),
+            proxy=proxy,
+            pickup_url=pickup,
+            phone="",
+            sms_url="",
+            use_cloudflare=use_cloudflare,
+            cf_base_url=cf_config["base_url"],
+            cf_address=cf_config["address"],
+            cf_admin_password=cf_config["admin_password"],
+            hme_base_url=hme_config.base_url if mailbox_ready else "",
+            hme_service_token=hme_config.service_token if mailbox_ready else "",
+            hme_account_id=str(account.hme_account_id or "") if mailbox_ready else "",
+            on_stage=on_stage,
+        )
+        if not browser.get("ok"):
+            code = str(browser.get("error_code") or "browser_failed")
+            status = reauth_terminal_status(success=False, error_code=code)
+            await self.mark_outcome(db, account, success=False, error_code=code)
+            await db.commit()
+            return {
+                "success": False,
+                "error": browser.get("error") or "自动授权失败",
+                "error_code": code,
+                "status": status,
+            }
+        try:
+            stored, parsed = await oauth_session_store.begin_exchange(
+                db,
+                ticket,
+                str(browser.get("callback_url") or ""),
+                account_id=account.id,
+                purpose="account_reauth",
+            )
+        except OAuthSessionError as exc:
+            await db.commit()
+            return {"success": False, "error": str(exc), "error_code": exc.error_code, "status": "manual_required"}
+        await db.refresh(account)
+        if stored.credential_revision != int(account.credential_revision or 1):
+            await oauth_session_store.finish(db, stored, success=False)
+            await db.commit()
+            return {
+                "success": False,
+                "error": "凭证版本已变化",
+                "error_code": "credential_revision_conflict",
+                "status": "manual_required",
+            }
+        exchange_context = oauth_session_store.exchange_context(stored)
+        exchanged = await chatgpt_client.exchange_oauth_code(
+            code=parsed["code"],
+            client_id=exchange_context["client_id"] or DEFAULT_OAUTH_CLIENT_ID,
+            redirect_uri=exchange_context["redirect_uri"] or OAUTH_REDIRECT_URI,
+            code_verifier=exchange_context["code_verifier"],
+            db_session=db,
+            identifier=account.email,
+        )
+        if not exchanged.get("success"):
+            await oauth_session_store.finish(db, stored, success=False)
+            code = str(exchanged.get("error_code") or "oauth_exchange_failed")
+            status = reauth_terminal_status(success=False, error_code=code)
+            await self.mark_outcome(db, account, success=False, error_code=code)
+            await db.commit()
+            return {
+                "success": False,
+                "error": exchanged.get("error") or "换票失败",
+                "error_code": code,
+                "status": status,
+            }
+        await auth_service.apply_tokens(account, exchanged)
+        await oauth_session_store.finish(db, stored, success=True)
+        oauth_sessions.pop_session(ticket)
+        await self.mark_outcome(db, account, success=True)
+        await db.commit()
+        from app.application.quota import quota_service
+        await quota_service.enqueue_after_credentials(db, account)
+        return {"success": True, "status": "success", "ticket": ticket, "message": "reauth complete"}
+
     async def start_manual_reauth(self, db: AsyncSession, account: Account) -> dict[str, Any]:
         email = normalize_email(account.email)
         role = "owner" if str(account.local_purpose or "") == "mother" else "child"

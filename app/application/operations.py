@@ -729,7 +729,7 @@ async def recover_stale_operations(session: AsyncSession) -> dict[str, Any]:
             row.state = "queued"
             row.current_step = "queued"
             row.started_at = None
-        elif row.op_type in {"workspace_sync", "reauth", "onboard", "rotate", "free_register", "reregister", "free"}:
+        elif row.op_type in {"workspace_sync", "reauth", "onboard", "replenish", "rotate", "free_register", "reregister", "free"}:
             await operation_store.finish(
                 session,
                 row,

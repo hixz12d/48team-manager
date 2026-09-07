@@ -95,6 +95,7 @@
     quota_probe: "额度刷新",
     reauth: "重新授权",
     onboard: "拉人",
+    replenish: "补充 Team",
     rotate: "轮转",
     workspace_sync: "同步官方成员",
     kick_member: "踢出成员",
@@ -137,6 +138,11 @@
     workspace_unavailable: "团队或母号已停用，未提交同步。",
     invite_lookup_unknown: "官方读取失败，未发送邀请。请同步后重试。",
     account_unavailable: "团队或账号已停用，未发送邀请。",
+    hme_empty: "HME 没有未占用别名，无法自动补人。",
+    hme_unconfigured: "HME 未配置，无法自动补人。",
+    team_full: "官方席位已满，无法再补人。",
+    browser_busy: "浏览器正在跑别的任务，请等它完成后再补。",
+    proxy_missing: "母号尚未配置静态 ISP 代理，无法自动补人。",
     token_revoked: "账号授权已失效，请重新授权。",
     token_invalidated: "账号授权已失效，请重新授权。",
     callback_invalid: "授权回调无效，请重新复制完整回调地址。",
@@ -1808,6 +1814,11 @@ function hmeRow(item) {
     ],
     team: [
       {
+        id: "team.replenish",
+        label: "补充 Team",
+        run: ({ workspace }, trigger) => replenishTeam(workspace, trigger),
+      },
+      {
         id: "team.member.invite",
         label: "邀请加入 Team",
         run: ({ workspace, values }, trigger) => inviteTeamMember(workspace, values, trigger),
@@ -2523,6 +2534,26 @@ function hmeRow(item) {
     return wrapper;
   }
 
+  async function replenishTeam(workspace, button) {
+    setButtonBusy(button, true, "补充中");
+    try {
+      const result = await postAction(`workspace-replenish-${workspace.id}`, `/api/workspaces/${workspace.id}/replenish`);
+      await handleActionResult(result, {
+        successMessage: result.message || "补充 Team 已完成",
+        refresh: false,
+        context: {
+          retry: result.partial && result.account_id
+            ? () => queueAutoReauth({ id: result.account_id, email: result.email, purpose: "child" })
+            : undefined,
+        },
+      });
+      await reloadTeamDetails();
+      return result;
+    } finally {
+      setButtonBusy(button, false);
+    }
+  }
+
   function canRotateWorkspace(workspace) {
       return workspace?.rotation?.eligible === true || workspace?.rotation_eligible === true || workspace?.can_rotate === true;
     }
@@ -2638,7 +2669,18 @@ function hmeRow(item) {
       list.className = "team-member-list";
       if (!rows.length) list.append(emptyState("没有子成员", "同步官方成员后，这里会显示当前 Team 成员。", true));
       else rows.forEach((row) => list.append(renderTeamMember(workspace, row)));
-      members.append(membersTitle, renderTeamInviteControls(workspace), list);
+      const replenish = document.createElement("button");
+      replenish.type = "button";
+      replenish.className = "button primary compact";
+      replenish.textContent = "补充 Team";
+      replenish.addEventListener("click", () => {
+        const action = (entityActions.team || []).find((candidate) => candidate.id === "team.replenish");
+        return action?.run({ workspace }, replenish);
+      });
+      const memberToolbar = document.createElement("div");
+      memberToolbar.className = "team-invite-controls";
+      memberToolbar.append(replenish, renderTeamInviteControls(workspace));
+      members.append(membersTitle, memberToolbar, list);
       body.append(members);
       if (workspace.former_members?.length) {
         const former = document.createElement("section");

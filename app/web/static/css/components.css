@@ -1129,9 +1129,10 @@
 }
 
 .team-invite-controls {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--space-xs);
-  justify-items: start;
+  align-items: start;
 }
 
 .team-invite-form[hidden] {
