@@ -20,6 +20,7 @@
     ["reauth", document.getElementById("reauth-sheet")],
     ["phone-import", document.getElementById("phone-import-sheet")],
     ["proxy-edit", document.getElementById("proxy-edit-sheet")],
+    ["confirm", document.getElementById("confirm-sheet")],
   ]);
   const sheet = overlayRegistry.get("entity");
   const menu = document.getElementById("action-menu");
@@ -503,6 +504,43 @@
 
   function confirmDanger(message) {
     return window.confirm(message);
+  }
+
+  let confirmResolver = null;
+  function finishConfirm(ok) {
+    const resolve = confirmResolver;
+    confirmResolver = null;
+    if (overlayState.previousContext) restoreOverlayContext();
+    else closeOverlay();
+    resolve?.(Boolean(ok));
+  }
+  function openConfirm({ title, subtitle = "", message = "", hint = "", items = [], confirmLabel = "确认删除" } = {}, trigger) {
+    return new Promise((resolve) => {
+      confirmResolver = resolve;
+      const titleEl = document.getElementById("confirm-title");
+      const subtitleEl = document.getElementById("confirm-subtitle");
+      const messageEl = document.getElementById("confirm-message");
+      const hintEl = document.getElementById("confirm-hint");
+      const listEl = document.getElementById("confirm-list");
+      const submit = document.getElementById("confirm-submit");
+      if (titleEl) titleEl.textContent = title || "确认操作";
+      if (subtitleEl) subtitleEl.textContent = subtitle;
+      if (messageEl) messageEl.textContent = message;
+      if (hintEl) { hintEl.hidden = !hint; hintEl.textContent = hint || ""; }
+      if (listEl) {
+        listEl.replaceChildren();
+        listEl.hidden = !items.length;
+        items.forEach((text) => {
+          const li = document.createElement("li");
+          li.textContent = text;
+          listEl.append(li);
+        });
+      }
+      if (submit) submit.textContent = confirmLabel;
+      const options = { returnFocus: trigger, context: { kind: "confirm" }, initialFocus: "[data-close-confirm]" };
+      if (getActiveOverlay() && getActiveOverlay() !== "confirm") replaceOverlay("confirm", options);
+      else openOverlay("confirm", options);
+    });
   }
 
   function focusableNodes(root) {
@@ -1916,17 +1954,20 @@ function hmeRow(item) {
         id: "account.delete-local",
         label: "永久删除本地档案",
         danger: true,
-        visible: (item) => Boolean(item.id) && item.kind === "unassigned" && item.purpose !== "mother" && !item.contexts?.length,
-        run: async (item) => {
-          const email = window.prompt(`永久删除 ${item.email} 的本地档案？\n\n保存的凭据、额度快照和本地绑定将被删除，无法撤销。\n不会删除 ChatGPT、Sub2API 远端账号或 iCloud 别名。\n\n请输入完整邮箱确认：`);
-          if (email === null) return;
-          if (email.trim().toLowerCase() !== item.email.trim().toLowerCase()) {
-            toast("邮箱不匹配，未删除。", "error");
-            return;
-          }
+        visible: (item) => Boolean(item.can_delete_local),
+        run: async (item, trigger) => {
+          const ok = await openConfirm({
+            title: "永久删除本地档案",
+            subtitle: item.email,
+            message: "保存的凭据、额度快照和本地绑定将被删除，无法撤销。不会删除 ChatGPT、Sub2API 远端账号或 iCloud 别名。",
+            hint: "只删 Team48 本地档案。",
+            items: [item.email],
+            confirmLabel: "确认删除",
+          }, trigger);
+          if (!ok) return;
           const result = await fetchEntity(`account-delete-local-${item.id}`, `/api/accounts/${item.id}`, {
             method: "DELETE", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ confirmation_email: email.trim() }),
+            body: JSON.stringify({ confirm: true }),
           });
           closeSheet();
           toast(result.message, "success");
@@ -3746,7 +3787,7 @@ function hmeRow(item) {
   async function bootAccounts() {
       return window.Team48Accounts.boot({
         fetchEntity, postAction, startCurrentOperation, entityActions, menuButton,
-        openSheet, openWorkspaceDetails, openOverlay, openRegister, relativeTime, toast, friendlyError, showPageError,
+        openSheet, openWorkspaceDetails, openOverlay, openRegister, openConfirm, relativeTime, toast, friendlyError, showPageError,
         cache: pageCache,
       });
     }
@@ -4097,7 +4138,8 @@ function hmeRow(item) {
   overlayRegistry.forEach((overlay, name) => {
     overlay?.addEventListener("click", (event) => {
       if (event.target !== overlay) return;
-      if (name === "entity") closeSheet();
+      if (name === "confirm") finishConfirm(false);
+      else if (name === "entity") closeSheet();
       else closeOverlay();
     });
   });
@@ -4117,7 +4159,8 @@ function hmeRow(item) {
         closeMenu();
       } else if (getActiveOverlay()) {
         event.preventDefault();
-        if (getActiveOverlay() === "entity") closeSheet();
+        if (getActiveOverlay() === "confirm") finishConfirm(false);
+        else if (getActiveOverlay() === "entity") closeSheet();
         else closeOverlay();
       }
       document.body.classList.remove("nav-open");
@@ -4140,6 +4183,8 @@ function hmeRow(item) {
   });
   document.querySelector("[data-close-proxy-edit]")?.addEventListener("click", closeProxyEdit);
   document.getElementById("proxy-edit-form")?.addEventListener("submit", submitProxyEdit);
+  document.querySelectorAll("[data-close-confirm]").forEach((node) => node.addEventListener("click", () => finishConfirm(false)));
+  document.getElementById("confirm-submit")?.addEventListener("click", () => finishConfirm(true));
 
   window.Team48 = {
     abortEntity,

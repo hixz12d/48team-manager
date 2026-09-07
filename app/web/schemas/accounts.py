@@ -6,7 +6,13 @@ from app.domain.identity.ids import normalize_email
 
 class DeleteAccountRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    confirmation_email: str = Field(min_length=3, max_length=255)
+    confirm: Literal[True]
+
+
+class DeleteAccountsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm: Literal[True]
+    account_ids: list[int] = Field(min_length=1, max_length=50)
 
 
 class RegisterAccountRequest(BaseModel):

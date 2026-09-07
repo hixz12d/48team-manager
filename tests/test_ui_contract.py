@@ -77,6 +77,8 @@ class UIContractTests(unittest.TestCase):
             self.assertIn('id="register-form"', accounts)  # shared overlay still present
             self.assertIn("data-open-register", accounts)
             self.assertIn('id="reauth-sheet"', accounts)
+            self.assertIn('id="confirm-sheet"', accounts)
+            self.assertIn('id="account-selection-bar"', accounts)
             self.assertIn("reauth-authorize-url", accounts)
             workspaces = client.get("/workspaces").text
             self.assertIn('id="register-form"', workspaces)
@@ -166,6 +168,9 @@ class UIContractTests(unittest.TestCase):
             self.assertNotIn("closeModalOverlay", js)
             self.assertIn("overlayState", js)
             self.assertIn("function openOverlay", js)
+            self.assertIn("function openConfirm", js)
+            self.assertNotIn("window.prompt", js)
+            self.assertIn("/api/accounts/delete-local", client.get("/static/js/accounts-view.js").text)
             self.assertIn("function replaceOverlay", js)
             self.assertIn("function closeOverlay", js)
             self.assertIn("function restoreOverlayContext", js)
@@ -196,6 +201,8 @@ class UIContractTests(unittest.TestCase):
             components_css = client.get("/static/css/components.css").text
             self.assertIn(".team-member-row.is-selected", components_css)
             self.assertIn(".palette", components_css)
+            self.assertIn(".confirm-sheet", components_css)
+            self.assertIn(".confirm-panel", components_css)
             self.assertIn(".palette::backdrop", components_css)
             self.assertIn('id="command-palette"', workspaces)
 

@@ -10,6 +10,8 @@ from app.persistence.models.quota import CredentialLease, QuotaProbeState, Quota
 from app.persistence.models.resources import PhoneAttempt
 from app.persistence.models.sub2api import Sub2ApiUsageSnapshot
 
+BATCH_LIMIT = 50
+
 
 class AccountDeletionError(ValueError):
     def __init__(self, code, message, status=409):
@@ -18,7 +20,17 @@ class AccountDeletionError(ValueError):
         self.status = status
 
 
-async def delete_unassigned_account(db, account_id: int, confirmation_email: str):
+def can_delete_local_account(item: dict, *, kind: str | None = None) -> bool:
+    card_kind = kind or item.get("kind")
+    return bool(
+        item.get("id")
+        and card_kind == "unassigned"
+        and item.get("purpose") != "mother"
+        and not item.get("contexts")
+    )
+
+
+async def delete_unassigned_account(db, account_id: int):
     # Obtain the SQLite writer lock before checking guards, so queue claims cannot
     # interleave with the check-and-delete transaction. The caller commits/rolls back.
     await db.execute(update(Account).where(Account.id == account_id).values(version=Account.version))
@@ -26,8 +38,6 @@ async def delete_unassigned_account(db, account_id: int, confirmation_email: str
     if account is None:
         raise AccountDeletionError("not_found", "账号不存在或已删除。", 404)
     email = account.email.strip().lower()
-    if confirmation_email.strip().lower() != email:
-        raise AccountDeletionError("confirmation_mismatch", "确认邮箱不匹配，未删除。", 400)
     owned = await db.scalar(select(Workspace.id).where(Workspace.owner_account_id == account_id).limit(1))
     if account.local_purpose == "mother" or owned is not None:
         raise AccountDeletionError("account_is_owner", "母号或团队所有者不能从此入口删除。")
@@ -76,4 +86,40 @@ async def delete_unassigned_account(db, account_id: int, confirmation_email: str
     await db.execute(update(PhoneAttempt).where(PhoneAttempt.account_id == account_id).values(account_id=None))
     # Preserve HME/phone occupancy and operation audit history; these are not free resources.
     await db.execute(delete(Account).where(Account.id == account_id))
-    return {"ok": True, "deleted_account_id": account_id, "message": "本地账号档案已永久删除，远端账号及别名未改动。"}
+    return {
+        "ok": True,
+        "deleted_account_id": account_id,
+        "email": account.email,
+        "message": "本地账号档案已永久删除，远端账号及别名未改动。",
+    }
+
+
+async def delete_unassigned_accounts(db, account_ids: list[int]):
+    ids = list(dict.fromkeys(int(account_id) for account_id in account_ids))
+    if not ids:
+        raise AccountDeletionError("empty_selection", "请先选择要删除的账号。", 400)
+    if len(ids) > BATCH_LIMIT:
+        raise AccountDeletionError("too_many", f"一次最多删除 {BATCH_LIMIT} 个账号。", 400)
+    deleted = []
+    failed = []
+    for account_id in ids:
+        try:
+            result = await delete_unassigned_account(db, account_id)
+            await db.commit()
+            deleted.append({"account_id": result["deleted_account_id"], "email": result["email"]})
+        except AccountDeletionError as exc:
+            await db.rollback()
+            failed.append({"account_id": account_id, "error_code": exc.code, "message": str(exc)})
+    if deleted and not failed:
+        message = f"已永久删除 {len(deleted)} 个本地档案，远端账号及别名未改动。"
+    elif deleted:
+        message = f"已删除 {len(deleted)} 个本地档案，{len(failed)} 个未删除。"
+    else:
+        message = failed[0]["message"] if len(failed) == 1 else f"{len(failed)} 个账号都未删除。"
+    return {
+        "ok": bool(deleted) and not failed,
+        "partial": bool(deleted and failed),
+        "deleted": deleted,
+        "failed": failed,
+        "message": message,
+    }

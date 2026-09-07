@@ -158,6 +158,11 @@
             <button type="button" class="button" data-action-page="workspace-sync-all" title="同步全部团队的官方成员"><span aria-hidden="true">↻</span> 同步全部团队</button>
             <span class="toolbar-count muted" id="accounts-count"></span>
           </div>
+          <div id="account-selection-bar" class="management-selection" hidden>
+            <span id="account-selection-count">已选 0 个</span>
+            <button type="button" class="button" id="account-selection-clear">取消选择</button>
+            <button type="button" class="button danger" id="account-selection-delete">永久删除本地档案</button>
+          </div>
           <p id="management-sync-status" class="management-sync-status" role="status" hidden></p>
           <div id="accounts-portfolio" class="management-list" aria-live="polite"></div>
           <div class="table-scroll">
@@ -592,6 +597,24 @@
           <button class="button primary" type="submit" id="proxy-edit-submit">保存</button>
         </div>
       </form>
+    </div>
+  </div>
+  <div class="confirm-sheet" id="confirm-sheet" hidden>
+    <div class="confirm-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <header>
+        <div>
+          <strong id="confirm-title">确认操作</strong>
+          <p class="muted" id="confirm-subtitle"></p>
+        </div>
+        <button type="button" class="button ghost" data-close-confirm>取消</button>
+      </header>
+      <p id="confirm-message"></p>
+      <ul id="confirm-list" class="confirm-list"></ul>
+      <p class="hint" id="confirm-hint"></p>
+      <div class="confirm-actions">
+        <button type="button" class="button" data-close-confirm>取消</button>
+        <button type="button" class="button danger" id="confirm-submit">确认删除</button>
+      </div>
     </div>
   </div>
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>

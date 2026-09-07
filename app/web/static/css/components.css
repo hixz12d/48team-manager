@@ -729,9 +729,47 @@
   to { opacity: 1; }
 }
 
-.sheet[hidden], .menu[hidden] {
+.sheet[hidden], .menu[hidden], .confirm-sheet[hidden] {
   display: none !important;
 }
+
+.confirm-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.64);
+  isolation: isolate;
+}
+.confirm-panel {
+  position: relative;
+  z-index: 1;
+  width: min(440px, 100%);
+  max-height: min(80vh, 640px);
+  overflow: auto;
+  background: #ffffff;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-overlay);
+  padding: 20px 22px 18px;
+  display: grid;
+  gap: 12px;
+  isolation: isolate;
+}
+.confirm-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.confirm-panel header strong { font-size: 16px; }
+.confirm-panel header .muted, .confirm-panel #confirm-message { overflow-wrap: anywhere; }
+.confirm-list { margin: 0; padding-left: 18px; max-height: 180px; overflow: auto; }
+.confirm-list li { overflow-wrap: anywhere; font-size: 13px; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 
 .menu {
   position: fixed;

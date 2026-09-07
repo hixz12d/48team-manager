@@ -20,6 +20,7 @@ from app.core.time import isoformat
 from app.domain.identity import MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import management_role
+from app.application.account_deletion import can_delete_local_account
 from app.persistence.repositories import identity as identity_repo
 
 
@@ -69,6 +70,7 @@ def _account_card(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
         **auth_status,
         **({"needs_auth": item["health"]["needs_auth"], "auth_action": item.get("auth_action")} if item.get("health") else {}),
         "kind": kind,
+        "can_delete_local": can_delete_local_account(item, kind=kind),
         "has_access_token": bool(item.get("has_access_token")),
         "quota_risk": _quota_risk(quota),
         "usage": item.get("usage"),

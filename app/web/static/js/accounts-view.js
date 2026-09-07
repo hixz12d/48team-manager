@@ -12,7 +12,21 @@
     if (node) { node.hidden = !syncErrors; node.textContent = syncErrors ? `上次批量提交：${syncErrors}` : ""; }
   }
   let collapsed = new Set();
+  let selected = new Set();
   try { collapsed = new Set(JSON.parse(localStorage.getItem("team48:collapsed-teams") || "[]")); } catch (_) {}
+  const canDelete = account => Boolean(account?.can_delete_local);
+  const selectedItems = () => (payload?.accounts || []).filter(account => selected.has(account.id) && canDelete(account));
+  function updateSelectionBar() {
+    const valid = new Set(selectedItems().map(account => account.id));
+    selected = new Set([...selected].filter(id => valid.has(id)));
+    const bar = document.getElementById("account-selection-bar");
+    const count = document.getElementById("account-selection-count");
+    const del = document.getElementById("account-selection-delete");
+    const items = selectedItems();
+    if (bar) bar.hidden = items.length === 0;
+    if (count) count.textContent = `已选 ${items.length} 个`;
+    if (del) del.disabled = items.length === 0;
+  }
   const el = (tag, cls, text) => {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -97,6 +111,17 @@
     const row = el("tr");
     const id = `${account.id || account.email}:${account.workspace_id || "none"}`;
     row.dataset.account = String(account.id || "");
+    const selectCell = el("td", "management-select");
+    if (canDelete(account)) {
+      const box = el("input"); box.type = "checkbox"; box.checked = selected.has(account.id);
+      box.setAttribute("aria-label", `选择 ${account.email}`);
+      box.addEventListener("click", event => event.stopPropagation());
+      box.addEventListener("change", () => {
+        if (box.checked) selected.add(account.id); else selected.delete(account.id);
+        render(payload);
+      });
+      selectCell.append(box);
+    }
     const identity = el("td");
     const identityWrap = el("div", "management-identity");
     const avatar = el("span", "management-avatar", (purposeLabels[account.purpose] || "外").slice(0, 1));
@@ -134,15 +159,28 @@
       }, `button${account.health?.needs_auth ? " danger" : ""}`, `primary:${id}`);
       actions.append(primary, api.menuButton("account", account));
     } else if (group) actions.append(button("管理成员", b => api.openWorkspaceDetails(b, group), "button", `remote:${id}`));
-    actionCell.append(actions); row.append(identity, health, quotaCell, money, time, actionCell);
+    actionCell.append(actions); row.append(selectCell, identity, health, quotaCell, money, time, actionCell);
     return row;
   }
   function table(items, group) {
     const scroll = el("div", "management-table-scroll"); scroll.tabIndex = 0; scroll.setAttribute("aria-label", "账号明细");
     scroll.dataset.scrollKey = group ? `team-${group.id}` : "all";
     const table = el("table", "management-table");
-    const colgroup = el("colgroup"); [27, 17, 18, 14, 12, 12].forEach(width => { const col = el("col"); col.style.width = `${width}%`; colgroup.append(col); });
+    const colgroup = el("colgroup"); [4, 25, 16, 17, 13, 12, 13].forEach(width => { const col = el("col"); col.style.width = `${width}%`; colgroup.append(col); });
     const head = el("thead"); const tr = el("tr");
+    const selectable = items.filter(canDelete);
+    const selectHead = el("th", "management-select"); selectHead.scope = "col";
+    if (selectable.length) {
+      const box = el("input"); box.type = "checkbox"; box.setAttribute("aria-label", "全选可删除账号");
+      box.checked = selectable.every(account => selected.has(account.id));
+      box.indeterminate = selectable.some(account => selected.has(account.id)) && !box.checked;
+      box.addEventListener("change", () => {
+        selectable.forEach(account => box.checked ? selected.add(account.id) : selected.delete(account.id));
+        render(payload);
+      });
+      selectHead.append(box);
+    }
+    tr.append(selectHead);
     ["账号 / 本地用途", "授权与检测", "官方额度 · 已用", "Sub2API 用户计费", "最近检查", "操作"].forEach((text, i) => { const th = el("th", i === 3 || i === 5 ? "num" : "", text); th.scope = "col"; tr.append(th); });
     head.append(tr); const body = el("tbody"); items.forEach(a => body.append(accountRow(a, group)));
     table.append(colgroup, head, body); scroll.append(table); return scroll;
@@ -255,6 +293,7 @@
     for (const node of root.querySelectorAll("[data-scroll-key]")) node.scrollLeft = scrolls.get(node.dataset.scrollKey) || 0;
     if (focusKey) [...root.querySelectorAll("[data-focus-key]")].find(n => n.dataset.focusKey === focusKey)?.focus({ preventScroll: true });
     window.scrollTo({ top: scrollY });
+    updateSelectionBar();
     refreshDetails();
   }
   function healthDetails(account) {
@@ -371,6 +410,29 @@
           for (const id of result.operation_ids || []) api.startCurrentOperation(`quota:${id}`, { operation_id: id, status: "queued" });
           api.toast(`已排队 ${result.queued} 个检查任务`, "success"); await boot(api);
         } catch (error) { api.toast(api.friendlyError(error), "error"); } finally { b.disabled = false; }
+      });
+      document.getElementById("account-selection-clear")?.addEventListener("click", () => { selected.clear(); render(payload); });
+      document.getElementById("account-selection-delete")?.addEventListener("click", async event => {
+        const items = selectedItems();
+        if (!items.length) return;
+        const ok = await api.openConfirm({
+          title: "永久删除本地档案",
+          subtitle: `已选 ${items.length} 个账号`,
+          message: "保存的凭据、额度快照和本地绑定将被删除，无法撤销。不会删除 ChatGPT、Sub2API 远端账号或 iCloud 别名。",
+          hint: "只删 Team48 本地档案。一次最多 50 个。",
+          items: items.map(account => account.email),
+          confirmLabel: `确认删除 ${items.length} 个`,
+        }, event.currentTarget);
+        if (!ok) return;
+        const result = await api.postAction("account-delete-local-batch", "/api/accounts/delete-local", {
+          confirm: true, account_ids: items.map(account => account.id),
+        });
+        const deleted = new Set((result.deleted || []).map(item => item.account_id));
+        deleted.forEach(id => selected.delete(id));
+        const failed = result.failed || [];
+        api.toast(result.message || (failed.length ? "部分账号未删除" : "已删除"), failed.length ? "warning" : "success");
+        if (failed.length) api.toast(failed.map(item => item.message).join("；"), "error");
+        await boot(api);
       });
     }
     if (!poller) poller = window.Team48Polling.createPoller({
