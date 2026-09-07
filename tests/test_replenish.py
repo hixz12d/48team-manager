@@ -141,6 +141,26 @@ class ReplenishTests(unittest.IsolatedAsyncioTestCase):
         count = list((await self.session.execute(select(Operation))).scalars())
         self.assertEqual(len(count), 0)
 
+    async def test_bind_account_phone_stores_number(self):
+        child = Account(
+            email="alias@icloud.com",
+            official_plan="unknown",
+            local_purpose="child",
+            operational_state="active",
+            proxy=PROXY,
+        )
+        self.session.add(child)
+        await self.session.commit()
+        result = await console_actions.bind_account_phone(
+            self.session,
+            child.id,
+            "+13657403674----https://api668.com/sms/by_key?key=test",
+        )
+        self.assertTrue(result["ok"])
+        await self.session.refresh(child)
+        self.assertEqual(child.phone, "+13657403674")
+        self.assertTrue(str(child.sms_url).startswith("https://api668.com/sms/by_key"))
+
 
 if __name__ == "__main__":
     unittest.main()

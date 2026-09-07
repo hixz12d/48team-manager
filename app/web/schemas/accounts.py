@@ -2,6 +2,7 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.domain.identity.ids import normalize_email
+from app.integrations.sms.client import parse_phone_line
 
 
 class DeleteAccountRequest(BaseModel):
@@ -30,3 +31,16 @@ class RegisterAccountRequest(BaseModel):
         if not local or not domain or "." not in domain or any(c in value for c in '<>;,"'):
             raise ValueError("邮箱格式不正确")
         return value
+
+
+class AccountPhonePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    phone_line: str = Field(min_length=8, max_length=500)
+
+    @field_validator("phone_line")
+    @classmethod
+    def valid_phone_line(cls, value):
+        number, sms_url = parse_phone_line(value)
+        if not number or not sms_url:
+            raise ValueError("手机号格式应为 +1xxxxxxxxxx----https://...")
+        return f"{number}----{sms_url}"

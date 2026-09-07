@@ -381,6 +381,54 @@ async def account_reauth(db: AsyncSession, account_id: int) -> dict[str, Any]:
     return await reauth_service.start_manual_reauth(db, account)
 
 
+async def bind_account_phone(db: AsyncSession, account_id: int, phone_line: str) -> dict[str, Any]:
+    from app.integrations.sms.client import parse_phone_line
+
+    account = await db.get(Account, int(account_id))
+    if account is None:
+        return {"ok": False, "error": "account not found", "error_code": "not_found"}
+    number, sms_url = parse_phone_line(phone_line)
+    if not number or not sms_url:
+        return {"ok": False, "error": "手机号格式应为 +1xxxxxxxxxx----https://...", "error_code": "sms_missing"}
+    account.phone = number
+    account.sms_url = sms_url
+    await db.commit()
+    return {"ok": True, "account_id": account.id, "email": account.email, "phone": number}
+
+
+async def start_account_immediate_reauth(db: AsyncSession, account_id: int) -> dict[str, Any]:
+    account = await db.get(Account, int(account_id))
+    if account is None:
+        return {"ok": False, "error": "account not found", "error_code": "not_found"}
+    busy = await operation_store.browser_busy(db)
+    if busy is not None:
+        return {
+            "ok": False,
+            "success": False,
+            "error": f"已有浏览器任务 {busy.email or busy.public_id}",
+            "error_code": "browser_busy",
+            "operation_id": busy.public_id,
+        }
+    operation = await operation_store.create(
+        db,
+        op_type="reauth",
+        account_id=account.id,
+        email=account.email,
+        input_payload={"account_id": account.id, "email": account.email, "mode": "immediate"},
+        source="manual",
+    )
+    await db.commit()
+    result = await reauth_service.run_immediate_reauth(
+        db,
+        account,
+        progress_job_id=operation.public_id,
+        skip_browser_busy=True,
+    )
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
 async def account_reauth_complete(
     db: AsyncSession,
     account_id: int,

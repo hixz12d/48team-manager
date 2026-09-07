@@ -21,7 +21,7 @@ from app.application.sub2api_usage import sub2api_usage_service
 from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account
 from app.web.deps import require_admin
-from app.web.schemas.accounts import DeleteAccountRequest, DeleteAccountsRequest, RegisterAccountRequest
+from app.web.schemas.accounts import AccountPhonePatch, DeleteAccountRequest, DeleteAccountsRequest, RegisterAccountRequest
 from app.web.schemas.resources import (
     AccountProxyPatch,
     AccountAutomationPatch,
@@ -509,6 +509,31 @@ def build_api_router(get_db) -> APIRouter:
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result)
         return result
+
+    @router.patch("/accounts/{account_id}/phone")
+    async def patch_account_phone(
+        account_id: int,
+        payload: AccountPhonePatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.bind_account_phone(db, account_id, payload.phone_line)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "phone update failed")
+        return result
+
+    @router.post("/accounts/{account_id}/reauth/immediate", status_code=status.HTTP_202_ACCEPTED)
+    async def immediate_account_reauth(
+        account_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.start_account_immediate_reauth(db, account_id)
+        if result.get("error_code") in {"not_found", "account_not_found"}:
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
 
     @router.patch("/accounts/{account_id}/automation")
     async def patch_account_automation(
