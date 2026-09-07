@@ -1,4 +1,5 @@
 /* Management surface, based on the supplied offline prototype. */
+#action-menu .menu-danger { color:var(--danger-text); }
 body[data-page="accounts"] { --bg:#f6f8fb; --text:#192638; --muted:#64758a; --accent:#345bdd; --sidebar-w:216px; --content-max:1700px; }
 body[data-page="accounts"] .topbar { min-height:84px; height:auto; gap:16px; padding:20px 30px; }
 body[data-page="accounts"] .topbar h1 { font-size:24px; letter-spacing:0; }

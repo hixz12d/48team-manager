@@ -4,6 +4,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.domain.identity.ids import normalize_email
 
 
+class DeleteAccountRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirmation_email: str = Field(min_length=3, max_length=255)
+
+
 class RegisterAccountRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str = Field(min_length=3, max_length=255)

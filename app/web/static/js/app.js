@@ -1913,6 +1913,27 @@ function hmeRow(item) {
         },
       },
       {
+        id: "account.delete-local",
+        label: "永久删除本地档案",
+        danger: true,
+        visible: (item) => Boolean(item.id) && item.kind === "unassigned" && item.purpose !== "mother" && !item.contexts?.length,
+        run: async (item) => {
+          const email = window.prompt(`永久删除 ${item.email} 的本地档案？\n\n保存的凭据、额度快照和本地绑定将被删除，无法撤销。\n不会删除 ChatGPT、Sub2API 远端账号或 iCloud 别名。\n\n请输入完整邮箱确认：`);
+          if (email === null) return;
+          if (email.trim().toLowerCase() !== item.email.trim().toLowerCase()) {
+            toast("邮箱不匹配，未删除。", "error");
+            return;
+          }
+          const result = await fetchEntity(`account-delete-local-${item.id}`, `/api/accounts/${item.id}`, {
+            method: "DELETE", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirmation_email: email.trim() }),
+          });
+          closeSheet();
+          toast(result.message, "success");
+          await bootPage();
+        },
+      },
+      {
         id: "account.copy",
         label: "复制邮箱",
         visible: (item) => Boolean(item.email),
@@ -2055,7 +2076,7 @@ function hmeRow(item) {
       menu.append(option);
     };
     const actions = (entityActions[kind] || []).filter((action) => !action.visible || action.visible(item));
-    actions.forEach((action) => add(action.label, () => action.run(item, button)));
+    actions.forEach((action) => add(action.label, () => action.run(item, button), action.danger ? "menu-danger" : ""));
     if (!menu.childElementCount) {
       button.hidden = true;
       return;

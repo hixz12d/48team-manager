@@ -21,7 +21,7 @@ from app.application.sub2api_usage import sub2api_usage_service
 from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account
 from app.web.deps import require_admin
-from app.web.schemas.accounts import RegisterAccountRequest
+from app.web.schemas.accounts import DeleteAccountRequest, RegisterAccountRequest
 from app.web.schemas.resources import (
     AccountProxyPatch,
     AccountAutomationPatch,
@@ -354,6 +354,20 @@ def build_api_router(get_db) -> APIRouter:
         if not result["ok"]:
             raise HTTPException(status_code=409, detail=_error_detail(result, "account exists"))
         return result
+
+    @router.delete("/accounts/{account_id}")
+    async def delete_account(account_id: int, payload: DeleteAccountRequest, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.account_deletion import AccountDeletionError, delete_unassigned_account
+        try:
+            result = await delete_unassigned_account(db, account_id, payload.confirmation_email)
+            await db.commit()
+            return result
+        except AccountDeletionError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=exc.status, detail={"message": str(exc), "error_code": exc.code}) from exc
+        except Exception:
+            await db.rollback()
+            raise
 
     @router.get("/accounts/portfolio")
     async def accounts_portfolio(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
