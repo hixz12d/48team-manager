@@ -18,7 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession as DBAsyncSession
 
 from app.core.config import load_settings
 from app.core.proxy import build_curl_cffi_proxies, mask_proxy_url, normalize_proxy_url
-from app.integrations.openai.member_adapter import extract_item_list, extract_reported_total, extract_seat_metadata, invite_role_payload, parse_invite_seat_type
+from app.integrations.openai.member_adapter import (
+    InviteContractUnverified,
+    InviteSeatIntent,
+    build_invite_payload,
+    classify_invite_submit_error,
+    extract_item_list,
+    extract_reported_total,
+    extract_seat_metadata,
+    parse_invite_seat_intent,
+)
 from app.persistence.models.identity import Account
 
 logger = logging.getLogger(__name__)
@@ -628,7 +637,8 @@ class ChatGPTClient:
         db_session: DBAsyncSession | None,
         identifier: str = "default",
         role: str = "owner",
-        seat_type: str = "premium",
+        seat_intent: str | InviteSeatIntent | None = None,
+        seat_type: str | None = None,
     ) -> dict[str, Any]:
         url = f"{self.BASE_URL}/accounts/{account_id}/invites"
         headers = {
@@ -636,21 +646,57 @@ class ChatGPTClient:
             "Authorization": f"Bearer {access_token}",
             "chatgpt-account-id": account_id,
         }
-        payload_role = invite_role_payload(role)
-        payload_seat = parse_invite_seat_type(seat_type)
-        return await self._make_request(
+        # seat_type remains accepted as a compatibility alias for seat_intent.
+        intent_value = seat_intent if seat_intent not in (None, "") else seat_type
+        try:
+            intent = parse_invite_seat_intent(intent_value)
+            json_data = build_invite_payload(email, role=role, seat_intent=intent)
+        except InviteContractUnverified as exc:
+            return {
+                "success": False,
+                "status_code": None,
+                "error": str(exc),
+                "error_code": exc.error_code,
+                "retryable": False,
+                "seat_intent": exc.seat_intent,
+                "stage": "invite_submit",
+            }
+        except ValueError as exc:
+            return {
+                "success": False,
+                "status_code": None,
+                "error": str(exc),
+                "error_code": "invalid_invite_seat_intent",
+                "retryable": False,
+                "stage": "invite_submit",
+            }
+        result = await self._make_request(
             "POST",
             url,
             headers,
             db_session=db_session,
             identifier=identifier,
-            json_data={
-                "email_addresses": [email],
-                "role": payload_role,
-                "seat_type": payload_seat,
-                "resend_emails": True,
-            },
+            json_data=json_data,
         )
+        if not result.get("success"):
+            classified = classify_invite_submit_error(
+                status_code=result.get("status_code"),
+                error=result.get("error"),
+                error_code=result.get("error_code"),
+            )
+            if classified:
+                result = {
+                    **result,
+                    "error_code": classified["code"],
+                    "error": classified["message"],
+                    "retryable": classified["retryable"],
+                    "stage": classified["stage"],
+                    "field": classified.get("field"),
+                    "upstream_error": result.get("error"),
+                }
+        result["seat_intent"] = intent.value
+        result["invite_payload_keys"] = sorted(json_data.keys())
+        return result
 
     async def delete_member(
         self,

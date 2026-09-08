@@ -1851,21 +1851,28 @@ function hmeRow(item) {
         id: "team.member.local-remove",
         label: "仅解除本地关联",
         danger: true,
-        visible: ({ row }) => Boolean(row.id || row.local_account_id),
+        // Retained for compatibility; not exposed in daily team member menus.
+        visible: () => false,
         run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "local"),
       },
       {
         id: "team.member.official-remove",
-        label: ({ row }) => presentTeamMember(row).code === "invited" ? "撤回邀请" : "移出团队，保留账号",
+        label: ({ row }) => presentTeamMember(row).code === "invited" ? "撤销官方邀请" : "移出官方团队",
         danger: true,
-        visible: ({ row }) => Boolean(row.email),
+        visible: ({ row }) => {
+          const presented = presentTeamMember(row);
+          if (presented.code === "owner" || row.purpose === "mother" || row.is_owner) return false;
+          if (["departed", "removed", "history"].includes(presented.code)) return false;
+          return Boolean(row.email) && (presented.code === "invited" || teamMemberIsJoined(row) || presented.code === "managed" || presented.code === "needs_auth" || presented.code === "remote_only");
+        },
         run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "official"),
       },
       {
         id: "team.member.purge",
-        label: "永久删除",
+        label: "永久删除本地档案",
         danger: true,
-        visible: ({ row }) => Boolean(row.email),
+        // High-risk maintenance; keep out of ordinary official-remove path labels.
+        visible: ({ row }) => Boolean(row.email) && Boolean(row.id || row.local_account_id),
         run: ({ workspace, row }, trigger) => removeTeamMember(workspace, row, trigger, "purge"),
       },
     ],
@@ -2316,27 +2323,28 @@ function hmeRow(item) {
         return { code: "invited", label: "等待接受邀请", primaryId: null, secondaryIds: ["team.member.official-remove"] };
       }
       if (kind === "conflict") {
-        return { code: "conflict", label: "身份冲突", primaryId: null, secondaryIds: ["team.member.local-remove"] };
+        // Daily menu no longer exposes local-only unlink; keep official/history actions only.
+        return { code: "conflict", label: "身份冲突", primaryId: null, secondaryIds: [] };
       }
       if (["departed", "removed", "history"].includes(kind)) {
         return { code: "departed", label: "已离队，账号已保留", primaryId: row.can_reinvite !== false ? "team.member.reinvite" : null, secondaryIds: [] };
       }
       if (kind === "local_only") {
-        return { code: "local_only", label: "本地有记录，官方未找到", primaryId: accountId ? "team.member.reinvite" : null, secondaryIds: ["team.member.local-remove"] };
+        return { code: "local_only", label: "本地有记录，官方未找到", primaryId: accountId ? "team.member.reinvite" : null, secondaryIds: [] };
       }
       if (auth.needsAuth && accountId) {
         return {
           code: "needs_auth",
           label: "已接入，需授权",
           primaryId: "team.member.reauth",
-          secondaryIds: ["team.member.role", "team.member.official-remove", "team.member.local-remove"],
+          secondaryIds: ["team.member.role", "team.member.official-remove"],
         };
       }
       return {
         code: "managed",
         label: "已接入",
         primaryId: null,
-        secondaryIds: ["team.member.role", "team.member.official-remove", "team.member.local-remove"],
+        secondaryIds: ["team.member.role", "team.member.official-remove"],
       };
     }
 
@@ -2457,7 +2465,7 @@ function hmeRow(item) {
     roleLabelEl.append(role);
     const seatHint = document.createElement("p");
     seatHint.className = "muted";
-    seatHint.textContent = "官方席位固定邀请 Premium，不走 Standard。";
+    seatHint.textContent = "角色可选 Owner / Member；席位使用工作区默认，不强制 Premium。";
     const more = document.createElement("details");
     more.className = "team-detail-disclosure";
     const moreSummary = document.createElement("summary");
@@ -2551,7 +2559,7 @@ function hmeRow(item) {
     form.hidden = true;
     const hint = document.createElement("p");
     hint.className = "muted";
-    hint.textContent = "自动领取未占用 HME，邀请为 Owner · Premium 席位，并当场授权。建议填接码号，避免 OpenAI 要手机时停在半路。";
+    hint.textContent = "自动领取未占用 HME，邀请为 Owner · 工作区默认席位，并当场授权。建议填接码号，避免 OpenAI 要手机时停在半路。";
     const phoneLabel = document.createElement("label");
     phoneLabel.textContent = "接码号";
     const phone = document.createElement("input");
@@ -2589,7 +2597,7 @@ function hmeRow(item) {
       status.hidden = false;
       status.className = "muted";
       status.setAttribute("role", "status");
-      status.textContent = "正在补充 Team：领号、邀请 Premium、当场授权，可能要几分钟…";
+      status.textContent = "正在补充 Team：领号、邀请（工作区默认席位）、当场授权，可能要几分钟…";
       try {
         const result = await action.run({ workspace, values }, submit);
         if (!result) return;
@@ -2962,9 +2970,11 @@ function hmeRow(item) {
       const accountId = row.id || row.local_account_id;
       const kind = presentTeamMember(row).code;
       const copy = mode === "purge"
-        ? `永久删除 ${email}？这会移出官方席位、下架 Sub2API 并清理本地档案，且不可恢复。`
+        ? `永久删除本地档案 ${email}？这会移出官方席位、下架 Sub2API 并清理本地档案，且不可恢复。`
         : mode === "official"
-          ? `${kind === "invited" ? "撤回邀请" : "移出团队"}：${email}？保留本地账号与凭据，之后可重新邀请；不调整已购买席位数量。`
+          ? (kind === "invited"
+            ? `撤销官方邀请：${email}？保留本地账号与历史，以后可重新邀请。`
+            : `将此成员移出官方团队：${email}？保留本地账号、授权凭据、历史与费用记录；不会调整已购买席位数量。确认移出后会尝试暂停已绑定的 Sub2API 远端调度（不解绑、不删远端账号）。`)
           : `只从本地移除 ${email}？官方 Team 不会改变。`;
       if (!confirmDanger(copy)) return;
       setButtonBusy(button, true, "处理中");

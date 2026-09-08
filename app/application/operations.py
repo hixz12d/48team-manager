@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import token_cipher
@@ -397,6 +398,8 @@ class OperationStore:
         *,
         actions: tuple[str, ...] | None = None,
         exclude_public_id: str | None = None,
+        now: datetime | None = None,
+        include_expired_leases: bool = False,
     ) -> Operation | None:
         try:
             target = int(workspace_id or 0)
@@ -404,14 +407,117 @@ class OperationStore:
             return None
         if not target:
             return None
+        stamp = now or utcnow()
         stmt = select(Operation).where(Operation.state.in_(ACTIVE_STATES), Operation.workspace_id == target)
         if actions:
             stmt = stmt.where(Operation.op_type.in_(actions))
         exclude = str(exclude_public_id or "").strip()
         if exclude:
             stmt = stmt.where(Operation.public_id != exclude)
+        if not include_expired_leases:
+            # queued rows may have null lease; running/waiting with expired lease are not holders.
+            stmt = stmt.where(
+                or_(
+                    Operation.state == "queued",
+                    Operation.lease_expires_at.is_(None),
+                    Operation.lease_expires_at > stamp,
+                )
+            )
         stmt = stmt.order_by(Operation.created_at.desc(), Operation.id.desc())
         return (await session.execute(stmt)).scalars().first()
+
+    async def reclaim_expired_workspace_locks(
+        self,
+        session: AsyncSession,
+        workspace_id: int,
+        *,
+        actions: tuple[str, ...] | None = None,
+        now: datetime | None = None,
+    ) -> list[Operation]:
+        """Mark expired running/waiting workspace lock holders as manual_required."""
+        try:
+            target = int(workspace_id or 0)
+        except (TypeError, ValueError):
+            return []
+        if not target:
+            return []
+        stamp = now or utcnow()
+        stmt = select(Operation).where(
+            Operation.workspace_id == target,
+            Operation.state.in_(("running", "waiting")),
+            Operation.lease_expires_at.is_not(None),
+            Operation.lease_expires_at <= stamp,
+        )
+        if actions:
+            stmt = stmt.where(Operation.op_type.in_(actions))
+        rows = list((await session.execute(stmt)).scalars().all())
+        recovered: list[Operation] = []
+        for row in rows:
+            await self.finish(
+                session,
+                row,
+                {
+                    "success": False,
+                    "status": "manual_required",
+                    "error_code": "lease_expired",
+                    "error": "workspace lock lease expired; resume is manual",
+                },
+            )
+            recovered.append(row)
+        return recovered
+
+    async def create_workspace_locked(
+        self,
+        session: AsyncSession,
+        *,
+        op_type: str,
+        workspace_id: int,
+        account_id: int | None = None,
+        email: str = "",
+        input_payload: dict[str, Any] | None = None,
+        public_id: str | None = None,
+        source: str = "manual",
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+        actions: tuple[str, ...] | None = None,
+    ) -> tuple[Operation | None, Operation | None]:
+        """Atomically create a workspace mutation lock.
+
+        Returns (operation, None) on success or (None, blocker) on conflict.
+        Expired leases are reclaimed first; the partial unique index is the
+        multi-worker race backstop.
+        """
+        from app.domain.automation import WORKSPACE_LOCK_ACTIONS
+
+        lock_actions = actions or WORKSPACE_LOCK_ACTIONS
+        target = int(workspace_id)
+        await self.reclaim_expired_workspace_locks(session, target, actions=lock_actions)
+        busy = await self.active_for_workspace(session, target, actions=lock_actions)
+        if busy is not None:
+            return None, busy
+        # Stable key so the partial unique index can serialize concurrent creates.
+        lock_key = f"ws-mutation:{target}"
+        try:
+            async with session.begin_nested():
+                row = await self.create(
+                    session,
+                    op_type=op_type,
+                    workspace_id=target,
+                    account_id=account_id,
+                    email=email,
+                    input_payload=input_payload,
+                    public_id=public_id,
+                    source=source,
+                    lease_seconds=lease_seconds,
+                    state="running",
+                )
+                row.idempotency_key = lock_key
+                await session.flush()
+            return row, None
+        except IntegrityError:
+            busy = await self.active_for_workspace(
+                session, target, actions=lock_actions, include_expired_leases=True
+            )
+            return None, busy
 
     async def iter_running(self, session: AsyncSession, actions: tuple[str, ...] | None = None) -> list[Operation]:
         stmt = select(Operation).where(Operation.state.in_(ACTIVE_STATES))

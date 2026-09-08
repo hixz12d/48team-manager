@@ -1,0 +1,26 @@
+{
+  "description": "Synthetic rejection matching the observed SeatType validation failure. Placeholder email only.",
+  "request": {
+    "method": "POST",
+    "path_shape": "accounts/{account_id}/invites",
+    "json": {
+      "email_addresses": ["invitee@example.com"],
+      "role": "account-owner",
+      "seat_type": "premium",
+      "resend_emails": true
+    }
+  },
+  "response": {
+    "status_code": null,
+    "error_text": "'premium' is not a valid SeatType",
+    "structured": {
+      "loc": ["body", "seat_type"],
+      "type": "enum"
+    }
+  },
+  "local_classification": {
+    "code": "invite_seat_type_invalid",
+    "retryable": false,
+    "field": "seat_type"
+  }
+}

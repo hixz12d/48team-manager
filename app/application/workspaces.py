@@ -20,11 +20,14 @@ from app.domain.identity.ids import normalize_email
 from app.domain.vacancy import parse_policy_notice, present_vacancy, summarize_for_message
 from app.integrations.openai.chatgpt import chatgpt_client
 from app.integrations.openai.member_adapter import (
+    load_verified_seat_wire_values,
+    InviteSeatIntent,
     adapt_collection,
     is_owner_role,
     normalize_official_role,
     official_roles_equivalent,
     parse_invite_role,
+    parse_invite_seat_intent,
     validate_fetch_counts,
 )
 from app.persistence.models.identity import Account, Workspace, WorkspaceMembership
@@ -284,6 +287,7 @@ class WorkspaceService:
         unbind_sub2api: bool = False,
         remote_unbind_confirmed: bool = False,
         binding_error: str | None = None,
+        workspace_id: int | None = None,
     ) -> None:
         account.operational_state = "standby"
         account.local_purpose = LOCAL_PURPOSE_STANDBY
@@ -293,15 +297,18 @@ class WorkspaceService:
             from app.persistence.models.identity import ExternalBinding
             from app.domain.identity import PROVIDER_SUB2API
 
-            binding = (
-                await db.execute(
-                    select(ExternalBinding).where(
-                        ExternalBinding.provider == PROVIDER_SUB2API,
-                        ExternalBinding.local_account_id == account.id,
-                    )
-                )
-            ).scalar_one_or_none()
-            if binding is not None:
+            query = select(ExternalBinding).where(
+                ExternalBinding.provider == PROVIDER_SUB2API,
+                ExternalBinding.local_account_id == account.id,
+            )
+            if workspace_id is not None:
+                query = query.where(ExternalBinding.workspace_id == int(workspace_id))
+            bindings = list((await db.execute(query)).scalars())
+            # Without workspace scope, only act when exactly one binding exists.
+            if workspace_id is None and len(bindings) > 1:
+                account.updated_at = utcnow()
+                return
+            for binding in bindings:
                 if remote_unbind_confirmed:
                     await db.delete(binding)
                 else:
@@ -473,7 +480,8 @@ class WorkspaceService:
         workspace_id: int,
         email: str,
         role: str = "owner",
-        seat_type: str = "premium",
+        seat_intent: str | InviteSeatIntent | None = None,
+        seat_type: str | None = None,
     ) -> dict[str, Any]:
         workspace = await self.load_workspace(db, workspace_id)
         if workspace is None:
@@ -482,12 +490,23 @@ class WorkspaceService:
             requested_role = parse_invite_role(role)
         except ValueError:
             return {"success": False, "error": "邀请角色只能是 Owner 或 Member", "error_code": "invalid_invite_role"}
+        try:
+            requested_seat_intent = parse_invite_seat_intent(
+                seat_intent if seat_intent not in (None, "") else seat_type
+            )
+        except ValueError:
+            return {
+                "success": False,
+                "error": "邀请席位意图只能是 workspace_default、premium 或 standard",
+                "error_code": "invalid_invite_seat_intent",
+            }
         owner = await self.owner_account(db, workspace)
         account_id = self._workspace_account_id(workspace)
         access_token = await self.ensure_access_token(db, workspace)
         target = normalize_email(email)
         if not access_token or not account_id:
             return {"success": False, "error": "该 Workspace 的登录凭证已过期，且自动刷新失败", "error_code": "token_refresh_failed"}
+        await load_verified_seat_wire_values(db)
         result = await self.client.send_invite(
             access_token,
             account_id,
@@ -495,9 +514,20 @@ class WorkspaceService:
             db,
             identifier=owner.email if owner else "default",
             role=requested_role,
-            seat_type=seat_type,
+            seat_intent=requested_seat_intent,
         )
-        if not result.get("success") and is_access_token_error(result):
+        # Contract/validation failures must not trigger OAuth refresh or retries.
+        non_retryable = {
+            "invite_seat_contract_unverified",
+            "invite_seat_type_invalid",
+            "invalid_invite_seat_intent",
+        }
+        if (
+            not result.get("success")
+            and result.get("error_code") not in non_retryable
+            and result.get("retryable") is not False
+            and is_access_token_error(result)
+        ):
             refreshed = await self.ensure_access_token(db, workspace, force_refresh=True)
             if refreshed:
                 result = await self.client.send_invite(
@@ -507,7 +537,7 @@ class WorkspaceService:
                     db,
                     identifier=owner.email if owner else "default",
                     role=requested_role,
-                    seat_type=seat_type,
+                    seat_intent=requested_seat_intent,
                 )
         if not result.get("success"):
             return {
@@ -516,12 +546,17 @@ class WorkspaceService:
                 "error_code": result.get("error_code") or "invite_failed",
                 "status_code": result.get("status_code"),
                 "requested_role": requested_role,
+                "seat_intent": requested_seat_intent.value,
+                "retryable": result.get("retryable"),
+                "field": result.get("field"),
+                "stage": result.get("stage") or "invite_submit",
             }
         return {
             "success": True,
             "message": f"已邀请 {target}",
             "data": result.get("data"),
             "requested_role": requested_role,
+            "seat_intent": requested_seat_intent.value,
         }
 
     async def revoke_invite(self, db: AsyncSession, workspace_id: int, email: str) -> dict[str, Any]:
@@ -533,19 +568,36 @@ class WorkspaceService:
         access_token = await self.ensure_access_token(db, workspace)
         if not access_token or not account_id:
             return {"success": False, "error": "workspace token missing", "error_code": "token_refresh_failed"}
+        target = normalize_email(email)
         result = await self.client.delete_invite(
             access_token,
             account_id,
-            normalize_email(email),
+            target,
             db,
             identifier=owner.email if owner else "default",
         )
+        if (
+            not result.get("success")
+            and not chatgpt_client.is_already_removed_error(
+                result.get("status_code"), result.get("error"), result.get("error_code")
+            )
+            and is_access_token_error(result)
+        ):
+            refreshed = await self.ensure_access_token(db, workspace, force_refresh=True)
+            if refreshed:
+                result = await self.client.delete_invite(
+                    refreshed,
+                    account_id,
+                    target,
+                    db,
+                    identifier=owner.email if owner else "default",
+                )
         if not result.get("success") and not chatgpt_client.is_already_removed_error(
             result.get("status_code"), result.get("error"), result.get("error_code")
         ):
             return {"success": False, "error": result.get("error") or "撤回邀请失败", "error_code": result.get("error_code") or "revoke_failed"}
         # Do not mark local departure until the caller verifies the invitation is gone.
-        return {"success": True, "message": f"{normalize_email(email)} 已撤回邀请"}
+        return {"success": True, "message": f"{target} 已撤回邀请"}
 
 
 workspace_service = WorkspaceService()

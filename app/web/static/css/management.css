@@ -138,10 +138,17 @@ button.management-email:hover { color:var(--accent); }
 .management-subscription { color:#466a62; font-size:12px; }
 .management-sync-status { color:#a3433a; font-size:12px; margin:0 0 14px; overflow-wrap:anywhere; }
 .management-selection { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 14px; padding:10px 12px; background:#fff7f7; border:1px solid var(--danger-border, #f0c9cd); border-radius:8px; font-size:13px; }
+/* JS uses the native hidden attribute; flex must not override it. */
+.management-selection[hidden] {
+  display: none !important;
+}
 .management-selection .button.danger { margin-left:auto; }
 .management-select { width:36px; padding-left:10px; padding-right:0; vertical-align:middle; }
 .management-select input { width:16px; height:16px; margin:0; accent-color:var(--accent); }
 .team-reinvite-form { grid-column:1/-1; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; padding:12px 0; border-top:1px solid var(--border); }
+.team-reinvite-form[hidden] {
+  display: none !important;
+}
 .team-reinvite-form>p { grid-column:1/-1; margin:0; overflow-wrap:anywhere; font-size:12px; }
 .team-reinvite-form>label { min-width:0; display:grid; gap:5px; font-size:12px; }
 .team-reinvite-form>.row-actions { position:static; transform:none; opacity:1; align-self:end; }

@@ -64,6 +64,10 @@ class Operation(Base):
             "uq_workspace_sync_active_key", "idempotency_key", unique=True,
             sqlite_where=(op_type == "workspace_sync") & state.in_(("queued", "running", "waiting")) & idempotency_key.is_not(None),
         ),
+        Index(
+            "uq_workspace_mutation_active", "idempotency_key", unique=True,
+            sqlite_where=idempotency_key.like("ws-mutation:%") & state.in_(("queued", "running", "waiting")),
+        ),
     )
 
 

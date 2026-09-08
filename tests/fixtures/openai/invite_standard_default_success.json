@@ -1,0 +1,66 @@
+{
+  "captured_at": "2026-09-08T00:23:28Z",
+  "workspace": {
+    "label": "Dual World",
+    "official_workspace_id": "86abf45a-494e-4eaa-910e-8cac7c64de9b",
+    "member_total_before": 1,
+    "invite_total_before": 0
+  },
+  "note": "Sanitized capture. HME alias email redacted. Tokens omitted.",
+  "request": {
+    "method": "POST",
+    "path": "/backend-api/accounts/{account_id}/invites",
+    "json": {
+      "email_addresses": [
+        "<email>"
+      ],
+      "role": "standard-user",
+      "resend_emails": true,
+      "seat_type": "default"
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "body": {
+      "account_invites": [
+        {
+          "id": "2e8fae95-b764-4139-97ef-76734252f229",
+          "email_address": "<email>",
+          "role": "standard-user",
+          "status": 2,
+          "seat_type": "default",
+          "created_time": "2026-09-08T00:23:28.135585Z",
+          "is_scim_managed": false,
+          "creation_source": null
+        }
+      ],
+      "errored_emails": []
+    }
+  },
+  "omit_seat_type_also_works": {
+    "request_json_keys": [
+      "email_addresses",
+      "role",
+      "resend_emails"
+    ],
+    "response_seat_type": "default",
+    "note": "Omitting seat_type also creates a default seat invite."
+  },
+  "rejected_seat_type_values": [
+    "standard",
+    "standard-user",
+    "member",
+    "business_standard",
+    "premium",
+    "business_premium",
+    "chatgpt-premium",
+    "codex",
+    "plus",
+    "pro",
+    "team_premium"
+  ],
+  "verified_mapping": {
+    "standard_intent_wire_value": "default",
+    "premium_intent_wire_value": "prolite"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "captured_at": "2026-09-08T01:54:00Z",
+  "workspace": {
+    "label": "Jupiter 1",
+    "official_workspace_id": "617649a2-2463-4e4f-bab8-ab145aa8a1bf",
+    "ui_premium_available": 1,
+    "ui_standard_assigned": 1
+  },
+  "note": "Not a success fixture. Shows invite cannot take premium, while user PATCH recognizes premium as paid seat change.",
+  "invite_create": {
+    "request": {"seat_type": "premium", "role": "standard-user"},
+    "status_code": 422,
+    "error_contains": "'premium' is not a valid SeatType"
+  },
+  "member_patch": {
+    "path": "/backend-api/accounts/{account_id}/users/{user_id}",
+    "request": {"seat_type": "premium"},
+    "status_code": 429,
+    "error": "Too many paid seat changes. Please try again later.",
+    "members_after_seat_type": "default"
+  },
+  "verified_mapping": {
+    "standard_intent_wire_value": "default",
+    "premium_intent_wire_value": null,
+    "premium_candidate_for_member_patch": "premium"
+  }
+}

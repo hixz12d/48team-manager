@@ -1,0 +1,16 @@
+{
+  "description": "Local shape for workspace_default invite body. Not a captured official success response.",
+  "request": {
+    "method": "POST",
+    "path_shape": "accounts/{account_id}/invites",
+    "json": {
+      "email_addresses": ["invitee@example.com"],
+      "role": "account-owner",
+      "resend_emails": true
+    }
+  },
+  "notes": [
+    "seat_type is intentionally omitted",
+    "does not claim upstream accepted this body today; parent commit used this shape"
+  ]
+}

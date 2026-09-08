@@ -152,7 +152,7 @@ class InviteOwnerRoleTests(unittest.IsolatedAsyncioTestCase):
             live_item={"email": mother.email, "status": "joined", "role": "owner", "user_id": "u-owner"}
         )
         service = RotateService(workspaces=workspaces)
-        result = await service.kick_to_standby(self.session, workspace_id=self.workspace.id, email=mother.email)
+        result = await service.kick_to_standby(self.session, workspace_id=self.workspace.id, email=mother.email, in_test=True)
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "primary_mother_protected")
 

@@ -29,7 +29,20 @@ from app.application.workspaces import WorkspaceService
 from app.core.time import utcnow
 from app.domain.identity import PROVIDER_SUB2API
 from app.integrations.openai.chatgpt import ChatGPTClient
-from app.integrations.openai.member_adapter import adapt_collection, invite_role_payload, normalize_official_member, normalize_official_role, parse_invite_role, parse_invite_seat_type, validate_fetch_counts
+from app.integrations.openai.member_adapter import (
+    InviteContractUnverified,
+    InviteSeatIntent,
+    adapt_collection,
+    build_invite_payload,
+    classify_invite_submit_error,
+    invite_role_payload,
+    normalize_official_member,
+    normalize_official_role,
+    parse_invite_role,
+    parse_invite_seat_intent,
+    parse_invite_seat_type,
+    validate_fetch_counts,
+)
 from app.persistence.database import Base
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceOfficialMemberSnapshot
 from app.persistence.models.resources import HmeAliasLease, PhonePool
@@ -69,6 +82,13 @@ class _FakeWorkspaces:
 
 
 class MemberAdapterTests(unittest.TestCase):
+    def setUp(self):
+        from app.integrations.openai import member_adapter as adapter
+        from app.integrations.openai.member_adapter import InviteSeatIntent
+        adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES.clear()
+        adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES[InviteSeatIntent.STANDARD] = "default"
+        adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES[InviteSeatIntent.PREMIUM] = "prolite"
+
     def test_nested_and_top_level_variants(self):
         nested = normalize_official_member(NESTED_JAMES)
         self.assertEqual(nested["email"], "james.smith@example.com")
@@ -82,8 +102,47 @@ class MemberAdapterTests(unittest.TestCase):
         self.assertEqual(parse_invite_role(None), "owner")
         self.assertEqual(invite_role_payload("owner"), "account-owner")
         self.assertEqual(invite_role_payload("member"), "standard-user")
-        self.assertEqual(parse_invite_seat_type(None), "premium")
+        self.assertEqual(parse_invite_seat_intent(None), InviteSeatIntent.WORKSPACE_DEFAULT)
+        self.assertEqual(parse_invite_seat_type(None), None)
         self.assertEqual(parse_invite_seat_type("standard"), "default")
+        self.assertEqual(parse_invite_seat_type("premium"), "prolite")
+        self.assertEqual(parse_invite_seat_type("prolite"), "prolite")
+
+    def test_workspace_default_invite_payload_omits_seat_type(self):
+        payload = build_invite_payload("invitee@example.com", role="owner")
+        self.assertEqual(payload["email_addresses"], ["invitee@example.com"])
+        self.assertEqual(payload["role"], "account-owner")
+        self.assertTrue(payload["resend_emails"])
+        self.assertNotIn("seat_type", payload)
+
+    def test_explicit_premium_uses_prolite_wire(self):
+        payload = build_invite_payload("invitee@example.com", role="member", seat_intent="premium")
+        self.assertEqual(payload.get("seat_type"), "prolite")
+        self.assertEqual(payload.get("role"), "standard-user")
+
+    def test_premium_blocked_when_verified_map_cleared(self):
+        from app.integrations.openai import member_adapter as adapter
+        saved = dict(adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES)
+        adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES.clear()
+        try:
+            with self.assertRaises(InviteContractUnverified) as ctx:
+                build_invite_payload("invitee@example.com", role="member", seat_intent="premium")
+            self.assertEqual(ctx.exception.error_code, "invite_seat_contract_unverified")
+        finally:
+            adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES.clear()
+            adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES.update(saved)
+
+    def test_seat_type_validation_error_is_not_retryable(self):
+        classified = classify_invite_submit_error(
+            status_code=422,
+            error="'premium' is not a valid SeatType",
+            error_code=None,
+            error_body={"loc": ["body", "seat_type"], "type": "enum"},
+        )
+        self.assertIsNotNone(classified)
+        self.assertEqual(classified["code"], "invite_seat_type_invalid")
+        self.assertFalse(classified["retryable"])
+        self.assertEqual(classified["field"], "seat_type")
 
     def test_schema_mismatch_when_reported_but_unparsed(self):
         adapted = adapt_collection([{"id": "user-x", "profile": {"display": "no email"}}], default_state="joined")
@@ -320,7 +379,7 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
         from app.application.rotate import RotateService
 
         rotate = RotateService(workspaces=service, sub2api=AsyncMock())
-        result = await rotate.kick_to_standby(self.session, workspace_id=self.workspace.id, email="kid@example.com", unbind_sub2api=True)
+        result = await rotate.kick_to_standby(self.session, workspace_id=self.workspace.id, email="kid@example.com", unbind_sub2api=True,  in_test=True)
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "manual_required")
         child = await self.session.get(Account, self.child.id)
@@ -366,7 +425,7 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
 
             client = type("C", (), {"pick_user_id": staticmethod(lambda item: item.get("user_id"))})()
 
-            async def mark_standby(self, db, account, next_eligible_at=None, unbind_sub2api=False, remote_unbind_confirmed=False, binding_error=None):
+            async def mark_standby(self, db, account, next_eligible_at=None, unbind_sub2api=False, remote_unbind_confirmed=False, binding_error=None, workspace_id=None):
                 from app.application.workspaces import workspace_service
 
                 await workspace_service.mark_standby(
@@ -381,8 +440,9 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
         sub = AsyncMock()
         sub.delete_accounts = AsyncMock(side_effect=RuntimeError("sub down"))
         rotate = RotateService(workspaces=_WS(), sub2api=sub)
+        rotate._remote_binding_for = AsyncMock(return_value={"state": "matched", "remote_id": "55", "binding": None})
         rotate._remote_id_for = AsyncMock(return_value="55")
-        result = await rotate.kick_to_standby(self.session, workspace_id=self.workspace.id, email="kid@example.com", unbind_sub2api=True)
+        result = await rotate.kick_to_standby(self.session, workspace_id=self.workspace.id, email="kid@example.com", unbind_sub2api=True,  in_test=True)
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "partial")
         binding = (await self.session.execute(select(ExternalBinding))).scalar_one()
@@ -409,6 +469,7 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
         sub = AsyncMock()
         sub.delete_accounts = AsyncMock(return_value={"deleted": [55], "failed": []})
         rotate = RotateService(workspaces=_WS(), sub2api=sub)
+        rotate._remote_binding_for = AsyncMock(return_value={"state": "matched", "remote_id": "55", "binding": None})
         rotate._remote_id_for = AsyncMock(return_value="55")
         result = await rotate.kick_to_standby(
             self.session,
@@ -416,6 +477,7 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
             email="kid@example.com",
             unbind_sub2api=True,
             purge_local=True,
+            in_test=True,
         )
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "purged")
@@ -442,7 +504,7 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
 
             client = type("C", (), {"pick_user_id": staticmethod(lambda item: item.get("user_id"))})()
 
-            async def mark_standby(self, db, account, next_eligible_at=None, unbind_sub2api=False, remote_unbind_confirmed=False, binding_error=None):
+            async def mark_standby(self, db, account, next_eligible_at=None, unbind_sub2api=False, remote_unbind_confirmed=False, binding_error=None, workspace_id=None):
                 from app.application.workspaces import workspace_service
 
                 await workspace_service.mark_standby(
@@ -457,6 +519,7 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
         sub = AsyncMock()
         sub.delete_accounts = AsyncMock(side_effect=RuntimeError("sub down"))
         rotate = RotateService(workspaces=_WS(), sub2api=sub)
+        rotate._remote_binding_for = AsyncMock(return_value={"state": "matched", "remote_id": "55", "binding": None})
         rotate._remote_id_for = AsyncMock(return_value="55")
         result = await rotate.kick_to_standby(
             self.session,
@@ -464,6 +527,7 @@ class LookupAndKickTests(unittest.IsolatedAsyncioTestCase):
             email="kid@example.com",
             unbind_sub2api=True,
             purge_local=True,
+            in_test=True,
         )
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "partial")
@@ -546,7 +610,7 @@ class ConsoleLoopTests(unittest.IsolatedAsyncioTestCase):
         op.cancel_requested = True
         await self.session.commit()
         rotate = RotateService(workspaces=_FakeWorkspaces())
-        result = await rotate.kick_to_standby(self.session, workspace_id=self.workspace.id, email="kid@example.com", job_id=op.public_id)
+        result = await rotate.kick_to_standby(self.session, workspace_id=self.workspace.id, email="kid@example.com", job_id=op.public_id,  in_test=True)
         self.assertEqual(result["status"], "cancelled")
 
     async def test_two_workers_do_not_steal_unexpired_lease(self):

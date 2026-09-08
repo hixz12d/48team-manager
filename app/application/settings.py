@@ -69,6 +69,18 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     env = load_settings()
     hme_cfg = await load_hme_config(db)
     sub2api_cfg = await sub2api_client.load_config(db)
+    from app.integrations.openai.member_adapter import (
+        SETTING_INVITE_SEAT_WIRE_PREMIUM,
+        SETTING_INVITE_SEAT_WIRE_STANDARD,
+        load_verified_seat_wire_values,
+    )
+    invite_wires = await load_verified_seat_wire_values(db)
+    invite_seat_wire = {
+        "premium": (await get_setting_value(db, SETTING_INVITE_SEAT_WIRE_PREMIUM, "") or "").strip() or None,
+        "standard": (await get_setting_value(db, SETTING_INVITE_SEAT_WIRE_STANDARD, "") or "").strip() or None,
+        "loaded_count": len(invite_wires),
+        "workspace_default": "omit_seat_type",
+    }
     phones_cfg = await phone_pool_service.get_config(db)
     from app.application.reauth import reauth_service
 
@@ -103,6 +115,7 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
             "official_quota_probe": stored_quota,
             "quota_runtime": quota_runtime,
             "auto_reauth": reauth_cfg,
+            "invite_seat_wire": invite_seat_wire,
         },
         "resources": {
             "sms_max_uses_per_phone": phones_cfg.max_uses,

@@ -372,9 +372,15 @@ class Sub2ApiClient:
         finally:
             await client.aclose()
         account = data if isinstance(data, dict) else {}
-        if "schedulable" not in account:
-            account["schedulable"] = wanted
-        return {"account": account, "patched": True, "patch": patch}
+        # Do not treat the request target as verified remote state when the field is absent.
+        verified = "schedulable" in account
+        return {
+            "account": account,
+            "patched": True,
+            "patch": patch,
+            "schedulable_verified": verified,
+            "schedulable": account.get("schedulable") if verified else None,
+        }
 
     async def clear_account_rate_limit(self, db: AsyncSession, account_id: int) -> dict[str, Any]:
         if not account_id:
@@ -681,6 +687,129 @@ class Sub2ApiClient:
             await client.aclose()
 
 
+
+
+    async def sync_oauth_credentials(
+        self,
+        db: AsyncSession,
+        account_id: int,
+        *,
+        credentials: dict[str, Any],
+        expected_identity: dict[str, Any] | None = None,
+        expected_updated_at: str | None = None,
+        operation_id: str | None = None,
+        recovery_mode: str = "credentials_only",
+    ) -> dict[str, Any]:
+        """Call the narrow Sub2API credential sync contract when available.
+
+        Returns a structured result. 404/405 means capability missing — callers
+        must not fall back to broad clear-error recovery.
+        """
+        if not account_id:
+            return {
+                "ok": False,
+                "supported": False,
+                "error_code": "missing_remote_id",
+                "error": "missing remote account id",
+            }
+        mode = str(recovery_mode or "credentials_only").strip() or "credentials_only"
+        if mode not in {"credentials_only", "auth_only"}:
+            return {
+                "ok": False,
+                "supported": True,
+                "error_code": "invalid_recovery_mode",
+                "error": f"unsupported recovery_mode={mode}",
+            }
+        body: dict[str, Any] = {
+            "contract_version": 1,
+            "recovery_mode": mode,
+            "credentials": {
+                key: credentials[key]
+                for key in ("access_token", "refresh_token", "id_token", "expires_at", "expired")
+                if key in credentials and credentials.get(key) not in (None, "")
+            },
+        }
+        if operation_id:
+            body["operation_id"] = str(operation_id)
+        if expected_updated_at:
+            body["expected_updated_at"] = str(expected_updated_at)
+        if expected_identity:
+            body["expected_identity"] = {
+                key: expected_identity[key]
+                for key in ("email", "workspace_id", "official_account_id")
+                if expected_identity.get(key) not in (None, "")
+            }
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            response = await client.post(
+                f"/api/v1/admin/accounts/{int(account_id)}/sync-oauth-credentials",
+                headers=headers,
+                json=body,
+            )
+            if response.status_code in {404, 405}:
+                return {
+                    "ok": False,
+                    "supported": False,
+                    "error_code": "sync_oauth_unsupported",
+                    "error": "远端未提供 sync-oauth-credentials 窄接口",
+                    "upstream_status": response.status_code,
+                }
+            if response.status_code in {401, 403}:
+                detail = (response.text or "")[:240]
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "error_code": "admin_auth_failed",
+                    "error": "Team 调用 Sub2API Admin 接口鉴权失败，不是子号 OAuth 掉授权",
+                    "upstream_status": response.status_code,
+                    "detail": detail,
+                }
+            if response.status_code >= 400:
+                detail = (response.text or "")[:240]
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "error_code": "sync_oauth_failed",
+                    "error": detail or f"HTTP {response.status_code}",
+                    "upstream_status": response.status_code,
+                }
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {}
+            data = self._unwrap(payload) if isinstance(payload, dict) else payload
+            if not isinstance(data, dict):
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "error_code": "sync_oauth_bad_response",
+                    "error": "sync-oauth-credentials 返回形状无效",
+                }
+            if int(data.get("contract_version") or 0) != 1:
+                return {
+                    "ok": False,
+                    "supported": True,
+                    "error_code": "sync_oauth_contract_mismatch",
+                    "error": f"unexpected contract_version={data.get('contract_version')!r}",
+                    "raw_keys": sorted(str(k) for k in data.keys())[:20],
+                }
+            return {
+                "ok": True,
+                "supported": True,
+                "contract_version": 1,
+                "operation_id": data.get("operation_id") or operation_id,
+                "remote_account_id": data.get("remote_account_id") or account_id,
+                "credential_write": data.get("credential_write") or "unknown",
+                "token_cache_invalidation": data.get("token_cache_invalidation") or "unknown",
+                "auth_recovery": data.get("auth_recovery") or "skipped",
+                "schedulable": data.get("schedulable"),
+                "scheduling_assessment": data.get("scheduling_assessment") or "unknown",
+                "remaining_blockers": list(data.get("remaining_blockers") or []),
+                "partial": bool(data.get("partial")),
+                "raw": data,
+            }
+        finally:
+            await client.aclose()
 
     async def read_after_write(self, db: AsyncSession, account_id: int) -> dict[str, Any]:
         return await self.get_account(db, account_id)

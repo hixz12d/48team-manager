@@ -1,0 +1,35 @@
+{
+  "captured_at": "2026-09-08T02:16:15Z",
+  "workspace": {
+    "label": "Jupiter 1",
+    "official_workspace_id": "617649a2-2463-4e4f-bab8-ab145aa8a1bf",
+    "owner_email_redacted": true
+  },
+  "note": "UI created Premium invite; Team48 read pending invites API. Email redacted. Tokens omitted.",
+  "source": "GET /backend-api/accounts/{account_id}/invites",
+  "observed_invite": {
+    "id": "3c778b20-ae92-4986-9ddd-6bf700692bc2",
+    "email_address": "<email>",
+    "role": "account-owner",
+    "status": 2,
+    "seat_type": "prolite",
+    "created_time": "2026-09-08T02:16:15.083897Z",
+    "is_scim_managed": false,
+    "creation_source": null
+  },
+  "ui_labels": {
+    "role": "Owner",
+    "seat_type": "Premium"
+  },
+  "verified_mapping": {
+    "standard_intent_wire_value": "default",
+    "premium_intent_wire_value": "prolite",
+    "owner_role_wire_value": "account-owner",
+    "member_role_wire_value": "standard-user"
+  },
+  "corrections": [
+    "UI Premium is NOT wire value 'premium' (422 on invite create).",
+    "UI Premium wire value is 'prolite'.",
+    "UI Standard wire value is 'default'."
+  ]
+}

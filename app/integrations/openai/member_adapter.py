@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 from app.domain.identity.ids import normalize_email
@@ -30,11 +31,46 @@ INVITE_ROLE_PAYLOAD = {
     DOMAIN_ROLE_OWNER: "account-owner",
     DOMAIN_ROLE_MEMBER: "standard-user",
 }
-INVITE_SEAT_TYPE_PREMIUM = "premium"
+INVITE_SEAT_TYPE_PREMIUM = "prolite"
 INVITE_SEAT_TYPE_STANDARD = "default"
-DEFAULT_INVITE_SEAT_TYPE = INVITE_SEAT_TYPE_PREMIUM
+
+
+class InviteSeatIntent(str, Enum):
+    """Local business seat intent. Not the upstream JSON enum."""
+
+    WORKSPACE_DEFAULT = "workspace_default"
+    STANDARD = "standard"
+    PREMIUM = "premium"
+
+
+DEFAULT_INVITE_SEAT_INTENT = InviteSeatIntent.WORKSPACE_DEFAULT
+# Kept only for response/history normalization of observed seat labels.
+DEFAULT_INVITE_SEAT_TYPE = INVITE_SEAT_TYPE_STANDARD
+# Wire values must come from a verified invite protocol fixture, not guesses.
+# Runtime may load operator-confirmed values from SystemSetting keys below.
+VERIFIED_INVITE_SEAT_WIRE_VALUES: dict[InviteSeatIntent, str] = {
+    InviteSeatIntent.STANDARD: "default",
+    InviteSeatIntent.PREMIUM: "prolite",
+}
+SETTING_INVITE_SEAT_WIRE_PREMIUM = "invite_seat_wire_premium"
+SETTING_INVITE_SEAT_WIRE_STANDARD = "invite_seat_wire_standard"
+# Public third-party samples have been observed sending seat_type=default for the
+# workspace-default path; that is NOT treated as verified Premium/Standard mapping.
 JOINED_STATES = {"joined", "active", "member", "accepted"}
 INVITED_STATES = {"invited", "pending", "invite", "invitation"}
+
+
+class InviteContractUnverified(ValueError):
+    """Explicit Premium/Standard requested but no verified wire mapping exists."""
+
+    error_code = "invite_seat_contract_unverified"
+
+    def __init__(self, seat_intent: InviteSeatIntent | str):
+        intent = str(getattr(seat_intent, "value", seat_intent) or "").strip() or "unknown"
+        self.seat_intent = intent
+        super().__init__(
+            f"邀请席位意图 {intent} 尚未通过当前接口契约验证；未发送请求。"
+        )
 
 
 def _as_text(value: Any) -> str | None:
@@ -281,13 +317,153 @@ def invite_role_payload(role: str | None, *, default: str = DOMAIN_ROLE_OWNER) -
     return INVITE_ROLE_PAYLOAD[parse_invite_role(role, default=default)]
 
 
-def parse_invite_seat_type(value: str | None, *, default: str = DEFAULT_INVITE_SEAT_TYPE) -> str:
-    raw = str(value or default or "").strip().lower()
-    if raw in {"premium", "premium-user", "premium_user"}:
+def parse_invite_seat_intent(
+    value: str | InviteSeatIntent | None,
+    *,
+    default: str | InviteSeatIntent = DEFAULT_INVITE_SEAT_INTENT,
+) -> InviteSeatIntent:
+    """Map operator/API input to a local seat intent."""
+    if isinstance(value, InviteSeatIntent):
+        return value
+    if value in (None, ""):
+        if isinstance(default, InviteSeatIntent):
+            return default
+        value = default
+    raw = str(getattr(value, "value", value) or "").strip().lower().replace("-", "_")
+    if raw in {"", "workspace_default", "default_seat", "workspace", "omit", "none", "auto"}:
+        return InviteSeatIntent.WORKSPACE_DEFAULT
+    if raw in {"premium", "premium_user", "prolite", "pro_lite", "pro-lite"}:
+        return InviteSeatIntent.PREMIUM
+    if raw in {"standard", "standard_user", "default", "member"}:
+        return InviteSeatIntent.STANDARD
+    raise ValueError("invite seat intent must be workspace_default, premium, or standard")
+
+
+def parse_invite_seat_type(value: str | None, *, default: str | None = None) -> str | None:
+    """Normalize an observed or explicit seat label.
+
+    None/empty with no default means workspace default (omit seat_type on wire).
+    Explicit premium/standard still normalize to legacy wire-facing labels used in
+    fixtures once a profile verifies them; they are not auto-sent without mapping.
+    """
+    if value in (None, "") and default in (None, ""):
+        return None
+    raw = str(value if value not in (None, "") else default or "").strip().lower()
+    if raw in {"", "workspace_default", "omit", "none", "auto"}:
+        return None
+    if raw in {"premium", "premium-user", "premium_user", "prolite", "pro_lite", "pro-lite"}:
         return INVITE_SEAT_TYPE_PREMIUM
     if raw in {"default", "standard", "standard-user", "member"}:
         return INVITE_SEAT_TYPE_STANDARD
-    raise ValueError("invite seat type must be premium or standard")
+    raise ValueError("invite seat type must be premium, standard, or workspace_default")
+
+
+def apply_verified_seat_wire_settings(values: dict[str, str] | None) -> dict[InviteSeatIntent, str]:
+    """Merge operator-confirmed wire values into the in-process map.
+
+    Only non-empty strings are accepted. Does not invent Premium/Standard values.
+    Returns the effective mapping after merge.
+    """
+    payload = values or {}
+    premium = str(payload.get("premium") or payload.get(SETTING_INVITE_SEAT_WIRE_PREMIUM) or "").strip()
+    standard = str(payload.get("standard") or payload.get(SETTING_INVITE_SEAT_WIRE_STANDARD) or "").strip()
+    if premium:
+        VERIFIED_INVITE_SEAT_WIRE_VALUES[InviteSeatIntent.PREMIUM] = premium
+    if standard:
+        VERIFIED_INVITE_SEAT_WIRE_VALUES[InviteSeatIntent.STANDARD] = standard
+    return dict(VERIFIED_INVITE_SEAT_WIRE_VALUES)
+
+
+async def load_verified_seat_wire_values(db) -> dict[InviteSeatIntent, str]:
+    """Load confirmed wire values from SystemSetting into the process map."""
+    try:
+        from app.application.settings import get_setting_value
+    except Exception:  # noqa: BLE001
+        return dict(VERIFIED_INVITE_SEAT_WIRE_VALUES)
+    premium = await get_setting_value(db, SETTING_INVITE_SEAT_WIRE_PREMIUM, "") or ""
+    standard = await get_setting_value(db, SETTING_INVITE_SEAT_WIRE_STANDARD, "") or ""
+    return apply_verified_seat_wire_settings({"premium": premium, "standard": standard})
+
+
+def verified_seat_wire_value(seat_intent: InviteSeatIntent | str) -> str | None:
+    intent = parse_invite_seat_intent(seat_intent)
+    if intent is InviteSeatIntent.WORKSPACE_DEFAULT:
+        return None
+    return VERIFIED_INVITE_SEAT_WIRE_VALUES.get(intent)
+
+
+def build_invite_payload(
+    email: str,
+    role: str | None = None,
+    seat_intent: str | InviteSeatIntent | None = None,
+) -> dict[str, Any]:
+    """Build the official invites POST body for the accounts/{id}/invites surface."""
+    intent = parse_invite_seat_intent(seat_intent)
+    payload: dict[str, Any] = {
+        "email_addresses": [normalize_email(email) or str(email or "").strip()],
+        "role": invite_role_payload(role),
+        "resend_emails": True,
+    }
+    if intent is InviteSeatIntent.WORKSPACE_DEFAULT:
+        return payload
+    wire_value = verified_seat_wire_value(intent)
+    if wire_value is None:
+        raise InviteContractUnverified(intent)
+    payload["seat_type"] = wire_value
+    return payload
+
+
+def classify_invite_submit_error(
+    *,
+    status_code: int | None = None,
+    error: Any = None,
+    error_code: Any = None,
+    error_body: Any = None,
+) -> dict[str, Any] | None:
+    """Map upstream invite failures to stable local error objects when possible."""
+    try:
+        code = int(status_code or 0)
+    except (TypeError, ValueError):
+        code = 0
+    text = str(error or "").strip()
+    lowered = text.lower()
+    code_text = str(error_code or "").strip().lower()
+    body = error_body if isinstance(error_body, dict) else {}
+    loc = body.get("loc") if isinstance(body.get("loc"), (list, tuple)) else ()
+    field = ""
+    for part in loc:
+        part_text = str(part or "").strip().lower()
+        if part_text in {"seat_type", "seattype", "body", "seat"}:
+            field = "seat_type" if "seat" in part_text or part_text == "body" else part_text
+            if part_text in {"seat_type", "seattype", "seat"}:
+                field = "seat_type"
+                break
+    seat_invalid = (
+        field == "seat_type"
+        or "seat_type" in lowered
+        or "seattype" in lowered
+        or "not a valid seattype" in lowered
+        or ("seat" in lowered and "valid" in lowered and "type" in lowered)
+    )
+    if seat_invalid:
+        return {
+            "code": "invite_seat_type_invalid",
+            "stage": "invite_submit",
+            "field": "seat_type",
+            "retryable": False,
+            "upstream_status": code or None,
+            "message": "邀请席位参数不被当前接口接受；请更新契约配置。",
+        }
+    if code_text in {"invite_seat_contract_unverified"} or "contract_unverified" in lowered:
+        return {
+            "code": "invite_seat_contract_unverified",
+            "stage": "invite_submit",
+            "field": "seat_intent",
+            "retryable": False,
+            "upstream_status": None,
+            "message": text or "邀请席位意图尚未通过当前接口契约验证；未发送请求。",
+        }
+    return None
 
 
 def official_roles_equivalent(left: str | None, right: str | None) -> bool:

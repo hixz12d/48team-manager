@@ -158,14 +158,30 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         update = AsyncMock(return_value={"id": 42})
         schedulable = AsyncMock(return_value={"patched": True})
         create_proxy = AsyncMock()
+        unsupported = AsyncMock(return_value={"ok": False, "supported": False, "error_code": "sync_oauth_unsupported"})
         with (
             patch(
                 "app.application.sub2api_publish.decrypt_secret",
                 side_effect=lambda value: "decrypted" if value else "",
             ),
+            patch("app.application.sub2api_publish.sub2api_client.sync_oauth_credentials", new=unsupported),
+            patch("app.application.sub2api_credential_sync.sub2api_client.sync_oauth_credentials", new=unsupported),
             patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
+            patch("app.application.sub2api_credential_sync.sub2api_client.update_account", new=update),
             patch(
                 "app.application.sub2api_publish.sub2api_client.read_after_write",
+                new=AsyncMock(return_value=remote),
+            ),
+            patch(
+                "app.application.sub2api_credential_sync.sub2api_client.read_after_write",
+                new=AsyncMock(return_value=remote),
+            ),
+            patch(
+                "app.application.sub2api_publish.sub2api_client.get_account",
+                new=AsyncMock(return_value=remote),
+            ),
+            patch(
+                "app.application.sub2api_credential_sync.sub2api_client.get_account",
                 new=AsyncMock(return_value=remote),
             ),
             patch(
@@ -257,8 +273,13 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.application.sub2api_publish.decrypt_secret", return_value="new-token"),
             patch("app.application.sub2api_publish.sub2api_client.get_account", new=AsyncMock(return_value=remote)),
+            patch("app.application.sub2api_credential_sync.sub2api_client.get_account", new=AsyncMock(return_value=remote)),
+            patch("app.application.sub2api_publish.sub2api_client.sync_oauth_credentials", new=AsyncMock(return_value={"ok": False, "supported": False, "error_code": "sync_oauth_unsupported"})),
+            patch("app.application.sub2api_credential_sync.sub2api_client.sync_oauth_credentials", new=AsyncMock(return_value={"ok": False, "supported": False, "error_code": "sync_oauth_unsupported"})),
             patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
+            patch("app.application.sub2api_credential_sync.sub2api_client.update_account", new=update),
             patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=remote)),
+            patch("app.application.sub2api_credential_sync.sub2api_client.read_after_write", new=AsyncMock(return_value=remote)),
         ):
             result = await push_refreshed_tokens_to_bound_sub2api(self.session, self.account)
         self.assertTrue(result["ok"])
@@ -273,6 +294,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         update = AsyncMock()
         with (
             patch("app.application.sub2api_publish.sub2api_client.get_account", new=AsyncMock(return_value=drifted)),
+            patch("app.application.sub2api_publish.sub2api_client.sync_oauth_credentials", new=AsyncMock(return_value={"ok": False, "supported": False, "error_code": "sync_oauth_unsupported"})),
             patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
         ):
             result = await push_refreshed_tokens_to_bound_sub2api(self.session, self.account)

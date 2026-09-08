@@ -121,7 +121,7 @@ def main():
         row = page.locator(f'.team-member-row[data-member-email="{email}"]')
         row.locator("summary").click()
         page.on("dialog", lambda dialog: dialog.accept())
-        row.get_by_role("button", name="移出团队，保留账号").click()
+        row.get_by_role("button", name="移出官方团队").click()
         page.locator(".team-former-members").wait_for()
         page.locator(".team-former-members").get_by_role("button", name="重新邀请").click()
         assert page.locator(".team-reinvite-form select").input_value() == "member"

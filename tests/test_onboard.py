@@ -28,13 +28,30 @@ class _FakeChatGPT:
         self.invite_error = None
         self.auto_join = auto_join
 
-    async def send_invite(self, access_token, account_id, email, db_session, identifier="default", role="owner", seat_type="premium"):
-        self.invites.append({"email": email, "role": role, "seat_type": seat_type})
+    async def send_invite(
+        self,
+        access_token,
+        account_id,
+        email,
+        db_session,
+        identifier="default",
+        role="owner",
+        seat_intent=None,
+        seat_type=None,
+    ):
+        intent = seat_intent if seat_intent not in (None, "") else seat_type
+        if intent in (None, ""):
+            intent = "workspace_default"
+        intent_value = getattr(intent, "value", intent)
+        record = {"email": email, "role": role, "seat_intent": intent_value}
+        if intent_value not in {None, "", "workspace_default"}:
+            record["seat_type"] = intent_value
+        self.invites.append(record)
         if self.invite_error:
             return {"success": False, "error": self.invite_error, "error_code": "invite_failed"}
         if self.auto_join:
             self.members = [{"email": email, "id": "user-1", "role": "account-owner"}]
-        return {"success": True, "data": {"ok": True}}
+        return {"success": True, "data": {"ok": True}, "seat_intent": intent_value}
 
     async def get_members(self, access_token, account_id, db_session, identifier="default"):
         return {"success": True, "members": list(self.members), "total": len(self.members), "error": None}
@@ -111,7 +128,10 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["success"])
         self.assertEqual(result["child"]["email"], "kid@icloud.com")
         self.assertFalse(result.get("pushed"))
-        self.assertEqual(client.invites, [{"email": "kid@icloud.com", "role": "owner", "seat_type": "premium"}])
+        self.assertEqual(
+            client.invites,
+            [{"email": "kid@icloud.com", "role": "owner", "seat_intent": "workspace_default"}],
+        )
         child = (await self.session.get(Account, result["child"]["id"]))
         self.assertEqual(child.operational_state, "active")
         self.assertEqual(child.proxy_source, "sub2api")
@@ -186,7 +206,10 @@ class OnboardTests(unittest.IsolatedAsyncioTestCase):
             service_hme.mark_signup_started = orig_start
         self.assertTrue(result["success"])
         self.assertEqual(result["child"]["email"], "alias@icloud.com")
-        self.assertEqual(client.invites, [{"email": "alias@icloud.com", "role": "owner", "seat_type": "premium"}])
+        self.assertEqual(
+            client.invites,
+            [{"email": "alias@icloud.com", "role": "owner", "seat_intent": "workspace_default"}],
+        )
 
     async def test_invite_failure_stops_before_browser(self):
         workspace = await self._seed_workspace()

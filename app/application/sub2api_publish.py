@@ -27,6 +27,7 @@ from app.domain.identity.binding import (
     team48_context_key,
 )
 from app.domain.identity.ids import normalize_email
+from app.application.sub2api_credential_sync import present_sync_message, sync_bound_oauth_credentials
 from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
 from app.persistence.repositories import identity as identity_repo
@@ -454,7 +455,37 @@ async def account_sub2api_push(
         if existing and existing.remote_account_id:
             remote_id = int(existing.remote_account_id)
             try:
-                written = await sub2api_client.update_account(db, remote_id, update_body)
+                if "credentials" in update_body:
+                    sync = await sync_bound_oauth_credentials(
+                        db,
+                        remote_id=remote_id,
+                        credentials=dict(update_body.get("credentials") or {}),
+                        expected_email=account.email,
+                        expected_workspace_id=expected_ws,
+                        operation_id=operation.public_id,
+                        reason="manual_push",
+                        auth_validated=True,
+                    )
+                    if not sync.get("ok") and sync.get("error_code") not in {"sync_oauth_unsupported"}:
+                        raise RuntimeError(sync.get("error") or sync.get("message") or "credential sync failed")
+                    residual = {k: v for k, v in update_body.items() if k != "credentials"}
+                    if residual:
+                        written = await sub2api_client.update_account(db, remote_id, residual)
+                    else:
+                        written = sync.get("after") or await sub2api_client.get_account(db, remote_id)
+                    written = dict(written or {})
+                    written["_credential_sync"] = {
+                        "credential_write": sync.get("credential_write"),
+                        "auth_recovery": sync.get("auth_recovery"),
+                        "token_cache_invalidation": sync.get("token_cache_invalidation"),
+                        "supported": sync.get("supported"),
+                        "partial": bool(sync.get("partial")),
+                        "message": sync.get("message") or present_sync_message(sync),
+                        "remaining_blockers": list(sync.get("remaining_blockers") or []),
+                        "schedulable": sync.get("schedulable"),
+                    }
+                else:
+                    written = await sub2api_client.update_account(db, remote_id, update_body)
                 action = "update"
             except Exception as exc:
                 if not _is_remote_missing(exc):
@@ -675,13 +706,25 @@ async def account_sub2api_push(
         return present_action_result({"operation_id": operation.public_id, **payload})
 
     group_label = "继承/保持" if normalized_groups is None else (",".join(str(x) for x in normalized_groups) or "已清空")
+    sync_meta = (written or {}).get("_credential_sync") if isinstance(written, dict) else None
+    if isinstance(sync_meta, dict) and sync_meta.get("message"):
+        success_message = str(sync_meta["message"])
+        partial_sync = bool(sync_meta.get("partial"))
+    else:
+        success_message = f"推送成功：远端账号 #{remote_id}，分组 {group_label}，身份验证通过"
+        partial_sync = False
     payload = {
         **base_result,
         "success": True,
         "ok": True,
-        "status": "success",
+        "status": "partial" if partial_sync else "success",
+        "partial": partial_sync,
         "outcome": "verified",
-        "message": f"推送成功：远端账号 #{remote_id}，分组 {group_label}，复读验证通过",
+        "message": success_message,
+        "credential_write": (sync_meta or {}).get("credential_write") if isinstance(sync_meta, dict) else None,
+        "auth_recovery": (sync_meta or {}).get("auth_recovery") if isinstance(sync_meta, dict) else None,
+        "token_cache_invalidation": (sync_meta or {}).get("token_cache_invalidation") if isinstance(sync_meta, dict) else None,
+        "remaining_blockers": list((sync_meta or {}).get("remaining_blockers") or []) if isinstance(sync_meta, dict) else [],
     }
     await operation_store.mark_step(db, operation, "read_after_write", state="success", result=payload)
     await operation_store.finish(db, operation, payload)
@@ -746,8 +789,18 @@ async def push_refreshed_tokens_to_bound_sub2api(
             binding.last_error = str(reason or "binding drift before token update")
             binding.last_observed_at = utcnow()
             raise RuntimeError(binding.last_error)
-        await sub2api_client.update_account(db, remote_id, {"credentials": _build_credentials(account)})
-        after = await sub2api_client.read_after_write(db, remote_id)
+        sync = await sync_bound_oauth_credentials(
+            db,
+            remote_id=remote_id,
+            credentials=_build_credentials(account),
+            expected_email=account.email,
+            expected_workspace_id=expected_ws,
+            operation_id=getattr(operation, "public_id", None),
+            reason="background_refresh",
+            auth_validated=False,
+            prefetched_remote=before,
+        )
+        after = sync.get("after") or await sub2api_client.read_after_write(db, remote_id)
         after_state, after_reason = cross_check_binding(
             local_email=account.email,
             local_official_account_id=account.official_account_id,
@@ -759,25 +812,54 @@ async def push_refreshed_tokens_to_bound_sub2api(
             binding.last_error = str(after_reason or "binding drift after token update")
             binding.last_observed_at = utcnow()
             raise RuntimeError(binding.last_error)
+        if not sync.get("ok"):
+            raise RuntimeError(sync.get("error") or sync.get("message") or "credential sync failed")
         account.sub2api_token_sync_state = "synced"
         account.sub2api_token_sync_error = None
         binding.last_error = None
         binding.last_observed_at = utcnow()
+        step_result = {
+            "remote_id": remote_id,
+            "updated_fields": ["credentials"],
+            "credential_write": sync.get("credential_write"),
+            "auth_recovery": sync.get("auth_recovery"),
+            "token_cache_invalidation": sync.get("token_cache_invalidation"),
+            "supported": sync.get("supported"),
+            "partial": bool(sync.get("partial")),
+            "message": sync.get("message") or present_sync_message(sync),
+        }
         if operation is not None:
             await operation_store.mark_step(
                 db,
                 operation,
                 "sub2api_token_push",
-                state="success",
-                result={"remote_id": remote_id, "updated_fields": ["credentials"]},
+                state="partial" if sync.get("partial") else "success",
+                result=step_result,
             )
         if owns_operation:
             await operation_store.finish(
                 db,
                 operation,
-                {"success": True, "status": "success", "outcome": "synced", "remote_id": remote_id},
+                {
+                    "success": True,
+                    "status": "partial" if sync.get("partial") else "success",
+                    "partial": bool(sync.get("partial")),
+                    "outcome": "synced",
+                    "remote_id": remote_id,
+                    **step_result,
+                },
             )
-        return {"ok": True, "outcome": "synced", "remote_id": remote_id}
+        return {
+            "ok": True,
+            "outcome": "synced",
+            "remote_id": remote_id,
+            "partial": bool(sync.get("partial")),
+            "message": step_result["message"],
+            "credential_write": step_result.get("credential_write"),
+            "auth_recovery": step_result.get("auth_recovery"),
+            "token_cache_invalidation": step_result.get("token_cache_invalidation"),
+            "supported": step_result.get("supported"),
+        }
     except Exception as exc:  # noqa: BLE001
         account.sub2api_token_sync_state = "failed"
         account.sub2api_token_sync_error = str(exc)[:500]

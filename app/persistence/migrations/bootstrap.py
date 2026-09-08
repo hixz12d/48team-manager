@@ -192,6 +192,11 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
             "AND state IN ('queued', 'running', 'waiting') AND idempotency_key IS NOT NULL"
         ))
         await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_mutation_active "
+            "ON operations (idempotency_key) WHERE idempotency_key LIKE 'ws-mutation:%' "
+            "AND state IN ('queued', 'running', 'waiting')"
+        ))
+        await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_quota_snapshots_account_workspace_queried "
             "ON quota_snapshots (account_id, workspace_id, queried_at)"
         ))

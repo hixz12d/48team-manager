@@ -768,7 +768,7 @@ async def kick_member_to_standby(
     child = (
         await db.execute(select(Account).where(Account.email == normalize_email(target)))
     ).scalar_one_or_none()
-    operation = await operation_store.create(
+    operation, blocker = await operation_store.create_workspace_locked(
         db,
         op_type="kick_member",
         workspace_id=workspace.id,
@@ -783,6 +783,13 @@ async def kick_member_to_standby(
             "unbind_sub2api": bool(unbind_sub2api),
         },
     )
+    if blocker is not None:
+        return {
+            "ok": False,
+            "error": f"Workspace {workspace.id} 已有 {blocker.op_type} 任务 {blocker.public_id} 在跑，避免两边同时踢拉",
+            "error_code": "operation_conflict",
+            "operation_id": blocker.public_id,
+        }
     await db.commit()
     result = await rotate_service.kick_to_standby(
         db,
@@ -817,7 +824,7 @@ async def purge_workspace_child(
     ).scalar_one_or_none()
     if child is not None and (child.local_purpose == "mother" or workspace.owner_account_id == child.id):
         return {"ok": False, "error": "workspace owner cannot be permanently deleted", "error_code": "not_linkable"}
-    operation = await operation_store.create(
+    operation, blocker = await operation_store.create_workspace_locked(
         db,
         op_type="purge_child",
         workspace_id=workspace.id,
@@ -833,6 +840,13 @@ async def purge_workspace_child(
             "purge_local": True,
         },
     )
+    if blocker is not None:
+        return {
+            "ok": False,
+            "error": f"Workspace {workspace.id} 已有 {blocker.op_type} 任务 {blocker.public_id} 在跑，避免两边同时踢拉",
+            "error_code": "operation_conflict",
+            "operation_id": blocker.public_id,
+        }
     await db.commit()
     result = await rotate_service.kick_to_standby(
         db,
@@ -861,13 +875,20 @@ async def revoke_workspace_invite(
     target = normalize_email(email)
     if not target:
         return {"ok": False, "error": "email required", "error_code": "email_required"}
-    operation = await operation_store.create(
+    operation, blocker = await operation_store.create_workspace_locked(
         db,
         op_type="revoke_invite",
         workspace_id=workspace.id,
         email=target,
         input_payload={"workspace_id": workspace.id, "email": target, "mode": "revoke_invite"},
     )
+    if blocker is not None:
+        return {
+            "ok": False,
+            "error": f"Workspace {workspace.id} 已有 {blocker.op_type} 任务 {blocker.public_id} 在跑，避免两边同时踢拉",
+            "error_code": "operation_conflict",
+            "operation_id": blocker.public_id,
+        }
     await db.commit()
     result = await rotate_service.kick_to_standby(
         db, workspace_id=workspace.id, email=target, invitation_only=True,
@@ -1012,13 +1033,20 @@ async def invite_workspace_child(
     target = normalize_email(email)
     if not target:
         return {"ok": False, "error": "email required", "error_code": "email_required"}
-    operation = await operation_store.create(
+    operation, blocker = await operation_store.create_workspace_locked(
         db,
         op_type="invite_child",
         workspace_id=workspace.id,
         email=target,
         input_payload={"workspace_id": workspace.id, "email": target, "mode": "invite", "requested_role": parse_invite_role(role)},
     )
+    if blocker is not None:
+        return {
+            "ok": False,
+            "error": f"Workspace {workspace.id} 已有 {blocker.op_type} 任务 {blocker.public_id} 在跑，避免两边同时踢拉",
+            "error_code": "operation_conflict",
+            "operation_id": blocker.public_id,
+        }
     await db.commit()
     result = await add_local_child(db, workspace.id, email=target, job_id=operation.public_id, role=role)
     result = {**result, "success": bool(result.get("ok"))}

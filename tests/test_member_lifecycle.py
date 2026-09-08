@@ -52,7 +52,7 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_kick_then_reinvite_preserves_account_credentials_and_binding(self):
         before = self.child.access_token_encrypted
-        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email, reason="console_team_detail")
+        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email, reason="console_team_detail",  in_test=True)
         self.assertTrue(result["success"])
         await self.db.commit()
         self.assertEqual(self.membership.membership_state, "removed")
@@ -81,7 +81,7 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unverified_delete_keeps_membership_and_snapshot(self):
         self.client.get_members.side_effect = [self.joined, {"success": False, "error": "timeout"}]
-        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email)
+        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email,  in_test=True)
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "kick_unverified")
         self.assertEqual(self.membership.membership_state, "joined")
@@ -91,7 +91,7 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def test_already_absent_reconciles_local_snapshot(self):
         self.client.get_members.side_effect = None
         self.client.get_members.return_value = self.absent
-        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email)
+        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email,  in_test=True)
         self.assertTrue(result["success"])
         self.client.delete_member.assert_not_called()
         self.assertEqual(self.membership.membership_state, "removed")
@@ -104,7 +104,7 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
         membership = WorkspaceMembership(workspace_id=other.id, account_id=self.child.id, membership_state="joined", local_purpose="child", official_role="member")
         self.db.add(membership)
         await self.db.commit()
-        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email)
+        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email,  in_test=True)
         self.assertTrue(result["success"])
         self.assertEqual(self.child.local_purpose, "child")
         self.assertEqual(self.child.operational_state, "active")
@@ -120,7 +120,7 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.membership.membership_state, "joined")
 
     async def test_revoke_cannot_kick_member_who_has_accepted_invitation(self):
-        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email, invitation_only=True)
+        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email, invitation_only=True,  in_test=True)
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "already_joined")
         self.client.delete_member.assert_not_called()
@@ -133,7 +133,7 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
             {"success": True, "items": [{"email": self.child.email, "role": "member", "id": "user-child"}], "total": 1},
             {"success": True, "items": [], "total": 0},
         ]
-        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email, invitation_only=True)
+        result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email, invitation_only=True,  in_test=True)
         self.assertTrue(result["success"])
         self.client.delete_invite.assert_awaited_once()
         self.assertEqual(self.membership.membership_state, "removed")
