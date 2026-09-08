@@ -480,6 +480,7 @@
         });
         item.append(button);
       }
+      while (region.children.length >= 3) region.firstElementChild.remove();
       region.append(item);
       window.setTimeout(() => item.remove(), 6500);
     }
@@ -861,10 +862,15 @@
 
   async function finishCurrentOperation(stableKey, result) {
     const entry = currentOperations.get(stableKey);
+    if (!entry) return;
     cancelCurrentOperationPolling(stableKey);
     currentOperations.delete(stableKey);
     persistCurrentOperations();
-    const failed = !(result?.ok || result?.success) || result?.partial || ["partial", "failed", "manual_required"].includes(result?.status || result?.state);
+    if (entry.entityType === "account" && entry.action === "auto-reauth") syncAutoReauthButtons(entry.entityId);
+    if (entry.restored) return;
+    const state = String(result?.state || result?.status || "").toLowerCase();
+    result = { ...(result?.result || {}), ...result, success: state === "success", operation_id: entry.operationId };
+    const failed = !result.success || result.partial || ["partial", "failed", "manual_required"].includes(state);
     const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (entry?.successMessage || "已完成"));
     const message = failed ? friendlyError(rawMessage) : rawMessage;
     toast(
@@ -894,6 +900,7 @@
         headers: { Accept: "application/json" },
         signal: controller.signal,
       }).then((response) => parseJsonResponse(response, `operation-${entry.operationId}`));
+      if (controller.signal.aborted || currentOperations.get(stableKey) !== entry || entry.controller !== controller) return;
       const state = String(detail.state || detail.status || "").toLowerCase();
       entry.state = state;
       persistCurrentOperations();
@@ -902,9 +909,12 @@
         await finishCurrentOperation(stableKey, detail);
         return;
       }
+      entry.restored = false;
+      entry.controller = null;
       entry.timer = window.setTimeout(() => pollCurrentOperation(stableKey), operationPollDelay(entry));
     } catch (error) {
-      if (isAbortError(error)) return;
+      if (isAbortError(error) || controller.signal.aborted || currentOperations.get(stableKey) !== entry || entry.controller !== controller) return;
+      entry.controller = null;
       entry.timer = window.setTimeout(() => pollCurrentOperation(stableKey), Math.max(3000, operationPollDelay(entry)));
     }
   }
@@ -919,15 +929,22 @@
     if (!Array.isArray(stored)) return;
     stored.forEach((item) => {
       if (!item?.stableKey || !item?.operationId) return;
-      if (currentOperations.has(item.stableKey)) return;
+      if (TERMINAL_OPERATION_STATES.has(String(item.state || "").toLowerCase())) return;
+      const current = currentOperations.get(item.stableKey);
+      if (current) {
+        if (!current.timer && !current.controller) pollCurrentOperation(item.stableKey);
+        return;
+      }
       currentOperations.set(item.stableKey, {
         ...item,
+        restored: true,
         controller: null,
         timer: null,
         startedAt: item.startedAt || Date.now(),
       });
       pollCurrentOperation(item.stableKey);
     });
+    persistCurrentOperations();
   }
 
   async function openOperationById(operationId) {
@@ -2701,6 +2718,37 @@ function hmeRow(item) {
       container.append(form);
     }
 
+  async function deleteLocalTeam(workspace, trigger) {
+    const name = workspace.display_name || workspace.name || workspace.owner_email || `#${workspace.id}`;
+    const confirmed = await openConfirm({
+      title: "删除本地团队",
+      subtitle: name,
+      message: "确认删除这个团队的本地管理记录？",
+      items: ["删除团队关系、快照及本地绑定", "删除仅属于此团队的本地账号及凭据，保留与其他团队共享的账号", "不解散官方团队，不踢官方成员，不删除 Sub2API 远端账号"],
+      hint: "本地删除不可撤销，也不会取消官方订阅或停止计费。",
+      confirmLabel: "确认删除本地团队",
+    }, trigger);
+    if (!confirmed) return;
+    setButtonBusy(trigger, true, "删除中");
+    try {
+      const result = await deleteAction(`workspace-delete-${workspace.id}`, `/api/workspaces/${workspace.id}`);
+      if (!result?.ok) throw new Error(result?.error || "删除失败");
+      if (teamDetailState?.workspaceId === workspace.id) closeSheet();
+      if (document.body.dataset.page === "accounts") {
+        const url = new URL(window.location.href);
+        for (const key of ["workspace", "team"]) {
+          if (url.searchParams.get(key) === String(workspace.id)) url.searchParams.delete(key);
+        }
+        window.history.replaceState(null, "", url);
+      }
+      await handleActionResult(result, { successMessage: "已删除本地团队" });
+    } catch (error) {
+      toast(friendlyError(error), "error");
+    } finally {
+      setButtonBusy(trigger, false);
+    }
+  }
+
     function renderTeamDetails(workspace) {
       if (!sheet || !workspace) return;
       teamDetailState = { ...(teamDetailState || {}), workspaceId: workspace.id, workspace, view: "details" };
@@ -2802,19 +2850,7 @@ function hmeRow(item) {
       deleteButton.type = "button";
       deleteButton.className = "button danger";
       deleteButton.textContent = "删除本地团队";
-      deleteButton.addEventListener("click", async () => {
-        const name = workspace.display_name || workspace.name || workspace.owner_email || `#${workspace.id}`;
-        if (!confirmDanger(`确认删除本地团队「${name}」？只删除本地数据，不改官方 Team。`)) return;
-        setButtonBusy(deleteButton, true, "删除中");
-        try {
-          const result = await deleteAction(`workspace-delete-${workspace.id}`, `/api/workspaces/${workspace.id}`);
-          closeSheet();
-          await handleActionResult(result, { successMessage: "已删除本地团队" });
-        } catch (error) {
-          toast(friendlyError(error), "error");
-          setButtonBusy(deleteButton, false);
-        }
-      });
+      deleteButton.addEventListener("click", () => deleteLocalTeam(workspace, deleteButton));
       dangerBody.append(warning, deleteButton);
       danger.append(dangerSummary, dangerBody);
       body.append(danger);
@@ -3917,7 +3953,7 @@ function hmeRow(item) {
 
   async function bootAccounts() {
       return window.Team48Accounts.boot({
-        fetchEntity, postAction, startCurrentOperation, entityActions, menuButton,
+        fetchEntity, postAction, startCurrentOperation, entityActions, menuButton, deleteLocalTeam,
         openSheet, openWorkspaceDetails, openOverlay, openRegister, openConfirm, relativeTime, toast, friendlyError, showPageError,
         cache: pageCache,
       });

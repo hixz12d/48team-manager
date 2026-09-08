@@ -236,6 +236,10 @@
     }
     const controls = el("div", "management-team-controls");
     controls.append(sync, button("管理团队", b => { setQuery("workspace", group.id); api.openWorkspaceDetails(b, group); }, "button", `team:${group.id}`));
+    const remove = button("删除团队", b => api.deleteLocalTeam(group, b), "button danger", `delete-team:${group.id}`);
+    remove.title = "删除本地团队，不解散官方团队";
+    remove.setAttribute("aria-label", `删除本地团队：${group.display_name || group.name || group.id}`);
+    controls.append(remove);
     header.append(toggle, el("span", "management-team-icon", String(group.display_name || group.name || "T").slice(0, 1)), title, money, controls);
     const body = el("div"); body.id = `management-team-${group.id}`; body.hidden = closed; body.append(table(items, group));
     section.append(header, body); return section;

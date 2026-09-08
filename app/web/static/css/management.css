@@ -131,7 +131,7 @@ button.management-email:hover { color:var(--accent); }
 }
 @media (prefers-reduced-motion:reduce) { .management-list * { transition:none !important; } }
 
-.management-team-controls { display:flex; flex:0 0 auto; gap:8px; }
+.management-team-controls { display:flex; flex:0 1 auto; flex-wrap:wrap; justify-content:flex-end; max-width:100%; gap:8px; }
 .team-sync-button { min-width:108px; height:36px; }
 .team-sync-button[aria-busy="true"] { opacity:1; color:#345bdd; background:#edf2ff; border-color:#cfdbfa; }
 .group-sync-outcome { display:block; font-size:12px; margin-top:5px; overflow-wrap:anywhere; }

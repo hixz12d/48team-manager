@@ -39,7 +39,7 @@ class _InviteWS:
             return {"success": True, "lookup_state": "found", "members": [self.live_item]}, self.live_item
         return {"success": True, "lookup_state": "absent_confirmed", "members": []}, None
 
-    async def invite_member(self, db, workspace_id, email, role="owner"):
+    async def invite_member(self, db, workspace_id, email, role="owner", seat_intent="workspace_default"):
         self.invites.append({"email": email, "role": role})
         if not self.invite_ok:
             return {"success": False, "error": "invite rejected", "error_code": "invite_failed"}
