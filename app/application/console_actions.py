@@ -614,7 +614,7 @@ async def start_workspace_onboard(
         sub2api_proxy_id = resolved.remote_id
         proxy_instance_key = resolved.instance_key
 
-    operation = await operation_store.create(
+    operation, blocker = await operation_store.create_workspace_locked(
         db,
         op_type="onboard",
         workspace_id=workspace.id,
@@ -632,6 +632,9 @@ async def start_workspace_onboard(
         },
         resolved_proxy=proxy_value,
     )
+    if blocker is not None:
+        return {"ok": False, "error_code": "operation_conflict",
+                "error": "工作区已有变更任务", "operation_id": blocker.public_id}
     await db.commit()
     result = await onboard_service.invite_and_onboard(
         db,
@@ -664,7 +667,7 @@ async def start_workspace_replenish(
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
         return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
-    operation = await operation_store.create(
+    operation, blocker = await operation_store.create_workspace_locked(
         db,
         op_type="replenish",
         workspace_id=workspace.id,
@@ -676,6 +679,9 @@ async def start_workspace_replenish(
             "phone_line": phone_line,
         },
     )
+    if blocker is not None:
+        return {"ok": False, "error_code": "operation_conflict",
+                "error": "工作区已有变更任务", "operation_id": blocker.public_id}
     await db.commit()
     result = await replenish_service.run(
         db,

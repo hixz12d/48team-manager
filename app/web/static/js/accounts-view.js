@@ -36,6 +36,7 @@
   const query = () => new URLSearchParams(location.search);
   const viewName = value => ({ portfolio: "teams", flat: "all" }[value] || (["teams", "all", "unassigned", "attention"].includes(value) ? value : "teams"));
   function setQuery(key, value) {
+    if (["q", "purpose", "health", "team", "view"].includes(key)) selected.clear();
     const params = query();
     if (!value || value === "all" && key !== "view") params.delete(key); else params.set(key, value);
     history.replaceState(null, "", `${location.pathname}${params.size ? "?" + params : ""}`);

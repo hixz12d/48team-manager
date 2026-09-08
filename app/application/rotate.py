@@ -177,13 +177,6 @@ class RotateService:
             return {"state": "absent", "remote_id": "", "binding": None}
 
         if workspace_id is None:
-            if len(rows) == 1:
-                binding = rows[0]
-                return {
-                    "state": "matched",
-                    "remote_id": str(binding.remote_account_id or ""),
-                    "binding": binding,
-                }
             return {
                 "state": "ambiguous_or_unverified",
                 "remote_id": "",
@@ -197,6 +190,21 @@ class RotateService:
         unscoped = [row for row in rows if row.workspace_id is None]
         if len(matched) == 1:
             binding = matched[0]
+            remote_id = str(binding.remote_account_id or "")
+            if binding.binding_state != "verified" or not remote_id.isdigit() or int(remote_id) <= 0:
+                return {"state": "ambiguous_or_unverified", "remote_id": "", "binding": binding,
+                        "reason": "binding_not_verified"}
+            from app.application.sub2api_credential_sync import validate_sync_identity
+            workspace = await db.get(Workspace, scoped_id)
+            try:
+                remote = await self.sub2api.get_account(db, int(remote_id))
+                error = validate_sync_identity(remote, int(remote_id), account.email,
+                                               workspace.official_workspace_id if workspace else None)
+            except Exception:
+                error = "remote_identity_unknown"
+            if workspace is None or error:
+                return {"state": "ambiguous_or_unverified", "remote_id": "", "binding": binding,
+                        "reason": error or "workspace_missing"}
             return {
                 "state": "matched",
                 "remote_id": str(binding.remote_account_id or ""),
@@ -325,6 +333,9 @@ class RotateService:
         else:
             try:
                 paused = await self.sub2api.set_account_schedulable(db, remote_id, False)
+                after = await self.sub2api.get_account(db, remote_id)
+                if not isinstance(after, dict) or str(after.get("id")) != str(remote_id) or after.get("schedulable") is not False:
+                    raise RuntimeError("远端暂停未确认，保留绑定等待复查")
             except Exception as exc:  # noqa: BLE001
                 await self._mark_step(db, job_id, "paused", state="failed", error_code="pause_failed", error_message=str(exc))
                 return {"ok": False, "code": "pause_failed", "error": str(exc)}
@@ -354,25 +365,38 @@ class RotateService:
         workspace: Workspace,
         email: str,
         in_test: bool = False,
+        expected_action: str = "remove",
     ) -> dict[str, Any]:
         """Bounded read-only confirmation after an official remove/revoke.
 
         Initial engineering budget: up to 5 attempts, delays ~0/0.5/1/2/3s.
         unknown_due_to_error never becomes absent_confirmed.
         """
-        # Production uses a short poll budget; tests force a single read-only check.
-        delays = [0.0] if in_test else [0.0, 0.5, 1.0, 2.0, 3.0]
+        delays = [0.0, 0.5, 1.0, 2.0, 3.0]
         last_live: dict[str, Any] = {"success": False}
         last_item: dict[str, Any] | None = None
         import asyncio
         import random
+        import time
+
+        deadline = time.monotonic() + 15.0
 
         for attempt, base_delay in enumerate(delays):
             if attempt > 0:
                 wait_for = 0.0 if in_test else max(0.0, base_delay + random.uniform(0.0, 0.15))
                 if wait_for:
-                    await asyncio.sleep(wait_for)
-            last_live, last_item = await self.workspaces.lookup_live_member(db, workspace, email)
+                    await asyncio.sleep(min(wait_for, max(0.0, deadline - time.monotonic())))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"confirmed": False, "state": "unknown_due_to_error", "item": last_item,
+                        "live": last_live, "attempts": attempt}
+            try:
+                last_live, last_item = await asyncio.wait_for(
+                    self.workspaces.lookup_live_member(db, workspace, email), timeout=remaining
+                )
+            except TimeoutError:
+                return {"confirmed": False, "state": "unknown_due_to_error", "item": last_item,
+                        "live": last_live, "attempts": attempt + 1}
             lookup_state = last_live.get("lookup_state") or (
                 "found" if last_item else ("absent_confirmed" if last_live.get("success") else "unknown_due_to_error")
             )
@@ -394,7 +418,10 @@ class RotateService:
                     "item": None,
                     "attempts": attempt + 1,
                 }
-            if last_item and last_item.get("status") == "invited":
+            if last_item and last_item.get("status") == "joined" and expected_action == "revoke":
+                return {"confirmed": False, "state": "state_changed", "item": last_item,
+                        "live": last_live, "attempts": attempt + 1}
+            if last_item and last_item.get("status") == "invited" and expected_action != "revoke":
                 return {
                     "confirmed": False,
                     "state": "invite_still_present",
@@ -426,6 +453,9 @@ class RotateService:
         last: dict[str, Any] = {"success": False, "error": "未执行踢人"}
         for candidate in ids:
             last = await self.workspaces.delete_member(db, workspace.id, candidate, email=email)
+            if not last.get("success") and last.get("error_code") == "write_outcome_unknown":
+                return {**last, "status": "manual_required", "outcome": "awaiting_confirmation",
+                        "retry_action": "sync_status"}
             if not last.get("success"):
                 logger.warning("踢人 ID %s 失败: %s", candidate, last.get("error"))
                 continue
@@ -453,6 +483,11 @@ class RotateService:
                 last["kicked_user_id"] = candidate
                 last["verify_attempts"] = confirmation.get("attempts")
                 return last
+            return {
+                "success": False, "status": "manual_required", "outcome": "awaiting_confirmation",
+                "error_code": "kick_unverified", "retry_action": "sync_status",
+                "error": "移除已提交但后置状态未确认，请先同步，不会尝试其他成员 ID",
+            }
         return {
             "success": False,
             "error": f"{email} 没有踢掉，ChatGPT 里还在。不要信刚才的成功提示。",
@@ -539,7 +574,7 @@ class RotateService:
                     "error_code": result.get("error_code") or "revoke_failed",
                 }
             confirmation = await self._confirm_member_absent(
-                db, workspace=workspace, email=target, in_test=in_test
+                db, workspace=workspace, email=target, in_test=in_test, expected_action="revoke"
             )
             if confirmation.get("state") == "unknown_due_to_error":
                 return {
@@ -595,7 +630,7 @@ class RotateService:
         remote_id = ""
         if binding_resolution.get("state") == "matched":
             remote_id = str(binding_resolution.get("remote_id") or "")
-        elif binding_resolution.get("state") == "ambiguous_or_unverified" and unbind:
+        elif binding_resolution.get("state") == "ambiguous_or_unverified":
             binding_error = "Sub2API 绑定存在多上下文或不明确，未自动下架远端账号"
         # After official remove is confirmed: pause schedulable on the matched binding.
         # Skip when we are about to delete the remote account (unbind path).
@@ -616,12 +651,16 @@ class RotateService:
         if child and unbind and remote_id:
             try:
                 deleted_sub = await self.sub2api.delete_accounts(db, [int(remote_id)])
-                remote_unbind_confirmed = True
+                deleted_ids = {str(value) for value in (deleted_sub.get("deleted") or [])}
+                failed_ids = {str(item.get("id")) for item in (deleted_sub.get("failed") or []) if isinstance(item, dict)}
+                remote_unbind_confirmed = str(remote_id) in deleted_ids and str(remote_id) not in failed_ids
+                if not remote_unbind_confirmed:
+                    binding_error = "远端删除回执未确认目标已删除，本地绑定已保留"
             except Exception as exc:  # noqa: BLE001
                 binding_error = str(exc)
                 logger.warning("Sub2API 下架失败 email=%s error=%s", target, exc)
         purged = False
-        if child and purge_local and not (unbind and remote_id and not remote_unbind_confirmed):
+        if child and purge_local and not binding_error and not (unbind and remote_id and not remote_unbind_confirmed):
             purged_local = await purge_local_child_record(db, workspace, child)
             if not purged_local.get("ok"):
                 return {
@@ -660,8 +699,8 @@ class RotateService:
         if pause_result is not None and not pause_result.get("ok") and not unbind:
             success = False
             status = "partial"
-        if unbind and binding_resolution.get("state") == "ambiguous_or_unverified":
-            message = f"{message}，官方已移出但远端绑定不明确，未自动下架"
+        if binding_resolution.get("state") == "ambiguous_or_unverified":
+            message = f"{message}，官方已移出但远端绑定未验证，暂停或下架未确认"
             status = "partial"
             success = False
         elif unbind and remote_id and not remote_unbind_confirmed:

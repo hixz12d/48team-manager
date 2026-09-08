@@ -148,7 +148,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         self.account.proxy = "http://127.0.0.1:8080"
         await self.session.commit()
         remote = {
-            "id": 42,
+            "id": 42, "platform": "openai", "type": "oauth", "schedulable": True,
             "credentials": {
                 "email": self.account.email,
                 "chatgpt_account_id": self.account.official_account_id,
@@ -263,7 +263,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refreshed_token_push_requires_verified_exact_binding(self):
         remote = {
-            "id": 42,
+            "id": 42, "platform": "openai", "type": "oauth", "schedulable": True,
             "credentials": {
                 "email": self.account.email,
                 "chatgpt_account_id": self.account.official_account_id,
@@ -288,7 +288,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refreshed_token_push_refuses_binding_drift(self):
         drifted = {
-            "id": 42,
+            "id": 42, "platform": "openai", "type": "oauth", "schedulable": True,
             "credentials": {"email": "someone-else@example.com", "chatgpt_account_id": "different"},
         }
         update = AsyncMock()

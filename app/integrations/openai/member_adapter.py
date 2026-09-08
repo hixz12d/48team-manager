@@ -359,23 +359,20 @@ def parse_invite_seat_type(value: str | None, *, default: str | None = None) -> 
 
 
 def apply_verified_seat_wire_settings(values: dict[str, str] | None) -> dict[InviteSeatIntent, str]:
-    """Merge operator-confirmed wire values into the in-process map.
-
-    Only non-empty strings are accepted. Does not invent Premium/Standard values.
-    Returns the effective mapping after merge.
-    """
+    """Build a request-local snapshot; empty settings restore the verified defaults."""
+    effective = dict(VERIFIED_INVITE_SEAT_WIRE_VALUES)
     payload = values or {}
     premium = str(payload.get("premium") or payload.get(SETTING_INVITE_SEAT_WIRE_PREMIUM) or "").strip()
     standard = str(payload.get("standard") or payload.get(SETTING_INVITE_SEAT_WIRE_STANDARD) or "").strip()
     if premium:
-        VERIFIED_INVITE_SEAT_WIRE_VALUES[InviteSeatIntent.PREMIUM] = premium
+        effective[InviteSeatIntent.PREMIUM] = premium
     if standard:
-        VERIFIED_INVITE_SEAT_WIRE_VALUES[InviteSeatIntent.STANDARD] = standard
-    return dict(VERIFIED_INVITE_SEAT_WIRE_VALUES)
+        effective[InviteSeatIntent.STANDARD] = standard
+    return effective
 
 
 async def load_verified_seat_wire_values(db) -> dict[InviteSeatIntent, str]:
-    """Load confirmed wire values from SystemSetting into the process map."""
+    """Load confirmed wire values without mutating another request's settings."""
     try:
         from app.application.settings import get_setting_value
     except Exception:  # noqa: BLE001
@@ -396,6 +393,8 @@ def build_invite_payload(
     email: str,
     role: str | None = None,
     seat_intent: str | InviteSeatIntent | None = None,
+    *,
+    wire_values: dict[InviteSeatIntent, str] | None = None,
 ) -> dict[str, Any]:
     """Build the official invites POST body for the accounts/{id}/invites surface."""
     intent = parse_invite_seat_intent(seat_intent)
@@ -406,7 +405,7 @@ def build_invite_payload(
     }
     if intent is InviteSeatIntent.WORKSPACE_DEFAULT:
         return payload
-    wire_value = verified_seat_wire_value(intent)
+    wire_value = verified_seat_wire_value(intent) if wire_values is None else wire_values.get(intent)
     if wire_value is None:
         raise InviteContractUnverified(intent)
     payload["seat_type"] = wire_value
@@ -428,12 +427,22 @@ def classify_invite_submit_error(
     text = str(error or "").strip()
     lowered = text.lower()
     code_text = str(error_code or "").strip().lower()
+    if isinstance(error_body, list):
+        for item in error_body:
+            classified = classify_invite_submit_error(status_code=code, error_body=item)
+            if classified:
+                return classified
+        return None
     body = error_body if isinstance(error_body, dict) else {}
+    if isinstance(body.get("detail"), (dict, list)):
+        classified = classify_invite_submit_error(status_code=code, error_body=body["detail"])
+        if classified:
+            return classified
     loc = body.get("loc") if isinstance(body.get("loc"), (list, tuple)) else ()
     field = ""
     for part in loc:
         part_text = str(part or "").strip().lower()
-        if part_text in {"seat_type", "seattype", "body", "seat"}:
+        if part_text in {"seat_type", "seattype", "seat"}:
             field = "seat_type" if "seat" in part_text or part_text == "body" else part_text
             if part_text in {"seat_type", "seattype", "seat"}:
                 field = "seat_type"

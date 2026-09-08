@@ -27,7 +27,12 @@ class BindingContextTests(unittest.IsolatedAsyncioTestCase):
         self.ws2 = Workspace(official_workspace_id="ws-2", owner_account_id=self.account.id, status="active", name="B")
         self.db.add_all([self.ws1, self.ws2])
         await self.db.flush()
-        self.rotate = RotateService(workspaces=AsyncMock())
+        sub2api = AsyncMock()
+        sub2api.get_account.side_effect = lambda db, remote_id: {
+            "id": remote_id, "platform": "openai", "type": "oauth",
+            "email": self.account.email, "workspace_id": "ws-1" if remote_id == 101 else "ws-2",
+        }
+        self.rotate = RotateService(workspaces=AsyncMock(), sub2api=sub2api)
 
     async def asyncTearDown(self):
         await self.db.close()

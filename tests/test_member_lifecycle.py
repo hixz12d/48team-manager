@@ -43,7 +43,13 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
             send_invite=AsyncMock(return_value={"success": True}),
         )
         self.workspaces = WorkspaceService(client=self.client)
-        self.sub2api = SimpleNamespace(delete_accounts=AsyncMock())
+        self.sub2api = SimpleNamespace(
+            delete_accounts=AsyncMock(),
+            get_account=AsyncMock(return_value={
+                "id": 23, "email": self.child.email, "workspace_id": "ws-1",
+                "platform": "openai", "type": "oauth", "schedulable": False,
+            }),
+        )
         self.rotate = RotateService(workspaces=self.workspaces, sub2api=self.sub2api)
 
     async def asyncTearDown(self):
@@ -80,7 +86,7 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.client.send_invite.assert_awaited_once()
 
     async def test_unverified_delete_keeps_membership_and_snapshot(self):
-        self.client.get_members.side_effect = [self.joined, {"success": False, "error": "timeout"}]
+        self.client.get_members.side_effect = [self.joined] + [{"success": False, "error": "timeout"}] * 5
         result = await self.rotate.kick_to_standby(self.db, workspace_id=self.workspace.id, email=self.child.email,  in_test=True)
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "kick_unverified")
@@ -148,6 +154,24 @@ class MemberLifecycleTests(unittest.IsolatedAsyncioTestCase):
         row = await operation_store.get_by_public_id(self.db, result["operation_id"])
         self.assertEqual(row.state, "success")
         self.assertTrue(result["success"])
+
+    async def test_failed_remote_delete_preserves_binding_and_account(self):
+        self.client.get_members.side_effect = None
+        self.client.get_members.return_value = self.absent
+        for receipt in ({"deleted": [], "failed": [{"id": 23, "status": 500}]},
+                        {"deleted": [23], "failed": [{"id": 23, "status": 500}]},
+                        {"deleted": [99], "failed": []}):
+            self.sub2api.delete_accounts.return_value = receipt
+            result = await self.rotate.kick_to_standby(
+                self.db, workspace_id=self.workspace.id, email=self.child.email,
+                purge_local=True, in_test=True,
+            )
+            self.assertTrue(result["partial"])
+            self.assertFalse(result["purged"])
+            self.assertFalse(result["unbound_sub2api"])
+            self.assertEqual(len(list(await self.db.scalars(select(ExternalBinding)))), 1)
+            self.assertIsNotNone(await self.db.get(Account, self.child.id))
+        self.client.delete_member.assert_not_awaited()
 
     async def test_disabled_account_is_not_reinvited(self):
         self.child.operational_state = "disabled"

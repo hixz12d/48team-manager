@@ -415,7 +415,19 @@ class Sub2ApiClient:
             if len(ids) == 1:
                 account_id = ids[0]
                 response = await client.delete(f"/api/v1/admin/accounts/{account_id}", headers=headers)
-                if response.status_code < 400:
+                try:
+                    payload = response.json()
+                    data = self._unwrap(payload)
+                except Exception:
+                    payload, data = {}, {}
+                business_failed = (
+                    isinstance(payload, dict) and (payload.get("success") is False or payload.get("error") or payload.get("code") not in (None, 0, "0", 200))
+                ) or (isinstance(data, dict) and (data.get("success") is False or data.get("failed") or data.get("error")))
+                if response.status_code in {200, 204} and not business_failed and (
+                    response.status_code == 204
+                    or isinstance(payload, dict) and payload.get("code") in (0, "0", 200)
+                    or isinstance(data, dict) and data.get("success") is True
+                ):
                     deleted.append(account_id)
                 else:
                     failed.append({"id": account_id, "status": response.status_code, "body": response.text[:240]})
@@ -425,8 +437,22 @@ class Sub2ApiClient:
                     headers=headers,
                     json={"account_ids": ids},
                 )
-                if response.status_code < 400:
-                    deleted = list(ids)
+                if 200 <= response.status_code < 300:
+                    try:
+                        payload = response.json()
+                        data = self._unwrap(payload)
+                        if isinstance(payload, dict) and (payload.get("success") is False or payload.get("error")):
+                            data = {}
+                    except Exception:
+                        data = {}
+                    receipt = data if isinstance(data, dict) else {}
+                    if receipt.get("success") is False or receipt.get("error"):
+                        receipt = {}
+                    failed_ids = {str(item.get("id")) for item in receipt.get("failed", []) if isinstance(item, dict)}
+                    confirmed = {str(value) for value in receipt.get("deleted", [])}
+                    deleted = [value for value in ids if str(value) in confirmed and str(value) not in failed_ids]
+                    failed = [{"id": value, "status": response.status_code, "error": "delete_unconfirmed"}
+                              for value in ids if value not in deleted]
                 else:
                     failed = [{"id": account_id, "status": response.status_code} for account_id in ids]
         finally:
@@ -785,7 +811,7 @@ class Sub2ApiClient:
                     "error_code": "sync_oauth_bad_response",
                     "error": "sync-oauth-credentials 返回形状无效",
                 }
-            if int(data.get("contract_version") or 0) != 1:
+            if data.get("contract_version") != 1:
                 return {
                     "ok": False,
                     "supported": True,
@@ -793,8 +819,23 @@ class Sub2ApiClient:
                     "error": f"unexpected contract_version={data.get('contract_version')!r}",
                     "raw_keys": sorted(str(k) for k in data.keys())[:20],
                 }
+            if str(data.get("remote_account_id") or "") != str(account_id) or (
+                operation_id and data.get("operation_id") != operation_id
+            ):
+                return {"ok": False, "supported": True, "error_code": "sync_oauth_identity_mismatch",
+                        "error": "同步回执的账号或操作 ID 不匹配"}
+            write_ok = data.get("credential_write") == "succeeded"
+            steps_ok = (
+                data.get("token_cache_invalidation") == "succeeded"
+                and data.get("auth_recovery") in {"cleared", "skipped", "not_applicable"}
+                and data.get("ok") is not False
+                and data.get("success") is not False
+                and not (isinstance(payload, dict) and payload.get("success") is False)
+            )
             return {
-                "ok": True,
+                "ok": write_ok and steps_ok,
+                "error_code": None if write_ok and steps_ok else "sync_oauth_incomplete",
+                "error": None if write_ok and steps_ok else "远端凭据同步步骤未全部成功",
                 "supported": True,
                 "contract_version": 1,
                 "operation_id": data.get("operation_id") or operation_id,
@@ -805,7 +846,7 @@ class Sub2ApiClient:
                 "schedulable": data.get("schedulable"),
                 "scheduling_assessment": data.get("scheduling_assessment") or "unknown",
                 "remaining_blockers": list(data.get("remaining_blockers") or []),
-                "partial": bool(data.get("partial")),
+                "partial": bool(data.get("partial") or (write_ok and not steps_ok)),
                 "raw": data,
             }
         finally:

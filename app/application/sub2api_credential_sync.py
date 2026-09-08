@@ -45,18 +45,13 @@ def assess_auth_error(remote: dict[str, Any] | None) -> bool:
         return False
     if not message:
         return False
-    markers = (
-        "401",
-        "unauthorized",
-        "token_expired",
-        "token is expired",
-        "invalid_token",
-        "authentication",
-        "oauth",
-        "access token",
-        "refresh token",
-    )
-    return any(marker in message for marker in markers)
+    # Background protocol words and embedded status numbers are not auth evidence.
+    if any(word in message for word in ("429", "403", "limit", "quota", "permission", "billing")):
+        return False
+    code = str((remote or {}).get("error_code") or "").lower()
+    if code:
+        return code in {"token_expired", "invalid_token", "token_revoked", "unauthorized"}
+    return message in {"token is expired", "token_expired", "invalid_token", "401 unauthorized", "oauth 401 unauthorized"}
 
 
 def choose_recovery_mode(reason: SyncReason, *, remote: dict[str, Any] | None, auth_validated: bool) -> str:
@@ -69,8 +64,6 @@ def choose_recovery_mode(reason: SyncReason, *, remote: dict[str, Any] | None, a
 
 def present_sync_message(result: dict[str, Any]) -> str:
     remote_id = result.get("remote_account_id") or result.get("remote_id") or "?"
-    if not result.get("supported", True) and result.get("error_code") == "sync_oauth_unsupported":
-        return f"凭据已按兼容路径同步至原账号 #{remote_id}；远端安全恢复能力不可用，旧鉴权错误未自动清理。"
     write = result.get("credential_write")
     recovery = result.get("auth_recovery")
     cache = result.get("token_cache_invalidation")
@@ -101,7 +94,43 @@ def present_sync_message(result: dict[str, Any]) -> str:
         parts.append("仍有限制：" + "、".join(blockers[:4]))
     if result.get("error") and not result.get("ok"):
         parts.append(str(result.get("error")))
-    return "；".join(parts) if parts else "凭据同步已完成"
+    if result.get("final_status"):
+        parts.append("最终运行状态：" + str(result["final_status"]))
+    return "；".join(parts) if parts else "凭据同步结果未确认"
+
+
+def validate_sync_identity(remote, remote_id, expected_email, expected_workspace_id) -> str | None:
+    """Fail closed on incomplete identity, including personal/team context drift."""
+    info = _identity_from_remote(remote)
+    if not isinstance(remote, dict) or str(remote.get("id") or "") != str(remote_id):
+        return "远端账号 ID 缺失或不匹配，未确认目标身份"
+    if remote.get("platform") != "openai" or remote.get("type") != "oauth":
+        return "远端平台或凭据类型未确认"
+    if not expected_email or info["email"] != normalize_email(expected_email):
+        return "远端邮箱缺失或与本地账号不一致"
+    if str(info["workspace_id"] or "").lower() != str(expected_workspace_id or "").lower():
+        return "远端工作区与预期上下文不一致"
+    return None
+
+
+def apply_final_assessment(result, after, remote_id, expected_email, expected_workspace_id):
+    info = _identity_from_remote(after)
+    blockers = list(result.get("remaining_blockers") or [])
+    identity_error = validate_sync_identity(after, remote_id, expected_email, expected_workspace_id)
+    if identity_error:
+        result.update(ok=False, error_code="final_identity_mismatch", error=identity_error)
+        blockers.append("final_identity_mismatch")
+    result["final_status"] = info["status"]
+    result["final_error"] = info["error_message"]
+    if info["status"].lower() in {"error", "unauthorized", "auth_error", "disabled", "paused"} or info["error_message"]:
+        blockers.append("final_status_blocked")
+    result["schedulable"] = info["schedulable"]
+    if not info["status"]:
+        blockers.append("final_status_unknown")
+    if info["schedulable"] is not True:
+        blockers.append("schedulable_off" if info["schedulable"] is False else "schedulable_unknown")
+    result["remaining_blockers"] = list(dict.fromkeys(blockers))
+    result["partial"] = bool(result.get("partial") or blockers)
 
 
 async def sync_bound_oauth_credentials(
@@ -134,21 +163,14 @@ async def sync_bound_oauth_credentials(
             }
 
     before = _identity_from_remote(remote)
-    if expected_email:
-        remote_email = before.get("email") or ""
-        if remote_email and normalize_email(expected_email) != remote_email:
-            return {
-                "ok": False,
-                "supported": True,
-                "error_code": "identity_mismatch",
-                "error": "远端邮箱与本地账号不一致，未写入",
-                "remote_account_id": remote_id,
-                "credential_write": "not_attempted",
-                "auth_recovery": "skipped",
-                "token_cache_invalidation": "skipped",
-                "expected_email": normalize_email(expected_email),
-                "remote_email": remote_email,
-            }
+    identity_error = validate_sync_identity(remote, remote_id, expected_email, expected_workspace_id)
+    if identity_error:
+        return {
+            "ok": False, "supported": True, "error_code": "identity_mismatch",
+            "error": identity_error, "remote_account_id": remote_id,
+            "credential_write": "not_attempted", "auth_recovery": "skipped",
+            "token_cache_invalidation": "skipped",
+        }
 
     recovery_mode = choose_recovery_mode(reason, remote=remote, auth_validated=bool(auth_validated))
     expected_identity = {
@@ -168,7 +190,6 @@ async def sync_bound_oauth_credentials(
     if narrow.get("supported") is False:
         try:
             await sub2api_client.update_account(db, int(remote_id), {"credentials": credentials})
-            after = await sub2api_client.read_after_write(db, int(remote_id))
         except Exception as exc:  # noqa: BLE001
             result = {
                 "ok": False,
@@ -180,12 +201,19 @@ async def sync_bound_oauth_credentials(
                 "auth_recovery": "skipped",
                 "token_cache_invalidation": "unknown",
             }
-            result["message"] = present_sync_message(
-                {
-                    **result,
-                    "error_code": "sync_oauth_unsupported",
-                }
-            )
+            result["message"] = present_sync_message(result)
+            return result
+        try:
+            after = await sub2api_client.read_after_write(db, int(remote_id))
+        except Exception as exc:
+            result = {
+                "ok": False, "supported": False, "partial": True,
+                "remote_account_id": remote_id, "credential_write": "succeeded",
+                "auth_recovery": "skipped", "token_cache_invalidation": "unknown",
+                "error_code": "final_get_failed", "error": f"写入已接受，但最终状态未知：{exc}",
+                "remaining_blockers": ["final_get_failed", "narrow_sync_unavailable"],
+            }
+            result["message"] = present_sync_message(result)
             return result
         after_info = _identity_from_remote(after)
         result = {
@@ -205,10 +233,11 @@ async def sync_bound_oauth_credentials(
             "recovery_mode_requested": recovery_mode,
             "after": after,
         }
+        apply_final_assessment(result, after, remote_id, expected_email, expected_workspace_id)
         result["message"] = present_sync_message(result)
         return result
 
-    if not narrow.get("ok"):
+    if not narrow.get("ok") and narrow.get("credential_write") != "succeeded":
         result = {
             **narrow,
             "remote_account_id": remote_id,
@@ -246,5 +275,6 @@ async def sync_bound_oauth_credentials(
             blockers.append("schedulable_off")
         result["remaining_blockers"] = blockers
         result["scheduling_assessment"] = result.get("scheduling_assessment") or "paused"
+    apply_final_assessment(result, after, remote_id, expected_email, expected_workspace_id)
     result["message"] = present_sync_message(result)
     return result

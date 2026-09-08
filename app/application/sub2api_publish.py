@@ -27,18 +27,12 @@ from app.domain.identity.binding import (
     team48_context_key,
 )
 from app.domain.identity.ids import normalize_email
-from app.application.sub2api_credential_sync import present_sync_message, sync_bound_oauth_credentials
+from app.application.sub2api_credential_sync import apply_final_assessment, present_sync_message, sync_bound_oauth_credentials
 from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
 from app.persistence.repositories import identity as identity_repo
 
 
-def _is_remote_missing(exc: Exception) -> bool:
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if status == 404:
-        return True
-    text = str(exc)
-    return "404 Not Found" in text and "/admin/accounts/" in text
 
 
 def sub2api_publish_eligibility(account: Account | None) -> dict[str, Any]:
@@ -451,7 +445,9 @@ async def account_sub2api_push(
         written = None
         remote_id = 0
         action = "create"
-        stale_binding = False
+
+        if existing and existing.binding_state != BINDING_VERIFIED:
+            raise RuntimeError("本地绑定尚未验证，请先对账")
         if existing and existing.remote_account_id:
             remote_id = int(existing.remote_account_id)
             try:
@@ -464,7 +460,7 @@ async def account_sub2api_push(
                         expected_workspace_id=expected_ws,
                         operation_id=operation.public_id,
                         reason="manual_push",
-                        auth_validated=True,
+                        auth_validated=False,
                     )
                     if not sync.get("ok") and sync.get("error_code") not in {"sync_oauth_unsupported"}:
                         raise RuntimeError(sync.get("error") or sync.get("message") or "credential sync failed")
@@ -488,13 +484,7 @@ async def account_sub2api_push(
                     written = await sub2api_client.update_account(db, remote_id, update_body)
                 action = "update"
             except Exception as exc:
-                if not _is_remote_missing(exc):
-                    raise
-                await db.delete(existing)
-                await db.flush()
-                existing = None
-                stale_binding = True
-                remote_id = 0
+                raise RuntimeError("原绑定同步失败，保留绑定且不自动重建：" + str(exc)) from exc
         if written is None:
             matched = None
             try:
@@ -502,21 +492,28 @@ async def account_sub2api_push(
                     await sub2api_client.list_status_accounts(db),
                     context_key=team48_context_key(expected_ws, account.id),
                 )
-            except Exception:
-                matched = None
+            except Exception as exc:
+                raise RuntimeError("远端匹配查询失败或存在歧义，未创建账号") from exc
             if matched and remote_id_from(matched):
                 remote_id = int(remote_id_from(matched))
                 try:
-                    written = await sub2api_client.update_account(db, remote_id, update_body)
+                    sync = await sync_bound_oauth_credentials(
+                        db, remote_id=remote_id, credentials=credentials,
+                        expected_email=account.email, expected_workspace_id=expected_ws,
+                        operation_id=operation.public_id, reason="manual_push",
+                    )
+                    if not sync.get("ok"):
+                        raise RuntimeError(sync.get("error") or "credential sync failed")
+                    residual = {key: value for key, value in update_body.items() if key != "credentials"}
+                    written = (await sub2api_client.update_account(db, remote_id, residual)) if residual else sync["after"]
+                    written = dict(written)
+                    written["_credential_sync"] = sync
                     action = "update"
                 except Exception as inner:
-                    if not _is_remote_missing(inner):
-                        raise
-                    remote_id = 0
-                    written = None
+                    raise RuntimeError("匹配目标同步失败，未创建替代账号：" + str(inner)) from inner
             if written is None:
                 written = await sub2api_client.create_account(db, create_body)
-                action = "recreate" if stale_binding else "create"
+                action = "create"
                 remote_id = int(remote_id_from(written) or 0)
         written_keys = sorted(list(written.keys()))[:12] if isinstance(written, dict) else []
         await operation_store.mark_step(
@@ -590,6 +587,11 @@ async def account_sub2api_push(
         expected_workspace=expected_ws,
         remote=remote,
     )
+    if isinstance(written, dict) and written.get("_credential_sync"):
+        from app.application.sub2api_credential_sync import validate_sync_identity
+        identity_error = validate_sync_identity(remote, remote_id, account.email, expected_ws)
+        if identity_error:
+            check_state, check_error = "conflict", identity_error
     if check_state != BINDING_VERIFIED:
         await ensure_binding(db, account=account, remote_account_id=remote_id, workspace_id=scoped_workspace_id)
         binding = (
@@ -707,6 +709,9 @@ async def account_sub2api_push(
 
     group_label = "继承/保持" if normalized_groups is None else (",".join(str(x) for x in normalized_groups) or "已清空")
     sync_meta = (written or {}).get("_credential_sync") if isinstance(written, dict) else None
+    if isinstance(sync_meta, dict):
+        apply_final_assessment(sync_meta, remote, remote_id, account.email, expected_ws)
+        sync_meta["message"] = present_sync_message(sync_meta)
     if isinstance(sync_meta, dict) and sync_meta.get("message"):
         success_message = str(sync_meta["message"])
         partial_sync = bool(sync_meta.get("partial"))

@@ -134,6 +134,10 @@ class WorkspaceLockAndPauseTests(unittest.IsolatedAsyncioTestCase):
 
         workspaces = WorkspaceService(client=client)
         sub2api = SimpleNamespace(
+            get_account=AsyncMock(return_value={
+                "id": 2980, "email": self.child.email, "workspace_id": "ws-1",
+                "platform": "openai", "type": "oauth", "schedulable": False,
+            }),
             delete_accounts=AsyncMock(),
             set_account_schedulable=AsyncMock(return_value={"patched": True, "schedulable_verified": True, "schedulable": False}),
         )
@@ -175,8 +179,8 @@ class SeatWireSettingsTests(unittest.TestCase):
         from app.integrations.openai import member_adapter as adapter
 
         adapter.VERIFIED_INVITE_SEAT_WIRE_VALUES.clear()
-        apply_verified_seat_wire_settings({"premium": "business_premium_seat"})
-        payload = build_invite_payload("a@b.com", role="member", seat_intent=InviteSeatIntent.PREMIUM)
+        wires = apply_verified_seat_wire_settings({"premium": "business_premium_seat"})
+        payload = build_invite_payload("a@b.com", role="member", seat_intent=InviteSeatIntent.PREMIUM, wire_values=wires)
         self.assertEqual(payload.get("seat_type"), "business_premium_seat")
 
     def test_third_party_default_not_auto_mapped_to_premium(self):

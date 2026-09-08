@@ -273,7 +273,7 @@ class Sub2ApiSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["remote_id"], 88)
         update.assert_not_awaited()
 
-    async def test_push_recreates_when_bound_remote_is_gone(self):
+    async def test_push_preserves_binding_when_remote_read_fails(self):
         self.session.add(
             ExternalBinding(
                 provider="sub2api",
@@ -300,20 +300,20 @@ class Sub2ApiSplitTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.application.sub2api_publish.decrypt_secret", side_effect=lambda raw: "token" if raw else ""),
             patch("app.application.sub2api_publish.sub2api_client.list_status_accounts", new=AsyncMock(return_value=[])),
+            patch("app.application.sub2api_publish.sub2api_client.get_account", new=AsyncMock(side_effect=_MissingRemote())),
             patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
             patch("app.application.sub2api_publish.sub2api_client.create_account", new=create),
             patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=created)),
             patch("app.application.sub2api_publish.sub2api_client.set_account_schedulable", new=AsyncMock(return_value={"patched": True})),
         ):
             result = await account_sub2api_push(self.session, self.account.id)
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["remote_id"], 4001)
-        self.assertEqual(result["action"], "recreate")
-        create.assert_awaited()
+        self.assertFalse(result["ok"])
+        create.assert_not_awaited()
+        update.assert_not_awaited()
         binding = (
             await self.session.execute(select(ExternalBinding).where(ExternalBinding.local_account_id == self.account.id))
         ).scalar_one()
-        self.assertEqual(binding.remote_account_id, "4001")
+        self.assertEqual(binding.remote_account_id, "2944")
         self.assertEqual(binding.binding_state, "verified")
 
     async def test_push_write_ok_but_verify_fail_stays_partial(self):

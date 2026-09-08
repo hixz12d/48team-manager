@@ -479,6 +479,8 @@ class OperationStore:
         source: str = "manual",
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
         actions: tuple[str, ...] | None = None,
+        phone: str = "",
+        resolved_proxy: str = "",
     ) -> tuple[Operation | None, Operation | None]:
         """Atomically create a workspace mutation lock.
 
@@ -509,6 +511,8 @@ class OperationStore:
                     source=source,
                     lease_seconds=lease_seconds,
                     state="running",
+                    phone=phone,
+                    resolved_proxy=resolved_proxy,
                 )
                 row.idempotency_key = lock_key
                 await session.flush()
@@ -517,6 +521,8 @@ class OperationStore:
             busy = await self.active_for_workspace(
                 session, target, actions=lock_actions, include_expired_leases=True
             )
+            if busy is None:
+                raise RuntimeError("workspace_lock_acquisition_failed")
             return None, busy
 
     async def iter_running(self, session: AsyncSession, actions: tuple[str, ...] | None = None) -> list[Operation]:
@@ -690,8 +696,10 @@ class OperationStore:
         elif requested_state == "partial" or bool(result.get("partial")):
             row.state = "partial"
             result = {**result, "success": False, "status": "partial", "partial": True}
-        elif requested_state == "manual_required":
+        elif requested_state in {"manual_required", "awaiting_confirmation", "state_changed"}:
             row.state = "manual_required"
+            result = {**result, "success": False, "status": "manual_required",
+                      "outcome": result.get("outcome") or requested_state}
         elif success:
             row.state = "success"
         else:

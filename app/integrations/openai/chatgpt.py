@@ -315,7 +315,9 @@ class ChatGPTClient:
             "oai-device-id": self._device_id_for(identifier),
             **headers,
         }
-        for attempt in range(self.MAX_RETRIES):
+        read_only = method == "GET"
+        attempts = self.MAX_RETRIES if read_only else 1
+        for attempt in range(attempts):
             try:
                 if attempt > 0:
                     await asyncio.sleep(self.RETRY_DELAYS[attempt - 1] + random.uniform(0.5, 1.5))
@@ -370,17 +372,17 @@ class ChatGPTClient:
                 last_error = error_msg
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
-                if self._is_transient(exc) and attempt < self.MAX_RETRIES - 1:
+                if read_only and self._is_transient(exc) and attempt < attempts - 1:
                     rebuilt = await self._rebuild_session(db_session, identifier)
                     if rebuilt is not None:
                         session = rebuilt
                     continue
-                return {"success": False, "status_code": 0, "error": last_error, "error_code": "transport", "attempts": attempt + 1}
+                return {"success": False, "status_code": 0, "error": last_error, "error_code": "transport" if read_only else "write_outcome_unknown", "outcome_unknown": not read_only, "attempts": attempt + 1}
             else:
-                if attempt < self.MAX_RETRIES - 1:
+                if attempt < attempts - 1:
                     continue
-                return {"success": False, "status_code": status_code, "error": last_error, "error_code": error_code,
-                        "retry_after": response.headers.get("Retry-After"), "attempts": attempt + 1}
+                return {"success": False, "status_code": status_code, "error": last_error, "error_code": error_code if read_only else "write_outcome_unknown",
+                        "outcome_unknown": not read_only, "retry_after": response.headers.get("Retry-After"), "attempts": attempt + 1}
         return {"success": False, "status_code": 0, "error": "request failed", "error_code": "transport"}
 
     async def get_wham_usage(
@@ -650,7 +652,9 @@ class ChatGPTClient:
         intent_value = seat_intent if seat_intent not in (None, "") else seat_type
         try:
             intent = parse_invite_seat_intent(intent_value)
-            json_data = build_invite_payload(email, role=role, seat_intent=intent)
+            from app.integrations.openai.member_adapter import load_verified_seat_wire_values
+            wires = await load_verified_seat_wire_values(db_session) if db_session is not None else None
+            json_data = build_invite_payload(email, role=role, seat_intent=intent, wire_values=wires)
         except InviteContractUnverified as exc:
             return {
                 "success": False,
@@ -694,6 +698,22 @@ class ChatGPTClient:
                     "field": classified.get("field"),
                     "upstream_error": result.get("error"),
                 }
+        if result.get("outcome_unknown"):
+            # Reconcile observations only. Never resend a possibly committed invite.
+            result["retryable"] = False
+            result["retry_action"] = "sync_status"
+            observations = {}
+            for label, reader in (("invites", self.get_invites), ("members", self.get_members)):
+                observed = await reader(access_token, account_id, db_session, identifier)
+                items = observed.get("items") or observed.get("members") or []
+                observations[label] = {
+                    "read_ok": bool(observed.get("success")),
+                    "target_present": any(
+                        isinstance(item, dict) and str(item.get("email") or item.get("email_address") or "").strip().lower() == email.strip().lower()
+                        for item in items
+                    ),
+                }
+            result["confirmation"] = observations
         result["seat_intent"] = intent.value
         result["invite_payload_keys"] = sorted(json_data.keys())
         return result

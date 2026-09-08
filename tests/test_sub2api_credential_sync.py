@@ -50,12 +50,14 @@ class CredentialSyncHelperTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsupported_narrow_interface_falls_back_without_clear_error(self):
         remote = {
+            "id": 55, "platform": "openai", "type": "oauth",
             "status": "error",
             "error_message": "401 unauthorized",
             "email": "kid@example.com",
             "schedulable": False,
         }
         after = {
+            "id": 55, "platform": "openai", "type": "oauth",
             "status": "error",
             "error_message": "401 unauthorized",
             "email": "kid@example.com",

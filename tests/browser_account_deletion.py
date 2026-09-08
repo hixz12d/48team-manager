@@ -1,11 +1,12 @@
 """Local preview only; delete requests are intercepted, no real records deleted."""
 import copy
 import json
+import os
 import tempfile
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-BASE = 'http://127.0.0.1:8019'
+BASE = os.environ.get('TEAM48_PREVIEW_URL', 'http://127.0.0.1:8019')
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     context = browser.new_context(viewport={'width':1440,'height':1000})
@@ -73,6 +74,16 @@ with sync_playwright() as p:
     page.get_by_role('button',name='确认删除').click()
     row.wait_for(state='detached')
     page.set_viewport_size({'width':1440,'height':1000})
+    extra_row.get_by_label(f'选择 {extra["email"]}').check()
+    page.locator('#accounts-search').fill('not-visible@example.com')
+    assert page.locator('#account-selection-bar').is_hidden()
+    assert page.locator('#account-selection-delete').is_disabled()
+    assert len(writes) == 2
+    page.locator('#accounts-search').fill('')
+    assert not extra_row.get_by_label(f'选择 {extra["email"]}').is_checked()
+    extra_row.get_by_label(f'选择 {extra["email"]}').check()
+    page.locator('[data-management-view="all"][aria-pressed]').click()
+    assert page.locator('#account-selection-bar').is_hidden()
     extra_row.get_by_label(f'选择 {extra["email"]}').check()
     page.get_by_role('button',name='永久删除本地档案').click()
     page.get_by_role('dialog',name='永久删除本地档案').wait_for()

@@ -506,7 +506,7 @@ class WorkspaceService:
         target = normalize_email(email)
         if not access_token or not account_id:
             return {"success": False, "error": "该 Workspace 的登录凭证已过期，且自动刷新失败", "error_code": "token_refresh_failed"}
-        await load_verified_seat_wire_values(db)
+        # The adapter loads a request-local seat mapping.
         result = await self.client.send_invite(
             access_token,
             account_id,
@@ -548,6 +548,9 @@ class WorkspaceService:
                 "requested_role": requested_role,
                 "seat_intent": requested_seat_intent.value,
                 "retryable": result.get("retryable"),
+                "retry_action": result.get("retry_action"),
+                "outcome_unknown": bool(result.get("outcome_unknown")),
+                "confirmation": result.get("confirmation"),
                 "field": result.get("field"),
                 "stage": result.get("stage") or "invite_submit",
             }
