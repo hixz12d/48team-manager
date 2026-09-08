@@ -35,6 +35,9 @@ from app.integrations.openai.member_adapter import (
     normalize_official_role,
     official_roles_equivalent,
     parse_invite_role,
+    parse_invite_seat_intent,
+    InviteSeatIntent,
+    existing_invite_seat_error,
 )
 from app.domain.onboard import (
     JOIN_CONFIRM_ATTEMPTS,
@@ -190,7 +193,9 @@ class OnboardService:
         job_id: str | None = None,
         in_test: bool = False,
         role: str = "owner",
+        seat_intent: str = "workspace_default",
     ) -> dict[str, Any]:
+        seat_intent = parse_invite_seat_intent(seat_intent).value
         claimed = None
         try:
             email_line, claimed = await hme_service.maybe_claim_alias(
@@ -219,6 +224,7 @@ class OnboardService:
                 claimed=claimed,
                 in_test=in_test,
                 role=role,
+                seat_intent=seat_intent,
             )
             label = ""
             if claimed and result.get("success"):
@@ -254,7 +260,9 @@ class OnboardService:
         claimed=None,
         in_test: bool = False,
         role: str = "owner",
+        seat_intent: str = "workspace_default",
     ) -> dict[str, Any]:
+        requested_seat = parse_invite_seat_intent(seat_intent)
         busy = await operation_store.active_for_workspace(
             db,
             workspace_id,
@@ -293,7 +301,8 @@ class OnboardService:
                 )
             ).scalar_one_or_none()
         if (
-            existing is not None
+            requested_seat is InviteSeatIntent.WORKSPACE_DEFAULT
+            and existing is not None
             and existing.operational_state == "active"
             and membership is not None
             and membership.membership_state == MEMBERSHIP_STATE_JOINED
@@ -361,6 +370,12 @@ class OnboardService:
         live, live_item = await self.workspaces.lookup_live_member(db, workspace, email)
         already_invited = bool(live_item and live_item.get("status") == "invited")
         already_joined = bool(live_item and live_item.get("status") == "joined")
+        if live_item:
+            seat_error = existing_invite_seat_error(requested_seat, live_item.get("seat_type"))
+            if seat_error:
+                return seat_error
+        elif not skip_invite and not live.get("success"):
+            return {"success": False, "error_code": "invite_lookup_unknown", "error": "官方成员或邀请读取失败，未发送邀请。"}
         if already_joined:
             await ensure_membership(
                 db,
@@ -423,10 +438,10 @@ class OnboardService:
             await self._progress(db, job_id=job_id, stage="invited", message="邀请已存在，开始重新注册")
         else:
             await self._progress(db, job_id=job_id, stage="inviting", message="正在发送 Team 邀请")
-            invite = await self.workspaces.invite_member(db, workspace.id, email, role=requested_role)
+            invite = await self.workspaces.invite_member(db, workspace.id, email, role=requested_role, seat_intent=requested_seat)
             if not invite.get("success"):
                 error = invite.get("error") or "邀请失败"
-                code = classify_onboard_error(error, stage="invite")
+                code = invite.get("error_code") or classify_onboard_error(error, stage="invite")
                 await self._progress(db, job_id=job_id, stage="invite_failed", message=error, error=error, error_code=code)
                 return {"success": False, "error": error, "error_code": code, "status": "invite_failed"}
             await ensure_membership(

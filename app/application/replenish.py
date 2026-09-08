@@ -96,6 +96,7 @@ class ReplenishService:
         workspace_id: int,
         job_id: str | None = None,
         role: str = "owner",
+        seat_intent: str = "workspace_default",
         phone_line: str = "",
         in_test: bool = False,
     ) -> dict[str, Any]:
@@ -153,6 +154,7 @@ class ReplenishService:
             job_id=job_id,
             in_test=in_test,
             role=role,
+            seat_intent=seat_intent,
         )
         child = onboard_result.get("child") if isinstance(onboard_result, dict) else None
         await self._attach_child(db, job_id, child if isinstance(child, dict) else None)

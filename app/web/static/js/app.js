@@ -2463,9 +2463,7 @@ function hmeRow(item) {
       role.append(option);
     });
     roleLabelEl.append(role);
-    const seatHint = document.createElement("p");
-    seatHint.className = "muted";
-    seatHint.textContent = "角色可选 Owner / Member；席位使用工作区默认，不强制 Premium。";
+    const seatControl = inviteSeatControl();
     const more = document.createElement("details");
     more.className = "team-detail-disclosure";
     const moreSummary = document.createElement("summary");
@@ -2514,7 +2512,7 @@ function hmeRow(item) {
     submit.className = "button primary";
     submit.textContent = "发送邀请";
     actions.append(cancel, submit);
-    form.append(emailLabel, roleLabelEl, seatHint, more, status, actions);
+    form.append(emailLabel, roleLabelEl, seatControl, more, status, actions);
     const setOpen = (open) => {
       form.hidden = !open;
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -2546,6 +2544,17 @@ function hmeRow(item) {
     return wrapper;
   }
 
+  function inviteSeatControl() {
+    const label = document.createElement("label");
+    label.textContent = "邀请席位";
+    const select = document.createElement("select");
+    select.name = "seat_intent";
+    select.append(new Option("工作区默认", "workspace_default"), new Option("Standard", "standard"), new Option("Premium", "premium"));
+    select.value = "workspace_default";
+    label.append(select);
+    return label;
+  }
+
   function renderTeamReplenishControls(workspace) {
     const wrapper = document.createElement("div");
     wrapper.className = "team-invite-controls";
@@ -2559,7 +2568,8 @@ function hmeRow(item) {
     form.hidden = true;
     const hint = document.createElement("p");
     hint.className = "muted";
-    hint.textContent = "自动领取未占用 HME，邀请为 Owner · 工作区默认席位，并当场授权。建议填接码号，避免 OpenAI 要手机时停在半路。";
+    hint.textContent = "官方角色：Owner";
+    const seatControl = inviteSeatControl();
     const phoneLabel = document.createElement("label");
     phoneLabel.textContent = "接码号";
     const phone = document.createElement("input");
@@ -2581,7 +2591,7 @@ function hmeRow(item) {
     submit.className = "button primary";
     submit.textContent = "开始补充";
     actions.append(cancel, submit);
-    form.append(hint, phoneLabel, status, actions);
+    form.append(hint, seatControl, phoneLabel, status, actions);
     const setOpen = (open) => {
       form.hidden = !open;
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -2597,7 +2607,7 @@ function hmeRow(item) {
       status.hidden = false;
       status.className = "muted";
       status.setAttribute("role", "status");
-      status.textContent = "正在补充 Team：领号、邀请（工作区默认席位）、当场授权，可能要几分钟…";
+      status.textContent = "正在补充 Team…";
       try {
         const result = await action.run({ workspace, values }, submit);
         if (!result) return;
@@ -2619,6 +2629,7 @@ function hmeRow(item) {
     try {
       const result = await postAction(`workspace-replenish-${workspace.id}`, `/api/workspaces/${workspace.id}/replenish`, {
         phone_line: phoneLine,
+        seat_intent: values?.seat_intent || "workspace_default",
       });
       await handleActionResult(result, {
         successMessage: result.message || "补充 Team 已完成",
@@ -2873,12 +2884,13 @@ function hmeRow(item) {
     submit.type = "submit"; submit.className = "button primary"; submit.textContent = "发送邀请";
     const errorBox = document.createElement("p");
     errorBox.className = "text-warning"; errorBox.setAttribute("role", "alert"); errorBox.hidden = true;
-    actions.append(cancel, submit); form.append(target, label, actions, errorBox);
+    const seatControl = inviteSeatControl();
+    actions.append(cancel, submit); form.append(target, label, seatControl, actions, errorBox);
     form.addEventListener("submit", async event => {
       event.preventDefault();
       submit.disabled = true; cancel.disabled = true; errorBox.hidden = true;
       try {
-        const result = await postAction(`workspace:${workspace.id}:member:${row.email}:reinvite`, `/api/workspaces/${workspace.id}/members/add`, { email: row.email, role: role.value });
+        const result = await postAction(`workspace:${workspace.id}:member:${row.email}:reinvite`, `/api/workspaces/${workspace.id}/members/add`, { email: row.email, role: role.value, seat_intent: seatControl.querySelector("select").value });
         toast(result.message || "邀请已发送，等待接受", "success");
         await reloadTeamDetails();
         if (document.body.dataset.page === "accounts") await bootAccounts();
@@ -2901,6 +2913,7 @@ function hmeRow(item) {
           ? { source: "sub2api", remote_id: Number(values.proxy_remote_id) }
           : null,
         role: values.role === "member" ? "member" : "owner",
+        seat_intent: values.seat_intent || "workspace_default",
         force: Boolean(values.force),
         skip_invite: Boolean(values.skip_invite),
       });

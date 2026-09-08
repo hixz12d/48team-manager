@@ -358,6 +358,29 @@ def parse_invite_seat_type(value: str | None, *, default: str | None = None) -> 
     raise ValueError("invite seat type must be premium, standard, or workspace_default")
 
 
+def existing_invite_seat_error(seat_intent: str | InviteSeatIntent | None, observed: Any) -> dict[str, Any] | None:
+    """Check an existing seat without changing membership or billing."""
+    intent = parse_invite_seat_intent(seat_intent)
+    if intent is InviteSeatIntent.WORKSPACE_DEFAULT:
+        return None
+    raw = _as_text(observed)
+    try:
+        actual = parse_invite_seat_intent(raw) if raw else InviteSeatIntent.WORKSPACE_DEFAULT
+    except ValueError:
+        actual = InviteSeatIntent.WORKSPACE_DEFAULT
+    if actual is intent:
+        return None
+    unknown = actual is InviteSeatIntent.WORKSPACE_DEFAULT
+    return {
+        "success": False, "ok": False,
+        "error_code": "invite_seat_unknown" if unknown else "invite_seat_mismatch",
+        "error": "现有成员或邀请的席位无法确认，未更改席位或重发邀请。" if unknown else "现有成员或邀请的席位与所选席位不一致，未更改席位或重发邀请。",
+        "requested_seat_intent": intent.value,
+        "existing_seat_intent": None if unknown else actual.value,
+        "retryable": False,
+    }
+
+
 def apply_verified_seat_wire_settings(values: dict[str, str] | None) -> dict[InviteSeatIntent, str]:
     """Build a request-local snapshot; empty settings restore the verified defaults."""
     effective = dict(VERIFIED_INVITE_SEAT_WIRE_VALUES)

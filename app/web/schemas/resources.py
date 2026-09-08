@@ -17,6 +17,7 @@ class PhoneImportRequest(BaseModel):
 
 
 class OnboardRequest(BaseModel):
+    seat_intent: Literal["workspace_default", "standard", "premium"] = "workspace_default"
     email_line: str = Field(default="", max_length=500)
     phone_line: str = Field(default="", max_length=500)
     proxy: str = Field(default="", max_length=500)
@@ -34,6 +35,7 @@ class OnboardRequest(BaseModel):
 
 
 class ReplenishRequest(BaseModel):
+    seat_intent: Literal["workspace_default", "standard", "premium"] = "workspace_default"
     phone_line: str = Field(default="", max_length=500)
     role: Literal["owner", "member"] = "owner"
 
@@ -127,6 +129,7 @@ class WorkspaceLinkMemberRequest(BaseModel):
 
 
 class WorkspaceAddChildRequest(BaseModel):
+    seat_intent: Literal["workspace_default", "standard", "premium"] = "workspace_default"
     email: str = Field(min_length=3, max_length=320)
     role: Literal["owner", "member"] = "owner"
 

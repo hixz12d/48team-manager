@@ -151,7 +151,7 @@ button.management-email:hover { color:var(--accent); }
 }
 .team-reinvite-form>p { grid-column:1/-1; margin:0; overflow-wrap:anywhere; font-size:12px; }
 .team-reinvite-form>label { min-width:0; display:grid; gap:5px; font-size:12px; }
-.team-reinvite-form>.row-actions { position:static; transform:none; opacity:1; align-self:end; }
+.team-reinvite-form>.row-actions { grid-column:1/-1; justify-content:flex-end; position:static; transform:none; opacity:1; align-self:end; }
 .team-former-members .team-member-state { font-size:12px; white-space:normal; }
 .team-member-identity>strong { overflow-wrap:anywhere; }
 @media(max-width:768px) {

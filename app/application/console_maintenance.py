@@ -15,7 +15,7 @@ from app.domain.automation import ACTIVE_STATES, TERMINAL_STATES, WORKSPACE_LOCK
 from app.domain.identity import LOCAL_PURPOSE_CHILD, LOCAL_PURPOSE_MOTHER, MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
 from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import is_workspace_owner
-from app.integrations.openai.member_adapter import normalize_official_role, official_roles_equivalent, parse_invite_role
+from app.integrations.openai.member_adapter import normalize_official_role, official_roles_equivalent, parse_invite_role, parse_invite_seat_intent, existing_invite_seat_error
 from app.domain.workspaces.names import apply_custom_name, apply_official_name, is_placeholder_or_email_name, resolve_display_name
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 from app.persistence.models.quota import QuotaSnapshot
@@ -253,7 +253,9 @@ async def add_local_child(
     workspaces=None,
     job_id: str | None = None,
     role: str = "owner",
+    seat_intent: str = "workspace_default",
 ) -> dict[str, Any]:
+    requested_seat = parse_invite_seat_intent(seat_intent)
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
         return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
@@ -286,6 +288,10 @@ async def add_local_child(
     already_joined = bool(live_item and live_item.get("status") == "joined")
     already_invited = bool(live_item and live_item.get("status") == "invited")
     invited_now = False
+    if live_item:
+        seat_error = existing_invite_seat_error(requested_seat, live_item.get("seat_type"))
+        if seat_error:
+            return seat_error
     requested_role = parse_invite_role(role)
     live_role = normalize_official_role((live_item or {}).get("role"))
     if already_joined and live_role not in {"unknown", ""} and not official_roles_equivalent(live_role, requested_role):
@@ -308,7 +314,7 @@ async def add_local_child(
         if not live.get("success") or live.get("lookup_state") == "unknown_due_to_error":
             return {"ok": False, "error_code": "invite_lookup_unknown",
                     "error": "官方成员或邀请读取失败，未发送邀请；请同步后重试"}
-        invite = await service.invite_member(db, workspace.id, target, role=requested_role)
+        invite = await service.invite_member(db, workspace.id, target, role=requested_role, seat_intent=requested_seat)
         if not invite.get("success"):
             return {
                 "ok": False,

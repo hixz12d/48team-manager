@@ -29,7 +29,7 @@ from app.core.proxy import mask_proxy_url, normalize_proxy_url
 from app.core.time import isoformat, utcnow
 from app.domain.identity.ids import normalize_email
 from app.domain.quota import quota_probe_user_message
-from app.integrations.openai.member_adapter import parse_invite_role
+from app.integrations.openai.member_adapter import parse_invite_role, parse_invite_seat_intent
 from app.domain.resources import (
     HME_STATE_RESERVED,
 )
@@ -589,7 +589,9 @@ async def start_workspace_onboard(
     force: bool = False,
     skip_invite: bool = False,
     role: str = "owner",
+    seat_intent: str = "workspace_default",
 ) -> dict[str, Any]:
+    seat_intent = parse_invite_seat_intent(seat_intent).value
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
         return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
@@ -628,6 +630,7 @@ async def start_workspace_onboard(
             "sub2api_proxy_id": sub2api_proxy_id,
             "force": bool(force),
             "skip_invite": bool(skip_invite),
+            "seat_intent": seat_intent,
             "requested_role": parse_invite_role(role),
         },
         resolved_proxy=proxy_value,
@@ -649,6 +652,7 @@ async def start_workspace_onboard(
         force=force,
         skip_invite=skip_invite,
         role=role,
+        seat_intent=seat_intent,
         job_id=operation.public_id,
         in_test=False,
     )
@@ -663,7 +667,9 @@ async def start_workspace_replenish(
     *,
     role: str = "owner",
     phone_line: str = "",
+    seat_intent: str = "workspace_default",
 ) -> dict[str, Any]:
+    seat_intent = parse_invite_seat_intent(seat_intent).value
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
         return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
@@ -676,6 +682,7 @@ async def start_workspace_replenish(
             "workspace_id": workspace.id,
             "requested_role": parse_invite_role(role),
             "mode": "replenish_one",
+            "seat_intent": seat_intent,
             "phone_line": phone_line,
         },
     )
@@ -689,6 +696,7 @@ async def start_workspace_replenish(
         job_id=operation.public_id,
         role=role,
         phone_line=phone_line,
+        seat_intent=seat_intent,
         in_test=False,
     )
     await operation_store.finish(db, operation, result)
@@ -1032,7 +1040,9 @@ async def invite_workspace_child(
     *,
     email: str,
     role: str = "owner",
+    seat_intent: str = "workspace_default",
 ) -> dict[str, Any]:
+    seat_intent = parse_invite_seat_intent(seat_intent).value
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
         return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
@@ -1044,7 +1054,7 @@ async def invite_workspace_child(
         op_type="invite_child",
         workspace_id=workspace.id,
         email=target,
-        input_payload={"workspace_id": workspace.id, "email": target, "mode": "invite", "requested_role": parse_invite_role(role)},
+        input_payload={"workspace_id": workspace.id, "email": target, "mode": "invite", "requested_role": parse_invite_role(role), "seat_intent": seat_intent},
     )
     if blocker is not None:
         return {
@@ -1054,7 +1064,7 @@ async def invite_workspace_child(
             "operation_id": blocker.public_id,
         }
     await db.commit()
-    result = await add_local_child(db, workspace.id, email=target, job_id=operation.public_id, role=role)
+    result = await add_local_child(db, workspace.id, email=target, job_id=operation.public_id, role=role, seat_intent=seat_intent)
     result = {**result, "success": bool(result.get("ok"))}
     await operation_store.finish(db, operation, result)
     await db.commit()

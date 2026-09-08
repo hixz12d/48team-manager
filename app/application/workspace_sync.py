@@ -32,7 +32,7 @@ def _counts_from_fetch(payload: dict[str, Any], *, default_state: str) -> dict[s
         items = payload.get("members") or payload.get("items") or []
     adapted = adapt_collection(items, default_state=default_state)
     reported = payload.get("reported_total")
-    if reported is None:
+    if "reported_total" not in payload:
         reported = payload.get("total")
     try:
         reported_total = int(reported) if reported is not None else None
@@ -287,14 +287,15 @@ class WorkspaceSyncService:
                 await db.commit()
                 return {"ok": False, "operation_id": operation.public_id, **result}
         stamp = utcnow()
-        remote_rows = self._merge_remote_rows(members, invites)
-        local_by_email = await self._local_by_email(db, workspace.id)
-        reconciliation = self._reconciliation(
-            workspace=workspace,
-            owner=owner,
-            remote_rows=remote_rows,
-            local_by_email=local_by_email,
+        # Absence is evidence only when both collections parsed completely.
+        can_reconcile_absence = all(
+            collection["invalid_item_count"] == 0
+            and collection["reported_total"] is not None
+            and collection["reported_total"] == collection["parsed_item_count"]
+            for collection in (members, invites)
         )
+        removed_memberships = 0
+        remote_rows = self._merge_remote_rows(members, invites)
 
         await db.execute(delete(WorkspaceOfficialMemberSnapshot).where(WorkspaceOfficialMemberSnapshot.workspace_id == workspace.id))
         for row in remote_rows.values():
@@ -321,6 +322,14 @@ class WorkspaceSyncService:
                 continue
             remote = remote_rows.get(normalize_email(account.email))
             if remote is None:
+                if (
+                    can_reconcile_absence
+                    and account.id != workspace.owner_account_id
+                    and membership.membership_state in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
+                ):
+                    membership.membership_state = MEMBERSHIP_STATE_REMOVED
+                    membership.removed_at = stamp
+                    removed_memberships += 1
                 continue
             membership.official_role = normalize_official_role(remote.get("role")) or membership.official_role
             membership.official_user_id = remote.get("user_id") or membership.official_user_id
@@ -334,6 +343,17 @@ class WorkspaceSyncService:
             elif remote_state == "invited":
                 membership.membership_state = MEMBERSHIP_STATE_INVITED
                 membership.removed_at = None
+
+        await db.flush()
+        reconciliation = self._reconciliation(
+            workspace=workspace,
+            owner=owner,
+            remote_rows=remote_rows,
+            local_by_email={
+                email: row for email, row in (await self._local_by_email(db, workspace.id)).items()
+                if row["membership_state"] in {MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_INVITED}
+            },
+        )
 
         seat_meta = dict(members.get("seat_metadata") or {})
         invite_meta = dict(invites.get("seat_metadata") or {})
@@ -416,6 +436,8 @@ class WorkspaceSyncService:
             "reconciliation": reconciliation["items"],
             "created_local_accounts": 0,
             "deleted_local_accounts": 0,
+            "removed_memberships": removed_memberships,
+            "absence_reconciled": can_reconcile_absence,
         }
         await operation_store.mark_step(db, operation, "commit_snapshot", state="success", result=result)
         await operation_store.finish(db, operation, result)
