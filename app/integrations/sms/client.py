@@ -27,6 +27,16 @@ def parse_phone_line(value: str) -> tuple[str, str]:
     return raw, ""
 
 
+def parse_optional_sms(value: str) -> tuple[str, str]:
+    if not str(value or "").strip():
+        return "", ""
+    number, url = parse_phone_line(value)
+    parsed = urlparse(url)
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", number) or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("SMS input must contain an E.164 number and an HTTPS receipt URL")
+    return number, url
+
+
 def require_proxy(proxy: Optional[str], purpose: str) -> str:
     normalized = normalize_proxy_url(proxy)
     if not normalized:
@@ -105,10 +115,10 @@ class SmsClient:
                     return code
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
-                logger.warning("接码轮询失败: %s", exc)
+                logger.warning("接码轮询失败: %s", type(exc).__name__)
             time.sleep(max(0.5, poll_interval_sec))
         if last_error:
-            raise TimeoutError(f"SMS OTP timeout after {timeout_sec}s: {last_error}")
+            raise TimeoutError(f"SMS OTP timeout after {timeout_sec}s ({type(last_error).__name__})") from None
         raise TimeoutError(f"SMS OTP timeout after {timeout_sec}s")
 
 

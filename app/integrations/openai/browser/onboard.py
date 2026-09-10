@@ -1172,8 +1172,17 @@ def run_browser_onboard(
     cf_admin_password: str = "",
     on_stage: StageCallback = None,
     phone_source=None,
+    allow_sms: bool = True,
+    executable_path: str = "",
+    invite_entry: bool = False,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
+    if not allow_sms:
+        phone, sms_url, phone_source = "", "", None
+    if invite_entry:
+        from app.integrations.mail.otp import extract_invite_url
+        if not start_url or extract_invite_url(start_url) != start_url:
+            return {"ok": False, "error_code": "invite_link_missing", "error": "有效邀请链接缺失"}
     from playwright.sync_api import sync_playwright
 
     def report(stage: str, message: str) -> None:
@@ -1188,9 +1197,11 @@ def run_browser_onboard(
 
     result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode, "phone": phone, "sms_url": sms_url}
     with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
-        browser = playwright.chromium.launch_persistent_context(
-            **chromium_context_kwargs(profile_dir, proxy_config)
-        )
+        launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config)
+        if executable_path:
+            launch_kwargs.pop("channel", None)
+            launch_kwargs["executable_path"] = executable_path
+        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
         try:
             browser.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         except Exception:  # noqa: BLE001
@@ -1199,7 +1210,7 @@ def run_browser_onboard(
         page.set_default_timeout(60000)
         try:
             target = start_url or (REGISTER_START_URL if mode == "register" else LOGIN_START_URL)
-            report("browser_open", f"正在打开注册/登录页 {target}")
+            report("browser_open", "正在打开邀请注册页" if invite_entry else "正在打开注册/登录页")
             goto_with_retries(page, target, report=report)
             if not wait_cloudflare(page):
                 result["error"] = _session_failure(page, {"status": "cloudflare"})
@@ -1242,6 +1253,7 @@ def run_browser_onboard(
             otp_resends = 0
             email_submits = 0
             about_you_tries = 0
+            invite_reopened = False
             has_mail = bool(pickup_url or use_cloudflare)
             debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
@@ -1375,6 +1387,10 @@ def run_browser_onboard(
                     continue
 
                 if _visible(page, 'input[type="tel"]') or "add-phone" in url:
+                    if not allow_sms:
+                        result["error"] = "邀请注册要求手机验证，请人工处理后继续同一邮箱"
+                        result["error_code"] = "phone_verification_required"
+                        break
                     report("add_phone", "页面要求添加手机号")
                     outcome, msg = phone_page_outcome(page, allow_risk=False)
                     if outcome in {"invalid", "recently_used", "risk"}:
@@ -1466,11 +1482,22 @@ def run_browser_onboard(
                     page.wait_for_timeout(1500)
                     continue
 
+                if invite_entry and _pick_workspace(page, team_name):
+                    report("workspace", "正在接受邀请并选择目标工作空间")
+                    page.wait_for_timeout(1500)
+                    continue
                 peeked = _peek_session(page)
                 if session_access_token(peeked):
+                    if invite_entry and not invite_reopened:
+                        if str(session_user(peeked).get("email") or "").strip().lower() != email.strip().lower():
+                            return {"ok": False, "error_code": "token_identity_mismatch", "error": "登录态邮箱与邀请不一致"}
+                        invite_reopened = True
+                        goto_with_retries(page, start_url, report=report)
+                        page.wait_for_timeout(1500)
+                        continue
                     session = peeked
                     break
-                polled = _poll_session(page)
+                polled = {} if invite_entry else _poll_session(page)
                 if session_access_token(polled):
                     session = polled
                     break
@@ -1515,6 +1542,8 @@ def run_browser_onboard(
             js = session.get("json") if isinstance(session.get("json"), dict) else {}
             session_token = str((js or {}).get("sessionToken") or "").strip()
             user = session_user(session)
+            if invite_entry and str(user.get("email") or "").strip().lower() != email.strip().lower():
+                return {"ok": False, "error_code": "token_identity_mismatch", "error": "邀请注册登录态邮箱不匹配"}
             result.update({
                 "ok": bool(access_token),
                 "access_token": access_token,

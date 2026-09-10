@@ -194,9 +194,26 @@ class OnboardService:
         in_test: bool = False,
         role: str = "owner",
         seat_intent: str = "workspace_default",
+        oauth_signup: bool = False,
+        browser_executable: str = "",
     ) -> dict[str, Any]:
         seat_intent = parse_invite_seat_intent(seat_intent).value
         claimed = None
+        if oauth_signup:
+            busy = await operation_store.active_for_workspace(
+                db, workspace_id, actions=WORKSPACE_LOCK_ACTIONS, exclude_public_id=job_id,
+            )
+            browser_busy = await operation_store.browser_busy(db)
+            if busy or (browser_busy and browser_busy.public_id != job_id):
+                return {"success": False, "error_code": "operation_conflict", "error": "已有任务运行，未领取 HME"}
+            from app.application.invitation_flow import prepare
+
+            email_line, blocked = await prepare(
+                self, db, workspace_id=workspace_id, email_line=email_line,
+                phone_line=phone_line, role=role, seat_intent=seat_intent, skip_invite=skip_invite,
+            )
+            if blocked:
+                return blocked
         try:
             email_line, claimed = await hme_service.maybe_claim_alias(
                 db,
@@ -225,6 +242,8 @@ class OnboardService:
                 in_test=in_test,
                 role=role,
                 seat_intent=seat_intent,
+                oauth_signup=oauth_signup,
+                browser_executable=browser_executable,
             )
             label = ""
             if claimed and result.get("success"):
@@ -232,6 +251,13 @@ class OnboardService:
                 cfg = await hme_service.load_config(db)
                 label = hme_service.resolve_workspace_tag(workspace, cfg.team_tag_map)
             await hme_service.finalize_claim(db, claimed, result, label)
+            if oauth_signup and result.get("success"):
+                from app.application.invitation_flow import authorize_joined
+
+                result = await authorize_joined(
+                    self, db, result, workspace_id=workspace_id, phone_line=phone_line,
+                    role=role, seat_intent=seat_intent, job_id=job_id, executable_path=browser_executable,
+                )
             return result
         except hme_service.HmeError as exc:
             await hme_service.finalize_claim(db, claimed, {"success": False, "error_code": exc.code})
@@ -261,6 +287,8 @@ class OnboardService:
         in_test: bool = False,
         role: str = "owner",
         seat_intent: str = "workspace_default",
+        oauth_signup: bool = False,
+        browser_executable: str = "",
     ) -> dict[str, Any]:
         requested_seat = parse_invite_seat_intent(seat_intent)
         busy = await operation_store.active_for_workspace(
@@ -328,7 +356,9 @@ class OnboardService:
                     error = f"{email} 刚被踢出，冷却期内不要再拉进任何 Team，避免 token_revoked"
                     return {"success": False, "error": error, "error_code": "kick_cooldown", "status": "blocked"}
 
-        phone, sms_url, phone_source = self._bind_phone(phone_line, job_id, existing.id if existing else None)
+        phone, sms_url, phone_source = ("", "", None) if oauth_signup else self._bind_phone(
+            phone_line, job_id, existing.id if existing else None
+        )
         if proxy:
             effective_proxy_source = proxy_source or "legacy"
             effective_sub2api_proxy_id = sub2api_proxy_id
@@ -365,6 +395,11 @@ class OnboardService:
             proxy_profile_id=_profile_id,
         )
         password = password or decrypt_secret(child.password_encrypted)
+        if oauth_signup and job_id:
+            op = await operation_store.get_by_public_id(db, job_id)
+            if op:
+                op.email, op.account_id = email, child.id
+                await db.flush()
         await self._progress(db, job_id=job_id, stage="checking", message="正在检查母号和占用")
 
         live, live_item = await self.workspaces.lookup_live_member(db, workspace, email)
@@ -454,6 +489,14 @@ class OnboardService:
             )
             await self._progress(db, job_id=job_id, stage="invited", message="邀请已发送，准备注册")
 
+        if oauth_signup:
+            checked, official_invite = await self.workspaces.lookup_live_member(db, workspace, email)
+            seat_error = existing_invite_seat_error(requested_seat, (official_invite or {}).get("seat_type"))
+            if not checked.get("success") or not official_invite or seat_error or not official_roles_equivalent(official_invite.get("role"), requested_role):
+                return {"success": False, "error_code": "invite_unverified", "status": "invited",
+                        "error": "官方邀请、角色或席位未确认，请继续此邮箱，不会开始注册",
+                        "child": serialize_child(child)}
+
         has_session = bool(decrypt_secret(child.access_token_encrypted) or decrypt_secret(child.session_token_encrypted))
         should_register = not (reuse_existing and has_session and decrypt_secret(child.password_encrypted))
         pickup_url = parsed.get("pickup_url") or ""
@@ -465,6 +508,27 @@ class OnboardService:
             error = "请先在系统中心配置 Cloudflare 邮箱，或输入 email----pickup_url"
             await self._progress(db, job_id=job_id, stage="mail_missing", message=error, error=error, error_code="mail_missing")
             return {"success": False, "error": error, "error_code": "mail_missing", "status": "mail_missing"}
+
+        invite_url = ""
+        if oauth_signup:
+            from app.integrations.mail.otp import wait_for_mailbox_item, extract_invite_url
+
+            await self._progress(db, job_id=job_id, stage="invite_mail", message="等待邀请邮件链接")
+            await db.commit()
+            try:
+                invite_url = await asyncio.to_thread(
+                    wait_for_mailbox_item, email=email, pickup_url=pickup_url,
+                    proxy=self._child_proxy(child, workspace), kind="invite", timeout_sec=120,
+                    cf_base_url=cf_config["base_url"], cf_address=cf_config["address"],
+                    cf_admin_password=cf_config["admin_password"],
+                )
+            except Exception:
+                invite_url = None
+            if not invite_url or extract_invite_url(invite_url) != invite_url:
+                return {"success": False, "error_code": "invite_link_missing", "status": "invited",
+                        "error": "未收到有效邀请链接，请继续此邮箱，不会改走普通注册页",
+                        "child": serialize_child(child)}
+        browser_options = {"allow_sms": False, "executable_path": browser_executable, "invite_entry": True} if oauth_signup else {}
 
         if claimed is not None:
             await hme_service.mark_signup_started(db, claimed, stage="browser")
@@ -487,16 +551,24 @@ class OnboardService:
                     loop.call_soon_threadsafe(lambda: None)
                     # Progress from Playwright stays queued on the main flow; avoid sharing AsyncSession.
 
+        if oauth_signup and not in_test:
+            async def on_stage(stage: str, message: str) -> None:
+                from app.application.invitation_flow import browser_progress
+                await hme_service.mark_signup_started(db, claimed, stage=stage)
+                await browser_progress(db, job_id, stage)
+            await db.commit()
+
         try:
             if in_test:
                 browser_result = self.browser(
+                    **browser_options,
                     email=email,
                     password=password,
                     pickup_url=pickup_url,
                     phone=phone,
                     sms_url=sms_url,
                     proxy=self._child_proxy(child, workspace),
-                    start_url="",
+                    start_url=invite_url,
                     mode=browser_mode,
                     team_name=str(workspace.name or ""),
                     use_cloudflare=use_cloudflare,
@@ -509,15 +581,18 @@ class OnboardService:
                 if asyncio.iscoroutine(browser_result):
                     browser_result = await browser_result
             else:
-                browser_result = await browser_slot.run_exclusive(
-                    self.browser,
+                runner = browser_slot.run_onboard_isolated if oauth_signup else browser_slot.run_exclusive
+                runner_args = () if oauth_signup else (self.browser,)
+                browser_result = await runner(
+                    *runner_args,
                     email=email,
                     password=password,
                     pickup_url=pickup_url,
                     phone=phone,
                     sms_url=sms_url,
+                    **browser_options,
                     proxy=self._child_proxy(child, workspace),
-                    start_url="",
+                    start_url=invite_url,
                     mode=browser_mode,
                     team_name=str(workspace.name or ""),
                     use_cloudflare=use_cloudflare,

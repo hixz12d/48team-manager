@@ -590,6 +590,8 @@ async def start_workspace_onboard(
     skip_invite: bool = False,
     role: str = "owner",
     seat_intent: str = "workspace_default",
+    oauth_signup: bool = False,
+    browser_executable: str = "",
 ) -> dict[str, Any]:
     seat_intent = parse_invite_seat_intent(seat_intent).value
     workspace = await db.get(Workspace, int(workspace_id))
@@ -621,7 +623,7 @@ async def start_workspace_onboard(
         op_type="onboard",
         workspace_id=workspace.id,
         email=str(email_line or "").strip(),
-        phone=str(phone_line or "").strip(),
+        phone="" if oauth_signup else str(phone_line or "").split("----", 1)[0].strip(),
         input_payload={
             "workspace_id": workspace.id,
             "email_line": email_line,
@@ -632,6 +634,7 @@ async def start_workspace_onboard(
             "skip_invite": bool(skip_invite),
             "seat_intent": seat_intent,
             "requested_role": parse_invite_role(role),
+            "oauth_signup": bool(oauth_signup),
         },
         resolved_proxy=proxy_value,
     )
@@ -655,6 +658,8 @@ async def start_workspace_onboard(
         seat_intent=seat_intent,
         job_id=operation.public_id,
         in_test=False,
+        oauth_signup=oauth_signup,
+        browser_executable=browser_executable,
     )
     await operation_store.finish(db, operation, result)
     await db.commit()
@@ -677,7 +682,7 @@ async def start_workspace_replenish(
         db,
         op_type="replenish",
         workspace_id=workspace.id,
-        phone=str(phone_line or "").strip(),
+        phone="",
         input_payload={
             "workspace_id": workspace.id,
             "requested_role": parse_invite_role(role),

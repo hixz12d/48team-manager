@@ -8,6 +8,7 @@ import re
 import time
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
+from html import unescape
 
 import httpx
 
@@ -98,19 +99,29 @@ def extract_code(text: str) -> Optional[str]:
     return None
 
 def extract_invite_url(text: str) -> Optional[str]:
-    blob = str(text or "")
-    for pattern in _INVITE_URL_RES:
-        match = pattern.search(blob)
-        if match:
-            return match.group(0).rstrip(").,;")
+    """Only accept HTTPS ChatGPT invitation routes, never arbitrary footer links."""
+    blob = unescape(str(text or ""))
     for match in INVITE_RE.finditer(blob):
         url = match.group(0).rstrip(").,;")
-        lower = url.lower()
-        if lower.rstrip("/") in _BARE_CHAT_HOMES:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in {"chatgpt.com", "chat.openai.com"}:
             continue
-        if any(bit in lower for bit in _SKIP_INVITE_BITS):
+        if parsed.netloc not in {"chatgpt.com", "chat.openai.com"}:
             continue
-        return url
+        path = parsed.path.lower()
+        if any(bit in path for bit in _SKIP_INVITE_BITS):
+            continue
+        if any(part in {"invite", "invites", "accept-invite"} for part in path.split("/")):
+            return url
+        if path == "/auth/login" and parsed.query:
+            query = parse_qs(parsed.query)
+            if any("invite" in key.lower() for key in query):
+                return url
+            for key in ("next", "callbackUrl", "redirect"):
+                for target in query.get(key, []):
+                    nested = target if target.startswith("https://") else "https://chatgpt.com" + target if target.startswith("/") and not target.startswith("//") else ""
+                    if nested and extract_invite_url(nested):
+                        return url
     return None
 
 

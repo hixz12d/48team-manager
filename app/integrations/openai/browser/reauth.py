@@ -76,10 +76,17 @@ def run_browser_oauth_reauth(
     hme_service_token: str = "",
     hme_account_id: str = "",
     allow_signup: bool = False,
+    allow_sms: bool = True,
+    max_sms_submissions: int = 7,
+    max_sms_code_submissions: int = 2,
+    team_name: str = "",
+    executable_path: str = "",
     on_stage: StageCallback = None,
     phone_source=None,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
+    if not allow_sms:
+        phone, sms_url, phone_source = "", "", None
     if not authorize_url:
         return {"ok": False, "error": "缺少授权链接", "error_code": "oauth_url_missing"}
 
@@ -116,9 +123,11 @@ def run_browser_oauth_reauth(
         )
 
     with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
-        browser = playwright.chromium.launch_persistent_context(
-            **chromium_context_kwargs(profile_dir, proxy_config)
-        )
+        launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config)
+        if executable_path:
+            launch_kwargs.pop("channel", None)
+            launch_kwargs["executable_path"] = executable_path
+        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
         page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
 
@@ -160,6 +169,8 @@ def run_browser_oauth_reauth(
             )
             otp_submits = 0
             phone_tries = 0
+            sms_submissions = 0
+            sms_code_submissions = 0
             otp_resends = 0
             password_tried = False
             signup_clicked = False
@@ -197,12 +208,17 @@ def run_browser_oauth_reauth(
                     _click_first(page, ['button:has-text("Continue")'])
                     page.wait_for_timeout(2000)
                     continue
-                if _pick_workspace(page):
+                if _pick_workspace(page, team_name):
                     report("workspace", "已选择工作空间")
                     page.wait_for_timeout(1500)
                     continue
                 on_phone = any(bit in url for bit in ("add-phone", "phone-verification")) or _visible(page, 'input[type="tel"]')
                 if on_phone:
+                    if not allow_sms:
+                        result["error"] = "本次注册禁止接短信，页面要求手机验证，已停止"
+                        result["error_code"] = "phone_verification_required"
+                        report("manual_required", result["error"])
+                        break
                     report("add_phone", "授权页要求手机号/短信验证码")
                     outcome, msg = phone_page_outcome(page, allow_risk=False)
                     if outcome in {"invalid", "recently_used", "risk"}:
@@ -241,6 +257,10 @@ def run_browser_oauth_reauth(
                         result["error_code"] = "sms_failed"
                         break
                     if _visible(page, 'input[type="tel"]'):
+                        if sms_submissions >= max_sms_submissions:
+                            result["error"] = "短信发送已达到本次上限，未重发或换号"
+                            result["error_code"] = "sms_send_limit"
+                            break
                         country, _national = split_phone(phone)
                         filled = _fill_phone_number(page, phone)
                         if not filled and country == "China":
@@ -259,6 +279,7 @@ def run_browser_oauth_reauth(
                             result["error_code"] = "sms_rejected"
                             break
                         _submit_phone_sms(page)
+                        sms_submissions += 1
                         page.wait_for_timeout(2500)
                         outcome, msg = phone_page_outcome(page)
                         if outcome in {"invalid", "recently_used", "risk"}:
@@ -278,6 +299,10 @@ def run_browser_oauth_reauth(
                         continue
                     otp_el = _find_otp(page)
                     if otp_el:
+                        if sms_code_submissions >= max_sms_code_submissions:
+                            result["error"] = "短信验证码未通过，未重复提交或换号"
+                            result["error_code"] = "sms_code_rejected"
+                            break
                         report("sms_otp", "等待短信验证码")
                         try:
                             sms_code = sms_client.wait_for_code(sms_url, proxy=proxy, timeout_sec=90)
@@ -297,9 +322,11 @@ def run_browser_oauth_reauth(
                             result["error_code"] = "sms_failed"
                             break
                         otp_el.fill(sms_code)
+                        sms_code_submissions += 1
                         _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
                         page.wait_for_timeout(2500)
                         record_pool_phone(phone_source, "success")
+                        result["sms_verified"] = not any(bit in (page.url or "").lower() for bit in ("add-phone", "phone-verification"))
                         result["phone"] = phone
                         result["sms_url"] = sms_url
                     else:
@@ -469,6 +496,7 @@ def run_browser_oauth_reauth(
                         break
 
             callback = captured["url"]
+            result["sms_verified"] = bool(callback and sms_code_submissions)
             result.update({
                 "ok": bool(callback),
                 "callback_url": callback,

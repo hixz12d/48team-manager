@@ -76,10 +76,7 @@ class SeatFlowTests(unittest.IsolatedAsyncioTestCase):
         onboard = AsyncMock()
         onboard.invite_and_onboard = AsyncMock(return_value={"success": False, "error_code": "fixture_stop"})
         service = ReplenishService(onboard=onboard, reauth=AsyncMock())
-        with self.network_guard(), patch.object(console_actions, "replenish_service", service), patch(
-            "app.application.replenish.hme_service.load_config",
-            new=AsyncMock(return_value=HmeConfig(base_url="http://hme.invalid", service_token="fake")),
-        ):
+        with self.network_guard(), patch.object(console_actions, "replenish_service", service):
             await console_actions.start_workspace_replenish(self.session, workspace.id, seat_intent="premium", role="member")
         self.assertEqual(onboard.invite_and_onboard.await_args.kwargs["seat_intent"], "premium")
         self.assertEqual(onboard.invite_and_onboard.await_args.kwargs["role"], "member")
