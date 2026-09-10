@@ -138,6 +138,7 @@ def build_api_router(get_db) -> APIRouter:
             proxy=payload.proxy,
             proxy_selection=payload.proxy_selection.model_dump() if payload.proxy_selection else None,
             password=payload.password,
+            oauth_signup=True,
             force=payload.force,
             skip_invite=payload.skip_invite,
             role=payload.role,

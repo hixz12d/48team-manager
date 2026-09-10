@@ -151,6 +151,8 @@ class SeatRequestTests(unittest.TestCase):
                     self.assertIn(response.status_code, (200, 202))
                     self.assertEqual(mocked.await_args.kwargs["seat_intent"], "premium")
                     self.assertEqual(mocked.await_args.kwargs["role"], "member")
+                    if endpoint == "onboard":
+                        self.assertTrue(mocked.await_args.kwargs["oauth_signup"])
                     mocked.reset_mock()
                     response = client.post(f"/api/workspaces/1/{endpoint}", json={**extra, "seat_intent": "invalid"})
                     self.assertEqual(response.status_code, 422)

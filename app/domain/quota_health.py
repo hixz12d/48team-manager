@@ -82,6 +82,10 @@ def present_context(account, latest=None, success=None, authority=None, schedule
             code = "auth_required"
     if code in {"unchecked", "temporary_failure"} and account.auth_state in {"oauth_required", "refresh_due", "phone_required", "manual_required"}:
         code = "auth_required"
+    if account.access_token_encrypted and not getattr(account, "refresh_token_encrypted", None):
+        code = "auth_required"
+    if account.auth_state in {"phone_required", "manual_required"}:
+        code = "auth_required"
     if not account.access_token_encrypted:
         code = "unauthorized"
     if account.auth_state == "deactivated":
@@ -106,6 +110,8 @@ def present_context(account, latest=None, success=None, authority=None, schedule
     if same and latest.http_status == 401:
         actual_401 = True
     health = health_payload(code, actual_401=actual_401)
+    if code == "auth_required" and not getattr(account, "refresh_token_encrypted", None) and not actual_401:
+        health["label"] = "待完成 OAuth · 缺少刷新凭据"
     if code == "rate_limited" and same and latest.http_status == 429:
         health["label"] = "429 · 等待重试"
     return {"credential_revision": revision, "latest_check": check, "last_success_quota": quota,

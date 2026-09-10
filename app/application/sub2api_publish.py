@@ -169,6 +169,23 @@ async def account_sub2api_reconcile(db: AsyncSession, account_id: int) -> dict[s
     )
     try:
         remotes = await sub2api_client.list_status_accounts(db)
+        remotes = list(remotes)
+        own_bindings = list(await db.scalars(select(ExternalBinding).where(
+            ExternalBinding.provider == PROVIDER_SUB2API,
+            ExternalBinding.local_account_id == account.id,
+        )))
+        for binding in own_bindings:
+            if any(remote_id_from(item) == binding.remote_account_id for item in remotes):
+                continue
+            try:
+                detail = await sub2api_client.get_account(db, int(binding.remote_account_id))
+            except Exception as exc:
+                if getattr(getattr(exc, "response", None), "status_code", None) == 404:
+                    continue
+                raise
+            if remote_id_from(detail) != binding.remote_account_id:
+                raise RuntimeError("远端详情身份不完整，保留原绑定，未判定为不存在")
+            remotes.append(detail)
     except Exception as exc:
         payload = {
             "success": False,
@@ -212,6 +229,12 @@ async def account_sub2api_reconcile(db: AsyncSession, account_id: int) -> dict[s
         ok = False
         message = f"对账完成：发现冲突（{own.get('last_error') or 'binding conflict'}）"
         binding_state = "conflict"
+    elif own and own.get("binding_state") == "missing":
+        outcome = "binding_remote_missing"
+        status = "manual_required"
+        ok = False
+        message = "原绑定远端账号已不存在；保留绑定，需确认原远端删除原因，不会自动重复创建。"
+        binding_state = "missing"
     elif remote is None:
         outcome = "remote_missing"
         status = "success"
@@ -336,6 +359,11 @@ async def account_sub2api_push(
 
 
     credentials = _build_credentials(account)
+    if not credentials.get("refresh_token"):
+        return {"success": False, "ok": False, "status": "failed",
+                "error_code": "missing_refresh_token", "outcome": "not_eligible",
+                "error": "缺少刷新凭据，请先完成 OAuth 授权",
+                "message": "尚未推送：请先完成 OAuth 授权", "account_id": account.id}
     if not credentials.get("access_token") and not credentials.get("refresh_token"):
         return {
             "success": False,
@@ -447,7 +475,7 @@ async def account_sub2api_push(
         action = "create"
 
         if existing and existing.binding_state != BINDING_VERIFIED:
-            raise RuntimeError("本地绑定尚未验证，请先对账")
+            raise RuntimeError("原绑定未验证或远端已缺失，请先核对原远端账号；不会自动创建替代账号")
         if existing and existing.remote_account_id:
             remote_id = int(existing.remote_account_id)
             try:

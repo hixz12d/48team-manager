@@ -2346,6 +2346,9 @@ function hmeRow(item) {
       if (["departed", "removed", "history"].includes(kind)) {
         return { code: "departed", label: "已离队，账号已保留", primaryId: row.can_reinvite !== false ? "team.member.reinvite" : null, secondaryIds: [] };
       }
+      if (kind === "pending_sync") {
+        return { code: "pending_sync", label: "已确认入组，待同步名单", primaryId: null, secondaryIds: [] };
+      }
       if (kind === "local_only") {
         return { code: "local_only", label: "本地有记录，官方未找到", primaryId: accountId ? "team.member.reinvite" : null, secondaryIds: [] };
       }
@@ -2513,7 +2516,7 @@ function hmeRow(item) {
     skip.type = "checkbox";
     skip.name = "skip_invite";
     skipLabel.append(skip, document.createTextNode(" 跳过官方邀请"));
-    moreBody.append(phoneLabel, proxyLabel, forceLabel, skipLabel);
+    moreBody.append(phoneLabel, proxyLabel);
     more.append(moreSummary, moreBody);
     const status = document.createElement("p");
     status.className = "muted";
@@ -2547,7 +2550,7 @@ function hmeRow(item) {
       status.hidden = false;
       status.className = "muted";
       status.setAttribute("role", "status");
-      status.textContent = "正在发送邀请…";
+      status.textContent = "正在检查邀请与授权条件…";
       try {
         const result = await action.run({ workspace, values }, submit);
         if (result) status.textContent = result.message || "邀请已提交";
@@ -2643,6 +2646,7 @@ function hmeRow(item) {
   async function replenishTeam(workspace, button, values) {
     const phoneLine = String(values?.phone_line || "").trim();
     setButtonBusy(button, true, "补充中");
+    const stopProgress = watchInviteProgress(workspace.id, button);
     try {
       const result = await postAction(`workspace-replenish-${workspace.id}`, `/api/workspaces/${workspace.id}/replenish`, {
         phone_line: phoneLine,
@@ -2661,6 +2665,7 @@ function hmeRow(item) {
       return result;
     } finally {
       setButtonBusy(button, false);
+      stopProgress();
     }
   }
 
@@ -2939,8 +2944,33 @@ function hmeRow(item) {
     item.append(form); role.focus();
   }
 
+  function watchInviteProgress(workspaceId, button) {
+    const status = button.closest("form")?.querySelector('[role="status"]');
+    const controller = new AbortController();
+    let stopped = false;
+    let timer;
+    async function poll() {
+      try {
+        const response = await fetch("/api/runtime/status", { signal: controller.signal, cache: "no-store" });
+        if (response.ok) {
+          const payload = await response.json();
+          const operation = (payload.active_operations || []).find((item) =>
+            item.workspace_id === workspaceId && ["onboard", "replenish"].includes(item.kind) && item.state === "running");
+          if (!stopped && status && operation) status.textContent = `${operation.stage_label} · ${operation.elapsed_seconds || 0} 秒`;
+        }
+      } catch (_) {
+        // Progress reads must not interrupt the submitted operation.
+      } finally {
+        if (!stopped) timer = setTimeout(poll, 2000);
+      }
+    }
+    void poll();
+    return () => { stopped = true; clearTimeout(timer); controller.abort(); };
+  }
+
   async function inviteTeamMember(workspace, values, button) {
-    setButtonBusy(button, true, "发送中");
+    setButtonBusy(button, true, "处理中");
+    const stopProgress = watchInviteProgress(workspace.id, button);
     try {
       const result = await postAction(`workspace-invite-${workspace.id}`, `/api/workspaces/${workspace.id}/onboard`, {
         email_line: String(values.email_line || "").trim(),
@@ -2958,6 +2988,7 @@ function hmeRow(item) {
       return result;
     } finally {
       setButtonBusy(button, false);
+      stopProgress();
     }
   }
 

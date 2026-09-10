@@ -52,7 +52,8 @@ class QuotaHealthIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
         self.db = self.factory()
         self.account = Account(email="member@example.com", local_purpose="child", operational_state="active", auth_state="healthy",
-                               access_token_encrypted=token_cipher().encrypt("test-token"))
+                               access_token_encrypted=token_cipher().encrypt("test-token"),
+                               refresh_token_encrypted=token_cipher().encrypt("test-refresh"))
         self.db.add(self.account)
         await self.db.commit()
         self.client = AsyncMock()

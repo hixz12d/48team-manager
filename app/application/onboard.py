@@ -109,6 +109,21 @@ class OnboardService:
         for item in members.get("members") or members.get("items") or []:
             adapted = normalize_official_member(item, default_state="joined")
             if adapted and adapted["email"] == target:
+                from app.persistence.models.identity import WorkspaceOfficialMemberSnapshot
+
+                snapshot = await db.scalar(select(WorkspaceOfficialMemberSnapshot).where(
+                    WorkspaceOfficialMemberSnapshot.workspace_id == workspace.id,
+                    WorkspaceOfficialMemberSnapshot.normalized_email == target,
+                ))
+                if snapshot is None:
+                    snapshot = WorkspaceOfficialMemberSnapshot(workspace_id=workspace.id, normalized_email=target)
+                    db.add(snapshot)
+                snapshot.remote_state = "joined"
+                snapshot.official_role = normalize_official_role(adapted.get("role"))
+                snapshot.official_user_id = adapted.get("user_id")
+                snapshot.seat_type = adapted.get("seat_type")
+                snapshot.fetched_at = utcnow()
+                await db.flush()
                 return adapted
         return None
 

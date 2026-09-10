@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.presenters import AUTH_NEED_STATES, build_auth_status, membership_status_label
 from app.core.proxy import mask_proxy_url
-from app.core.time import isoformat
+from app.core.time import as_utc, isoformat
 from app.domain.identity import (
     AUDIT_CONFLICT,
     MEMBERSHIP_STATE_INVITED,
@@ -336,6 +336,9 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "official_user_id": (remote or {}).get("user_id") or row.official_user_id,
                 "user_id": (remote or {}).get("user_id") or row.official_user_id,
                 "membership_state": membership_state,
+                "joined_after_snapshot": bool(row.joined_at and (
+                    not workspace.last_official_sync_at or as_utc(row.joined_at) > as_utc(workspace.last_official_sync_at)
+                )),
                 "remote_state": (remote or {}).get("state"),
                 "auth": account.auth_state,
                 **build_auth_status(account),
@@ -361,6 +364,8 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
             elif remote is None and (local or {}).get("membership_state") == MEMBERSHIP_STATE_INVITED:
                 status = "invited"
                 pending_invites += 1
+            elif remote is None and (local or {}).get("membership_state") == MEMBERSHIP_STATE_JOINED and (local or {}).get("joined_after_snapshot"):
+                status = "pending_sync"
             elif remote and local:
                 status = "managed"
                 matched += 1
@@ -393,6 +398,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                     "note": {
                         "remote_only": "官方已加入，本地尚未接入。点接入会按该邮箱建立本地子号，完成授权后才能读额度。",
                         "local_only": "本地有账号记录，但官方成员列表未找到对应邮箱。",
+                        "pending_sync": "入组记录晚于官方快照，请同步团队；无需重新邀请。",
                         "invited": "官方邀请仍待接受。" if remote else "邀请已提交，等待官方同步确认。",
                         "conflict": "身份冲突，需人工核对。",
                     }.get(status),

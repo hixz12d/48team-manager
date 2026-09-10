@@ -267,23 +267,40 @@ class Sub2ApiClient:
         seen: dict[int, dict[str, Any]] = {}
         items_without_id: list[dict[str, Any]] = []
         page = 1
-        while page <= 8:
+        while page <= 1000:
             params = {"page": page, "page_size": 100, **(extra_params or {})}
             response = await client.get(path, headers=headers, params=params)
             response.raise_for_status()
-            items = self._account_items(self._unwrap(response.json()))
-            if not items:
-                break
+            payload = self._unwrap(response.json())
+            items = self._account_items(payload)
+            total = payload.get("total") if isinstance(payload, dict) else None
+            if total is not None:
+                try:
+                    total = int(total)
+                except (TypeError, ValueError):
+                    raise RuntimeError("Sub2API pagination returned an invalid total") from None
+                if total < 0:
+                    raise RuntimeError("Sub2API pagination returned an invalid total")
+            before = len(seen) + len(items_without_id)
             for item in items:
                 item_id = self.remote_id(item)
                 if item_id:
                     seen[item_id] = item
                 else:
                     items_without_id.append(item)
-            if len(items) < 100:
-                break
+            count = len(seen) + len(items_without_id)
+            if total is not None and count >= total:
+                return list(seen.values()) + items_without_id
+            if not items:
+                if total is not None and count < total:
+                    raise RuntimeError("Sub2API account list is incomplete; existing bindings were preserved")
+                return list(seen.values()) + items_without_id
+            if count == before:
+                raise RuntimeError("Sub2API pagination repeated a page; existing bindings were preserved")
+            if total is None and len(items) < 100:
+                return list(seen.values()) + items_without_id
             page += 1
-        return list(seen.values()) + items_without_id
+        raise RuntimeError("Sub2API pagination limit reached; refusing a partial account list")
 
     async def list_status_accounts(self, db: AsyncSession, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         client, headers, _cfg = await self._with_client(db, cfg)
