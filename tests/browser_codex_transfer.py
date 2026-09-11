@@ -32,10 +32,7 @@ with sync_playwright() as p:
             return route.fulfill(headers={"Content-Type": "application/json", "Content-Disposition": 'attachment; filename="team48-codex-at-only.json"'},
                 body=json.dumps({"accounts": [{"access_token": "preview-at", "id_token": "preview-id"}]}))
         if path.endswith("/api/accounts/codex/push"):
-            body = route.request.post_data_json
-            calls.append(("push", body))
-            ok = body["account_ids"] == [selected[0]["id"]]
-            return route.fulfill(json={"ok": ok, "synced": int(ok), "results": [{"ok": ok, "message": "远端持有 RT，禁止覆盖"}]})
+            raise AssertionError("Removed Codex button must not send a push")
         if route.request.method not in {"GET", "HEAD"}:
             raise AssertionError("Unexpected write: " + route.request.url)
         route.continue_()
@@ -63,21 +60,11 @@ with sync_playwright() as p:
         page.set_viewport_size({"width": width, "height": height})
         bar = page.locator("#account-selection-bar")
         bar.scroll_into_view_if_needed()
-        for name in ("account-selection-export", "account-selection-push"):
+        assert page.locator("#account-selection-push").count() == 0
+        for name in ("account-selection-export", "account-selection-clear", "account-selection-delete"):
             assert page.locator("#" + name).evaluate("n => { const r=n.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && n.scrollWidth <= n.clientWidth; }")
         page.screenshot(path=str(out / f"accounts-{width}.png"))
-    page.locator("#account-selection-push").click()
-    page.get_by_role("dialog", name="推送到 Codex").wait_for()
-    assert page.get_by_text("https://codex.example", exact=True).is_visible()
-    page.get_by_role("button", name="确认推送", exact=True).click()
-    page.get_by_role("dialog", name="Codex 推送结果").wait_for()
-    page.get_by_text(selected[1]["email"] + ": 远端持有 RT，禁止覆盖", exact=True).wait_for()
-    page.evaluate("document.getAnimations().forEach(animation => animation.finish())")
-    assert page.locator(".codex-transfer-details").evaluate("n => {const r=n.getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth && n.scrollWidth<=n.clientWidth;}")
-    pushes = [body for kind, body in calls if kind == "push"]
-    assert len(pushes) == 2
-    assert all(body["expected_target"] == "https://codex.example" and body["confirm"] is True for body in pushes)
-    page.screenshot(path=str(out / "push-result-390.png"))
+    assert all(kind != "push" for kind, _ in calls)
     page.goto(BASE + "/settings")
     page.locator("input[name=codex_base_url]").wait_for()
     assert page.locator("input[name=codex_admin_key]").input_value() == ""
@@ -88,5 +75,5 @@ with sync_playwright() as p:
         assert page.locator("input[name=codex_base_url]").evaluate("n => {const r=n.getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth;}")
         page.screenshot(path=str(out / f"settings-{width}.png"))
     assert not errors, errors
-    print(json.dumps({"checks": "selection, cancel, download, partial push, target confirmation, secret field, desktop/mobile", "screenshots": str(out), "page_errors": errors}))
+    print(json.dumps({"checks": "selection, cancel, download, push button absent, secret field, desktop/mobile", "screenshots": str(out), "page_errors": errors}))
     browser.close()

@@ -426,47 +426,6 @@
           api.toast(`已排队 ${result.queued} 个检查任务`, "success"); await boot(api);
         } catch (error) { api.toast(api.friendlyError(error), "error"); } finally { b.disabled = false; }
       });
-      document.getElementById("account-selection-push")?.addEventListener("click", async event => {
-        const b = event.currentTarget, items = selectedItems();
-        if (!items.length || b.disabled) return;
-        b.disabled = true;
-        try {
-          if (items.length > 50) throw new Error("一次最多选择 50 个账号");
-          const settingsResponse = await fetch("/api/settings", {headers: {Accept: "application/json"}, cache: "no-store"});
-          if (!settingsResponse.ok) throw new Error("无法读取 Codex 目标配置");
-          const settings = await settingsResponse.json();
-          if (!settings.connections?.codex?.configured) throw new Error("请先在设置中保存 Codex 地址和管理员 API Key");
-          if (!await api.openConfirm({
-            title: "推送到 Codex", subtitle: settings.connections.codex_base_url,
-            message: "将发送敏感 AT 和 ID token，不含 RT。已绑定账号更新凭据，未绑定账号尝试创建；不修改 Sub2API。",
-            hint: "AT 到期后需在 Team Manager 刷新并再次推送。", items: items.map(a => a.email), confirmLabel: "确认推送",
-          }, b)) return;
-          let synced = 0;
-          const failures = [];
-          for (const [index, item] of items.entries()) {
-            b.textContent = `推送中 ${index + 1}/${items.length}`;
-            const response = await fetch("/api/accounts/codex/push", {
-              method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
-              body: JSON.stringify({confirm: true, account_ids: [item.id], expected_target: settings.connections.codex_base_url}),
-            });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result.detail?.message || "推送未完成，请核对绑定状态");
-            synced += result.synced || 0;
-            for (const failed of result.results || []) if (!failed.ok) failures.push(`${item.email}: ${failed.message}`);
-          }
-          api.toast(`Codex 已同步 ${synced}/${items.length}`, failures.length ? "warning" : "success");
-          const report = el("section", "sheet-section codex-transfer-details");
-          report.append(el("h3", "", `Codex 已同步 ${synced}/${items.length}`));
-          for (const message of failures) report.append(el("p", "text-warning", message));
-          if (failures.length) {
-            document.getElementById("sheet-title").textContent = "Codex 推送结果";
-            document.getElementById("sheet-subtitle").textContent = "";
-            document.getElementById("sheet-body").replaceChildren(report);
-            api.openOverlay("entity", {returnFocus: b});
-          }
-        } catch (error) { api.toast(api.friendlyError(error), "error"); }
-        finally { b.disabled = false; b.textContent = "推送到 Codex"; }
-      });
       document.getElementById("account-selection-export")?.addEventListener("click", async event => {
         const b = event.currentTarget, items = selectedItems();
         if (!items.length || b.disabled) return;

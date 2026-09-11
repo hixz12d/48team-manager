@@ -38,6 +38,47 @@ function env(stored = []) {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+for (const action of ['create', 'update']) test(`Sub2API ${action} proceeds without a blocking confirmation`, async () => {
+  const calls = [], results = [];
+  const context = vm.createContext({
+    window: {confirm: () => assert.fail('native confirmation must not open')},
+    openConfirm: () => assert.fail('no replacement confirmation'),
+    fetchEntity: async (key, url, options) => {
+      calls.push(['preview', url, JSON.parse(options.body)]);
+      return {action, would_update: ['credentials'], would_preserve: ['proxy_id']};
+    },
+    postAction: async (key, url, body) => { calls.push(['push', url, body]); return {ok: true}; },
+    handleActionResult: async (result, options) => results.push([result, options]),
+  });
+  vm.runInContext(declaration('pushSub2ApiAccount'), context);
+  await context.pushSub2ApiAccount({id: 7, workspace_id: 'ws/3'});
+  assert.deepEqual(calls.map(call => call.slice(0, 2)), [
+    ['preview', '/api/accounts/7/sub2api/preview?workspace_id=ws%2F3'],
+    ['push', '/api/accounts/7/sub2api/push?workspace_id=ws%2F3'],
+  ]);
+  assert.equal(JSON.stringify(calls[1][2]), '{}');
+  assert.equal(results.length, 1);
+  assert.equal(results[0][0].ok, true);
+});
+
+test('Sub2API preview rejection still prevents a push', async () => {
+  const context = vm.createContext({
+    fetchEntity: async () => { throw new Error('not eligible'); },
+    postAction: () => assert.fail('must not push after a failed preview'),
+  });
+  vm.runInContext(declaration('pushSub2ApiAccount'), context);
+  await assert.rejects(context.pushSub2ApiAccount({id: 7}), /not eligible/);
+});
+
+test('account selection keeps Codex export but removes the push entry point', () => {
+  const template = fs.readFileSync(path.join(__dirname, '../app/web/templates/console.html'), 'utf8');
+  const accounts = fs.readFileSync(path.join(__dirname, '../app/web/static/js/accounts-view.js'), 'utf8');
+  assert.doesNotMatch(template, /account-selection-push/);
+  assert.doesNotMatch(accounts, /account-selection-push|\/api\/accounts\/codex\/push/);
+  assert.match(template, /account-selection-export/);
+  assert.match(accounts, /\/api\/accounts\/codex\/export/);
+});
+
 test('refresh silently reconciles previously finished operations, without a toast storm', async () => {
   const fixture = Array.from({length: 20}, (_, i) => ({stableKey: `k${i}`, operationId: `public-${i}`, state: 'queued'}));
   const e = env(fixture);

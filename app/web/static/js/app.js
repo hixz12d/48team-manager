@@ -1712,15 +1712,6 @@ function hmeRow(item) {
         body: JSON.stringify(body),
       },
     );
-    const updateText = (preview.would_update || []).join(", ") || "无";
-    const preserveText = (preview.would_preserve || []).join(", ");
-    const prompt = [
-      preview.action === "create" ? "确认创建 Sub2API 账号？" : "确认更新 Sub2API 账号？",
-      `将写入：${updateText}`,
-      preserveText ? `将保留：${preserveText}` : null,
-      ...(preview.warnings || []),
-    ].filter(Boolean).join("\n");
-    if (!window.confirm(prompt)) return;
     const result = await postAction(
       `account-sub2api-push-${item.id}`,
       `/api/accounts/${item.id}/sub2api/push${query}`,

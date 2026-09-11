@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,17 +40,15 @@ class WorkspaceMetadataResolver:
             return payloads
         access = decrypt_secret(owner.access_token_encrypted)
         id_token = decrypt_secret(getattr(owner, "id_token_encrypted", None))
-        jwt_orgs = self._jwt_orgs(access, id_token)
-        if jwt_orgs:
-            payloads.append(("jwt_organizations", jwt_orgs))
         if access and workspace.official_workspace_id:
             try:
-                context = await self.client.get_account_context(
-                    access,
-                    db,
-                    account_id=str(workspace.official_workspace_id),
-                    identifier=owner.email,
-                )
+                async with asyncio.timeout(10):
+                    context = await self.client.get_account_context(
+                        access,
+                        db,
+                        account_id=str(workspace.official_workspace_id),
+                        identifier=owner.email,
+                    )
             except Exception as exc:  # noqa: BLE001
                 payloads.append(("account_context_error", {"error": str(exc)[:200]}))
             else:
@@ -72,6 +71,10 @@ class WorkspaceMetadataResolver:
                             },
                         )
                     )
+        # Token claims may contain a name from before the latest official rename.
+        jwt_orgs = self._jwt_orgs(access, id_token)
+        if jwt_orgs:
+            payloads.append(("jwt_organizations", jwt_orgs))
         return payloads
 
     def apply_resolved(

@@ -279,6 +279,28 @@ class WorkspaceSyncService:
             },
         )
 
+        name_warning = None
+        try:
+            from app.application.workspace_metadata import workspace_metadata_resolver
+
+            extra = [
+                ("members", members_raw),
+                ("members_seat_metadata", members_raw.get("seat_metadata") or {}),
+                ("invites", invites_raw),
+                ("invites_seat_metadata", invites_raw.get("seat_metadata") or {}),
+            ]
+            # Release operation-log writes before the read-only metadata request.
+            if queued_execution:
+                await db.commit()
+            name_result = await workspace_metadata_resolver.refresh(db, workspace, owner, extra=extra, persist=False)
+            if name_result.get("found") is False or not name_result.get("ok", True):
+                name_warning = "Team 名称获取失败，已保留现有名称"
+        except Exception:
+            logger.exception("official name refresh failed workspace=%s", workspace.id)
+            name_warning = "Team 名称获取失败，已保留现有名称"
+        if name_warning:
+            workspace.official_name_last_error = name_warning
+
         if queued_execution:
             await db.refresh(operation, ["cancel_requested"])
             if operation.cancel_requested:
@@ -367,25 +389,6 @@ class WorkspaceSyncService:
         workspace.last_official_sync_state = "fresh"
         workspace.updated_at = stamp
         workspace.version = int(workspace.version or 1) + 1
-
-        name_warning = None
-        try:
-            from app.application.workspace_metadata import workspace_metadata_resolver
-
-            extra = []
-            if isinstance(members_raw, dict):
-                extra.append(("members", members_raw))
-                extra.append(("members_seat_metadata", members_raw.get("seat_metadata") or {}))
-            if isinstance(invites_raw, dict):
-                extra.append(("invites", invites_raw))
-                extra.append(("invites_seat_metadata", invites_raw.get("seat_metadata") or {}))
-            # Queued member reads do not refresh OAuth or fetch unrelated metadata.
-            name_result = {"ok": True} if queued_execution else await workspace_metadata_resolver.refresh(db, workspace, owner, extra=extra, persist=False)
-            if isinstance(name_result, dict) and not name_result.get("ok", True):
-                name_warning = name_result.get("error") or "Team 名称获取失败，已保留现有名称"
-        except Exception as exc:
-            logger.exception("official name refresh failed workspace=%s", workspace.id)
-            name_warning = f"Team 名称获取失败，已保留现有名称（{exc}"[:180] + ")" if str(exc) else "Team 名称获取失败，已保留现有名称"
 
         joined_people_total = sum(1 for row in remote_rows.values() if row.get("state") == "joined")
         official_owner_count = sum(

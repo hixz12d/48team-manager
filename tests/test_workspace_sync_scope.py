@@ -24,13 +24,21 @@ class WorkspaceSyncScopeTests(unittest.IsolatedAsyncioTestCase):
         self.engine = create_async_engine(f"sqlite+aiosqlite:///{Path(self.tmp.name).as_posix()}/scope.db")
         await bootstrap_schema(self.engine)
         self.factory = async_sessionmaker(self.engine, expire_on_commit=False)
+        context_patch = patch("app.application.workspace_metadata.workspace_metadata_resolver.client.get_account_context",
+                              new_callable=AsyncMock)
+        self.context = context_patch.start()
+        self.addCleanup(context_patch.stop)
+        self.official_ids = [f"00000000-0000-0000-0000-{i:012d}" for i in range(8)]
+        self.context.return_value = {"success": True, "data": {"accounts": {
+            self.official_ids[i]: {"account": {"name": f"Official Team {i}"}} for i in range(8)
+        }}}
         async with self.factory() as db:
             owner = Account(email="owner@example.test", local_purpose="mother", access_token_encrypted=encrypt_secret("test-access"))
             db.add(owner)
             await db.flush()
             self.owner_id = owner.id
             for i in range(8):
-                db.add(Workspace(official_workspace_id=f"ws-{i}", owner_account_id=owner.id, status="active"))
+                db.add(Workspace(official_workspace_id=self.official_ids[i], owner_account_id=owner.id, status="active"))
             await db.commit()
 
     async def asyncTearDown(self):
@@ -57,23 +65,79 @@ class WorkspaceSyncScopeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(batch["items"][2]["operation_id"], single["operation_id"])
             self.assertEqual(len(list(await db.scalars(select(Operation)))), 8)
 
-    async def test_only_requested_workspace_read_and_no_nested_operation(self):
+    async def _sync_target(self):
         queued = await self.enqueue(3)
         members = AsyncMock(return_value={"success": True, "members": [{"id": "user-1", "email": "owner@example.test", "role": "owner"}], "total": 1})
         invites = AsyncMock(return_value={"success": True, "items": [], "total": 0})
         with patch.object(workspace_sync_service.workspaces.client, "get_members", members), patch.object(workspace_sync_service.workspaces.client, "get_invites", invites), patch("app.application.tokens.auth_service.refresh_account", new_callable=AsyncMock) as refresh:
             async with self.factory() as db:
+                count_before = len(list(await db.scalars(select(Operation))))
                 result = await dispatch_workspace_sync(db)
                 self.assertTrue(result["result"]["ok"])
                 self.assertEqual(result["operation_id"], queued["operation_id"])
-                self.assertEqual(len(list(await db.scalars(select(Operation)))), 1)
+                self.assertEqual(len(list(await db.scalars(select(Operation)))), count_before)
                 snapshots = list(await db.scalars(select(WorkspaceOfficialMemberSnapshot)))
                 self.assertEqual([row.workspace_id for row in snapshots], [3])
             refresh.assert_not_called()
-        self.assertEqual(members.await_args.args[1], "ws-2")
-        self.assertEqual(invites.await_args.args[1], "ws-2")
+        self.assertEqual(members.await_args.args[1], self.official_ids[2])
+        self.assertEqual(invites.await_args.args[1], self.official_ids[2])
+        return result
+
+    async def test_only_requested_workspace_read_and_no_nested_operation(self):
+        queued = await self._sync_target()
+        async with self.factory() as db:
+            self.assertEqual(len(list(await db.scalars(select(Operation)))), 1)
         new = await self.enqueue(3)
         self.assertNotEqual(new["operation_id"], queued["operation_id"])
+
+    async def test_queued_sync_refreshes_only_target_name_and_prefers_live_context(self):
+        with patch("app.application.workspace_metadata.workspace_metadata_resolver._jwt_orgs",
+                   return_value=[{"id": self.official_ids[2], "name": "Old token name"}]):
+            result = await self._sync_target()
+        self.assertEqual(result["result"]["status"], "success")
+        self.assertEqual(self.context.await_count, 1)
+        self.assertEqual(self.context.await_args.kwargs["account_id"], self.official_ids[2])
+        async with self.factory() as db:
+            target = await db.get(Workspace, 3)
+            self.assertEqual(target.official_name, "Official Team 2")
+            self.assertEqual(target.name, "Official Team 2")
+            self.assertIsNotNone(target.official_name_synced_at)
+            self.assertIsNone(target.official_name_last_error)
+            self.assertIsNone((await db.get(Workspace, 2)).official_name)
+
+    async def test_queued_sync_preserves_custom_name(self):
+        async with self.factory() as db:
+            target = await db.get(Workspace, 3)
+            target.name = target.custom_name = "Local Team"
+            await db.commit()
+        await self._sync_target()
+        async with self.factory() as db:
+            target = await db.get(Workspace, 3)
+            self.assertEqual(target.official_name, "Official Team 2")
+            self.assertEqual(target.name, "Local Team")
+            self.assertEqual(target.name_source, "custom")
+
+    async def test_metadata_miss_or_timeout_preserves_name_and_member_sync(self):
+        for response in ({"success": True, "data": {"id": self.official_ids[0], "name": "Wrong Team"}},
+                         {"success": True, "data": {"unexpected": True}}, TimeoutError()):
+            with self.subTest(response=response):
+                async with self.factory() as db:
+                    target = await db.get(Workspace, 3)
+                    target.name = target.official_name = "Existing Team"
+                    await db.commit()
+                self.context.side_effect = response if isinstance(response, Exception) else None
+                self.context.return_value = response
+                result = await self._sync_target()
+                self.assertEqual(result["result"]["status"], "partial")
+                self.assertTrue(result["result"]["warnings"])
+                async with self.factory() as db:
+                    target = await db.get(Workspace, 3)
+                    self.assertEqual(target.name, "Existing Team")
+                    self.assertEqual(target.official_name, "Existing Team")
+                    self.assertTrue(target.official_name_last_error)
+                    finished = list(await db.scalars(select(Operation).where(Operation.state == "partial")))
+                    self.assertTrue(finished)
+                    self.assertIn("warnings", finished[-1].result_json)
 
     async def test_incomplete_page_keeps_old_snapshot(self):
         await self.enqueue()
