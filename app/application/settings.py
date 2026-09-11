@@ -90,7 +90,10 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     stored_quota = quota_runtime["effective_enabled"]
     mail_password = await get_setting_value(db, CF_SETTING_ADMIN_PASSWORD, "") or ""
     mail_configured = bool(mail_password)
+    codex_url = await get_setting_value(db, "codex_base_url", "") or ""
+    codex_key = await get_setting_value(db, "codex_admin_key_encrypted", "") or ""
     secret_state = {
+        "codex_admin_key": _secret_state(codex_key),
         "sub2api_api_key": _secret_state(sub2api_cfg.get("api_key")),
         "sub2api_admin_password": _secret_state(sub2api_cfg.get("password")),
         "hme_service_token": _secret_state(hme_cfg.service_token),
@@ -98,6 +101,8 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     }
     return {
         "connections": {
+            "codex_base_url": codex_url,
+            "codex": {"configured": bool(codex_url and codex_key)},
             "sub2api_base_url": sub2api_cfg.get("base_url") or DEFAULT_SUB2API_BASE_URL,
             "sub2api_admin_email": sub2api_cfg.get("email") or "",
             "hme_base_url": hme_cfg.base_url or DEFAULT_HME_BASE_URL,
@@ -125,6 +130,7 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
         "account": {"username": env.admin_username},
         "secret_state": secret_state,
         "secrets": {
+            "codex_admin_key": "",
             "sub2api_api_key": _secret_view(sub2api_cfg.get("api_key")),
             "sub2api_admin_password": _secret_view(sub2api_cfg.get("password")),
             "hme_token": _secret_view(hme_cfg.service_token),
@@ -137,6 +143,24 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
 async def save_console_settings(db: AsyncSession, payload) -> dict[str, Any]:
     if payload.connections is not None:
         conn = payload.connections
+        if conn.codex_base_url is not None or conn.codex_admin_key is not None:
+            from app.integrations.codex.client import normalize_url
+            from app.application.tokens import encrypt_secret
+            from app.persistence.models.codex import CodexBinding
+            old_url = await get_setting_value(db, "codex_base_url", "") or ""
+            new_url = old_url if conn.codex_base_url is None else (normalize_url(conn.codex_base_url) if conn.codex_base_url.strip() else "")
+            if new_url and new_url != old_url:
+                if _keep_secret(conn.codex_admin_key):
+                    raise ValueError("更改 Codex 地址时必须重新输入目标管理员 API Key")
+                foreign_binding = await db.scalar(select(CodexBinding.account_id).where(CodexBinding.target_url != new_url).limit(1))
+                if foreign_binding is not None:
+                    raise ValueError("已有账号绑定其他 Codex 地址，请先核对绑定，禁止直接更换目标")
+            if not _keep_secret(conn.codex_admin_key):
+                key = conn.codex_admin_key.strip()
+                if any(ord(c) < 33 or ord(c) > 126 for c in key):
+                    raise ValueError("Codex API Key 格式无效")
+                await upsert_setting(db, "codex_admin_key_encrypted", encrypt_secret(key))
+            await upsert_setting(db, "codex_base_url", new_url)
         mapping = {
             "sub2api_base_url": conn.sub2api_base_url,
             "sub2api_admin_email": conn.sub2api_admin_email,

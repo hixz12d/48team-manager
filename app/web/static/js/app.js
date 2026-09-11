@@ -3438,6 +3438,8 @@ function hmeRow(item) {
   function snapshotSettings(form) {
     const data = new FormData(form);
     return JSON.stringify({
+      codex_base_url: data.get("codex_base_url"),
+      codex_admin_key: data.get("codex_admin_key"),
       sub2api_base_url: data.get("sub2api_base_url"),
       sub2api_api_key: data.get("sub2api_api_key"),
       sub2api_admin_email: data.get("sub2api_admin_email"),
@@ -3479,6 +3481,9 @@ function hmeRow(item) {
     const resources = payload.resources || {};
     const secretState = payload.secret_state || {};
     const account = payload.account || {};
+    form.codex_base_url.value = connections.codex_base_url || "";
+    form.codex_admin_key.value = "";
+    document.getElementById("codex-connection-status").textContent = connections.codex?.configured ? "已配置 · RT 由 Team Manager 保管" : "未配置";
     form.sub2api_base_url.value = connections.sub2api_base_url || "";
     form.sub2api_admin_email.value = connections.sub2api_admin_email || "";
     form.hme_base_url.value = connections.hme_base_url || "";
@@ -3553,6 +3558,8 @@ function hmeRow(item) {
 
   function connectionsPayload(form) {
     return {
+      codex_base_url: form.codex_base_url.value,
+      codex_admin_key: secretOrNull(form.codex_admin_key.value),
       sub2api_base_url: form.sub2api_base_url.value,
       sub2api_admin_email: form.sub2api_admin_email.value,
       hme_base_url: form.hme_base_url.value,

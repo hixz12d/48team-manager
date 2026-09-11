@@ -459,6 +459,12 @@ async def remove_local_child(
 
 
 async def purge_local_child_record(db: AsyncSession, workspace: Workspace, account: Account) -> dict[str, Any]:
+    from app.persistence.models.codex import CodexBinding
+    await db.execute(update(Account).where(Account.id == account.id).values(version=Account.version))
+    codex_busy = await db.scalar(select(CodexBinding.account_id).where(
+        CodexBinding.account_id == account.id, CodexBinding.lease_until > utcnow()))
+    if codex_busy is not None:
+        return {"ok": False, "error": "Codex push in progress", "error_code": "account_busy"}
     if is_workspace_owner(workspace, account.id) or account.local_purpose == LOCAL_PURPOSE_MOTHER:
         return {"ok": False, "error": "workspace owner cannot be permanently deleted", "error_code": "not_linkable"}
     owned = (await db.execute(select(Workspace.id).where(Workspace.owner_account_id == account.id))).scalars().all()
@@ -481,6 +487,7 @@ async def purge_local_child_record(db: AsyncSession, workspace: Workspace, accou
         await db.execute(delete(HmeAliasLease).where(HmeAliasLease.email == email))
     await db.execute(update(Account).where(Account.source_child_account_id == account_id).values(source_child_account_id=None))
     await db.execute(update(Operation).where(Operation.account_id == account_id).values(account_id=None))
+    await db.execute(delete(CodexBinding).where(CodexBinding.account_id == account_id))
     await db.delete(account)
     await db.flush()
     return {"ok": True, "purged_account_id": account_id, "email": email}

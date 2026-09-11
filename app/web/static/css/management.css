@@ -137,7 +137,9 @@ button.management-email:hover { color:var(--accent); }
 .group-sync-outcome { display:block; font-size:12px; margin-top:5px; overflow-wrap:anywhere; }
 .management-subscription { color:#466a62; font-size:12px; }
 .management-sync-status { color:#a3433a; font-size:12px; margin:0 0 14px; overflow-wrap:anywhere; }
-.management-selection { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 14px; padding:10px 12px; background:#fff7f7; border:1px solid var(--danger-border, #f0c9cd); border-radius:8px; font-size:13px; }
+.management-selection { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 14px; padding:10px 12px; background:#fff; border:1px solid var(--border); border-radius:8px; font-size:13px; }
+.codex-transfer-details { min-width:0; overflow-wrap:anywhere; }
+#account-selection-push { min-width:106px; }
 /* JS uses the native hidden attribute; flex must not override it. */
 .management-selection[hidden] {
   display: none !important;

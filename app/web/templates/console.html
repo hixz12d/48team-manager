@@ -161,6 +161,8 @@
           <div id="account-selection-bar" class="management-selection" hidden>
             <span id="account-selection-count">已选 0 个</span>
             <button type="button" class="button" id="account-selection-clear">取消选择</button>
+            <button type="button" class="button" id="account-selection-export">导出 Codex JSON</button>
+            <button type="button" class="button" id="account-selection-push">推送到 Codex</button>
             <button type="button" class="button danger" id="account-selection-delete">永久删除本地档案</button>
           </div>
           <p id="management-sync-status" class="management-sync-status" role="status" hidden></p>
@@ -359,6 +361,14 @@
                   </div>
                 </div>
               </article>
+              <section class="panel" data-service="codex">
+                <div class="panel-header"><span class="panel-title">Codex Proxy</span></div>
+                <div class="panel-body stack">
+                  <label>服务地址<input name="codex_base_url" type="url" autocomplete="off"></label>
+                  <label>管理员 API Key<input name="codex_admin_key" type="password" autocomplete="new-password" data-secret="codex_admin_key"></label>
+                  <p class="muted" id="codex-connection-status">未配置</p>
+                </div>
+              </section>
               <article class="panel service-card" data-service="hme">
                 <div class="panel-header">
                   <div>

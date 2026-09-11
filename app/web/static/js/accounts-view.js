@@ -15,7 +15,8 @@
   let selected = new Set();
   try { collapsed = new Set(JSON.parse(localStorage.getItem("team48:collapsed-teams") || "[]")); } catch (_) {}
   const canDelete = account => Boolean(account?.can_delete_local);
-  const selectedItems = () => (payload?.accounts || []).filter(account => selected.has(account.id) && canDelete(account));
+  const canSelect = account => account.managed !== false && Number.isInteger(account.id) && account.id > 0;
+  const selectedItems = () => (payload?.accounts || []).filter(account => selected.has(account.id) && canSelect(account));
   function updateSelectionBar() {
     const valid = new Set(selectedItems().map(account => account.id));
     selected = new Set([...selected].filter(id => valid.has(id)));
@@ -25,7 +26,7 @@
     const items = selectedItems();
     if (bar) bar.hidden = items.length === 0;
     if (count) count.textContent = `已选 ${items.length} 个`;
-    if (del) del.disabled = items.length === 0;
+    if (del) del.disabled = items.length === 0 || items.some(account => !canDelete(account));
   }
   const el = (tag, cls, text) => {
     const node = document.createElement(tag);
@@ -113,7 +114,7 @@
     const id = `${account.id || account.email}:${account.workspace_id || "none"}`;
     row.dataset.account = String(account.id || "");
     const selectCell = el("td", "management-select");
-    if (canDelete(account)) {
+    if (canSelect(account)) {
       const box = el("input"); box.type = "checkbox"; box.checked = selected.has(account.id);
       box.setAttribute("aria-label", `选择 ${account.email}`);
       box.addEventListener("click", event => event.stopPropagation());
@@ -169,10 +170,10 @@
     const table = el("table", "management-table");
     const colgroup = el("colgroup"); [4, 25, 16, 17, 13, 12, 13].forEach(width => { const col = el("col"); col.style.width = `${width}%`; colgroup.append(col); });
     const head = el("thead"); const tr = el("tr");
-    const selectable = items.filter(canDelete);
+    const selectable = items.filter(canSelect);
     const selectHead = el("th", "management-select"); selectHead.scope = "col";
     if (selectable.length) {
-      const box = el("input"); box.type = "checkbox"; box.setAttribute("aria-label", "全选可删除账号");
+      const box = el("input"); box.type = "checkbox"; box.setAttribute("aria-label", "全选本地账号");
       box.checked = selectable.every(account => selected.has(account.id));
       box.indeterminate = selectable.some(account => selected.has(account.id)) && !box.checked;
       box.addEventListener("change", () => {
@@ -274,7 +275,7 @@
         const items = (group.members || []).filter(a => matches(a, group, params));
         if (!items.length && ((group.members || []).length || params.get("q") || params.get("health"))) continue;
         if (params.get("team") && String(group.id) !== params.get("team")) continue;
-        const renderKey = JSON.stringify([group, params.toString(), collapsed.has(String(group.id))]);
+        const renderKey = JSON.stringify([group, params.toString(), collapsed.has(String(group.id)), [...selected]]);
         const old = previousGroups.get(String(group.id));
         const node = old?._renderKey === renderKey ? old : groupNode(group, items, params);
         node._renderKey = renderKey;
@@ -336,6 +337,15 @@
     const block = el("section"); block.id = "account-health-content";
     block.dataset.account = account.id; block.dataset.workspace = account.workspace_id || ""; block.append(healthDetails(account));
     body.append(block);
+    const codex = el("section", "sheet-section codex-transfer-details");
+    codex.append(el("h3", "", "Codex Proxy"));
+    const codexState = el("p", "muted", "读取绑定状态中"); codex.append(codexState); body.append(codex);
+    fetch("/api/accounts/codex/status", {headers: {Accept: "application/json"}, cache: "no-store"})
+      .then(response => { if (!response.ok) throw new Error("绑定状态暂时不可用"); return response.json(); })
+      .then(data => {
+        const binding = data.items.find(item => item.account_id === account.id);
+        codexState.textContent = !binding ? "未绑定" : `${binding.target_url} · ${binding.remote_account_id || "远端待确认"} · ${binding.state === "synced" ? (binding.stale ? "本地凭据已更新，待推送" : "已同步") : "未完成，需核对"}${binding.last_error ? ` · ${binding.last_error}` : ""}`;
+      }).catch(error => { codexState.textContent = error.message; });
     if (account.contexts?.length > 1) {
       const section = el("section", "sheet-section"); section.append(el("h3", "", "工作区检测状态"));
       account.contexts.forEach(c => section.append(button(`${c.workspace_name || c.workspace_id} · ${c.health.label}`, b => openAccount(c, b), "button management-context")));
@@ -415,6 +425,73 @@
           for (const id of result.operation_ids || []) api.startCurrentOperation(`quota:${id}`, { operation_id: id, status: "queued" });
           api.toast(`已排队 ${result.queued} 个检查任务`, "success"); await boot(api);
         } catch (error) { api.toast(api.friendlyError(error), "error"); } finally { b.disabled = false; }
+      });
+      document.getElementById("account-selection-push")?.addEventListener("click", async event => {
+        const b = event.currentTarget, items = selectedItems();
+        if (!items.length || b.disabled) return;
+        b.disabled = true;
+        try {
+          if (items.length > 50) throw new Error("一次最多选择 50 个账号");
+          const settingsResponse = await fetch("/api/settings", {headers: {Accept: "application/json"}, cache: "no-store"});
+          if (!settingsResponse.ok) throw new Error("无法读取 Codex 目标配置");
+          const settings = await settingsResponse.json();
+          if (!settings.connections?.codex?.configured) throw new Error("请先在设置中保存 Codex 地址和管理员 API Key");
+          if (!await api.openConfirm({
+            title: "推送到 Codex", subtitle: settings.connections.codex_base_url,
+            message: "将发送敏感 AT 和 ID token，不含 RT。已绑定账号更新凭据，未绑定账号尝试创建；不修改 Sub2API。",
+            hint: "AT 到期后需在 Team Manager 刷新并再次推送。", items: items.map(a => a.email), confirmLabel: "确认推送",
+          }, b)) return;
+          let synced = 0;
+          const failures = [];
+          for (const [index, item] of items.entries()) {
+            b.textContent = `推送中 ${index + 1}/${items.length}`;
+            const response = await fetch("/api/accounts/codex/push", {
+              method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+              body: JSON.stringify({confirm: true, account_ids: [item.id], expected_target: settings.connections.codex_base_url}),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.detail?.message || "推送未完成，请核对绑定状态");
+            synced += result.synced || 0;
+            for (const failed of result.results || []) if (!failed.ok) failures.push(`${item.email}: ${failed.message}`);
+          }
+          api.toast(`Codex 已同步 ${synced}/${items.length}`, failures.length ? "warning" : "success");
+          const report = el("section", "sheet-section codex-transfer-details");
+          report.append(el("h3", "", `Codex 已同步 ${synced}/${items.length}`));
+          for (const message of failures) report.append(el("p", "text-warning", message));
+          if (failures.length) {
+            document.getElementById("sheet-title").textContent = "Codex 推送结果";
+            document.getElementById("sheet-subtitle").textContent = "";
+            document.getElementById("sheet-body").replaceChildren(report);
+            api.openOverlay("entity", {returnFocus: b});
+          }
+        } catch (error) { api.toast(api.friendlyError(error), "error"); }
+        finally { b.disabled = false; b.textContent = "推送到 Codex"; }
+      });
+      document.getElementById("account-selection-export")?.addEventListener("click", async event => {
+        const b = event.currentTarget, items = selectedItems();
+        if (!items.length || b.disabled) return;
+        b.disabled = true;
+        try {
+          if (!await api.openConfirm({
+            title: "导出 Codex 凭据", subtitle: `已选 ${items.length} 个账号`,
+            message: "文件含敏感 AT 和 ID token，不含 RT。刷新仍由 Team Manager 负责；AT 到期后需重新导出或推送。",
+            hint: "最多 50 个账号；不会自动刷新凭据。", items: items.map(a => a.email), confirmLabel: "确认导出",
+          }, b)) return;
+          const response = await fetch("/api/accounts/codex/export", {
+            method: "POST", headers: {"Content-Type": "application/json", Accept: "application/json"},
+            cache: "no-store", body: JSON.stringify({confirm: true, account_ids: items.map(a => a.id)}),
+          });
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail?.message || "导出失败，请检查账号状态与选择数量");
+          }
+          const blob = await response.blob(), url = URL.createObjectURL(blob);
+          const link = el("a"); link.href = url; link.download = "team48-codex-at-only.json";
+          document.body.append(link); link.click(); link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          api.toast("已导出 Codex 凭据（不含 RT）", "success");
+        } catch (error) { api.toast(api.friendlyError(error), "error"); }
+        finally { b.disabled = false; }
       });
       document.getElementById("account-selection-clear")?.addEventListener("click", () => { selected.clear(); render(payload); });
       document.getElementById("account-selection-delete")?.addEventListener("click", async event => {

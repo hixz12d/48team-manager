@@ -16,6 +16,23 @@ class DeleteAccountsRequest(BaseModel):
     account_ids: list[int] = Field(min_length=1, max_length=50)
 
 
+class CodexTransferRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm: Literal[True]
+    account_ids: list[int] = Field(min_length=1, max_length=50)
+
+    @field_validator("account_ids")
+    @classmethod
+    def positive_ids(cls, value):
+        if any(item <= 0 for item in value):
+            raise ValueError("account_ids must be positive")
+        return value
+
+
+class CodexPushRequest(CodexTransferRequest):
+    expected_target: str = Field(min_length=1, max_length=500)
+
+
 class RegisterAccountRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str = Field(min_length=3, max_length=255)

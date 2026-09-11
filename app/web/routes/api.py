@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
+from app.application.codex_export import CodexTransferError, export_document
+from app.web.schemas.accounts import CodexTransferRequest, CodexPushRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import console_actions
@@ -65,6 +68,37 @@ def build_api_router(get_db) -> APIRouter:
     async def runtime_status(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         from app.application.queries.runtime_status import runtime_status as query_runtime_status
         return await query_runtime_status(db)
+
+    @router.get("/accounts/codex/status")
+    async def codex_status(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application.codex_publish import binding_status
+        return JSONResponse(await binding_status(db), headers={"Cache-Control": "no-store"})
+
+    @router.post("/accounts/codex/push")
+    async def push_codex_accounts(payload: CodexPushRequest, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application.codex_publish import push_accounts
+        try:
+            result = await push_accounts(db, payload.account_ids, expected_target=payload.expected_target)
+        except CodexTransferError as exc:
+            raise HTTPException(status_code=exc.status, detail={"message": str(exc), "error_code": exc.code}) from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.post("/accounts/codex/export")
+    async def export_codex_accounts(
+        payload: CodexTransferRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ):
+        try:
+            document = await export_document(db, payload.account_ids)
+        except CodexTransferError as exc:
+            raise HTTPException(status_code=exc.status, detail={"message": str(exc), "error_code": exc.code}) from None
+        return JSONResponse(document, headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Content-Disposition": 'attachment; filename="team48-codex-at-only.json"',
+            "X-Content-Type-Options": "nosniff",
+        })
 
     @router.get("/overview")
     async def overview(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:

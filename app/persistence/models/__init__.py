@@ -1,5 +1,6 @@
 """ORM models."""
 
+from app.persistence.models.codex import CodexBinding
 from app.persistence.models.identity import (
     Account,
     ExternalBinding,
@@ -17,6 +18,7 @@ from app.persistence.models.vacancy import SeatVacancyEvent
 
 __all__ = [
     "Account",
+    "CodexBinding",
     "ExternalBinding",
     "HmeAliasLease",
     "Operation",

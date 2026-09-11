@@ -5,6 +5,7 @@ from sqlalchemy import delete, func, or_, select, update
 from app.core.time import utcnow
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 from app.persistence.models.oauth import OAuthSession
+from app.persistence.models.codex import CodexBinding
 from app.persistence.models.operations import Operation
 from app.persistence.models.quota import CredentialLease, QuotaProbeState, QuotaSnapshot
 from app.persistence.models.resources import PhoneAttempt
@@ -67,12 +68,16 @@ async def delete_unassigned_account(db, account_id: int):
     credential = await db.scalar(select(CredentialLease.account_id).where(
         CredentialLease.account_id == account_id, CredentialLease.expires_at > now,
     ).limit(1))
-    if any(value is not None for value in (busy, oauth, probe, credential)):
+    codex = await db.scalar(select(CodexBinding.account_id).where(
+        CodexBinding.account_id == account_id, CodexBinding.lease_until > now,
+    ).limit(1))
+    if any(value is not None for value in (busy, oauth, probe, credential, codex)):
         raise AccountDeletionError("account_busy", "账号有执行中、排队中或待完成的授权任务，请结束任务后再删除。")
 
     for model, column in (
         (Sub2ApiUsageSnapshot, Sub2ApiUsageSnapshot.local_account_id),
         (ExternalBinding, ExternalBinding.local_account_id),
+        (CodexBinding, CodexBinding.account_id),
         (QuotaSnapshot, QuotaSnapshot.account_id),
         (QuotaProbeState, QuotaProbeState.account_id),
         (CredentialLease, CredentialLease.account_id),

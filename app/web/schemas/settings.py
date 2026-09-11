@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 
 class ConnectionSettings(BaseModel):
+    codex_base_url: str | None = Field(default=None, max_length=500)
+    codex_admin_key: str | None = Field(default=None, max_length=4096)
     sub2api_base_url: str | None = None
     sub2api_api_key: str | None = None
     sub2api_admin_email: str | None = None
