@@ -156,6 +156,34 @@ button.management-email:hover { color:var(--accent); }
 .team-reinvite-form>.row-actions { grid-column:1/-1; justify-content:flex-end; position:static; transform:none; opacity:1; align-self:end; }
 .team-former-members .team-member-state { font-size:12px; white-space:normal; }
 .team-member-identity>strong { overflow-wrap:anywhere; }
+
+/* Calendar reminders stay distinct from official subscription and account health. */
+.workspace-expiry-trigger { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; max-width:100%; min-height:32px; margin-top:8px; padding:5px 8px; border:1px solid #dce4ef; border-radius:6px; background:#f4f7fc; color:#526680; text-align:left; font-size:12px; line-height:1.5; cursor:pointer; }
+.workspace-expiry-trigger:hover { border-color:#8ca5e5; }
+.workspace-expiry-trigger small { font-size:11px; opacity:.8; }
+.workspace-expiry-trigger.expiry-muted { border-style:dashed; background:transparent; color:var(--muted); }
+.expiry-status { font-weight:600; }
+.workspace-expiry-editor { gap:12px; min-width:0; padding:18px; border:1px solid var(--border); border-radius:10px; background:#fff; }
+.expiry-heading, .expiry-actions, .expiry-shortcuts { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.expiry-heading { justify-content:space-between; }
+.workspace-expiry-editor .expiry-heading h3 { color:var(--text); font-size:14px; }
+.expiry-source { font-size:11px; padding:3px 7px; border-radius:4px; background:#f0f3f7; color:var(--muted); }
+.workspace-expiry-editor p { margin:0; line-height:1.6; }
+.expiry-preview { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px 12px; padding:12px 14px; background:#f4f7fc; border-radius:7px; color:#526680; font-size:13px; }
+.expiry-preview strong { font-size:18px; font-weight:600; font-variant-numeric:tabular-nums; }
+.expiry-warning { color:#805810; background:#fff7e5; border-color:#eedcaa; }
+.expiry-error { color:#aa3544; background:#fff0f1; border-color:#efc6cb; }
+.expiry-date-label { display:grid; gap:7px; font-size:12px; min-width:0; }
+.expiry-date-label input { width:100%; min-width:0; min-height:42px; box-sizing:border-box; font-size:15px; }
+.expiry-shortcuts { font-size:12px; }
+.expiry-shortcuts .button { font-size:12px; padding:0 9px; min-height:34px; }
+.expiry-clear { margin-left:auto; }
+.expiry-actions { padding-top:4px; }
+.expiry-message { color:#167257; font-size:12px; }
+.workspace-expiry-editor>.expiry-error { padding:8px 10px; border-radius:6px; font-size:12px; overflow-wrap:anywhere; }
+.expiry-message:empty, .expiry-updated:empty { display:none; }
+@media (pointer:coarse) { .workspace-expiry-trigger, .expiry-shortcuts .button, .expiry-actions .button { min-height:44px; } }
+@media (max-width:540px) { .workspace-expiry-editor { padding:14px; } .expiry-clear { margin-left:0; } }
 @media(max-width:768px) {
   .management-team-controls { margin-left:auto; }
   .team-reinvite-form { grid-template-columns:minmax(0,1fr); }

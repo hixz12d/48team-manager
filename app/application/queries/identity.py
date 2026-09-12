@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.presenters import AUTH_NEED_STATES, build_auth_status, membership_status_label
+from app.application.workspace_expiry import expiry_record
 from app.core.proxy import mask_proxy_url
 from app.core.time import as_utc, isoformat
 from app.domain.identity import (
@@ -469,6 +470,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "last_sync_operation": last_syncs.get(workspace.id),
                 "former_members": former_members,
                 "subscription_plan": workspace.subscription_plan,
+                "expiry": expiry_record(workspace),
                 "subscription": {"plan_family": workspace.subscription_plan if workspace.subscription_plan in {"business", "team"} else "unknown",
                                  "seat_tier": "unknown", "status": "unverified", "observed_at": None},
                 "seat_distribution": {"standard": 0, "premium": 0, "unknown": sum(s.remote_state == "joined" for s in snaps)},

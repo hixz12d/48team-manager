@@ -216,6 +216,7 @@
     if (counts.unmanaged) top.append(el("span", "management-badge tone-warning", `${counts.unmanaged} 个未接入`));
     const seats = counts.joined_people == null ? "人数尚未同步" : `已加入 ${counts.joined_people} 人`;
     title.append(top, el("small", "muted", `${seats} · ${items.length} 条${params.get("q") ? "命中" : "记录"} · 成员同步 ${group.last_sync ? api.relativeTime(group.last_sync) : "尚未同步"}`));
+    title.append(window.Team48Expiry.trigger(group, b => api.openWorkspaceExpiry(b, group)));
     const usage = fmt.usageWindow(group.usage); const money = el("div", "management-group-money");
     if (usage) {
       money.append(el("small", "muted", `${usage.label} · Sub2API`), el("span", "tabular", `用户计费 ${fmt.formatCost(usage.user_cost)} / 成本 ${fmt.formatCost(usage.account_cost)}`));
@@ -275,7 +276,7 @@
         const items = (group.members || []).filter(a => matches(a, group, params));
         if (!items.length && ((group.members || []).length || params.get("q") || params.get("health"))) continue;
         if (params.get("team") && String(group.id) !== params.get("team")) continue;
-        const renderKey = JSON.stringify([group, params.toString(), collapsed.has(String(group.id)), [...selected]]);
+        const renderKey = JSON.stringify([group, params.toString(), collapsed.has(String(group.id)), [...selected], window.Team48Expiry.today()]);
         const old = previousGroups.get(String(group.id));
         const node = old?._renderKey === renderKey ? old : groupNode(group, items, params);
         node._renderKey = renderKey;
@@ -508,5 +509,9 @@
     }
   }
   const closeSelection = () => { setQuery("account", ""); setQuery("workspace", ""); };
-  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, closeSelection, subscriptionLabel, reportSyncErrors, refresh: () => poller?.refresh() };
+  function updateExpiry(id, expiry) {
+    const group = payload?.groups?.find(item => item.id === id);
+    if (group) { group.expiry = expiry; render(payload); }
+  }
+  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refresh: () => poller?.refresh() };
 })();

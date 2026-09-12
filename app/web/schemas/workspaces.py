@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from typing import Literal
+from datetime import date
+import re
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProxySelection(BaseModel):
@@ -32,3 +34,20 @@ class CompleteWorkspaceOAuthRequest(BaseModel):
 class CompleteAccountOAuthRequest(BaseModel):
     ticket: str = Field(min_length=8, max_length=200)
     callback_url: str = Field(min_length=8, max_length=4000)
+
+
+class WorkspaceExpiryPatch(BaseModel):
+    # Required key: an omitted field must never silently clear a saved reminder.
+    expires_on: date | None
+
+    @field_validator("expires_on", mode="before")
+    @classmethod
+    def validate_calendar_date(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value, flags=re.ASCII):
+            raise ValueError("请选择有效日期，格式为 YYYY-MM-DD；清空请传 null")
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("请选择有效的日历日期") from exc

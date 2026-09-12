@@ -2746,6 +2746,32 @@ function hmeRow(item) {
     }
   }
 
+    function workspaceExpiryEditor(workspace) {
+      return window.Team48Expiry.editor(workspace, {
+        friendlyError,
+        save: async (expiresOn) => {
+          const result = await patchAction(`workspace-expiry-${workspace.id}`, `/api/workspaces/${workspace.id}/expiry`, { expires_on: expiresOn });
+          if (!result?.ok) throw new Error(result?.error || "日期保存失败");
+          workspace.expiry = result.expiry;
+          if (document.body.dataset.page === "accounts") {
+            const focusKey = overlayState.returnFocus?.dataset.focusKey;
+            window.Team48Accounts.updateExpiry(workspace.id, result.expiry);
+            if (focusKey) overlayState.returnFocus = document.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`) || overlayState.returnFocus;
+          }
+          return result.expiry;
+        },
+      });
+    }
+
+    function openWorkspaceExpiry(trigger, workspace) {
+      if (!sheet || !workspace) return;
+      teamDetailState = null;
+      document.getElementById("sheet-title").textContent = "记录到期日期";
+      document.getElementById("sheet-subtitle").textContent = workspace.display_name || workspace.name || `团队 #${workspace.id}`;
+      document.getElementById("sheet-body").replaceChildren(workspaceExpiryEditor(workspace));
+      openOverlay("entity", { returnFocus: trigger, context: { kind: "workspace-expiry", workspace }, initialFocus: 'input[name="expires_on"]' });
+    }
+
     function renderTeamDetails(workspace) {
       if (!sheet || !workspace) return;
       teamDetailState = { ...(teamDetailState || {}), workspaceId: workspace.id, workspace, view: "details" };
@@ -2766,6 +2792,8 @@ function hmeRow(item) {
         ["最近同步", workspace.last_sync ? relativeTime(workspace.last_sync) : "尚未同步"],
         ["健康状态", workspace.owner_auth_reason === "owner_account_missing" ? "母号本地档案缺失" : (workspace.owner_needs_auth ? "母号要授权" : labelOf(statusLabels, workspace.health || workspace.status))],
       ]));
+
+      body.append(workspaceExpiryEditor(workspace));
 
       const mother = document.createElement("section");
       mother.className = "sheet-section team-mother-section";
@@ -3984,6 +4012,7 @@ function hmeRow(item) {
   async function bootAccounts() {
       return window.Team48Accounts.boot({
         fetchEntity, postAction, startCurrentOperation, entityActions, menuButton, deleteLocalTeam,
+        openWorkspaceExpiry,
         openSheet, openWorkspaceDetails, openOverlay, openRegister, openConfirm, relativeTime, toast, friendlyError, showPageError,
         cache: pageCache,
       });

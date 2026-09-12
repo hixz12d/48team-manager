@@ -47,6 +47,8 @@ OPERATION_COLUMNS = (
 )
 
 WORKSPACE_COLUMNS = (
+    ("manual_expires_on", "DATE"),
+    ("manual_expiry_updated_at", "DATETIME"),
     ("official_name", "VARCHAR(255)"),
     ("custom_name", "VARCHAR(255)"),
     ("name_source", "VARCHAR(20) DEFAULT 'placeholder' NOT NULL"),

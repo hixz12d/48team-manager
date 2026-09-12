@@ -48,6 +48,8 @@ from app.web.schemas.resources import (
 )
 from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
 from app.web.schemas.workspaces import CompleteAccountOAuthRequest, CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
+from app.web.schemas.workspaces import WorkspaceExpiryPatch
+from app.application.workspace_expiry import update_workspace_expiry
 
 
 def _accepted(payload: dict) -> dict:
@@ -277,6 +279,18 @@ def build_api_router(get_db) -> APIRouter:
         if result.get("error_code") == "not_linkable":
             raise HTTPException(status_code=400, detail=result.get("error") or "not linkable")
         return _accepted(result)
+
+    @router.patch("/workspaces/{workspace_id}/expiry")
+    async def patch_workspace_expiry(
+        workspace_id: int,
+        payload: WorkspaceExpiryPatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await update_workspace_expiry(db, workspace_id, payload.expires_on)
+        if not result["ok"]:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
 
     @router.patch("/workspaces/{workspace_id}/name")
     async def patch_workspace_name(

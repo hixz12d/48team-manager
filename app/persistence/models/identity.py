@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func, inspect
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func, inspect
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.persistence.database import Base
@@ -111,6 +111,8 @@ class Workspace(Base):
     official_name_last_error: Mapped[str | None] = mapped_column(String(500))
     official_name_payload_source: Mapped[str | None] = mapped_column(String(80))
     subscription_plan: Mapped[str | None] = mapped_column(String(100))
+    manual_expires_on: Mapped[date | None] = mapped_column(Date)
+    manual_expiry_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     owner_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     seat_limit: Mapped[int | None] = mapped_column(Integer)
