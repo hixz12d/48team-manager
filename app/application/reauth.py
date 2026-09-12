@@ -62,6 +62,15 @@ async def load_cf_config(db: AsyncSession) -> dict[str, str]:
 
 
 
+async def _remote_refresh_guard(db, account_id):
+    from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
+    from app.application.refresh_ownership import remote_refresh_owner
+    if await remote_refresh_owner(db, account_id):
+        return {"success": False, "skipped": True, "allow_oauth": False, "error_code": "remote_refresh_owned",
+                "error": "账号已委托 Sub2API 刷新，请人工核对后再重新授权", "status": "skipped"}
+    return None
+
+
 class ReauthService:
     async def execution_context(self, db: AsyncSession, account: Account) -> dict[str, Any]:
         proxy_account = account
@@ -178,6 +187,9 @@ class ReauthService:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         stamp = now or utcnow()
+        remote_guard = await _remote_refresh_guard(db, account.id)
+        if remote_guard:
+            return remote_guard
         email = normalize_email(account.email)
         gate = await automation_gate(db, email=email)
         if not gate.get("allow"):
@@ -253,13 +265,17 @@ class ReauthService:
         stored_session = oauth_sessions.get_session(session["ticket"])
         if stored_session is None:
             raise OAuthSessionError("无法保存 OAuth 会话", error_code="oauth_session_invalid")
-        await oauth_session_store.persist(
-            db,
-            stored_session,
-            purpose="account_reauth",
-            account_id=account.id,
-            credential_revision=int(account.credential_revision or 1),
-        )
+        try:
+            await oauth_session_store.persist(db, stored_session, purpose="account_reauth",
+                account_id=account.id, credential_revision=int(account.credential_revision or 1))
+        except OAuthSessionError as exc:
+            if exc.error_code != "remote_refresh_owned":
+                raise
+            result = {"success": False, "skipped": True, "allow_oauth": False, "error_code": exc.error_code, "error": str(exc), "status": "skipped"}
+            oauth_sessions.pop_session(session["ticket"])
+            await operation_store.finish(db, row, result)
+            await db.commit()
+            return result
         await db.commit()
         return {
             "success": True,
@@ -280,6 +296,9 @@ class ReauthService:
     ) -> dict[str, Any]:
         """Run auto reauth in this request. Do not queue the disabled dispatcher."""
         stamp = now or utcnow()
+        remote_guard = await _remote_refresh_guard(db, account.id)
+        if remote_guard:
+            return remote_guard
         email = normalize_email(account.email)
         gate = await automation_gate(db, email=email)
         if not gate.get("allow"):
@@ -354,13 +373,15 @@ class ReauthService:
         stored_session = oauth_sessions.get_session(session["ticket"])
         if stored_session is None:
             raise OAuthSessionError("无法保存 OAuth 会话", error_code="oauth_session_invalid")
-        await oauth_session_store.persist(
-            db,
-            stored_session,
-            purpose="account_reauth",
-            account_id=account.id,
-            credential_revision=int(account.credential_revision or 1),
-        )
+        try:
+            await oauth_session_store.persist(db, stored_session, purpose="account_reauth",
+                account_id=account.id, credential_revision=int(account.credential_revision or 1))
+        except OAuthSessionError as exc:
+            if exc.error_code != "remote_refresh_owned":
+                raise
+            oauth_sessions.pop_session(session["ticket"])
+            await db.commit()
+            return {"success": False, "skipped": True, "allow_oauth": False, "error_code": exc.error_code, "error": str(exc), "status": "skipped"}
         await db.commit()
         ticket = session["ticket"]
 
@@ -564,7 +585,7 @@ class ReauthService:
         await db.commit()
         from app.application.quota import quota_service
         await quota_service.enqueue_after_credentials(db, account)
-        token_sync = await push_refreshed_tokens_to_bound_sub2api(db, account)
+        token_sync = await push_refreshed_tokens_to_bound_sub2api(db, account, reason="manual_reauthorize")
         await db.commit()
         return {
             "ok": True,
@@ -598,6 +619,11 @@ class ReauthService:
             await operation_store.finish(db, row, {"success": False, "error": "本地账号不存在", "error_code": "identity_unbound", "status": "manual_required"})
             await db.commit()
             return {"success": False, "error_code": "identity_unbound"}
+        remote_guard = await _remote_refresh_guard(db, account.id)
+        if remote_guard:
+            await operation_store.finish(db, row, remote_guard)
+            await db.commit()
+            return remote_guard
         payload = unpack_input(row.input_json)
         frozen = await proxy_profile_service.frozen_url(db, row.public_id)
         proxy = frozen or str(payload.get("proxy") or account.proxy or session.get("proxy") or "")
@@ -704,7 +730,7 @@ class ReauthService:
         await db.commit()
         from app.application.quota import quota_service
         await quota_service.enqueue_after_credentials(db, account)
-        token_sync = await push_refreshed_tokens_to_bound_sub2api(db, account, operation=row)
+        token_sync = await push_refreshed_tokens_to_bound_sub2api(db, account, operation=row, reason="automatic_reauthorize")
         await operation_store.finish(
             db,
             row,
@@ -750,6 +776,9 @@ class ReauthService:
         candidates: list[Account] = []
         for account in accounts:
             stats["scanned"] += 1
+            if await _remote_refresh_guard(db, account.id):
+                stats["skipped"] += 1
+                continue
             if not account.auto_reauth_opt_in:
                 stats["skipped"] += 1
                 continue

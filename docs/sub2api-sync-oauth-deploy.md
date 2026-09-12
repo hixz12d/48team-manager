@@ -1,5 +1,7 @@
 # Sub2API `sync-oauth-credentials` 部署交接
 
+> 历史交接记录。当前实现、兼容边界与实际测试结果以 [安全同步第一批交付](sub2api-safe-sync.md) 为准：已取消隐式 PUT 降级，auth_only 暂不开放，不应按下文旧行为验收。
+
 ## 为什么本仓库不直接部署
 
 [AGENTS.md](/C:/Projects/Github_Other_Projects/48team-manager/AGENTS.md) / [VPS.md](/C:/Projects/Github_Other_Projects/48team-manager/VPS.md) 硬约束：

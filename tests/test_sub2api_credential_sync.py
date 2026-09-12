@@ -48,7 +48,7 @@ class CredentialSyncHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("旧授权错误已清除", message)
         self.assertIn("调度开关仍关闭", message)
 
-    async def test_unsupported_narrow_interface_falls_back_without_clear_error(self):
+    async def test_unsupported_narrow_interface_stops_without_legacy_write(self):
         remote = {
             "id": 55, "platform": "openai", "type": "oauth",
             "status": "error",
@@ -80,11 +80,11 @@ class CredentialSyncHelperTests(unittest.IsolatedAsyncioTestCase):
                 auth_validated=True,
                 prefetched_remote=remote,
             )
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
         self.assertFalse(result["supported"])
         self.assertEqual(result["auth_recovery"], "skipped")
-        self.assertTrue(result["partial"])
-        client.update_account.assert_awaited()
+        self.assertEqual(result["credential_write"], "not_attempted")
+        client.update_account.assert_not_awaited()
 
 
 if __name__ == "__main__":

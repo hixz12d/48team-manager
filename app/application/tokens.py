@@ -113,20 +113,48 @@ class AuthService:
         account_id = account.id
         ticket = uuid.uuid4().hex
         await db.execute(insert(CredentialLease).values(account_id=account_id).on_conflict_do_nothing())
+        # The first write serializes ownership handoff with local refresh acquisition.
+        from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
+        from app.application.refresh_ownership import remote_refresh_owner
+        remote_owner = await remote_refresh_owner(db, account_id)
         claimed = await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(
             CredentialLease.account_id == account_id,
+            CredentialLease.token.is_(None),
             or_(CredentialLease.expires_at.is_(None), CredentialLease.expires_at <= stamp),
             or_(CredentialLease.next_attempt_at.is_(None), CredentialLease.next_attempt_at <= stamp),
         ).values(token=ticket, expires_at=stamp + timedelta(seconds=180)))
         await db.commit()
         if claimed.rowcount != 1:
             return {"success": False, "error_code": "refresh_deferred", "allow_oauth": False}
+        release_lease = True
         try:
             await db.refresh(account)
-            return await self._refresh_claimed(db, account, client_id=client_id, now=now, schedule_checks=schedule_checks)
+            if remote_owner is not None:
+                from app.application.sub2api_refresh_authority import pull_owned_access_token, failure
+                try:
+                    result = await asyncio.wait_for(pull_owned_access_token(db, account_id, ticket), timeout=90)
+                except Exception:
+                    await db.rollback()
+                    result = failure("remote_unavailable")
+                await db.refresh(account)
+                if result.get("success") and schedule_checks:
+                    from app.application.quota import quota_service
+                    await quota_service.enqueue_after_credentials(db, account)
+                if not result.get("success"):
+                    await db.execute(update(CredentialLease).where(
+                        CredentialLease.account_id == account_id, CredentialLease.token == ticket,
+                    ).values(next_attempt_at=stamp + timedelta(minutes=5)))
+                return result
+            release_lease = False
+            result = await self._refresh_claimed(db, account, client_id=client_id, now=now, schedule_checks=schedule_checks, lease_ticket=ticket)
+            release_lease = bool(result.get("success")) or result.get("error_code") in {"credential_revision_conflict", "missing_refresh_token", "credential_error", "token_refresh_failed", "invalid_grant", "invalid_token", "token_revoked", "token_invalidated"}
+            if not release_lease:
+                result = {**result, "allow_oauth": False, "error_code": "refresh_outcome_unknown", "error": "刷新结果未确认，已阻止再次消费同一刷新凭据，请人工核对"}
+            return result
         finally:
-            await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(CredentialLease.account_id == account_id,
-                CredentialLease.token == ticket).values(token=None, expires_at=None))
+            if release_lease:
+                await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(CredentialLease.account_id == account_id,
+                    CredentialLease.token == ticket).values(token=None, expires_at=None))
             await db.commit()
 
     async def _refresh_claimed(
@@ -137,6 +165,7 @@ class AuthService:
         client_id: str = "",
         now: datetime | None = None,
         schedule_checks: bool = True,
+        lease_ticket: str | None = None,
     ) -> dict[str, Any]:
         stamp = now or utcnow()
         refresh = decrypt_secret(account.refresh_token_encrypted)
@@ -149,6 +178,8 @@ class AuthService:
             set_auth_state(account, "oauth_required")
             return {"success": False, "error_code": "missing_refresh_token", "error": "refresh token missing"}
         revision = int(account.credential_revision or 1)
+        from app.application.sub2api_refresh_authority import _local
+        original = _local(account)
         identifier = account.email or "default"
         await db.commit()
         try:
@@ -157,8 +188,13 @@ class AuthService:
             result = {"success": False, "error_code": "transport"}
         await db.commit()
         # Acquire a short write transaction before comparing and storing credentials.
-        guard = await db.execute(update(Account).where(Account.id == account.id,
-            Account.credential_revision == revision).values(credential_revision=revision))
+        guard = await db.execute(update(Account).where(*[getattr(Account, k) == v for k, v in original.items()]).values(credential_revision=revision))
+        if lease_ticket is not None:
+            lease = await db.get(CredentialLease, original["id"], populate_existing=True)
+            from app.core.time import as_utc
+            if not lease or lease.token != lease_ticket or not lease.expires_at or as_utc(lease.expires_at) <= as_utc(utcnow()):
+                await db.rollback()
+                return {"success": False, "error_code": "lease_lost", "allow_oauth": False}
         if guard.rowcount != 1:
             await db.refresh(account)
             return {"success": False, "error_code": "credential_revision_conflict", "allow_oauth": False}
@@ -225,7 +261,10 @@ class AuthService:
             if str(account.operational_state or "") in SKIP_OPERATIONAL_STATES:
                 stats["skipped"] += 1
                 continue
-            if str(account.auth_state or "") in {"deactivated", "manual_required", "oauth_required", "phone_required"}:
+            from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
+            from app.application.refresh_ownership import remote_refresh_owner
+            remote_owned = await remote_refresh_owner(db, account.id) if account.auth_state == "oauth_required" else None
+            if str(account.auth_state or "") in {"deactivated", "manual_required", "oauth_required", "phone_required"} and remote_owned is None:
                 stats["skipped"] += 1
                 continue
             if not self.access_token_due(account, now=stamp, window_hours=int(cfg["window_hours"])):

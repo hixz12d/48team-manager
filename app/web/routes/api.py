@@ -658,6 +658,56 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=400, detail=_error_detail(result, "reauth failed"))
         return result
 
+    @router.post("/accounts/{account_id}/sub2api/auth-recovery/preview")
+    async def preview_sub2api_auth_recovery(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_auth_recovery import preview_auth_recovery
+        return await preview_auth_recovery(db, account_id, workspace_id)
+
+    @router.post("/accounts/{account_id}/sub2api/auth-recovery")
+    async def recover_sub2api_auth(account_id: int, body: dict, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_auth_recovery import recover_auth
+        return await recover_auth(db, account_id, body, workspace_id)
+
+    @router.post("/accounts/{account_id}/sub2api/refresh-return/preview")
+    async def preview_sub2api_return(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_refresh_handoff import preview_return
+        return await preview_return(db, account_id, workspace_id)
+
+    @router.post("/accounts/{account_id}/sub2api/refresh-return")
+    async def return_sub2api_refresh(account_id: int, body: dict, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_refresh_handoff import return_to_team
+        return await return_to_team(db, account_id, body, workspace_id)
+
+    @router.get("/accounts/{account_id}/sub2api/refresh-authority")
+    async def get_refresh_authority(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.sub2api_refresh_authority import authority_state
+        return await authority_state(db, account_id)
+
+    @router.post("/accounts/{account_id}/sub2api/refresh-authority/preview")
+    async def preview_refresh_authority(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_refresh_authority import preview_authority
+        return await preview_authority(db, account_id, workspace_id)
+
+    @router.post("/accounts/{account_id}/sub2api/refresh-authority")
+    async def adopt_refresh_authority(account_id: int, body: dict, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_refresh_authority import adopt_authority
+        return await adopt_authority(db, account_id, body, workspace_id)
+
+    @router.get("/accounts/{account_id}/sub2api/remote-state")
+    async def account_remote_sync_state(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_remote_state import cached_remote_state
+        return await cached_remote_state(db, account_id, workspace_id)
+
+    @router.post("/accounts/{account_id}/sub2api/remote-state/refresh")
+    async def refresh_account_remote_sync_state(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_remote_state import refresh_remote_state
+        return await refresh_remote_state(db, account_id, workspace_id)
+
+    @router.post("/accounts/{account_id}/sub2api/remote-state/retry")
+    async def retry_account_remote_sync_followups(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), workspace_id: int | None = Query(default=None)) -> dict:
+        from app.application.sub2api_remote_state import retry_remote_followups
+        return await retry_remote_followups(db, account_id, workspace_id)
+
     @router.post("/accounts/{account_id}/sub2api/sync")
     async def sync_account_sub2api(
         account_id: int,

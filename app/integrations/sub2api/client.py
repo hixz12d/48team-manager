@@ -732,140 +732,184 @@ class Sub2ApiClient:
 
 
 
-    async def sync_oauth_credentials(
-        self,
-        db: AsyncSession,
-        account_id: int,
-        *,
-        credentials: dict[str, Any],
-        expected_identity: dict[str, Any] | None = None,
-        expected_updated_at: str | None = None,
-        operation_id: str | None = None,
-        recovery_mode: str = "credentials_only",
-    ) -> dict[str, Any]:
-        """Call the narrow Sub2API credential sync contract when available.
-
-        Returns a structured result. 404/405 means capability missing — callers
-        must not fall back to broad clear-error recovery.
-        """
-        if not account_id:
-            return {
-                "ok": False,
-                "supported": False,
-                "error_code": "missing_remote_id",
-                "error": "missing remote account id",
-            }
-        mode = str(recovery_mode or "credentials_only").strip() or "credentials_only"
-        if mode not in {"credentials_only", "auth_only"}:
-            return {
-                "ok": False,
-                "supported": True,
-                "error_code": "invalid_recovery_mode",
-                "error": f"unsupported recovery_mode={mode}",
-            }
-        body: dict[str, Any] = {
-            "contract_version": 1,
-            "recovery_mode": mode,
-            "credentials": {
-                key: credentials[key]
-                for key in ("access_token", "refresh_token", "id_token", "expires_at", "expired")
-                if key in credentials and credentials.get(key) not in (None, "")
-            },
+    @staticmethod
+    def _sync_failure(code: str, *, unknown: bool = False, supported: bool = True) -> dict[str, Any]:
+        messages = {
+            "sync_oauth_unsupported": "Sub2API 暂不支持所需的安全同步，请先升级服务端；本次未写入",
+            "bridge_admin_auth_failed": "连接 Sub2API 的管理凭证被拒绝，请检查管理密钥；这不是账号 OAuth 失效",
+            "bridge_unavailable": "无法连接 Sub2API，请检查地址、网络与连接配置；本次未写入",
+            "remote_account_missing": "原远端账号不存在，已保留绑定等待核对，不会自动重建",
+            "credential_version_conflict": "远端账号或同一操作的内容已变化，已停止覆盖，请核对最新状态",
+            "candidate_validation_failed": "新授权的身份或 Codex 访问能力未验证通过，远端未写入凭据",
+            "auth_error_unattributed": "远端错误缺少匹配的凭据版本证据，未写入凭据或清错",
+            "auth_recovery_unsupported": "Sub2API 尚不支持经过验证的认证恢复，请先升级服务端",
         }
-        if operation_id:
-            body["operation_id"] = str(operation_id)
-        if expected_updated_at:
-            body["expected_updated_at"] = str(expected_updated_at)
-        if expected_identity:
-            body["expected_identity"] = {
-                key: expected_identity[key]
-                for key in ("email", "workspace_id", "official_account_id")
-                if expected_identity.get(key) not in (None, "")
-            }
-        client, headers, _cfg = await self._with_client(db)
+        return {
+            "ok": False, "supported": supported, "error_code": code,
+            "error": "远端同步结果未知，请核对操作回执，勿重复提交" if unknown else messages.get(code, "远端未接受安全凭据同步，请核对能力、身份与版本"),
+            "credential_write": "unknown" if unknown else "not_attempted",
+            "auth_recovery": "skipped", "token_cache_invalidation": "unknown" if unknown else "skipped",
+            "partial": unknown, "state": "unknown" if unknown else "blocked",
+        }
+
+    def _unwrap_sync_error(self, response):
         try:
-            response = await client.post(
-                f"/api/v1/admin/accounts/{int(account_id)}/sync-oauth-credentials",
-                headers=headers,
-                json=body,
-            )
-            if response.status_code in {404, 405}:
-                return {
-                    "ok": False,
-                    "supported": False,
-                    "error_code": "sync_oauth_unsupported",
-                    "error": "远端未提供 sync-oauth-credentials 窄接口",
-                    "upstream_status": response.status_code,
-                }
-            if response.status_code in {401, 403}:
-                detail = (response.text or "")[:240]
-                return {
-                    "ok": False,
-                    "supported": True,
-                    "error_code": "admin_auth_failed",
-                    "error": "Team 调用 Sub2API Admin 接口鉴权失败，不是子号 OAuth 掉授权",
-                    "upstream_status": response.status_code,
-                    "detail": detail,
-                }
-            if response.status_code >= 400:
-                detail = (response.text or "")[:240]
-                return {
-                    "ok": False,
-                    "supported": True,
-                    "error_code": "sync_oauth_failed",
-                    "error": detail or f"HTTP {response.status_code}",
-                    "upstream_status": response.status_code,
-                }
+            payload = response.json()
+            code = payload.get("reason") if isinstance(payload, dict) else None
+            mapped = {"OAUTH_VALIDATION_FAILED": "candidate_validation_failed",
+                      "AUTH_ERROR_UNATTRIBUTED": "auth_error_unattributed",
+                      "AUTH_RECOVERY_UNSUPPORTED": "auth_recovery_unsupported"}.get(code)
+            return self._sync_failure(mapped) if mapped else None
+        except Exception:
+            return None
+
+    def _unwrap_sync_payload(self, payload: Any) -> Any:
+        if not isinstance(payload, dict) or payload.get("success") is False:
+            raise ValueError("invalid synchronization response")
+        return self._unwrap(payload)
+
+    def _parse_sync_receipt(self, data: Any, account_id: int, operation_id: str, expected_instance_id: str | None = None) -> dict[str, Any]:
+        if expected_instance_id is not None and (not isinstance(data, dict) or data.get("instance_id") != expected_instance_id):
+            return self._sync_failure("sync_oauth_identity_mismatch", unknown=True)
+        if not isinstance(data, dict) or data.get("contract_version") != 1:
+            return self._sync_failure("sync_oauth_bad_response", unknown=True)
+        if str(data.get("remote_account_id") or "") != str(account_id) or data.get("operation_id") != operation_id:
+            return self._sync_failure("sync_oauth_identity_mismatch", unknown=True)
+        blockers = data.get("remaining_blockers")
+        if not isinstance(blockers, list) or any(not isinstance(item, str) for item in blockers):
+            return self._sync_failure("sync_oauth_bad_response", unknown=True)
+        if not isinstance(data.get("partial"), bool) or not isinstance(data.get("schedulable"), bool):
+            return self._sync_failure("sync_oauth_bad_response", unknown=True)
+        if data.get("auth_recovery") == "cleared":
             try:
-                payload = response.json()
+                from app.integrations.sub2api.sync_state import _when
+                if data.get("validation_scope") != "codex_identity_usage_catalog":
+                    raise ValueError("validation missing")
+                _when(data.get("validated_at"))
+            except (ValueError, TypeError):
+                return self._sync_failure("sync_oauth_bad_response", unknown=True)
+        write_ok = data.get("credential_write") == "succeeded"
+        steps_ok = (data.get("token_cache_invalidation") == "succeeded"
+                    and data.get("auth_recovery") in {"skipped", "not_applicable", "cleared"}
+                    and data.get("scheduler_refresh") == "succeeded" and data.get("state") == "completed"
+                    and data.get("ok") is not False and data.get("success") is not False)
+        complete = write_ok and steps_ok and not data["partial"] and not blockers
+        # Persist only contract fields, never raw response bodies or credentials.
+        return {
+            "ok": complete, "supported": True, "contract_version": 1,
+            "operation_id": operation_id, "remote_account_id": account_id,
+            "instance_id": expected_instance_id,
+            "scheduler_refresh": data.get("scheduler_refresh") if data.get("scheduler_refresh") in {"pending", "succeeded"} else "unknown",
+            "credential_version": data.get("credential_version") if type(data.get("credential_version")) is int else None,
+            "validation_scope": data.get("validation_scope") if data.get("validation_scope") == "codex_identity_usage_catalog" else None,
+            "validated_at": data.get("validated_at") if isinstance(data.get("validated_at"), str) and len(data["validated_at"]) < 64 else None,
+            "credential_write": "succeeded" if write_ok else "unknown",
+            "auth_recovery": data.get("auth_recovery") if data.get("auth_recovery") in {"skipped", "not_applicable", "cleared", "failed", "conflict"} else "unknown",
+            "token_cache_invalidation": data.get("token_cache_invalidation") if data.get("token_cache_invalidation") in {"succeeded", "failed", "pending", "unavailable"} else "unknown",
+            "schedulable": data["schedulable"], "scheduling_assessment": "not_assessed",
+            "remaining_blockers": [item for item in blockers if item in {
+                "token_cache_pending", "final_state_unknown", "schedulable_off", "runtime_blocked",
+                "account_error", "rate_limit", "temporary_pause", "overload", "account_expired",
+            }],
+            "partial": not complete, "state": data.get("state") if data.get("state") in {"pending", "completed", "needs_review"} else "partial",
+            "error_code": None if complete else "sync_oauth_incomplete",
+            "error": None if complete else "凭据同步未全部确认，保留已完成步骤",
+        }
+
+    async def sync_oauth_credentials(
+        self, db: AsyncSession, account_id: int, *, credentials: dict[str, Any],
+        expected_identity: dict[str, Any] | None = None,
+        expected_updated_at: str | None = None, operation_id: str | None = None,
+        recovery_mode: str = "credentials_only",
+        expected_instance_id: str | None = None,
+    ) -> dict[str, Any]:
+        if not account_id or not operation_id or not expected_updated_at:
+            return self._sync_failure("sync_precondition_missing")
+        if recovery_mode not in {"credentials_only", "auth_only"}:
+            return self._sync_failure("invalid_recovery_mode")
+        from app.application.refresh_ownership import remote_accepts_access_token_only
+        if await remote_accepts_access_token_only(db, account_id):
+            credentials = {k: v for k, v in credentials.items() if k not in {"refresh_token", "id_token", "session_token"}}
+        body = {
+            "contract_version": 1, "operation_id": operation_id,
+            "expected_updated_at": expected_updated_at, "recovery_mode": recovery_mode,
+            "expected_identity": {
+                "email": (expected_identity or {}).get("email"),
+                "workspace_id": (expected_identity or {}).get("workspace_id"),
+            },
+            "credentials": {key: credentials[key] for key in (
+                "access_token", "refresh_token", "id_token", "expires_at", "expired", "client_id",
+            ) if key in credentials and credentials[key] not in (None, "")},
+        }
+        try:
+            client, headers, _cfg = await self._with_client(db)
+        except httpx.HTTPStatusError as exc:
+            return self._sync_failure("bridge_admin_auth_failed" if exc.response.status_code in {401, 403} else "bridge_unavailable")
+        except Exception:
+            return self._sync_failure("bridge_unavailable")
+        try:
+            try:
+                capability_response = await client.get("/api/v1/admin/integration/capabilities", headers=headers)
+                if capability_response.status_code in {401, 403}:
+                    return self._sync_failure("bridge_admin_auth_failed")
+                if capability_response.status_code in {404, 405}:
+                    return self._sync_failure("sync_oauth_unsupported", supported=False)
+                capability_response.raise_for_status()
+                capability = self._unwrap_sync_payload(capability_response.json())
+                contract = capability.get("oauth_sync", {}) if isinstance(capability, dict) else {}
+                if not isinstance(contract, dict) or contract.get("revision") not in {3, 4, 5} or any(
+                    contract.get(key) is not True for key in ("available", "credential_cas", "operation_receipts", "atomic_receipts", "resumable_followups")
+                ) or recovery_mode not in contract.get("recovery_modes", []):
+                    return self._sync_failure("sync_oauth_unsupported", supported=False)
+                if recovery_mode == "auth_only" and (contract.get("revision") not in {4, 5} or any(contract.get(k) is not True for k in ("auth_only", "candidate_validation", "versioned_auth_errors")) or contract.get("validation_scope") != "codex_identity_usage_catalog"):
+                    return self._sync_failure("auth_recovery_unsupported", supported=False)
+                from uuid import UUID
+                instance_id = str(UUID(capability.get("instance_id", "")))
+                if expected_instance_id is not None and instance_id != expected_instance_id:
+                    return self._sync_failure("instance_mismatch")
+                body["expected_instance_id"] = instance_id
             except Exception:
-                payload = {}
-            data = self._unwrap(payload) if isinstance(payload, dict) else payload
-            if not isinstance(data, dict):
-                return {
-                    "ok": False,
-                    "supported": True,
-                    "error_code": "sync_oauth_bad_response",
-                    "error": "sync-oauth-credentials 返回形状无效",
-                }
-            if data.get("contract_version") != 1:
-                return {
-                    "ok": False,
-                    "supported": True,
-                    "error_code": "sync_oauth_contract_mismatch",
-                    "error": f"unexpected contract_version={data.get('contract_version')!r}",
-                    "raw_keys": sorted(str(k) for k in data.keys())[:20],
-                }
-            if str(data.get("remote_account_id") or "") != str(account_id) or (
-                operation_id and data.get("operation_id") != operation_id
-            ):
-                return {"ok": False, "supported": True, "error_code": "sync_oauth_identity_mismatch",
-                        "error": "同步回执的账号或操作 ID 不匹配"}
-            write_ok = data.get("credential_write") == "succeeded"
-            steps_ok = (
-                data.get("token_cache_invalidation") == "succeeded"
-                and data.get("auth_recovery") in {"cleared", "skipped", "not_applicable"}
-                and data.get("ok") is not False
-                and data.get("success") is not False
-                and not (isinstance(payload, dict) and payload.get("success") is False)
-            )
-            return {
-                "ok": write_ok and steps_ok,
-                "error_code": None if write_ok and steps_ok else "sync_oauth_incomplete",
-                "error": None if write_ok and steps_ok else "远端凭据同步步骤未全部成功",
-                "supported": True,
-                "contract_version": 1,
-                "operation_id": data.get("operation_id") or operation_id,
-                "remote_account_id": data.get("remote_account_id") or account_id,
-                "credential_write": data.get("credential_write") or "unknown",
-                "token_cache_invalidation": data.get("token_cache_invalidation") or "unknown",
-                "auth_recovery": data.get("auth_recovery") or "skipped",
-                "schedulable": data.get("schedulable"),
-                "scheduling_assessment": data.get("scheduling_assessment") or "unknown",
-                "remaining_blockers": list(data.get("remaining_blockers") or []),
-                "partial": bool(data.get("partial") or (write_ok and not steps_ok)),
-                "raw": data,
-            }
+                return self._sync_failure("capability_check_failed")
+            try:
+                response = await client.post(f"/api/v1/admin/accounts/{int(account_id)}/sync-oauth-credentials", headers=headers, json=body)
+                if response.status_code in {401, 403}:
+                    return self._sync_failure("bridge_admin_auth_failed")
+                if response.status_code == 404:
+                    return self._sync_failure("remote_account_missing")
+                if response.status_code in {400, 409}:
+                    failure = self._unwrap_sync_error(response)
+                    if failure is not None:
+                        return failure
+                if response.status_code == 409:
+                    conflict = response.json()
+                    if isinstance(conflict, dict) and conflict.get("reason") == "SYNC_INSTANCE_MISMATCH":
+                        return self._sync_failure("instance_mismatch")
+                    if isinstance(conflict, dict) and conflict.get("reason") in {
+                        "CREDENTIAL_VERSION_CONFLICT", "IDEMPOTENCY_KEY_CONFLICT",
+                    }:
+                        return self._sync_failure("credential_version_conflict")
+                    # In-progress/retry-backoff may follow a committed write.
+                    raise ValueError("operation outcome requires receipt lookup")
+                if 400 <= response.status_code < 500:
+                    return self._sync_failure("sync_oauth_rejected")
+                response.raise_for_status()
+                result = self._parse_sync_receipt(self._unwrap_sync_payload(response.json()), account_id, operation_id, instance_id)
+                if result.get("state") != "unknown":
+                    return result
+            except Exception:
+                pass
+            # POST may have committed. Query once; never retry the mutation or PUT.
+            try:
+                receipt_response = await client.get(
+                    f"/api/v1/admin/accounts/{int(account_id)}/credential-sync-operations/{operation_id}", headers=headers,
+                )
+                receipt_response.raise_for_status()
+                saved = self._unwrap_sync_payload(receipt_response.json())
+                if isinstance(saved, dict) and saved.get("state") == "recorded" and saved.get("operation_id") == operation_id:
+                    return self._parse_sync_receipt(saved.get("receipt"), account_id, operation_id, instance_id)
+            except Exception:
+                pass
+            return self._sync_failure("sync_outcome_unknown", unknown=True)
         finally:
             await client.aclose()
 

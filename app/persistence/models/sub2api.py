@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.persistence.database import Base
@@ -71,3 +71,37 @@ class Sub2ApiProxyBinding(Base):
         UniqueConstraint("remote_proxy_id", name="uq_sub2api_proxy_remote"),
         Index("idx_sub2api_proxy_sync_state", "sync_state"),
     )
+
+
+class Sub2ApiSyncObservation(Base):
+    """Redacted remote observation; a failed refresh preserves the last snapshot."""
+
+    __tablename__ = "sub2api_sync_observations"
+
+    binding_id: Mapped[int] = mapped_column(ForeignKey("external_bindings.id", ondelete="CASCADE"), primary_key=True)
+    instance_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    remote_account_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Sub2ApiRefreshAuthority(Base):
+    """Sticky remote ownership; deleting a binding never re-enables local RT use."""
+
+    __tablename__ = "sub2api_refresh_authorities"
+
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True)
+    binding_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    binding_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    instance_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    remote_account_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    remote_version: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    local_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    local_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_success_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

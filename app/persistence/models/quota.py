@@ -75,7 +75,7 @@ class ProbeDispatchLease(Base):
 
 
 class CredentialLease(Base):
-    """Account-level refresh exclusion and expiry-based crash recovery."""
+    """Account refresh ticket; expiry never authorizes replay of an unresolved attempt."""
 
     __tablename__ = "credential_leases"
 

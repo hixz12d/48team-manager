@@ -74,6 +74,16 @@ class OAuthSessionStore:
         credential_revision: int | None = None,
     ) -> OAuthSession:
         cipher = token_cipher()
+        if purpose == "account_reauth" and account_id is not None:
+            from app.persistence.models.identity import Account
+            from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
+            # Serialize session creation with the ownership handoff's writer lock.
+            await db.execute(update(Account).where(Account.id == account_id).values(
+                credential_revision=Account.credential_revision, updated_at=Account.updated_at,
+            ).execution_options(synchronize_session=False))
+            from app.application.refresh_ownership import remote_refresh_owner
+            if memory_session.get("mode") == "auto" and await remote_refresh_owner(db, account_id):
+                raise OAuthSessionError("账号已委托 Sub2API 刷新，请人工核对后再重新授权", error_code="remote_refresh_owned")
         state = str(memory_session.get("state") or "")
         verifier = str(memory_session.get("code_verifier") or "")
         if not state or not verifier:
@@ -150,6 +160,13 @@ class OAuthSessionStore:
         )
         if claimed.rowcount != 1:
             raise OAuthSessionError("授权回调已提交，不能重复使用", error_code="callback_consumed")
+        if row.purpose == "account_reauth" and row.mode == "auto" and row.account_id is not None:
+            from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
+            from app.application.refresh_ownership import remote_refresh_owner
+            if await remote_refresh_owner(db, row.account_id):
+                row.status = "failed"
+                await db.commit()
+                raise OAuthSessionError("账号已委托 Sub2API 刷新，停止自动换票", error_code="remote_refresh_owned")
         await db.commit()
         row.status = "exchanging"
         return row, parsed

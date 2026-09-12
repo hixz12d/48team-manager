@@ -149,6 +149,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         await self.session.commit()
         remote = {
             "id": 42, "platform": "openai", "type": "oauth", "schedulable": True,
+            "status": "active",
             "credentials": {
                 "email": self.account.email,
                 "chatgpt_account_id": self.account.official_account_id,
@@ -158,14 +159,14 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         update = AsyncMock(return_value={"id": 42})
         schedulable = AsyncMock(return_value={"patched": True})
         create_proxy = AsyncMock()
-        unsupported = AsyncMock(return_value={"ok": False, "supported": False, "error_code": "sync_oauth_unsupported"})
+        sync_client = AsyncMock(return_value={"ok": True, "supported": True, "credential_write": "succeeded", "auth_recovery": "skipped", "token_cache_invalidation": "succeeded", "partial": False})
         with (
             patch(
                 "app.application.sub2api_publish.decrypt_secret",
                 side_effect=lambda value: "decrypted" if value else "",
             ),
-            patch("app.application.sub2api_publish.sub2api_client.sync_oauth_credentials", new=unsupported),
-            patch("app.application.sub2api_credential_sync.sub2api_client.sync_oauth_credentials", new=unsupported),
+            patch("app.application.sub2api_publish.sub2api_client.sync_oauth_credentials", new=sync_client),
+            patch("app.application.sub2api_credential_sync.sub2api_client.sync_oauth_credentials", new=sync_client),
             patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
             patch("app.application.sub2api_credential_sync.sub2api_client.update_account", new=update),
             patch(
@@ -201,8 +202,9 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertIn("proxy_id", preview["would_preserve"])
         self.assertNotIn("proxy_id", preview["would_update"])
-        sent = update.await_args.args[2]
-        self.assertEqual(set(sent), {"credentials"})
+        sent = sync_client.await_args.kwargs["credentials"]
+        self.assertIn("access_token", sent)
+        update.assert_not_awaited()
         for field in ("concurrency", "priority", "extra", "group_ids", "proxy_id"):
             self.assertNotIn(field, sent)
         schedulable.assert_not_awaited()
@@ -264,6 +266,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
     async def test_refreshed_token_push_requires_verified_exact_binding(self):
         remote = {
             "id": 42, "platform": "openai", "type": "oauth", "schedulable": True,
+            "status": "active",
             "credentials": {
                 "email": self.account.email,
                 "chatgpt_account_id": self.account.official_account_id,
@@ -274,8 +277,8 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
             patch("app.application.sub2api_publish.decrypt_secret", return_value="new-token"),
             patch("app.application.sub2api_publish.sub2api_client.get_account", new=AsyncMock(return_value=remote)),
             patch("app.application.sub2api_credential_sync.sub2api_client.get_account", new=AsyncMock(return_value=remote)),
-            patch("app.application.sub2api_publish.sub2api_client.sync_oauth_credentials", new=AsyncMock(return_value={"ok": False, "supported": False, "error_code": "sync_oauth_unsupported"})),
-            patch("app.application.sub2api_credential_sync.sub2api_client.sync_oauth_credentials", new=AsyncMock(return_value={"ok": False, "supported": False, "error_code": "sync_oauth_unsupported"})),
+            patch("app.application.sub2api_publish.sub2api_client.sync_oauth_credentials", new=AsyncMock(return_value={"ok": True, "supported": True, "credential_write": "succeeded", "auth_recovery": "skipped", "token_cache_invalidation": "succeeded", "partial": False})),
+            patch("app.application.sub2api_credential_sync.sub2api_client.sync_oauth_credentials", new=AsyncMock(return_value={"ok": True, "supported": True, "credential_write": "succeeded", "auth_recovery": "skipped", "token_cache_invalidation": "succeeded", "partial": False})),
             patch("app.application.sub2api_publish.sub2api_client.update_account", new=update),
             patch("app.application.sub2api_credential_sync.sub2api_client.update_account", new=update),
             patch("app.application.sub2api_publish.sub2api_client.read_after_write", new=AsyncMock(return_value=remote)),
@@ -283,8 +286,9 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await push_refreshed_tokens_to_bound_sub2api(self.session, self.account)
         self.assertTrue(result["ok"])
-        self.assertEqual(set(update.await_args.args[2]), {"credentials"})
-        self.assertEqual(self.account.sub2api_token_sync_state, "synced")
+        update.assert_not_awaited()
+        self.assertIsNone(self.binding.last_error)
+        self.assertIsNotNone(self.binding.last_observed_at)
 
     async def test_refreshed_token_push_refuses_binding_drift(self):
         drifted = {
@@ -301,7 +305,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         update.assert_not_awaited()
         self.assertEqual(self.binding.binding_state, "conflict")
-        self.assertEqual(self.account.sub2api_token_sync_state, "failed")
+        self.assertIsNotNone(self.binding.last_error)
 
 
 if __name__ == "__main__":

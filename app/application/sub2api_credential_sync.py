@@ -3,13 +3,38 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.identity.ids import normalize_email
 from app.integrations.sub2api.client import sub2api_client
 
-SyncReason = Literal["manual_reauthorize", "background_refresh", "manual_push"]
+SyncReason = Literal["manual_reauthorize", "automatic_reauthorize", "background_refresh", "manual_push"]
+
+
+def sync_step_receipt(result: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "credential_write", "auth_recovery", "token_cache_invalidation", "supported",
+        "scheduler_refresh", "credential_version", "instance_id",
+        "partial", "state", "error_code", "error", "message", "remaining_blockers",
+        "operation_id", "remote_account_id", "recovery_mode_requested", "schedulable",
+    )
+    return {key: result[key] for key in keys if key in result}
+
+
+class CredentialSyncError(RuntimeError):
+    def __init__(self, result: dict[str, Any]):
+        self.receipt = sync_step_receipt(result)
+        super().__init__(result.get("message") or result.get("error") or "credential sync incomplete")
+
+
+def sync_failure_receipt(error: BaseException) -> dict[str, Any]:
+    while error is not None:
+        if isinstance(error, CredentialSyncError):
+            return error.receipt
+        error = error.__cause__
+    return {}
 
 
 def _identity_from_remote(remote: dict[str, Any] | None) -> dict[str, Any]:
@@ -83,6 +108,10 @@ def present_sync_message(result: dict[str, Any]) -> str:
         parts.append("鉴权恢复发生冲突，未覆盖新状态")
     elif recovery and recovery not in {"unknown"}:
         parts.append(f"鉴权恢复：{recovery}")
+    if result.get("state") == "pending":
+        parts.append("后续步骤处理中，可在远端状态中核对进度")
+    if result.get("scheduler_refresh") == "succeeded":
+        parts.append("共享调度快照已刷新，尚未验证实际可用性")
     if cache == "failed":
         parts.append("旧 Token 缓存失效失败，恢复未完成")
     elif cache == "succeeded":
@@ -113,6 +142,19 @@ def validate_sync_identity(remote, remote_id, expected_email, expected_workspace
     return None
 
 
+def sync_allows_explicit_metadata(result, remote_id, expected_email, expected_workspace_id):
+    """A verified committed write can coexist with pending cache propagation."""
+    if result.get("ok"):
+        return True
+    return bool(
+        result.get("state") == "pending"
+        and result.get("credential_write") == "succeeded"
+        and result.get("error_code") in (None, "sync_oauth_incomplete")
+        and result.get("after")
+        and not validate_sync_identity(result["after"], remote_id, expected_email, expected_workspace_id)
+    )
+
+
 def apply_final_assessment(result, after, remote_id, expected_email, expected_workspace_id):
     info = _identity_from_remote(after)
     blockers = list(result.get("remaining_blockers") or [])
@@ -131,6 +173,8 @@ def apply_final_assessment(result, after, remote_id, expected_email, expected_wo
         blockers.append("schedulable_off" if info["schedulable"] is False else "schedulable_unknown")
     result["remaining_blockers"] = list(dict.fromkeys(blockers))
     result["partial"] = bool(result.get("partial") or blockers)
+    if result["partial"]:
+        result["ok"] = False
 
 
 async def sync_bound_oauth_credentials(
@@ -144,8 +188,10 @@ async def sync_bound_oauth_credentials(
     reason: SyncReason = "manual_push",
     auth_validated: bool = False,
     prefetched_remote: dict[str, Any] | None = None,
+    expected_instance_id: str | None = None,
 ) -> dict[str, Any]:
-    """GET → narrow sync (or legacy credentials update) → final GET assessment."""
+    """Read, submit a conditional operation, then assess current remote state."""
+    operation_id = operation_id or uuid4().hex
     remote = prefetched_remote
     if remote is None:
         try:
@@ -185,55 +231,16 @@ async def sync_bound_oauth_credentials(
         expected_updated_at=str(before.get("updated_at") or "") or None,
         operation_id=operation_id,
         recovery_mode=recovery_mode,
+        expected_instance_id=expected_instance_id,
     )
 
     if narrow.get("supported") is False:
-        try:
-            await sub2api_client.update_account(db, int(remote_id), {"credentials": credentials})
-        except Exception as exc:  # noqa: BLE001
-            result = {
-                "ok": False,
-                "supported": False,
-                "error_code": "legacy_credential_update_failed",
-                "error": str(exc),
-                "remote_account_id": remote_id,
-                "credential_write": "failed",
-                "auth_recovery": "skipped",
-                "token_cache_invalidation": "unknown",
-            }
-            result["message"] = present_sync_message(result)
-            return result
-        try:
-            after = await sub2api_client.read_after_write(db, int(remote_id))
-        except Exception as exc:
-            result = {
-                "ok": False, "supported": False, "partial": True,
-                "remote_account_id": remote_id, "credential_write": "succeeded",
-                "auth_recovery": "skipped", "token_cache_invalidation": "unknown",
-                "error_code": "final_get_failed", "error": f"写入已接受，但最终状态未知：{exc}",
-                "remaining_blockers": ["final_get_failed", "narrow_sync_unavailable"],
-            }
-            result["message"] = present_sync_message(result)
-            return result
-        after_info = _identity_from_remote(after)
         result = {
-            "ok": True,
-            "supported": False,
-            "error_code": "sync_oauth_unsupported",
-            "remote_account_id": remote_id,
-            "credential_write": "succeeded",
-            "auth_recovery": "skipped",
-            "token_cache_invalidation": "unknown",
-            "schedulable": after_info.get("schedulable"),
-            "scheduling_assessment": "paused" if after_info.get("schedulable") is False else "unknown",
-            "remaining_blockers": ["narrow_sync_unavailable"]
-            + (["schedulable_off"] if after_info.get("schedulable") is False else [])
-            + (["status_error"] if str(after_info.get("status") or "").lower() == "error" else []),
-            "partial": True,
-            "recovery_mode_requested": recovery_mode,
-            "after": after,
+            **narrow, "ok": False, "remote_account_id": remote_id,
+            "credential_write": "not_attempted", "auth_recovery": "skipped",
+            "token_cache_invalidation": "skipped", "recovery_mode_requested": recovery_mode,
+            "remaining_blockers": ["narrow_sync_unavailable"],
         }
-        apply_final_assessment(result, after, remote_id, expected_email, expected_workspace_id)
         result["message"] = present_sync_message(result)
         return result
 

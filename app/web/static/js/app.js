@@ -1692,6 +1692,7 @@ function hmeRow(item) {
     }
     if (kind === "account" && document.body.dataset.page === "accounts") window.Team48Accounts.decorateDetails(item, body, trigger);
     openOverlay("entity", { returnFocus: trigger, context: { kind, item }, initialFocus: "[data-close-sheet]" });
+    if (kind === "account") window.Team48Sub2ApiState?.mount(body, item, {get: fetchEntity, post: postAction, kvSection});
   }
 
   function closeSheet() {
