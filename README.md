@@ -74,6 +74,10 @@ Quota checks return queued Operations. Latest check evidence and the last succes
 
 Implementation, configuration, verification and rollback notes: [docs/unified-management.md](docs/unified-management.md).
 
+团队卡片的到期日期旁提供“今日切换 N 次 / ＋1”。每个团队单独手动计数，保存到 SQLite，刷新页面或重启服务后保留当天次数。按北京时间每天 00:00 自动归零，页面保持打开也会更新；跨日按 0 读取，下次点击从 1 开始，不依赖定时清库任务。计数只用于手动记录，不会触发团队切换。
+
+计数器回归检查：`python -m unittest tests.test_workspace_switch_count`、`node --test tests/workspace_switch_count_ui.test.cjs`、`python -m tests.browser_workspace_switch_count`（隔离的本地浏览器预览）。
+
 ## Database
 
 SQLite, WAL. New tables are created by `app/persistence/migrations/bootstrap.py`.

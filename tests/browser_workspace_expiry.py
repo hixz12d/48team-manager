@@ -57,7 +57,8 @@ def preview_app(db_path):
     async def isolate(request, call_next):
         local_reads = {"/api/accounts", "/api/accounts/portfolio", "/api/workspaces", "/api/overview", "/api/quota/runtime", "/api/runtime/status"}
         expiry_write = request.method == "PATCH" and request.url.path in {f"/api/workspaces/{i}/expiry" for i in (1, 2, 3)}
-        allowed = expiry_write or request.url.path in {"/auth/login", "/auth/logout"} or (
+        counter_write = request.method == "POST" and request.url.path in {f"/api/workspaces/{i}/switch-count/increment" for i in (1, 2, 3)}
+        allowed = expiry_write or counter_write or request.url.path in {"/auth/login", "/auth/logout"} or (
             request.method in {"GET", "HEAD"} and (not request.url.path.startswith("/api/") or request.url.path in local_reads))
         if not allowed:
             return JSONResponse({"detail": "隔离预览不执行外部操作"}, status_code=409)

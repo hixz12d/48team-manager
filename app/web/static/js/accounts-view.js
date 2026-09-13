@@ -216,7 +216,19 @@
     if (counts.unmanaged) top.append(el("span", "management-badge tone-warning", `${counts.unmanaged} 个未接入`));
     const seats = counts.joined_people == null ? "人数尚未同步" : `已加入 ${counts.joined_people} 人`;
     title.append(top, el("small", "muted", `${seats} · ${items.length} 条${params.get("q") ? "命中" : "记录"} · 成员同步 ${group.last_sync ? api.relativeTime(group.last_sync) : "尚未同步"}`));
-    title.append(window.Team48Expiry.trigger(group, b => api.openWorkspaceExpiry(b, group)));
+    const metadata = el("div", "workspace-manual-metadata");
+    metadata.append(window.Team48Expiry.trigger(group, b => api.openWorkspaceExpiry(b, group)),
+      window.Team48SwitchCount.widget(group, {
+        increment: async () => {
+          const result = await api.postAction(`switch-count:${group.id}`, `/api/workspaces/${group.id}/switch-count/increment`);
+          if (!result?.ok) throw new Error(result?.error || "次数保存失败");
+          const current = payload?.groups?.find(item => item.id === group.id);
+          if (current) current.switch_count = result.switch_count;
+          return result.switch_count;
+        },
+        onError: error => api.toast(`计数未确认：${api.friendlyError(error)}，请刷新核对后再操作`, "error"),
+      }));
+    title.append(metadata);
     const usage = fmt.usageWindow(group.usage); const money = el("div", "management-group-money");
     if (usage) {
       money.append(el("small", "muted", `${usage.label} · Sub2API`), el("span", "tabular", `用户计费 ${fmt.formatCost(usage.user_cost)} / 成本 ${fmt.formatCost(usage.account_cost)}`));

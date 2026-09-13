@@ -157,6 +157,13 @@ button.management-email:hover { color:var(--accent); }
 .team-former-members .team-member-state { font-size:12px; white-space:normal; }
 .team-member-identity>strong { overflow-wrap:anywhere; }
 
+.workspace-manual-metadata { display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; margin-top:8px; }
+.workspace-manual-metadata .workspace-expiry-trigger { margin-top:0; }
+.workspace-switch-counter { display:flex; align-items:center; flex-wrap:wrap; gap:6px 8px; max-width:100%; font-size:12px; }
+.workspace-switch-counter [data-switch-label] { color:#4363af; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.workspace-switch-counter .button { min-height:32px; height:32px; padding:0 10px; color:#345bdd; border-color:#dce4ef; background:#f4f7fc; }
+.workspace-switch-counter small { font-size:11px; }
+@media (pointer:coarse) { .workspace-switch-counter .button { min-height:44px; } }
 /* Calendar reminders stay distinct from official subscription and account health. */
 .workspace-expiry-trigger { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; max-width:100%; min-height:32px; margin-top:8px; padding:5px 8px; border:1px solid #dce4ef; border-radius:6px; background:#f4f7fc; color:#526680; text-align:left; font-size:12px; line-height:1.5; cursor:pointer; }
 .workspace-expiry-trigger:hover { border-color:#8ca5e5; }

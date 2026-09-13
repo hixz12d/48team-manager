@@ -50,6 +50,7 @@ from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
 from app.web.schemas.workspaces import CompleteAccountOAuthRequest, CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
 from app.web.schemas.workspaces import WorkspaceExpiryPatch
 from app.application.workspace_expiry import update_workspace_expiry
+from app.application.workspace_switch_count import increment_workspace_switch_count
 
 
 def _accepted(payload: dict) -> dict:
@@ -288,6 +289,17 @@ def build_api_router(get_db) -> APIRouter:
         db: AsyncSession = Depends(get_db),
     ) -> dict:
         result = await update_workspace_expiry(db, workspace_id, payload.expires_on)
+        if not result["ok"]:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return result
+
+    @router.post("/workspaces/{workspace_id}/switch-count/increment")
+    async def increment_workspace_switch_count_route(
+        workspace_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await increment_workspace_switch_count(db, workspace_id)
         if not result["ok"]:
             raise HTTPException(status_code=404, detail=result["error"])
         return result
