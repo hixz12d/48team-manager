@@ -589,7 +589,7 @@
       <header>
         <div>
           <strong id="proxy-edit-title">修改母号代理</strong>
-          <p class="muted" id="proxy-edit-subtitle">仅母号可修改运行时代理 URL。</p>
+          <p class="muted" id="proxy-edit-subtitle">团队通过母号代理连接官方服务。</p>
         </div>
         <button type="button" class="button ghost" data-close-proxy-edit>关闭</button>
       </header>
@@ -600,7 +600,7 @@
           <label>当前代理<input name="current_proxy" readonly></label>
           <label>Sub2API 代理<select name="proxy_remote_id" data-proxy-select><option value="">正在读取代理目录…</option></select></label>
           <label class="check"><input name="clear" type="checkbox"> 清除代理</label>
-          <p class="hint">仅母号可改。只提交远端代理 ID，运行中任务继续使用已冻结的代理。</p>
+          <p class="hint">保存后可重新同步团队。共用此母号的团队会一起使用新代理；子号各自的代理不变。已启动的浏览器任务继续使用原代理。清除后使用直连。</p>
         </div>
         <p id="proxy-edit-status" class="muted" hidden></p>
         <div class="settings-probe-actions">

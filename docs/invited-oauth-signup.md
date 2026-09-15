@@ -2,7 +2,7 @@
 
 The one-seat replenish action and `scripts.signup_one` now use an invitation-first flow. No scheduler, automatic member removal, SMS purchase or Sub2API push is enabled by this change. The legacy registration-only paths remain separate.
 
-Flow: validate workspace/proxy/mailbox -> resume an unfinished child or reuse eligible standby -> claim one HME only when neither exists -> send and verify the requested invitation -> read its HTTPS invitation link -> register through that link -> confirm official membership/role/seat -> OAuth login (signup disabled) -> conditionally verify SMS -> validate callback and token email -> save access/refresh tokens.
+Flow: validate workspace/proxy/mailbox -> resume an unfinished child or reuse eligible standby -> claim one HME only when neither exists -> send and verify the requested invitation -> read its HTTPS invitation link -> register through that link -> keep the browser and page open while confirming official membership/role/seat -> open the OAuth link in that same page (signup disabled) -> conditionally verify SMS -> validate callback and token email -> save access/refresh tokens.
 
 Registration does not consume SMS. During OAuth, an explicitly supplied number and HTTPS receipt URL are used only if a phone page appears. Missing SMS input stops with `phone_verification_required`. The unified flow permits at most one SMS send and one code submission, with a 90-second polling timeout; it never changes numbers automatically. An OAuth failure after joining returns `partial`, preserving the same account for retry. No successful registration is inferred merely from sending an invitation or receiving an OAuth callback.
 
@@ -11,7 +11,7 @@ Registration does not consume SMS. During OAuth, an explicitly supplied number a
 - Use the intended Team48 runtime and database. Local backup data is not the production HME occupation store.
 - Configure the Cloudflare forwarding mailbox (or an account-specific pickup URL) and the workspace owner's proxy. HME is needed only when claiming a new alias, not when resuming an existing account. Playwright and its browser must already be available.
 - Explicitly select the workspace ID, role and seat intent. The command does not remove members, increase capacity, or select a different workspace.
-- For Chromix, download and verify a trusted platform build separately, then pass its actual browser executable via `--browser-executable`. Do not pass the Windows `.cmd` launcher. This integration uses Playwright's executable path, not the Chromix SDK or fingerprint flags. Linux x64 startup, DOM interaction and OAuth entry were verified in the isolated trial below; full signup was blocked by phone verification.
+- For Chromix, download and verify a trusted platform build separately. Set `BROWSER_EXECUTABLE` in `.env` to its actual executable to use it for the invitation + OAuth flow from the UI/API and CLI. `--browser-executable` overrides this default for one CLI run. Use a path accessible inside the runtime/container (for example `/app/data/browsers/chromix/chrome`), not a host-only path or Windows `.cmd` launcher. When unset, existing Playwright/browser-channel defaults apply. This integration launches the supplied browser with Playwright; it does not configure Chromix SDK fingerprint flags. Both stages retain the same running browser, profile and proxy bridge.
 - Existing `browser_headless` settings still apply. No dependencies or browser binaries are installed by this command.
 
 ## Run
@@ -30,7 +30,7 @@ Use `--seat-intent premium` only when that seat has been approved. Standard/defa
 
 For conditional SMS, add `--sms-stdin` and provide exactly one `+number----https://receipt-url` line on standard input. Do not place the receipt credential in command-line arguments, shell history or committed files. In the one-seat replenish API, the existing `phone_line` is the explicit per-operation SMS authorization; leaving it empty does not use the number pool or saved SMS credentials. Receipt URLs are not stored in the operation's phone field or the new account's SMS URL. Only a successfully verified phone is retained.
 
-Invite registration and OAuth run in cancellable child processes. Stage updates and 30-second heartbeats keep the operation lease live; cancellation stops the browser worker. The existing alias lease is retained when registration has already started. Successful invitation registration finalizes the HME workspace label before attempting OAuth, so a later authorization failure cannot release that identity.
+Invite registration and OAuth share one cancellable child process, browser context, page and proxy bridge. After registration the worker waits while the parent confirms membership and finalizes the HME workspace label, then continues OAuth in the original page. The global browser slot stays held across this handoff. Identity, proxy or executable changes reject the continuation; a lost worker never silently launches a fresh OAuth browser. Success, failure and cancellation close the worker and release the slot. Stage updates and 30-second browser heartbeats keep the operation lease live. The existing alias lease is retained when registration has already started; a later authorization failure cannot release that identity. An already-joined account resumed in a later operation opens its saved profile, since the previous live session has ended.
 
 An interrupted attempt may already have created an invitation/account. Empty email first resumes a single unfinished local child in this workspace; multiple candidates require explicit selection. `--email-line alias@icloud.com` selects the account deterministically. Already-joined accounts go directly to the membership gate and OAuth, without a new invite/registration. Explicit emails do not acquire/relabel HME. A healthy account with a refresh token does not repeat OAuth. Missing invitation links never fall back to a generic signup URL.
 
@@ -39,7 +39,7 @@ Output contains status, operation ID, account ID and email, not tokens, proxy UR
 ## Verification
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_invitation_flow tests.test_oauth_signup tests.test_onboard tests.test_replenish tests.test_oauth_security tests.test_reauth -q
+.\.venv\Scripts\python.exe -m unittest tests.test_browser_handoff tests.test_invitation_flow tests.test_oauth_signup tests.test_onboard tests.test_replenish tests.test_oauth_security tests.test_reauth -q
 ```
 
 Tests use an in-memory database and mocked external APIs/browser. They do not establish that OpenAI will omit phone verification for a particular account, proxy or browser build. A live one-account run requires separate approval; do not deploy from this command or touch `/opt/sub2api`.

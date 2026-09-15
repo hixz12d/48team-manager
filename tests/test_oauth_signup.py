@@ -35,7 +35,7 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
         await self.db.close()
         await self.engine.dispose()
 
-    async def run_signup(self, *, browser_ok=True, joined=True, bad_state=False, token_email="kid@icloud.com", invite_error=None, use_hme=False):
+    async def run_signup(self, *, browser_ok=True, joined=True, bad_state=False, token_email="kid@icloud.com", invite_error=None, use_hme=False, isolated=False):
         client = fixtures._FakeChatGPT(auto_join=joined)
         client.invite_error = invite_error
         async def get_invites(*args, **kwargs):
@@ -51,6 +51,8 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
         service = OnboardService(workspaces=WorkspaceService(client=client), browser=register)
 
         async def callback(**kwargs):
+            if kwargs.pop("_invite_onboard", False):
+                return register(**kwargs)
             self.assertEqual(len(client.invites), 1)
             self.assertTrue(registration)
             self.assertFalse(kwargs["allow_signup"])
@@ -65,18 +67,58 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("app.integrations.mail.otp.wait_for_mailbox_item", return_value="https://chatgpt.com/accept-invite?token=test"),
+            patch("app.application.onboard.browser_slot.InvitedBrowserSession") as session_factory,
+            patch("app.core.config.load_settings", return_value=MagicMock(browser_executable="C:/Chromix/chrome.exe")),
             patch("app.application.invitation_flow.load_cf_config", new=AsyncMock(return_value={"base_url": "https://mail.test", "address": "mail@test.example", "admin_password": "secret"})),
             patch("app.application.oauth_signup.browser_slot.run_reauth_isolated", new=AsyncMock(side_effect=callback)) as run_browser,
             patch("app.application.oauth_signup.chatgpt_client.exchange_oauth_code", new=AsyncMock(return_value={"success": True, "access_token": "token", "refresh_token": "refresh"})) as exchange,
             patch("app.application.oauth_signup.jwt_parser.extract_email", return_value=token_email),
             patch.object(service, "_bind_phone", side_effect=AssertionError("SMS pool must not be bound")),
         ):
+            self.browser_session = session_factory.return_value
+            self.browser_session.run = run_browser
+            self.browser_session.close = AsyncMock()
             result = await service.invite_and_onboard(
                 self.db, workspace_id=self.workspace.id,
                 email_line="" if use_hme else "kid@icloud.com----https://mail.example/pickup",
-                phone_line="", oauth_signup=True, in_test=True,
+                phone_line="", oauth_signup=True, in_test=not isolated,
             )
         return result, run_browser, exchange
+
+    async def test_runtime_hands_registration_session_to_oauth_and_closes(self):
+        result, calls, exchange = await self.run_signup(isolated=True)
+        self.assertTrue(result["success"])
+        self.assertEqual(calls.await_count, 2)
+        registration, oauth = [call.kwargs for call in calls.await_args_list]
+        self.assertTrue(registration["_invite_onboard"])
+        self.assertNotIn("authorize_url", registration)
+        self.assertNotIn("_invite_onboard", oauth)
+        for key in ("email", "proxy", "executable_path"):
+            self.assertEqual(registration[key], oauth[key])
+        self.assertEqual(oauth["executable_path"], "C:/Chromix/chrome.exe")
+        self.browser_session.close.assert_awaited_once()
+        exchange.assert_awaited_once()
+
+    async def test_runtime_oauth_failure_preserves_child_and_closes_session(self):
+        result, calls, exchange = await self.run_signup(isolated=True, browser_ok=False)
+        self.assertTrue(result["partial"])
+        self.assertTrue(result["joined"])
+        self.assertEqual(calls.await_count, 2)
+        self.browser_session.close.assert_awaited_once()
+        exchange.assert_not_awaited()
+
+    async def test_runtime_membership_gate_closes_registration_without_oauth(self):
+        with (
+            patch("app.application.onboard.JOIN_CONFIRM_ATTEMPTS", 1),
+            patch("app.application.onboard.JOIN_CONFIRM_INTERVAL", 0),
+        ):
+            result, calls, exchange = await self.run_signup(isolated=True, joined=False)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "not_joined")
+        calls.assert_awaited_once()
+        self.assertTrue(calls.await_args.kwargs["_invite_onboard"])
+        self.browser_session.close.assert_awaited_once()
+        exchange.assert_not_awaited()
 
     async def test_success_confirms_join_and_does_not_publish(self):
         result, browser_call, exchange = await self.run_signup()

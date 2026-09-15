@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.identity import ensure_binding, verify_bindings
@@ -237,7 +237,7 @@ async def account_sub2api_reconcile(db: AsyncSession, account_id: int) -> dict[s
         outcome = "binding_remote_missing"
         status = "manual_required"
         ok = False
-        message = "原绑定远端账号已不存在；保留绑定，需确认原远端删除原因，不会自动重复创建。"
+        message = "原绑定远端账号已不存在；可点击推送重新创建，成功后将自动更新绑定。"
         binding_state = "missing"
     elif remote is None:
         outcome = "remote_missing"
@@ -361,7 +361,7 @@ async def account_sub2api_push(
         from app.application.sub2api_remote_state import refresh_remote_state
         current = await refresh_remote_state(db, account.id, existing.workspace_id)
         if not current.get("ok") or (current.get("snapshot") or {}).get("instance_id") != authority.instance_id:
-            return {"ok": False, "error_code": "binding_changed", "message": "远端身份或实例未确认，没有修改配置"}
+            return {"ok": False, "error_code": "binding_changed", "message": "远端身份或实例未确认；若已删除远端账号，请先完成 OAuth 授权再推送"}
     normalized_groups = None
     if group_ids is not None:
         if any(int(value) <= 0 for value in group_ids):
@@ -453,6 +453,7 @@ async def account_sub2api_push(
             "account_id": account.id,
             "workspace_id": scoped_workspace_id,
             "mode": "credential_sync",
+            "previous_remote_id": existing.remote_account_id if existing else None,
             "group_ids": normalized_groups,
             "schedulable": schedulable,
         },
@@ -491,9 +492,37 @@ async def account_sub2api_push(
         remote_id = 0
         action = "create"
 
-        if existing and existing.binding_state != BINDING_VERIFIED:
-            raise RuntimeError("原绑定未验证或远端已缺失，请先核对原远端账号；不会自动创建替代账号")
-        if existing and existing.remote_account_id:
+        replacing_missing = False
+        replacement_owner = None
+        remotes = None
+        if existing and existing.binding_state not in {BINDING_VERIFIED, BINDING_PENDING, "missing"}:
+            raise RuntimeError("原绑定存在身份冲突，请先核对原远端账号")
+        if existing and existing.remote_account_id and not metadata_only:
+            try:
+                before = await sub2api_client.get_account(db, int(existing.remote_account_id))
+            except Exception as exc:
+                if getattr(getattr(exc, "response", None), "status_code", None) != 404:
+                    raise
+                # A detail-route 404 alone is not proof that the account was deleted.
+                remotes = await sub2api_client.list_status_accounts(db)
+                if any(remote_id_from(item) == str(existing.remote_account_id) for item in remotes):
+                    raise RuntimeError("旧账号仍在远端列表中，但详情读取失败；请检查 Sub2API 接口") from exc
+                replacement_owner = await db.get(Sub2ApiRefreshAuthority, account.id)
+                if replacement_owner and (replacement_owner.binding_id != existing.id or replacement_owner.remote_account_id != str(existing.remote_account_id)):
+                    raise RuntimeError("刷新归属指向其他绑定，请先核对账号上下文") from exc
+                if authority and account.credential_revision <= authority.local_revision:
+                    raise RuntimeError("旧远端账号已删除；请先完成新的 OAuth 授权，再点击推送") from exc
+                replacing_missing = True
+            else:
+                state, error = cross_check_binding(
+                    local_email=account.email,
+                    local_official_account_id=account.official_account_id,
+                    expected_workspace=expected_ws,
+                    remote=before,
+                )
+                if remote_id_from(before) != str(existing.remote_account_id) or state != BINDING_VERIFIED:
+                    raise RuntimeError(error or "原远端账号身份未确认，请先核对绑定")
+        if existing and existing.remote_account_id and not replacing_missing:
             remote_id = int(existing.remote_account_id)
             try:
                 if "credentials" in update_body:
@@ -526,13 +555,19 @@ async def account_sub2api_push(
             matched = None
             try:
                 matched = _match_remote(
-                    await sub2api_client.list_status_accounts(db),
+                    remotes if remotes is not None else await sub2api_client.list_status_accounts(db),
                     context_key=team48_context_key(expected_ws, account.id),
                 )
             except Exception as exc:
                 raise RuntimeError("远端匹配查询失败或存在歧义，未创建账号") from exc
             if matched and remote_id_from(matched):
                 remote_id = int(remote_id_from(matched))
+                taken = await db.scalar(select(ExternalBinding).where(
+                    ExternalBinding.provider == PROVIDER_SUB2API,
+                    ExternalBinding.remote_account_id == str(remote_id),
+                ))
+                if taken is not None and (existing is None or taken.id != existing.id):
+                    raise RuntimeError("匹配的远端账号已被其他本地上下文绑定，请核对绑定")
                 try:
                     sync = await sync_bound_oauth_credentials(
                         db, remote_id=remote_id, credentials=credentials,
@@ -552,6 +587,31 @@ async def account_sub2api_push(
                 written = await sub2api_client.create_account(db, create_body)
                 action = "create"
                 remote_id = int(remote_id_from(written) or 0)
+        if replacing_missing and remote_id:
+            taken = await db.scalar(select(ExternalBinding).where(
+                ExternalBinding.provider == PROVIDER_SUB2API,
+                ExternalBinding.remote_account_id == str(remote_id),
+                ExternalBinding.id != existing.id,
+            ))
+            if taken is not None:
+                raise RuntimeError("新远端账号已被其他本地上下文绑定，请核对绑定")
+            from app.persistence.models.sub2api import Sub2ApiSyncObservation, Sub2ApiUsageSnapshot
+            if replacement_owner is not None:
+                from app.persistence.models.refresh_handoff import Sub2ApiRefreshHandoff
+                await db.execute(delete(Sub2ApiRefreshHandoff).where(Sub2ApiRefreshHandoff.account_id == account.id))
+                await db.delete(replacement_owner)
+            for model in (Sub2ApiSyncObservation, Sub2ApiUsageSnapshot):
+                await db.execute(delete(model).where(model.binding_id == existing.id))
+            # Remember the new ID even if read-after-write fails, so retry updates it.
+            existing.remote_account_id = str(remote_id)
+            existing.workspace_id = scoped_workspace_id
+            existing.binding_state = BINDING_PENDING
+            existing.verified_email = None
+            existing.verified_official_account_id = None
+            existing.verified_workspace_id = None
+            existing.last_error = "重新推送已写入，等待远端身份验证"
+            existing.last_observed_at = utcnow()
+            await db.flush()
         written_keys = sorted(list(written.keys()))[:12] if isinstance(written, dict) else []
         await operation_store.mark_step(
             db,

@@ -2814,6 +2814,14 @@ function hmeRow(item) {
         motherAside.append(quotaCell({ quota: ownerQuota }));
       }
       const ownerAction = workspacePrimaryAction(workspace);
+      if (workspace.owner_account_id && workspace.owner_purpose === "mother") {
+        const proxyButton = document.createElement("button");
+        proxyButton.type = "button";
+        proxyButton.className = "button";
+        proxyButton.textContent = "切换代理";
+        proxyButton.addEventListener("click", () => openWorkspaceProxy(proxyButton, workspace));
+        motherAside.append(proxyButton);
+      }
       if (ownerAction.id === "owner-missing" || ownerAction.id === "owner-auth") {
         const ownerButton = document.createElement("button");
         ownerButton.type = "button";
@@ -3252,22 +3260,30 @@ function hmeRow(item) {
 
   async function loadProxySelect(select, selectedId = null) {
     if (!select) return false;
+    const requestId = String(++proxySelectRequestId);
+    select.dataset.proxyRequestId = requestId;
     select.disabled = true;
     select.replaceChildren(new Option("正在读取代理目录…", ""));
     try {
-      const requestId = ++proxySelectRequestId;
       const payload = await fetchEntity(`proxy-select-${requestId}`, "/api/resources/proxies?limit=200");
-      const empty = new Option("不使用代理", "");
+      if (select.dataset.proxyRequestId !== requestId) return false;
+      const empty = new Option(select.form?.id === "proxy-edit-form" ? "请选择代理" : "不使用代理", "");
       const options = (payload.items || []).map((item) => {
         const option = new Option(proxyOptionLabel(item), String(item.id));
         option.disabled = ["disabled", "inactive", "deleted"].includes(String(item.status || "").toLowerCase());
         return option;
       });
       select.replaceChildren(empty, ...options);
+      if (selectedId != null && selectedId !== "" && !options.some(option => option.value === String(selectedId))) {
+        const missing = new Option(`当前代理 #${selectedId} 已不在目录中，请重新选择`, String(selectedId));
+        missing.disabled = true;
+        select.append(missing);
+      }
       if (selectedId != null && selectedId !== "") select.value = String(selectedId);
       select.disabled = false;
       return true;
     } catch (error) {
+      if (select.dataset.proxyRequestId !== requestId) return false;
       select.replaceChildren(new Option("代理目录读取失败", ""));
       select.disabled = true;
       toast(friendlyError(error), "error");
@@ -3275,26 +3291,48 @@ function hmeRow(item) {
     }
   }
 
-  async function openProxyEdit(trigger, account) {
+  function openWorkspaceProxy(trigger, workspace) {
+    if (!workspace.owner_account_id || workspace.owner_purpose !== "mother") {
+      toast("请先为团队配置可用的母号", "error");
+      return;
+    }
+    return openProxyEdit(trigger, {
+      id: workspace.owner_account_id,
+      email: workspace.owner_email,
+      proxy_url: workspace.owner_proxy,
+      sub2api_proxy_id: workspace.sub2api_proxy_id,
+    }, workspace);
+  }
+
+  async function openProxyEdit(trigger, account, workspace = null) {
     if (!proxyEditSheet) return;
     const form = document.getElementById("proxy-edit-form");
     form?.reset();
     if (form) {
       form.account_id.value = account.id || "";
       form.email.value = account.email || "";
-      form.current_proxy.value = account.proxy_url || "";
+      form.current_proxy.value = account.proxy_url || "未配置代理（直连）";
       form.clear.checked = false;
     }
+    document.getElementById("proxy-edit-title").textContent = workspace ? "切换团队代理" : "修改母号代理";
+    document.getElementById("proxy-edit-subtitle").textContent = workspace
+      ? workspace.display_name || workspace.name || `团队 #${workspace.id}`
+      : account.email || "母号代理";
     setFormStatus("proxy-edit-status", "", "muted");
-    openOverlay("proxy-edit", { returnFocus: trigger, context: { kind: "account-proxy", account }, initialFocus: "#proxy-edit-submit" });
+    const show = getActiveOverlay() && getActiveOverlay() !== "proxy-edit" ? replaceOverlay : openOverlay;
+    show("proxy-edit", { returnFocus: trigger, context: { kind: "account-proxy", account, workspace }, initialFocus: "[data-close-proxy-edit]" });
     if (form?.elements.proxy_remote_id) {
       await loadProxySelect(form.elements.proxy_remote_id, account.sub2api_proxy_id);
     }
   }
 
   function closeProxyEdit() {
-      closeOverlay();
-    }
+    const trigger = overlayState.returnFocus;
+    if (overlayState.previousContext) {
+      restoreOverlayContext();
+      if (trigger?.isConnected) trigger.focus();
+    } else closeOverlay();
+  }
 
   async function submitProxyEdit(event) {
     event.preventDefault();
@@ -3307,15 +3345,17 @@ function hmeRow(item) {
     try {
       const remoteId = Number(form.proxy_remote_id.value || 0);
       const clear = Boolean(form.clear.checked);
+      if (!clear && form.proxy_remote_id.disabled) throw new Error("代理目录尚未加载成功，请重新打开后重试");
       if (!clear && remoteId <= 0) throw new Error("请选择 Sub2API 代理，或勾选清除代理");
       const result = await patchAction(`account-proxy-${accountId}`, `/api/accounts/${accountId}/proxy`, clear
         ? { clear: true }
         : { proxy_selection: { source: "sub2api", remote_id: remoteId } });
       setFormStatus("proxy-edit-status", result.ok ? "已保存" : (result.error || "失败"), result.ok ? "muted" : "error");
-      toast(result.ok ? "母号代理已更新" : (result.error || "更新失败"), result.ok ? "success" : "error");
+      toast(result.ok ? "代理已更新，可点击“同步本团队”重试" : (result.error || "更新失败"), result.ok ? "success" : "error");
       if (result?.ok) {
         closeProxyEdit();
         await bootPage();
+        if (teamDetailState?.workspaceId) await reloadTeamDetails();
       }
     } catch (error) {
       setFormStatus("proxy-edit-status", friendlyError(error), "error");
@@ -4013,6 +4053,7 @@ function hmeRow(item) {
       return window.Team48Accounts.boot({
         fetchEntity, postAction, startCurrentOperation, entityActions, menuButton, deleteLocalTeam,
         openWorkspaceExpiry,
+        openWorkspaceProxy,
         openSheet, openWorkspaceDetails, openOverlay, openRegister, openConfirm, relativeTime, toast, friendlyError, showPageError,
         cache: pageCache,
       });
@@ -4366,6 +4407,7 @@ function hmeRow(item) {
       if (event.target !== overlay) return;
       if (name === "confirm") finishConfirm(false);
       else if (name === "entity") closeSheet();
+      else if (name === "proxy-edit") closeProxyEdit();
       else closeOverlay();
     });
   });
@@ -4387,6 +4429,7 @@ function hmeRow(item) {
         event.preventDefault();
         if (getActiveOverlay() === "confirm") finishConfirm(false);
         else if (getActiveOverlay() === "entity") closeSheet();
+        else if (getActiveOverlay() === "proxy-edit") closeProxyEdit();
         else closeOverlay();
       }
       document.body.classList.remove("nav-open");

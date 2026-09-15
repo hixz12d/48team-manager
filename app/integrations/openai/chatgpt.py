@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession as DBAsyncSession
 
 from app.core.config import load_settings
-from app.core.proxy import build_curl_cffi_proxies, mask_proxy_url, normalize_proxy_url
+from app.core.proxy import build_curl_cffi_proxies, normalize_proxy_url
 from app.integrations.openai.member_adapter import (
     InviteContractUnverified,
     InviteSeatIntent,
@@ -112,7 +112,9 @@ class ChatGPTClient:
         return bundle or True
 
     def _cache_key(self, identifier: str, proxy: str | None) -> str:
-        fingerprint = mask_proxy_url(proxy) if proxy else "direct"
+        # Credentials can select a different exit even on the same proxy host.
+        normalized = normalize_proxy_url(proxy)
+        fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else "direct"
         return f"{identifier}|{fingerprint}"
 
     async def _create_session(self, db_session: DBAsyncSession | None, identifier: str) -> AsyncSession:

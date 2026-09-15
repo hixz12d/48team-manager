@@ -273,7 +273,7 @@ class Sub2ApiSplitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["remote_id"], 88)
         update.assert_not_awaited()
 
-    async def test_push_preserves_binding_when_remote_read_fails(self):
+    async def test_push_recreates_confirmed_deleted_remote_and_rebinds(self):
         self.session.add(
             ExternalBinding(
                 provider="sub2api",
@@ -307,13 +307,13 @@ class Sub2ApiSplitTests(unittest.IsolatedAsyncioTestCase):
             patch("app.application.sub2api_publish.sub2api_client.set_account_schedulable", new=AsyncMock(return_value={"patched": True})),
         ):
             result = await account_sub2api_push(self.session, self.account.id)
-        self.assertFalse(result["ok"])
-        create.assert_not_awaited()
+        self.assertTrue(result["ok"], result)
+        create.assert_awaited_once()
         update.assert_not_awaited()
         binding = (
             await self.session.execute(select(ExternalBinding).where(ExternalBinding.local_account_id == self.account.id))
         ).scalar_one()
-        self.assertEqual(binding.remote_account_id, "2944")
+        self.assertEqual(binding.remote_account_id, "4001")
         self.assertEqual(binding.binding_state, "verified")
 
     async def test_push_write_ok_but_verify_fail_stays_partial(self):

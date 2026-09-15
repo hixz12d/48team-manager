@@ -1175,6 +1175,7 @@ def run_browser_onboard(
     allow_sms: bool = True,
     executable_path: str = "",
     invite_entry: bool = False,
+    continue_in_browser=None,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
     if not allow_sms:
@@ -1561,6 +1562,8 @@ def run_browser_onboard(
                     result["error_code"] = result.get("error_code") or (
                         "cloudflare_challenge" if page_is_cloudflare(page) else "session_missing"
                     )
+            if result.get("ok") and continue_in_browser is not None:
+                continue_in_browser(result, browser, page)
         except Exception as exc:  # noqa: BLE001
             result["error"] = str(exc)
             result["error_code"] = result.get("error_code") or "browser_failed"

@@ -83,6 +83,8 @@ def run_browser_oauth_reauth(
     executable_path: str = "",
     on_stage: StageCallback = None,
     phone_source=None,
+    existing_browser=None,
+    existing_page=None,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
     if not allow_sms:
@@ -122,13 +124,20 @@ def run_browser_oauth_reauth(
             body="<html><body>ok</body></html>",
         )
 
-    with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
-        launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config)
-        if executable_path:
-            launch_kwargs.pop("channel", None)
-            launch_kwargs["executable_path"] = executable_path
-        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
-        page = browser.pages[0] if browser.pages else browser.new_page()
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        if existing_browser is not None:
+            browser, page = existing_browser, existing_page
+        else:
+            proxy_config = stack.enter_context(chrome_proxy_launch(proxy))
+            playwright = stack.enter_context(sync_playwright())
+            launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config)
+            if executable_path:
+                launch_kwargs.pop("channel", None)
+                launch_kwargs["executable_path"] = executable_path
+            browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
+            page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
 
         def attach(target) -> None:
@@ -515,7 +524,8 @@ def run_browser_oauth_reauth(
             result["sms_url"] = sms_url
             release_pool_phone(phone_source)
             try:
-                browser.close()
+                if existing_browser is None:
+                    browser.close()
             except Exception:  # noqa: BLE001
                 pass
     return result

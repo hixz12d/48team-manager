@@ -74,6 +74,10 @@ Quota checks return queued Operations. Latest check evidence and the last succes
 
 Implementation, configuration, verification and rollback notes: [docs/unified-management.md](docs/unified-management.md).
 
+团队卡片和“管理团队”的母号区域提供“切换代理”：选择 Sub2API 节点并保存，再点击“同步本团队”重试。团队连接官方服务使用母号代理，共用母号的团队一起生效；子号各自的代理不变，已启动的浏览器任务保留冻结的代理。清除代理后使用直连。即使节点地址相同，更换代理用户名或密码也会重建官方请求连接。
+
+代理切换回归：`python -m unittest tests.test_workspace_proxy`、`python -m tests.browser_workspace_proxy`（临时数据库与模拟代理目录，不访问真实官方服务）。
+
 团队卡片的到期日期旁提供“今日切换 N 次 / ＋1”。每个团队单独手动计数，保存到 SQLite，刷新页面或重启服务后保留当天次数。按北京时间每天 00:00 自动归零，页面保持打开也会更新；跨日按 0 读取，下次点击从 1 开始，不依赖定时清库任务。计数只用于手动记录，不会触发团队切换。
 
 计数器回归检查：`python -m unittest tests.test_workspace_switch_count`、`node --test tests/workspace_switch_count_ui.test.cjs`、`python -m tests.browser_workspace_switch_count`（隔离的本地浏览器预览）。

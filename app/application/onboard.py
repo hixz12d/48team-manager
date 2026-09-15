@@ -214,6 +214,10 @@ class OnboardService:
     ) -> dict[str, Any]:
         seat_intent = parse_invite_seat_intent(seat_intent).value
         claimed = None
+        browser_session = browser_slot.InvitedBrowserSession() if oauth_signup and not in_test else None
+        if oauth_signup and not browser_executable:
+            from app.core.config import load_settings
+            browser_executable = load_settings().browser_executable
         if oauth_signup:
             busy = await operation_store.active_for_workspace(
                 db, workspace_id, actions=WORKSPACE_LOCK_ACTIONS, exclude_public_id=job_id,
@@ -259,6 +263,7 @@ class OnboardService:
                 seat_intent=seat_intent,
                 oauth_signup=oauth_signup,
                 browser_executable=browser_executable,
+                browser_session=browser_session,
             )
             label = ""
             if claimed and result.get("success"):
@@ -272,6 +277,7 @@ class OnboardService:
                 result = await authorize_joined(
                     self, db, result, workspace_id=workspace_id, phone_line=phone_line,
                     role=role, seat_intent=seat_intent, job_id=job_id, executable_path=browser_executable,
+                    browser_session=browser_session,
                 )
             return result
         except hme_service.HmeError as exc:
@@ -281,6 +287,9 @@ class OnboardService:
         except Exception:
             await hme_service.finalize_claim(db, claimed, {"success": False})
             raise
+        finally:
+            if browser_session is not None:
+                await browser_session.close()
 
     async def _invite_and_onboard_impl(
         self,
@@ -304,6 +313,7 @@ class OnboardService:
         seat_intent: str = "workspace_default",
         oauth_signup: bool = False,
         browser_executable: str = "",
+        browser_session=None,
     ) -> dict[str, Any]:
         requested_seat = parse_invite_seat_intent(seat_intent)
         busy = await operation_store.active_for_workspace(
@@ -597,6 +607,9 @@ class OnboardService:
                     browser_result = await browser_result
             else:
                 runner = browser_slot.run_onboard_isolated if oauth_signup else browser_slot.run_exclusive
+                if browser_session is not None:
+                    runner = browser_session.run
+                    browser_options["_invite_onboard"] = True
                 runner_args = () if oauth_signup else (self.browser,)
                 browser_result = await runner(
                     *runner_args,

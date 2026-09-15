@@ -13,6 +13,7 @@ from app.integrations.openai.chatgpt import chatgpt_client
 async def run_invited_oauth_signup(
     db, *, child, workspace, password, pickup_url, use_cloudflare, cf_config,
     job_id=None, executable_path="", phone_line="",
+    browser_session=None,
 ):
     from app.integrations.sms.client import parse_optional_sms
 
@@ -46,7 +47,8 @@ async def run_invited_oauth_signup(
             from app.application.invitation_flow import browser_progress
             await browser_progress(db, job_id, stage)
 
-        result = await browser_slot.run_reauth_isolated(
+        runner = browser_session.run if browser_session is not None else browser_slot.run_reauth_isolated
+        result = await runner(
             email=child.email,
             password=password,
             authorize_url=authorize["authorize_url"],

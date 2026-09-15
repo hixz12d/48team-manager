@@ -229,6 +229,10 @@
         onError: error => api.toast(`计数未确认：${api.friendlyError(error)}，请刷新核对后再操作`, "error"),
       }));
     title.append(metadata);
+    const proxyLabel = group.sub2api_proxy_id ? `Sub2API #${group.sub2api_proxy_id}` : (group.owner_proxy_set ? "已配置" : "直连");
+    const proxyStatus = el("small", "muted", `团队代理：${proxyLabel}`);
+    proxyStatus.title = group.owner_proxy || "未配置代理";
+    title.append(proxyStatus);
     const usage = fmt.usageWindow(group.usage); const money = el("div", "management-group-money");
     if (usage) {
       money.append(el("small", "muted", `${usage.label} · Sub2API`), el("span", "tabular", `用户计费 ${fmt.formatCost(usage.user_cost)} / 成本 ${fmt.formatCost(usage.account_cost)}`));
@@ -250,6 +254,9 @@
     }
     const controls = el("div", "management-team-controls");
     controls.append(sync, button("管理团队", b => { setQuery("workspace", group.id); api.openWorkspaceDetails(b, group); }, "button", `team:${group.id}`));
+    if (group.owner_account_id && group.owner_purpose === "mother") {
+      controls.append(button("切换代理", b => api.openWorkspaceProxy(b, group), "button", `proxy:${group.id}`));
+    }
     const remove = button("删除团队", b => api.deleteLocalTeam(group, b), "button danger", `delete-team:${group.id}`);
     remove.title = "删除本地团队，不解散官方团队";
     remove.setAttribute("aria-label", `删除本地团队：${group.display_name || group.name || group.id}`);
