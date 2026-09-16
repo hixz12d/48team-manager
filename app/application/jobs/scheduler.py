@@ -75,6 +75,13 @@ async def scheduled_sub2api_usage_sync() -> None:
         await sub2api_usage_service.sync(session, source="scheduled", force_usage=False)
 
 
+async def scheduled_sub2api_status_sync() -> None:
+    from app.application.sub2api_status import refresh
+    if _session_factory is not None:
+        async with _session_factory() as session:
+            await refresh(session)
+
+
 async def dispatch_quota_queue() -> None:
     from app.application.quota import quota_service
     if _session_factory is not None:
@@ -105,6 +112,7 @@ def configure_jobs(settings: Settings) -> None:
         "auto_reauth_scan",
         "auto_rotate_scan",
         "sub2api_usage_sync",
+        "sub2api_status_sync",
     )
     for job_id in job_ids:
         if scheduler.get_job(job_id):
@@ -114,6 +122,7 @@ def configure_jobs(settings: Settings) -> None:
     scheduler.add_job(dispatch_quota_queue, IntervalTrigger(seconds=2), id="quota_queue_dispatch", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(dispatch_workspace_queue, IntervalTrigger(seconds=2), id="workspace_queue_dispatch", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_auth_probe, IntervalTrigger(minutes=1), id="auth_probe_scan", replace_existing=True)
+    scheduler.add_job(scheduled_sub2api_status_sync, IntervalTrigger(seconds=60), id="sub2api_status_sync", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_auto_reauth, IntervalTrigger(minutes=30), id="auto_reauth_scan", replace_existing=True)
     scheduler.add_job(scheduled_auto_rotate, IntervalTrigger(minutes=30), id="auto_rotate_scan", replace_existing=True)
     scheduler.add_job(

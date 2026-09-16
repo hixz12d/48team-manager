@@ -157,6 +157,15 @@
             <select class="filter" id="management-workspace" aria-label="团队"><option value="">全部团队</option></select>
             <button type="button" class="button" data-action-page="workspace-sync-all" title="同步全部团队的官方成员"><span aria-hidden="true">↻</span> 同步全部团队</button>
             <span class="toolbar-count muted" id="accounts-count"></span>
+            <select class="filter" id="management-remote" aria-label="Sub2API 远端状态">
+              <option value="all">全部 Sub2API 状态</option>
+              <option value="missing">远端已删除 / 不存在</option><option value="healthy">远端正常</option>
+              <option value="paused">远端已暂停</option><option value="attention">远端异常 / 待核对</option>
+              <option value="rate_limited">远端限流 / 限额</option><option value="unknown">远端状态未确认</option>
+              <option value="unbound">未绑定 Sub2API</option>
+            </select>
+            <button type="button" class="button" id="refresh-remote-status">核对 Sub2API 状态</button>
+            <span id="management-remote-status" class="muted" role="status"></span>
           </div>
           <div id="account-selection-bar" class="management-selection" hidden>
             <span id="account-selection-count">已选 0 个</span>

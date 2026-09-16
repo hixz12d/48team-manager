@@ -14,6 +14,7 @@ from app.application.queries.identity import (
 )
 from app.application.quota import quota_service
 from app.application.sub2api_usage import sub2api_usage_service
+from app.application import sub2api_status
 from app.application.presenters import build_auth_status
 from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat
@@ -88,6 +89,23 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
     read_health = await quota_service.health_reader(db)
     accounts_by_id = {item["id"]: item for item in accounts_payload.get("items") or []}
     usage_by_context = await sub2api_usage_service.payloads_by_context(db)
+    remote_by_context, remote_summary = await sub2api_status.payloads(db)
+
+    def remote_for(account_id, workspace_id):
+        exact = remote_by_context.get((account_id, workspace_id))
+        if exact is not None:
+            return exact
+        if len(account_contexts.get(account_id, set())) <= 1:
+            unscoped = remote_by_context.get((account_id, None))
+            if unscoped is not None:
+                return unscoped
+        if workspace_id is None:
+            related = [value for (local_id, _), value in remote_by_context.items() if local_id == account_id]
+            if len(related) == 1:
+                return related[0]
+            if related:
+                return {"state": "multiple", "label": "多个远端绑定 · 按团队核对", "severity": "warning", "stale": any(r["stale"] for r in related), "bindings": related}
+        return sub2api_status.present()
 
     def usage_for(account_id: int, workspace_id: int | None) -> dict[str, Any] | None:
         exact = usage_by_context.get((int(account_id), workspace_id))
@@ -173,6 +191,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                     "managed": True,
                     **health,
                     "usage": usage_for(account["id"], ws_id),
+                    "remote_status": remote_for(account["id"], ws_id),
                     "joined_at": isoformat(row.joined_at),
                     "removed_at": isoformat(row.removed_at),
                 },
@@ -200,6 +219,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                         "managed": True,
                         **health,
                         "usage": usage_for(owner_item["id"], ws_id),
+                        "remote_status": remote_for(owner_item["id"], ws_id),
                     },
                     kind="mother",
                 )
@@ -284,6 +304,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         if not item.get("include_reason") and item.get("state") in HIDDEN_ACCOUNT_STATES:
             continue
         item["usage"] = usage_for(item["id"], None)
+        item["remote_status"] = remote_for(item["id"], None)
         item.update(read_health(accounts_raw[item["id"]], None))
         unassigned.append(_account_card(item, kind="unassigned"))
 
@@ -325,5 +346,6 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         "groups": groups,
         "unassigned": unassigned,
         "usage_available": any(item.get("available") for item in usage_by_context.values()),
+        "sub2api_status": remote_summary,
         "usage_note": "Sub2API 用量仅来自后台同步的本地快照；缺失和失败不会显示为 0。",
     }

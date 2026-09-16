@@ -68,6 +68,9 @@ button.management-email:hover { color:var(--accent); }
 .management-bar.is-stale>span { background:#b4c0d4; }
 .management-quota small { font-size:12px; margin-top:2px; }
 .management-money { text-align:right; }
+.management-remote-status { margin-bottom:10px; line-height:1.5; }
+.management-remote-status small { display:block; font-size:12px; margin-top:3px; }
+#management-remote-status { flex-basis:100%; font-size:12px; }
 .management-money strong { font-weight:600; }
 .management-money small { display:block; font-size:12px; margin-top:4px; }
 .management-actions { display:flex; justify-content:flex-end; align-items:center; gap:8px; }

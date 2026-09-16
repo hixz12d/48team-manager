@@ -148,13 +148,20 @@ class QuotaService:
         return await self._latest(db, success_only=success_only)
 
     async def health_reader(self, db):
+        from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
+        from app.persistence.models.refresh_handoff import Sub2ApiRefreshHandoff
+        owners = (await db.execute(select(Sub2ApiRefreshAuthority, Sub2ApiRefreshHandoff).outerjoin(
+            Sub2ApiRefreshHandoff, Sub2ApiRefreshHandoff.account_id == Sub2ApiRefreshAuthority.account_id))).all()
+        remote_owned = {owner.account_id for owner, handoff in owners
+                        if not (handoff and handoff.state == "completed" and handoff.authority_epoch == owner.epoch)}
         latest = await self._latest(db)
         successes = await self._latest(db, success_only=True)
         authority = await self._latest(db, authority=True)
         schedules = { (r.account_id, r.workspace_id): r for r in (await db.execute(select(QuotaProbeState))).scalars() }
         def read(account, workspace_id):
             key = (account.id, workspace_id)
-            return present_context(account, latest.get(key), successes.get(key), authority.get(key), schedules.get(key))
+            return present_context(account, latest.get(key), successes.get(key), authority.get(key), schedules.get(key),
+                                   remote_refresh_owned=account.id in remote_owned)
         return read
 
     async def resolve_probe_workspace(self, db, account, workspace_id=None):

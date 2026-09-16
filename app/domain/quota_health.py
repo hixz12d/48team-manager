@@ -71,7 +71,7 @@ def retry_after(value, now):
             return None
 
 
-def present_context(account, latest=None, success=None, authority=None, schedule=None):
+def present_context(account, latest=None, success=None, authority=None, schedule=None, *, remote_refresh_owned=False):
     now = utcnow()
     revision = int(account.credential_revision or 1)
     same = latest is not None and latest.credential_revision == revision
@@ -82,7 +82,7 @@ def present_context(account, latest=None, success=None, authority=None, schedule
             code = "auth_required"
     if code in {"unchecked", "temporary_failure"} and account.auth_state in {"oauth_required", "refresh_due", "phone_required", "manual_required"}:
         code = "auth_required"
-    if account.access_token_encrypted and not getattr(account, "refresh_token_encrypted", None):
+    if account.access_token_encrypted and not getattr(account, "refresh_token_encrypted", None) and not remote_refresh_owned:
         code = "auth_required"
     if account.auth_state in {"phone_required", "manual_required"}:
         code = "auth_required"
@@ -110,7 +110,10 @@ def present_context(account, latest=None, success=None, authority=None, schedule
     if same and latest.http_status == 401:
         actual_401 = True
     health = health_payload(code, actual_401=actual_401)
-    if code == "auth_required" and not getattr(account, "refresh_token_encrypted", None) and not actual_401:
+    if code in {"pending", "unchecked"} and account.auth_state == "healthy" and account.access_token_encrypted and (account.refresh_token_encrypted or remote_refresh_owned):
+        health["label"] = "已授权 · 等待额度检测"
+        health["severity"] = "info"
+    if code == "auth_required" and not getattr(account, "refresh_token_encrypted", None) and not remote_refresh_owned and not actual_401:
         health["label"] = "待完成 OAuth · 缺少刷新凭据"
     if code == "rate_limited" and same and latest.http_status == 429:
         health["label"] = "429 · 等待重试"

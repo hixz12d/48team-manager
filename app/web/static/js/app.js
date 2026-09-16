@@ -867,13 +867,12 @@
     currentOperations.delete(stableKey);
     persistCurrentOperations();
     if (entry.entityType === "account" && entry.action === "auto-reauth") syncAutoReauthButtons(entry.entityId);
-    if (entry.restored) return;
     const state = String(result?.state || result?.status || "").toLowerCase();
     result = { ...(result?.result || {}), ...result, success: state === "success", operation_id: entry.operationId };
     const failed = !result.success || result.partial || ["partial", "failed", "manual_required"].includes(state);
     const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (entry?.successMessage || "已完成"));
     const message = failed ? friendlyError(rawMessage) : rawMessage;
-    toast(
+    if (!entry.restored) toast(
       message,
       operationTone(result),
       failed && result?.operation_id ? { label: "技术详情", onClick: () => openOperationById(result.operation_id) } : undefined,
@@ -2279,6 +2278,7 @@ function hmeRow(item) {
       });
       closeReauth();
       await handleActionResult(result, { successMessage: result.message || "授权已更新" });
+      void window.Team48Accounts?.refreshRemote(true).catch(() => {});
     } catch (error) {
       setReauthStatus(friendlyError(error), "error");
       toast(friendlyError(error), "error");
@@ -2926,6 +2926,7 @@ function hmeRow(item) {
         const target = sheet?.querySelector(`[data-member-email="${CSS.escape(selected)}"]`);
         target?.scrollIntoView({ block: "nearest" });
       }
+      if (document.body.dataset.page === "accounts") await bootAccounts();
     }
 
   function openReinviteForm(workspace, row, trigger) {
@@ -3021,6 +3022,10 @@ function hmeRow(item) {
   }
 
   async function linkTeamMember(workspace, row, button) {
+      // Portfolio shortcuts establish the same context as the team member action.
+      if (!teamDetailState || teamDetailState.workspaceId !== workspace.id || overlayState.active !== "entity") {
+        openWorkspaceDetails(button, workspace);
+      }
       const email = String(row.email || "").trim();
       if (!email) return;
       if (teamDetailState) {
@@ -3232,6 +3237,7 @@ function hmeRow(item) {
           teamDetailState.stage = "authorization_completed";
           await reloadTeamDetails();
           toast(result.message || "授权成功", "success");
+          void window.Team48Accounts?.refreshRemote(true).catch(() => {});
         } catch (error) {
           const code = extractErrorCode(error);
           status.textContent = friendlyError(error);
@@ -4051,7 +4057,7 @@ function hmeRow(item) {
 
   async function bootAccounts() {
       return window.Team48Accounts.boot({
-        fetchEntity, postAction, startCurrentOperation, entityActions, menuButton, deleteLocalTeam,
+        fetchEntity, postAction, startCurrentOperation, entityActions, menuButton, deleteLocalTeam, linkTeamMember,
         openWorkspaceExpiry,
         openWorkspaceProxy,
         openSheet, openWorkspaceDetails, openOverlay, openRegister, openConfirm, relativeTime, toast, friendlyError, showPageError,

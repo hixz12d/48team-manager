@@ -4,7 +4,7 @@
   const purposeLabels = { mother: "母号", child: "子号", standby: "待命", free: "空闲", disabled: "停用" };
   const kindLabels = { invited: "待接受邀请", unmanaged: "官方已加入 · 未接入", history: "历史成员", unassigned: "未分配" };
   const retryCodes = new Set(["rate_limited", "temporary_failure", "parse_error"]);
-  let api, payload, bound = false, deepLinked = false, poller;
+  let api, payload, bound = false, deepLinked = false, poller, remotePoller;
   let lastUpdated = null, syncErrors = "";
   function reportSyncErrors(items = []) {
     syncErrors = items.filter(item => !item.ok).map(item => `团队 #${item.workspace_id}：${item.error_code === "credentials_missing" ? "缺少母号凭据" : "暂时无法同步"}`).join("；");
@@ -37,7 +37,7 @@
   const query = () => new URLSearchParams(location.search);
   const viewName = value => ({ portfolio: "teams", flat: "all" }[value] || (["teams", "all", "unassigned", "attention"].includes(value) ? value : "teams"));
   function setQuery(key, value) {
-    if (["q", "purpose", "health", "team", "view"].includes(key)) selected.clear();
+    if (["q", "purpose", "health", "team", "view", "remote"].includes(key)) selected.clear();
     const params = query();
     if (!value || value === "all" && key !== "view") params.delete(key); else params.set(key, value);
     history.replaceState(null, "", `${location.pathname}${params.size ? "?" + params : ""}`);
@@ -72,11 +72,41 @@
     if (purpose === "conflict" && account.state !== "conflict") return false;
     if (["mother", "child", "standby", "free"].includes(purpose) && account.purpose !== purpose) return false;
     const any = predicate => contexts(account).some(predicate);
+    const remote = params.get("remote") || "all";
+    if (remote !== "all" && !remoteItems(account).some(item => remote === "attention"
+      ? ["error", "auth_error", "forbidden", "phone_required", "identity_mismatch", "identity_unconfirmed", "binding_review"].includes(item.state)
+      : item.state === remote)) return false;
     if (health === "auth") return any(c => c.health?.needs_auth);
     if (health === "401") return any(c => c.latest_check?.http_status === 401 && c.latest_check?.current_credential !== false);
     if (health === "retry") return any(c => retryCodes.has(c.health?.code));
     if (health !== "all") return any(c => c.health?.code === health);
     return true;
+  }
+  function remoteItems(account) {
+    return contexts(account).flatMap(c => c.remote_status?.bindings || [c.remote_status || {
+      state: "unknown", label: "远端尚未核对", severity: "muted", stale: true,
+    }]);
+  }
+  function remoteStatus(account) {
+    const wrap = el("div", "management-remote-status");
+    for (const state of remoteItems(account)) {
+      const badge = el("span", `management-badge tone-${state.severity || "muted"}`, state.label);
+      badge.dataset.remoteState = state.state;
+      wrap.append(badge);
+      if (state.remote_id) wrap.append(el("small", "muted", `远端 #${state.remote_id}${state.schedulable === false ? " · 不调度" : ""}`));
+      if (state.last_known_label && state.checked_at) wrap.append(el("small", "text-warning", `上次：${state.last_known_label}`));
+      if (state.checked_at) wrap.append(el("small", state.stale ? "text-warning" : "muted", `${state.stale ? "旧状态 · " : ""}${api.relativeTime(state.checked_at)}核对`));
+      else if (state.state !== "unbound") wrap.append(el("small", "muted", state.message || "等待核对"));
+    }
+    return wrap;
+  }
+  async function refreshRemote(force = false) {
+    if (!payload?.sub2api_status?.configured || !payload.sub2api_status.bindings) return {ok: true, skipped: true};
+    const result = await api.postAction(`sub2api-status:${force ? "manual" : "auto"}`, `/api/sub2api/status/refresh${force ? "?force=true" : ""}`, {});
+    await poller?.refresh();
+    const node = document.getElementById("management-remote-status");
+    if (node && !result.ok) node.textContent = result.message || "Sub2API 暂时无法核对，保留上次状态";
+    return result;
   }
   function quota(account) {
     const wrap = el("div", "management-quota");
@@ -147,6 +177,7 @@
     else if (account.latest_check?.state === "temporary_failure" && account.health?.code === "auth_required") health.append(el("small", "text-warning", "最近复查超时 / 暂时失败"));
     const quotaCell = el("td"); quotaCell.append(canOpen ? quota(account) : el("span", "muted", kindLabels[account.kind] || "尚未接入"));
     const money = el("td", "management-money tabular");
+    if (canOpen) money.append(remoteStatus(account));
     const usage = fmt.usageWindow(account.usage);
     money.append(el("strong", "", fmt.formatCost(usage?.user_cost)), el("small", "muted", usage ? `${usage.label} · 成本 ${fmt.formatCost(usage.account_cost)}` : "无计费快照"));
     if (usage?.stale) money.append(el("small", "text-warning", "旧计费快照"));
@@ -160,7 +191,12 @@
         else openAccount(account, b, group);
       }, `button${account.health?.needs_auth ? " danger" : ""}`, `primary:${id}`);
       actions.append(primary, api.menuButton("account", account));
-    } else if (group) actions.append(button("管理成员", b => api.openWorkspaceDetails(b, group), "button", `remote:${id}`));
+    } else if (group) {
+      if (account.kind === "unmanaged") {
+        actions.append(button("接入并授权", b => api.linkTeamMember(group, account, b), "button primary", `link:${id}`));
+      }
+      else actions.append(button("管理成员", b => api.openWorkspaceDetails(b, group), "button", `remote:${id}`));
+    }
     actionCell.append(actions); row.append(selectCell, identity, health, quotaCell, money, time, actionCell);
     return row;
   }
@@ -183,7 +219,7 @@
       selectHead.append(box);
     }
     tr.append(selectHead);
-    ["账号 / 本地用途", "授权与检测", "官方额度 · 已用", "Sub2API 用户计费", "最近检查", "操作"].forEach((text, i) => { const th = el("th", i === 3 || i === 5 ? "num" : "", text); th.scope = "col"; tr.append(th); });
+    ["账号 / 本地用途", "授权与检测", "官方额度 · 已用", "Sub2API 状态 / 计费", "最近检查", "操作"].forEach((text, i) => { const th = el("th", i === 3 || i === 5 ? "num" : "", text); th.scope = "col"; tr.append(th); });
     head.append(tr); const body = el("tbody"); items.forEach(a => body.append(accountRow(a, group)));
     table.append(colgroup, head, body); scroll.append(table); return scroll;
   }
@@ -288,6 +324,14 @@
     }
     wsSelect.value = params.get("team") || "";
     document.getElementById("management-health").value = params.get("health") || "all";
+    const remoteFilter = document.getElementById("management-remote");
+    if (remoteFilter) remoteFilter.value = params.get("remote") || "all";
+    const remoteInfo = data.sub2api_status;
+    const remoteLine = document.getElementById("management-remote-status");
+    if (remoteLine && remoteInfo) remoteLine.textContent = !remoteInfo.configured ? "Sub2API 尚未配置"
+      : `远端状态每 30 秒核对 · ${remoteInfo.bindings} 个绑定${remoteInfo.missing ? ` · ${remoteInfo.missing} 个远端已不存在` : ""}${remoteInfo.stale ? " · 有状态待更新" : ""}`;
+    const remoteRefresh = document.getElementById("refresh-remote-status");
+    if (remoteRefresh) remoteRefresh.disabled = !remoteInfo?.configured || !remoteInfo.bindings;
     document.querySelector("[data-filter='purpose']").value = params.get("purpose") || "all";
     let shown = 0;
     if (view === "teams") {
@@ -307,12 +351,12 @@
       let items = view === "unassigned" ? data.unassigned || [] : data.accounts || [];
       if (params.get("purpose") === "archived") items = [...(data.groups || []).flatMap(g => g.history || []), ...(data.unassigned || []).filter(a => a.state === "archived")];
       items = items.filter(a => matches(a, null, params));
-      if (view === "attention") items = items.filter(a => !["healthy", "disabled"].includes(a.health?.code));
+      if (view === "attention") items = items.filter(a => !["healthy", "disabled"].includes(a.health?.code) || remoteItems(a).some(s => ["missing", "auth_error", "error", "identity_mismatch"].includes(s.state)));
       shown = items.length; if (shown) root.append(table(items));
     }
     if (!root.children.length) {
       const empty = el("div", "management-empty"); empty.append(el("h2", "", "没有匹配的记录"), button("清除筛选", () => {
-        ["q", "purpose", "health", "team"].forEach(k => setQuery(k, "")); document.getElementById("accounts-search").value = ""; render(payload);
+        ["q", "purpose", "health", "team", "remote"].forEach(k => setQuery(k, "")); document.getElementById("accounts-search").value = ""; render(payload);
       })); root.append(empty);
     }
     document.getElementById("accounts-count").textContent = `${shown} 条${view === "teams" ? "关系记录" : "账号记录"}`;
@@ -333,7 +377,7 @@
       ["下次检查", account.next_check_at], ["任务", account.queued ? "排队 / 运行中" : "无待执行任务"]]) {
       dl.append(el("dt", "", label), el("dd", "", value ?? "—"));
     }
-    fragment.append(dl); return fragment;
+    fragment.append(dl, el("h3", "", "Sub2API 远端状态"), remoteStatus(account)); return fragment;
   }
   function refreshDetails() {
     const box = document.getElementById("account-health-content"); if (!box || !payload) return;
@@ -435,6 +479,15 @@
       document.getElementById("accounts-search").addEventListener("input", event => { setQuery("q", event.target.value); render(payload); });
       document.querySelector("[data-filter='purpose']").addEventListener("change", event => { setQuery("purpose", event.target.value); render(payload); });
       document.getElementById("management-health").addEventListener("change", event => { setQuery("health", event.target.value); render(payload); });
+      document.getElementById("management-remote")?.addEventListener("change", event => { setQuery("remote", event.target.value); render(payload); });
+      document.getElementById("refresh-remote-status")?.addEventListener("click", async event => {
+        const b = event.currentTarget; b.disabled = true;
+        try {
+          const result = await refreshRemote(true);
+          api.toast(result.message || "Sub2API 状态已更新", result.ok ? "success" : "warning");
+        } catch (error) { api.toast(api.friendlyError(error), "error"); }
+        finally { b.disabled = false; }
+      });
       document.getElementById("management-workspace").addEventListener("change", event => { setQuery("team", event.target.value); render(payload); });
       document.querySelectorAll("[data-management-view]").forEach(b => b.addEventListener("click", () => { setQuery("view", b.dataset.managementView); render(payload); }));
       document.querySelectorAll("[data-management-health]").forEach(b => b.addEventListener("click", () => { setQuery("view", "all"); setQuery("health", b.dataset.managementHealth); render(payload); }));
@@ -510,7 +563,17 @@
       },
       delay: data => data.groups.some(g => g.sync_operation) ? 2000 : 15000,
     });
-    return poller.refresh();
+    if (!remotePoller) remotePoller = window.Team48Polling.createPoller({
+      read: () => refreshRemote(),
+      onData: () => {},
+      onError: () => {
+        const node = document.getElementById("management-remote-status");
+        if (node) node.textContent = "Sub2API 核对失败，将自动重试；显示的是上次状态";
+      },
+      delay: result => result.refreshing ? 2000 : 30000,
+    });
+    await poller.refresh();
+    void remotePoller.refresh();
   }
   function acceptData(data) {
     lastUpdated = new Date().toLocaleTimeString("zh-CN");
@@ -532,5 +595,5 @@
     const group = payload?.groups?.find(item => item.id === id);
     if (group) { group.expiry = expiry; render(payload); }
   }
-  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refresh: () => poller?.refresh() };
+  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refreshRemote, refresh: () => poller?.refresh() };
 })();

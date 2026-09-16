@@ -272,7 +272,11 @@ class Sub2ApiClient:
             response = await client.get(path, headers=headers, params=params)
             response.raise_for_status()
             payload = self._unwrap(response.json())
-            items = self._account_items(payload)
+            raw_items = payload if isinstance(payload, list) else next(
+                (payload[key] for key in ("items", "accounts", "list") if isinstance(payload, dict) and key in payload), None)
+            if not isinstance(raw_items, list) or any(not isinstance(item, dict) for item in raw_items):
+                raise RuntimeError("Sub2API returned an invalid account list; refusing to infer missing accounts")
+            items = raw_items
             total = payload.get("total") if isinstance(payload, dict) else None
             if total is not None:
                 try:

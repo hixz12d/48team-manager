@@ -11,6 +11,7 @@ from app.persistence.models.identity import Account, ExternalBinding, Workspace,
 from app.persistence.models.operations import Operation
 from app.persistence.models.oauth import OAuthSession
 from app.persistence.models.sub2api import Sub2ApiUsageSnapshot
+from app.persistence.models.sub2api_status import Sub2ApiAccountStatus
 from app.persistence.models.quota import CredentialLease, QuotaProbeState, QuotaSnapshot
 from app.persistence.models.resources import HmeAliasLease
 
@@ -52,6 +53,8 @@ class AccountDeletionTests(unittest.IsolatedAsyncioTestCase):
         await self.db.commit()
         binding = await self.db.scalar(select(ExternalBinding))
         self.db.add(Sub2ApiUsageSnapshot(binding_id=binding.id, local_account_id=self.account_id, remote_account_id='123', window_kind='7d'))
+        self.db.add(Sub2ApiAccountStatus(binding_id=binding.id, remote_account_id='123', source_signature='source',
+                                       binding_signature='binding', exists=True, state='healthy', last_attempt_at=utcnow()))
         await self.db.commit()
         result = await delete_unassigned_account(self.db, self.account_id)
         await self.db.commit()
@@ -59,7 +62,7 @@ class AccountDeletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['email'], 'unused@example.com')
         self.assertIsNone(await self.db.get(Account, self.account_id))
         self.assertIsNotNone(await self.db.get(Account, self.other.id))
-        for model in (ExternalBinding, Sub2ApiUsageSnapshot, QuotaSnapshot, QuotaProbeState, CredentialLease):
+        for model in (ExternalBinding, Sub2ApiUsageSnapshot, Sub2ApiAccountStatus, QuotaSnapshot, QuotaProbeState, CredentialLease):
             self.assertEqual(list(await self.db.scalars(select(model))), [])
         self.assertEqual(len(list(await self.db.scalars(select(HmeAliasLease)))), 1)
         op = await self.db.scalar(select(Operation))

@@ -463,6 +463,13 @@ def build_api_router(get_db) -> APIRouter:
             await db.rollback()
             raise
 
+    @router.post("/sub2api/status/refresh")
+    async def refresh_sub2api_status(
+        _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db), force: bool = Query(default=False),
+    ) -> dict:
+        from app.application.sub2api_status import refresh
+        return await refresh(db, force=force)
+
     @router.get("/accounts/portfolio")
     async def accounts_portfolio(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.portfolio(db)

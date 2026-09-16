@@ -74,6 +74,9 @@ async def delete_unassigned_account(db, account_id: int):
     if any(value is not None for value in (busy, oauth, probe, credential, codex)):
         raise AccountDeletionError("account_busy", "账号有执行中、排队中或待完成的授权任务，请结束任务后再删除。")
 
+    from app.persistence.models.sub2api_status import Sub2ApiAccountStatus
+    await db.execute(delete(Sub2ApiAccountStatus).where(Sub2ApiAccountStatus.binding_id.in_(
+        select(ExternalBinding.id).where(ExternalBinding.local_account_id == account_id))))
     for model, column in (
         (Sub2ApiUsageSnapshot, Sub2ApiUsageSnapshot.local_account_id),
         (ExternalBinding, ExternalBinding.local_account_id),

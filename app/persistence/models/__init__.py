@@ -14,6 +14,7 @@ from app.persistence.models.quota import QuotaSnapshot
 from app.persistence.models.resources import HmeAliasLease, PhoneAttempt, PhonePool, ProxyProfile
 from app.persistence.models.settings import SystemSetting
 from app.persistence.models.sub2api import Sub2ApiProxyBinding, Sub2ApiUsageSnapshot, Sub2ApiSyncObservation, Sub2ApiRefreshAuthority
+from app.persistence.models.sub2api_status import Sub2ApiAccountStatus
 from app.persistence.models.refresh_handoff import Sub2ApiRefreshHandoff
 from app.persistence.models.vacancy import SeatVacancyEvent
 
@@ -34,6 +35,7 @@ __all__ = [
     "Sub2ApiProxyBinding",
     "Sub2ApiUsageSnapshot",
     "Sub2ApiSyncObservation",
+    "Sub2ApiAccountStatus",
     "Sub2ApiRefreshAuthority",
     "Sub2ApiRefreshHandoff",
     "Workspace",
