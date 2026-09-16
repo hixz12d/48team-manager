@@ -1,6 +1,7 @@
 """Application configuration."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -35,6 +36,9 @@ class Settings(BaseSettings):
     browser_headless: bool = False
     browser_channel: str = ""
     browser_executable: str = ""
+    browser_engine: Literal["chromium", "chromix"] = "chromium"
+    browser_locale: str = "en-US"
+    browser_timezone: str = ""
     openai_ca_bundle: str = ""
 
     identity_gmail_policy: str = "owner_only"

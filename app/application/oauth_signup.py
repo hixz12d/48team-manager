@@ -45,7 +45,7 @@ async def run_invited_oauth_signup(
         await db.commit()
         async def on_stage(stage, message):
             from app.application.invitation_flow import browser_progress
-            await browser_progress(db, job_id, stage)
+            await browser_progress(db, job_id, stage, message)
 
         runner = browser_session.run if browser_session is not None else browser_slot.run_reauth_isolated
         result = await runner(

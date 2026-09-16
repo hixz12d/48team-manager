@@ -13,6 +13,9 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from app.core.config import load_settings
+from app.integrations.openai.browser.environment import (
+    BrowserEnvironmentError, context_options, environment_summary,
+)
 from app.integrations.mail.otp import list_mailbox_codes, wait_for_mailbox_item
 from app.integrations.proxy.socks_bridge import chrome_proxy_launch
 from app.integrations.sms.client import require_proxy, sms_client
@@ -100,24 +103,11 @@ def ensure_virtual_display() -> None:
     raise RuntimeError(f"Xvfb 没起来，DISPLAY={display}")
 
 
-def chromium_context_kwargs(profile_dir: Path | str, proxy_config: dict[str, str]) -> dict[str, Any]:
+def chromium_context_kwargs(
+    profile_dir: Path | str, proxy_config: dict[str, str], *, executable_path: str = "",
+) -> dict[str, Any]:
+    kwargs = context_options(profile_dir, proxy_config, settings=settings, executable_path=executable_path)
     ensure_virtual_display()
-    kwargs: dict[str, Any] = {
-        "user_data_dir": str(profile_dir),
-        "headless": bool(settings.browser_headless),
-        "proxy": proxy_config,
-        "locale": "en-US",
-        "viewport": {"width": 1280, "height": 900},
-        "ignore_default_args": ["--enable-automation"],
-        "args": [
-            "--disable-features=Translate",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-            "--disable-blink-features=AutomationControlled",
-        ],
-    }
-    if settings.browser_channel:
-        kwargs["channel"] = settings.browser_channel
     return kwargs
 
 
@@ -1198,15 +1188,18 @@ def run_browser_onboard(
 
     result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode, "phone": phone, "sms_url": sms_url}
     with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
-        launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config)
-        if executable_path:
-            launch_kwargs.pop("channel", None)
-            launch_kwargs["executable_path"] = executable_path
-        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
         try:
-            browser.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        except Exception:  # noqa: BLE001
-            pass
+            launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config, executable_path=executable_path)
+        except BrowserEnvironmentError as exc:
+            return {**result, "error_code": exc.error_code, "error": str(exc)}
+        profile_dir = Path(launch_kwargs.get("user_data_dir", profile_dir))
+        report("browser_environment", environment_summary(launch_kwargs))
+        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
+        if settings.browser_engine == "chromium":
+            try:
+                browser.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            except Exception:  # noqa: BLE001
+                pass
         page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
         try:

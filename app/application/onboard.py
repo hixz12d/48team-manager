@@ -213,6 +213,13 @@ class OnboardService:
         browser_executable: str = "",
     ) -> dict[str, Any]:
         seat_intent = parse_invite_seat_intent(seat_intent).value
+        from app.core.config import load_settings
+        from app.integrations.openai.browser.environment import BrowserEnvironmentError, validate_configuration
+
+        try:
+            validate_configuration(load_settings(), browser_executable)
+        except BrowserEnvironmentError as exc:
+            return {"success": False, "error_code": exc.error_code, "error": str(exc)}
         claimed = None
         browser_session = browser_slot.InvitedBrowserSession() if oauth_signup and not in_test else None
         if oauth_signup and not browser_executable:
@@ -580,7 +587,7 @@ class OnboardService:
             async def on_stage(stage: str, message: str) -> None:
                 from app.application.invitation_flow import browser_progress
                 await hme_service.mark_signup_started(db, claimed, stage=stage)
-                await browser_progress(db, job_id, stage)
+                await browser_progress(db, job_id, stage, message)
             await db.commit()
 
         try:

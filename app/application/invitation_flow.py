@@ -19,7 +19,7 @@ def failed(code, message, **fields):
     return {"success": False, "error_code": code, "error": message, **fields}
 
 
-async def browser_progress(db, job_id, stage):
+async def browser_progress(db, job_id, stage, message=""):
     if not job_id:
         return
     from app.application.operations import operation_store
@@ -34,7 +34,9 @@ async def browser_progress(db, job_id, stage):
     if stage == "heartbeat":
         await operation_store.heartbeat(db, op)
     else:
-        await operation_store.note(db, op, stage, f"浏览器阶段：{stage}")
+        # Only the generated environment summary is safe to persist verbatim.
+        detail = str(message)[:300] if stage == "browser_environment" else f"浏览器阶段：{stage}"
+        await operation_store.note(db, op, stage, detail)
     await db.commit()
 
 

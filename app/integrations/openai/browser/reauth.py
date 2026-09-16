@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from app.core.config import load_settings
+from app.integrations.openai.browser.environment import BrowserEnvironmentError, environment_summary
 from app.integrations.openai.browser.onboard import (
     ABOUT_YOU_STUCK_LIMIT,
     _accept_terms,
@@ -132,10 +133,12 @@ def run_browser_oauth_reauth(
         else:
             proxy_config = stack.enter_context(chrome_proxy_launch(proxy))
             playwright = stack.enter_context(sync_playwright())
-            launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config)
-            if executable_path:
-                launch_kwargs.pop("channel", None)
-                launch_kwargs["executable_path"] = executable_path
+            try:
+                launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config, executable_path=executable_path)
+            except BrowserEnvironmentError as exc:
+                return {**result, "error_code": exc.error_code, "error": str(exc)}
+            profile_dir = Path(launch_kwargs.get("user_data_dir", profile_dir))
+            report("browser_environment", environment_summary(launch_kwargs))
             browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
             page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.application.onboard import OnboardService
+from app.core.config import Settings
 from app.application.tokens import encrypt_secret
 from app.application.workspaces import WorkspaceService
 from app.integrations.openai.browser import reauth as browser
@@ -68,7 +69,7 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.integrations.mail.otp.wait_for_mailbox_item", return_value="https://chatgpt.com/accept-invite?token=test"),
             patch("app.application.onboard.browser_slot.InvitedBrowserSession") as session_factory,
-            patch("app.core.config.load_settings", return_value=MagicMock(browser_executable="C:/Chromix/chrome.exe")),
+            patch("app.core.config.load_settings", return_value=Settings(_env_file=None, browser_executable="C:/Chromix/chrome.exe")),
             patch("app.application.invitation_flow.load_cf_config", new=AsyncMock(return_value={"base_url": "https://mail.test", "address": "mail@test.example", "admin_password": "secret"})),
             patch("app.application.oauth_signup.browser_slot.run_reauth_isolated", new=AsyncMock(side_effect=callback)) as run_browser,
             patch("app.application.oauth_signup.chatgpt_client.exchange_oauth_code", new=AsyncMock(return_value={"success": True, "access_token": "token", "refresh_token": "refresh"})) as exchange,
@@ -197,7 +198,7 @@ class BrowserNoSmsTests(unittest.TestCase):
             stack.enter_context(patch.object(browser, "Path"))
             proxy = stack.enter_context(patch.object(browser, "chrome_proxy_launch"))
             proxy.return_value.__enter__.return_value = {}
-            stack.enter_context(patch.object(browser, "chromium_context_kwargs", return_value={"channel": "chrome"}))
+            options = stack.enter_context(patch.object(browser, "chromium_context_kwargs", return_value={"executable_path": "C:/Chromix/chrome.exe"}))
             for name in ("goto_with_retries", "wait_cloudflare", "_snapshot_mailbox_codes", "_save_debug"):
                 stack.enter_context(patch.object(browser, name))
             stack.enter_context(patch.object(browser, "_page_text", return_value="Phone verification"))
@@ -220,6 +221,7 @@ class BrowserNoSmsTests(unittest.TestCase):
         wait_sms.assert_not_called()
         launch = playwright.chromium.launch_persistent_context.call_args.kwargs
         self.assertNotIn("channel", launch)
+        self.assertEqual(options.call_args.kwargs["executable_path"], "C:/Chromix/chrome.exe")
         self.assertEqual(launch["executable_path"], "C:/Chromix/chrome.exe")
 
 
