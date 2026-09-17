@@ -66,6 +66,9 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     )
     from app.integrations.sub2api.client import DEFAULT_SUB2API_BASE_URL, sub2api_client
 
+    from app.application.sub2api_defaults import load_defaults
+
+    push_defaults = await load_defaults(db)
     env = load_settings()
     hme_cfg = await load_hme_config(db)
     sub2api_cfg = await sub2api_client.load_config(db)
@@ -116,6 +119,7 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
             "hme": {"configured": bool(hme_cfg.configured)},
             "mail": {"configured": mail_configured},
         },
+        "sub2api_push": push_defaults.model_dump(),
         "automation": {
             "official_quota_probe": stored_quota,
             "quota_runtime": quota_runtime,
@@ -194,6 +198,10 @@ async def save_console_settings(db: AsyncSession, payload) -> dict[str, Any]:
             "auto_reauth_enabled",
             "true" if payload.automation.auto_reauth else "false",
         )
+    if payload.sub2api_push is not None:
+        from app.application.sub2api_defaults import save_defaults
+
+        await save_defaults(db, payload.sub2api_push)
     if payload.resources is not None:
         res = payload.resources
         numbers = {

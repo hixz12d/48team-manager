@@ -167,14 +167,15 @@
             <button type="button" class="button" id="refresh-remote-status">核对 Sub2API 状态</button>
             <span id="management-remote-status" class="muted" role="status"></span>
           </div>
+          <p id="management-sync-status" class="management-sync-status" role="status" hidden></p>
+          <div id="accounts-portfolio" class="management-list" aria-live="polite"></div>
+          <nav id="accounts-pagination" class="management-pagination" aria-label="账号分页"></nav>
           <div id="account-selection-bar" class="management-selection" hidden>
-            <span id="account-selection-count">已选 0 个</span>
+            <span id="account-selection-count" aria-live="polite">已选 0 个</span>
             <button type="button" class="button" id="account-selection-clear">取消选择</button>
             <button type="button" class="button" id="account-selection-export">导出 Codex JSON</button>
             <button type="button" class="button danger" id="account-selection-delete">永久删除本地档案</button>
           </div>
-          <p id="management-sync-status" class="management-sync-status" role="status" hidden></p>
-          <div id="accounts-portfolio" class="management-list" aria-live="polite"></div>
           <div class="table-scroll">
             <table class="data-table">
               <thead>
@@ -360,6 +361,28 @@
                     </div>
                     <button class="button compact" id="sub2api-usage-sync-all" type="button">同步全部</button>
                   </div>
+                  <section class="sub2api-push-defaults stack" aria-labelledby="sub2api-defaults-title">
+                    <div class="panel-header">
+                      <strong id="sub2api-defaults-title">新建账号默认值</strong>
+                      <button type="button" class="button compact" id="sub2api-options-refresh">刷新分组和代理</button>
+                    </div>
+                    <p class="hint">用于首次推送和远端已删除后的重建；更新已有账号时保留远端配置。</p>
+                    <label>默认并发<input name="sub2api_concurrency" type="number" min="1" max="1000" value="5" required></label>
+                    <fieldset class="sub2api-default-groups">
+                      <legend>默认账号分组（可多选）</legend>
+                      <div id="sub2api-default-groups" class="sub2api-group-options"></div>
+                    </fieldset>
+                    <p class="hint">只列出可用的 OpenAI 分组；不选择时沿用 Sub2API 的默认分组。</p>
+                    <label>默认代理方式<select name="sub2api_proxy_mode" aria-label="默认代理方式">
+                      <option value="none">不指定代理</option>
+                      <option value="group">按代理分组自动分配</option>
+                      <option value="proxy">使用固定代理</option>
+                    </select></label>
+                    <label id="sub2api-proxy-group-field" hidden>代理分组<select name="sub2api_proxy_group_id"></select></label>
+                    <label id="sub2api-proxy-field" hidden>固定代理<select name="sub2api_proxy_id"></select></label>
+                    <p class="hint">选择 IPv6 等代理分组后，Sub2API 会按容量自动分配可用代理；分组满时会提示失败。</p>
+                    <p id="sub2api-options-status" class="hint" role="status">读取分组和代理中…</p>
+                  </section>
                   <div class="service-edit" data-edit-panel="sub2api" hidden>
                     <label>地址<input name="sub2api_base_url" autocomplete="off"></label>
                     <p class="hint" id="sub2api-auth-hint">认证方式会显示在这里。</p>
@@ -369,14 +392,6 @@
                   </div>
                 </div>
               </article>
-              <section class="panel" data-service="codex">
-                <div class="panel-header"><span class="panel-title">Codex Proxy</span></div>
-                <div class="panel-body stack">
-                  <label>服务地址<input name="codex_base_url" type="url" autocomplete="off"></label>
-                  <label>管理员 API Key<input name="codex_admin_key" type="password" autocomplete="new-password" data-secret="codex_admin_key"></label>
-                  <p class="muted" id="codex-connection-status">未配置</p>
-                </div>
-              </section>
               <article class="panel service-card" data-service="hme">
                 <div class="panel-header">
                   <div>
@@ -646,6 +661,7 @@
   <script src="/static/js/workspace-switch-count.js"></script>
   <script src="/static/js/polling.js"></script>
   <script src="/static/js/accounts-view.js"></script>
+  <script src="/static/js/sub2api-defaults.js"></script>
   <script src="/static/js/sub2api-state-view.js"></script>
   {% if page == 'overview' %}<script src="/static/js/runtime-status.js"></script>{% endif %}
   <script src="/static/js/app.js"></script>

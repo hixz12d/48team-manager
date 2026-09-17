@@ -3504,8 +3504,7 @@ function hmeRow(item) {
   function snapshotSettings(form) {
     const data = new FormData(form);
     return JSON.stringify({
-      codex_base_url: data.get("codex_base_url"),
-      codex_admin_key: data.get("codex_admin_key"),
+      sub2api_push: window.Team48Sub2ApiDefaults.value(),
       sub2api_base_url: data.get("sub2api_base_url"),
       sub2api_api_key: data.get("sub2api_api_key"),
       sub2api_admin_email: data.get("sub2api_admin_email"),
@@ -3547,9 +3546,7 @@ function hmeRow(item) {
     const resources = payload.resources || {};
     const secretState = payload.secret_state || {};
     const account = payload.account || {};
-    form.codex_base_url.value = connections.codex_base_url || "";
-    form.codex_admin_key.value = "";
-    document.getElementById("codex-connection-status").textContent = connections.codex?.configured ? "已配置 · RT 由 Team Manager 保管" : "未配置";
+    window.Team48Sub2ApiDefaults.fill(payload.sub2api_push);
     form.sub2api_base_url.value = connections.sub2api_base_url || "";
     form.sub2api_admin_email.value = connections.sub2api_admin_email || "";
     form.hme_base_url.value = connections.hme_base_url || "";
@@ -3624,8 +3621,6 @@ function hmeRow(item) {
 
   function connectionsPayload(form) {
     return {
-      codex_base_url: form.codex_base_url.value,
-      codex_admin_key: secretOrNull(form.codex_admin_key.value),
       sub2api_base_url: form.sub2api_base_url.value,
       sub2api_admin_email: form.sub2api_admin_email.value,
       hme_base_url: form.hme_base_url.value,
@@ -3746,6 +3741,7 @@ function hmeRow(item) {
     const saveButton = document.getElementById("settings-save");
     const payload = {
       connections: connectionsPayload(form),
+      sub2api_push: window.Team48Sub2ApiDefaults.value(),
       automation: {
         official_quota_probe: form.official_quota_probe.checked,
         auto_reauth: form.auto_reauth.checked,
@@ -3769,6 +3765,7 @@ function hmeRow(item) {
         body: JSON.stringify(payload),
       });
       fillSettings(saved);
+      void window.Team48Sub2ApiDefaults.refresh();
       if (statusEl) {
         statusEl.className = "muted";
         statusEl.textContent = "已保存 · 刚刚";
@@ -4280,6 +4277,7 @@ function hmeRow(item) {
   async function bootSettings() {
     const form = document.getElementById("settings-form");
     const passwordForm = document.getElementById("password-form");
+    window.Team48Sub2ApiDefaults.init(form, fetchEntity);
     if (form && !form.dataset.bound) {
       form.dataset.bound = "1";
       form.addEventListener("submit", saveSettings);
@@ -4305,6 +4303,7 @@ function hmeRow(item) {
       passwordForm.addEventListener("submit", savePassword);
     }
     fillSettings(await fetchEntity("settings", "/api/settings"));
+    void window.Team48Sub2ApiDefaults.refresh();
     void loadSub2ApiManagement();
   }
 

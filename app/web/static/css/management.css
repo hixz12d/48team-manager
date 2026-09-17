@@ -1,11 +1,11 @@
 /* Management surface, based on the supplied offline prototype. */
 #action-menu .menu-danger { color:var(--danger-text); }
-body[data-page="accounts"] { --bg:#f6f8fb; --text:#192638; --muted:#64758a; --accent:#345bdd; --sidebar-w:216px; --content-max:1700px; }
+body[data-page="accounts"] { --bg:#f6f8fb; --text:#192638; --muted:#64758a; --accent:#345bdd; --sidebar-w:216px; --content-max:1700px; overflow-x:clip; }
 body[data-page="accounts"] .topbar { min-height:84px; height:auto; gap:16px; padding:20px 30px; }
 body[data-page="accounts"] .topbar h1 { font-size:24px; letter-spacing:0; }
 body[data-page="accounts"] #page-subtitle:empty { display:none; }
 body[data-page="accounts"] .workspace { grid-template-columns:minmax(0,1fr); }
-body[data-page="accounts"] .page { width:100%; padding:24px 30px 40px; }
+body[data-page="accounts"] .page { width:100%; padding:24px 30px 40px; overflow:visible; }
 body[data-page="accounts"] .button.primary { background:var(--accent); border-color:var(--accent); }
 body[data-page="accounts"] .button.primary:hover { background:#284dcc; }
 .management-summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); background:#fff; border-block:1px solid var(--border); margin-bottom:24px; }
@@ -140,9 +140,24 @@ button.management-email:hover { color:var(--accent); }
 .group-sync-outcome { display:block; font-size:12px; margin-top:5px; overflow-wrap:anywhere; }
 .management-subscription { color:#466a62; font-size:12px; }
 .management-sync-status { color:#a3433a; font-size:12px; margin:0 0 14px; overflow-wrap:anywhere; }
-.management-selection { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 14px; padding:10px 12px; background:#fff; border:1px solid var(--border); border-radius:8px; font-size:13px; }
-.codex-transfer-details { min-width:0; overflow-wrap:anywhere; }
-#account-selection-push { min-width:106px; }
+.management-selection { position:sticky; bottom:12px; z-index:20; display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:14px 0 0; padding:12px; background:#fff; border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 20px #19263818; font-size:13px; }
+.management-pagination { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:12px; margin:18px 0; font-size:13px; }
+.management-pagination label { display:flex; align-items:center; gap:8px; margin-right:auto; }
+.management-pagination select { width:auto; min-width:88px; }
+.sub2api-push-defaults { padding-top:16px; border-top:1px solid var(--border); }
+.sub2api-push-defaults .panel-header { padding:0; border:0; flex-wrap:wrap; gap:10px; }
+.sub2api-default-groups { border:1px solid var(--border); border-radius:8px; padding:10px 12px; min-width:0; }
+.sub2api-default-groups legend { padding:0 5px; font-size:13px; }
+.sub2api-group-options { display:grid; gap:8px; max-height:180px; overflow:auto; }
+.sub2api-group-options label { display:flex; align-items:center; gap:8px; }
+.sub2api-group-options input { width:16px; height:16px; flex:0 0 16px; }
+.sub2api-push-defaults [hidden] { display:none !important; }
+@media (max-width:540px) {
+  .management-selection { bottom:8px; gap:8px; }
+  .management-selection>span { flex-basis:100%; }
+  .management-pagination { gap:8px; }
+  .sub2api-push-defaults .panel-header .button { width:100%; }
+}
 /* JS uses the native hidden attribute; flex must not override it. */
 .management-selection[hidden] {
   display: none !important;

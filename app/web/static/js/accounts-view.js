@@ -25,8 +25,10 @@
     const del = document.getElementById("account-selection-delete");
     const items = selectedItems();
     if (bar) bar.hidden = items.length === 0;
-    if (count) count.textContent = `已选 ${items.length} 个`;
-    if (del) del.disabled = items.length === 0 || items.some(account => !canDelete(account));
+    if (count) count.textContent = `已选 ${items.length} 个（含跨页选择）${items.length > 50 ? " · 单次最多 50 个" : ""}`;
+    if (del) del.disabled = items.length === 0 || items.length > 50 || items.some(account => !canDelete(account));
+    const exportButton = document.getElementById("account-selection-export");
+    if (exportButton) exportButton.disabled = items.length === 0 || items.length > 50;
   }
   const el = (tag, cls, text) => {
     const node = document.createElement(tag);
@@ -39,6 +41,7 @@
   function setQuery(key, value) {
     if (["q", "purpose", "health", "team", "view", "remote"].includes(key)) selected.clear();
     const params = query();
+    if (["q", "purpose", "health", "team", "view", "remote", "page_size"].includes(key)) params.delete("page");
     if (!value || value === "all" && key !== "view") params.delete(key); else params.set(key, value);
     history.replaceState(null, "", `${location.pathname}${params.size ? "?" + params : ""}`);
   }
@@ -315,6 +318,48 @@
     const body = el("div"); body.id = `management-team-${group.id}`; body.hidden = closed; body.append(table(items, group));
     section.append(header, body); return section;
   }
+  function filteredEntries(data, view, params) {
+    if (view === "teams") {
+      const entries = [];
+      for (const group of data.groups || []) {
+        if (params.get("team") && String(group.id) !== params.get("team")) continue;
+        const items = (group.members || []).filter(a => matches(a, group, params));
+        if (items.length) entries.push(...items.map(account => ({account, group})));
+        else if (!(group.members || []).length && !["q", "health", "purpose", "remote"].some(key => params.get(key) && params.get(key) !== "all")) entries.push({account: null, group});
+      }
+      entries.push(...(data.unassigned || []).filter(a => matches(a, null, params)).map(account => ({account, group: null})));
+      return entries;
+    }
+    let items = view === "unassigned" ? data.unassigned || [] : data.accounts || [];
+    if (params.get("purpose") === "archived") items = [...(data.groups || []).flatMap(g => g.history || []), ...(data.unassigned || []).filter(a => a.state === "archived")];
+    items = items.filter(a => matches(a, null, params));
+    if (view === "attention") items = items.filter(a => !["healthy", "disabled"].includes(a.health?.code) || remoteItems(a).some(s => ["missing", "auth_error", "error", "identity_mismatch"].includes(s.state)));
+    return items.map(account => ({account, group: null}));
+  }
+  function pageWindow(entries, requestedPage, requestedSize) {
+    const size = [10, 20, 50, 100].includes(Number(requestedSize)) ? Number(requestedSize) : 20;
+    const pages = Math.max(1, Math.ceil(entries.length / size));
+    const page = Math.max(1, Math.min(pages, Math.floor(Number(requestedPage)) || 1));
+    return {items: entries.slice((page - 1) * size, page * size), page, pages, size, total: entries.length};
+  }
+  function renderPagination(page) {
+    const pager = document.getElementById("accounts-pagination"); if (!pager) return;
+    pager.replaceChildren();
+    const go = number => {
+      setQuery("page", String(number)); render(payload);
+      document.querySelector(".management-content")?.scrollIntoView({behavior: "instant", block: "start"});
+    };
+    const previous = button("上一页", () => go(page.page - 1)); previous.disabled = page.page <= 1;
+    const next = button("下一页", () => go(page.page + 1)); next.disabled = page.page >= page.pages;
+    const label = el("label", "", "每页"); const size = el("select"); size.setAttribute("aria-label", "每页条数");
+    [10, 20, 50, 100].forEach(n => size.add(new Option(`${n} 条`, String(n)))); size.value = String(page.size);
+    size.addEventListener("change", () => {
+      try { localStorage.setItem("team48:page-size", size.value); } catch (_) {}
+      setQuery("page_size", size.value); go(1);
+    });
+    label.append(size);
+    pager.append(label, el("span", "muted", `第 ${page.page} / ${page.pages} 页 · 共 ${page.total} 条`), previous, next);
+  }
   function render(data) {
     if (!data) return;
     payload = data; const root = document.getElementById("accounts-portfolio"); if (!root) return;
@@ -347,33 +392,33 @@
     const remoteRefresh = document.getElementById("refresh-remote-status");
     if (remoteRefresh) remoteRefresh.disabled = !remoteInfo?.configured || !remoteInfo.bindings;
     document.querySelector("[data-filter='purpose']").value = params.get("purpose") || "all";
-    let shown = 0;
+    let savedSize;
+    try { savedSize = localStorage.getItem("team48:page-size"); } catch (_) {}
+    const entries = filteredEntries(data, view, params);
+    const page = pageWindow(entries, params.get("page"), params.get("page_size") || savedSize);
+    if (params.has("page") && params.get("page") !== String(page.page)) setQuery("page", String(page.page));
     if (view === "teams") {
-      for (const group of data.groups || []) {
-        const items = (group.members || []).filter(a => matches(a, group, params));
-        if (!items.length && ((group.members || []).length || params.get("q") || params.get("health"))) continue;
-        if (params.get("team") && String(group.id) !== params.get("team")) continue;
-        const renderKey = JSON.stringify([group, params.toString(), collapsed.has(String(group.id)), [...selected], window.Team48Expiry.today()]);
+      const groups = new Map();
+      for (const entry of page.items) {
+        const key = entry.group?.id || "unassigned";
+        if (!groups.has(key)) groups.set(key, {group: entry.group, items: []});
+        if (entry.account) groups.get(key).items.push(entry.account);
+      }
+      for (const {group, items} of groups.values()) {
+        if (!group) { root.append(el("h2", "management-section-title", `未分配 · 本页 ${items.length}`), table(items)); continue; }
+        const renderKey = JSON.stringify([group, items, params.toString(), collapsed.has(String(group.id)), [...selected], window.Team48Expiry.today()]);
         const old = previousGroups.get(String(group.id));
         const node = old?._renderKey === renderKey ? old : groupNode(group, items, params);
-        node._renderKey = renderKey;
-        root.append(node); shown += items.length;
+        node._renderKey = renderKey; root.append(node);
       }
-      const free = (data.unassigned || []).filter(a => matches(a, null, params));
-      if (free.length) { root.append(el("h2", "management-section-title", `未分配 · ${free.length}`), table(free)); shown += free.length; }
-    } else {
-      let items = view === "unassigned" ? data.unassigned || [] : data.accounts || [];
-      if (params.get("purpose") === "archived") items = [...(data.groups || []).flatMap(g => g.history || []), ...(data.unassigned || []).filter(a => a.state === "archived")];
-      items = items.filter(a => matches(a, null, params));
-      if (view === "attention") items = items.filter(a => !["healthy", "disabled"].includes(a.health?.code) || remoteItems(a).some(s => ["missing", "auth_error", "error", "identity_mismatch"].includes(s.state)));
-      shown = items.length; if (shown) root.append(table(items));
-    }
+    } else if (page.items.length) root.append(table(page.items.map(entry => entry.account)));
+    renderPagination(page);
     if (!root.children.length) {
       const empty = el("div", "management-empty"); empty.append(el("h2", "", "没有匹配的记录"), button("清除筛选", () => {
         ["q", "purpose", "health", "team", "remote"].forEach(k => setQuery(k, "")); document.getElementById("accounts-search").value = ""; render(payload);
       })); root.append(empty);
     }
-    document.getElementById("accounts-count").textContent = `${shown} 条${view === "teams" ? "关系记录" : "账号记录"}`;
+    document.getElementById("accounts-count").textContent = `共 ${entries.length} 条${view === "teams" ? "关系记录" : "账号记录"} · 本页 ${page.items.length} 条`;
     for (const node of root.querySelectorAll("[data-scroll-key]")) node.scrollLeft = scrolls.get(node.dataset.scrollKey) || 0;
     if (focusKey) [...root.querySelectorAll("[data-focus-key]")].find(n => n.dataset.focusKey === focusKey)?.focus({ preventScroll: true });
     window.scrollTo({ top: scrollY });
@@ -415,15 +460,6 @@
     const block = el("section"); block.id = "account-health-content";
     block.dataset.account = account.id; block.dataset.workspace = account.workspace_id || ""; block.append(healthDetails(account));
     body.append(block);
-    const codex = el("section", "sheet-section codex-transfer-details");
-    codex.append(el("h3", "", "Codex Proxy"));
-    const codexState = el("p", "muted", "读取绑定状态中"); codex.append(codexState); body.append(codex);
-    fetch("/api/accounts/codex/status", {headers: {Accept: "application/json"}, cache: "no-store"})
-      .then(response => { if (!response.ok) throw new Error("绑定状态暂时不可用"); return response.json(); })
-      .then(data => {
-        const binding = data.items.find(item => item.account_id === account.id);
-        codexState.textContent = !binding ? "未绑定" : `${binding.target_url} · ${binding.remote_account_id || "远端待确认"} · ${binding.state === "synced" ? (binding.stale ? "本地凭据已更新，待推送" : "已同步") : "未完成，需核对"}${binding.last_error ? ` · ${binding.last_error}` : ""}`;
-      }).catch(error => { codexState.textContent = error.message; });
     if (account.contexts?.length > 1) {
       const section = el("section", "sheet-section"); section.append(el("h3", "", "工作区检测状态"));
       account.contexts.forEach(c => section.append(button(`${c.workspace_name || c.workspace_id} · ${c.health.label}`, b => openAccount(c, b), "button management-context")));
@@ -609,5 +645,5 @@
     const group = payload?.groups?.find(item => item.id === id);
     if (group) { group.expiry = expiry; render(payload); }
   }
-  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refreshRemote, refresh: () => poller?.refresh() };
+  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, filteredEntries, pageWindow, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refreshRemote, refresh: () => poller?.refresh() };
 })();

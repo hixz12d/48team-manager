@@ -320,6 +320,18 @@ class Sub2ApiClient:
         finally:
             await client.aclose()
 
+    async def list_proxy_groups(self, db: AsyncSession, cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        client, headers, _cfg = await self._with_client(db, cfg)
+        try:
+            response = await client.get("/api/v1/admin/proxy-groups", headers=headers)
+            response.raise_for_status()
+            data = self._unwrap(response.json())
+            if not isinstance(data, list) or any(not isinstance(row, dict) or not self.remote_id(row) for row in data):
+                raise ValueError("Sub2API returned an invalid proxy group list")
+            return data
+        finally:
+            await client.aclose()
+
     async def list_proxies(
         self,
         db: AsyncSession,

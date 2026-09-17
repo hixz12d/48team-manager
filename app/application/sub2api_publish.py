@@ -406,8 +406,20 @@ async def account_sub2api_push(
     )
     account_name = str(name or "").strip() or canonical_name
 
+    from app.application.sub2api_defaults import load_defaults, validate_defaults
+    defaults = await load_defaults(db)
+    creation_defaults = {"concurrency": defaults.concurrency}
+    if defaults.group_ids:
+        creation_defaults["group_ids"] = defaults.group_ids
+    if defaults.proxy_id:
+        creation_defaults["proxy_id"] = defaults.proxy_id
+    if defaults.proxy_group_id:
+        creation_defaults["proxy_group_id"] = defaults.proxy_group_id
+    if normalized_groups is not None:
+        creation_defaults["group_ids"] = normalized_groups
+
     if dry_run:
-        create_fields = ["name", "platform", "type", "credentials", "extra", "concurrency", "priority"]
+        create_fields = list(dict.fromkeys(["name", "platform", "type", "credentials", "extra", "concurrency", "priority", *creation_defaults]))
         update_fields = [] if metadata_only else ["credentials"]
         if name:
             update_fields.append("name")
@@ -426,6 +438,7 @@ async def account_sub2api_push(
             "action": "update" if existing else "create",
             "effective_name": account_name,
             "group_ids": normalized_groups,
+            "creation_defaults": creation_defaults,
             "would_update": update_fields if existing else create_fields,
             "would_preserve": [] if not existing else [
                 value for value in (
@@ -473,7 +486,7 @@ async def account_sub2api_push(
             "source": "team48-manager",
             "team48_context_key": team48_context_key(expected_ws, account.id),
         },
-        "concurrency": 5,
+        **creation_defaults,
         "priority": 1,
     }
     update_body: dict[str, Any] = {} if metadata_only else {"credentials": credentials}
@@ -486,6 +499,7 @@ async def account_sub2api_push(
         create_body["confirm_mixed_channel_risk"] = True
         update_body["confirm_mixed_channel_risk"] = True
 
+    allocated_proxy_candidates = []
     sync = None
     try:
         written = None
@@ -584,7 +598,23 @@ async def account_sub2api_push(
                 except Exception as inner:
                     raise RuntimeError("匹配目标同步失败，未创建替代账号：" + str(inner)) from inner
             if written is None:
-                written = await sub2api_client.create_account(db, create_body)
+                selected_defaults = defaults.model_copy(update={"group_ids": creation_defaults.get("group_ids", [])})
+                allocated_proxy_candidates = await validate_defaults(db, selected_defaults)
+                try:
+                    written = await sub2api_client.create_account(db, create_body)
+                except Exception as exc:
+                    response = getattr(exc, "response", None)
+                    if response is not None and response.status_code == 409:
+                        try:
+                            reason = response.json()
+                        except ValueError:
+                            reason = {}
+                        if isinstance(reason, dict):
+                            if reason.get("reason") in {"PROXY_GROUP_FULL", "PROXY_GROUP_CAPACITY"}:
+                                raise RuntimeError("Sub2API 拒绝分配代理：请检查所选代理分组的可用代理和账号容量") from exc
+                            if reason.get("error") == "mixed_channel_warning":
+                                raise RuntimeError("所选账号分组存在混合渠道风险，请到 Sub2API 核对分组配置后重试") from exc
+                    raise
                 action = "create"
                 remote_id = int(remote_id_from(written) or 0)
         if replacing_missing and remote_id:
@@ -791,11 +821,29 @@ async def account_sub2api_push(
         "canonical_name": canonical_name,
         "effective_name": account_name,
         "workspace_id": scoped_workspace_id,
-        "group_ids": normalized_groups,
+        "group_ids": creation_defaults.get("group_ids") if action == "create" else normalized_groups,
+        "creation_defaults": creation_defaults if action == "create" else None,
+        "proxy_id": remote.get("proxy_id"),
         "updated_fields": updated_fields,
         "preserved_fields": preserved_fields,
         "warnings": [],
     }
+    configuration_error = None
+    if action == "create":
+        if defaults.proxy_group_id and remote.get("proxy_id") not in allocated_proxy_candidates:
+            configuration_error = "代理分组的自动分配结果未确认，请到 Sub2API 核对该账号代理"
+        elif defaults.proxy_id and remote.get("proxy_id") != defaults.proxy_id:
+            configuration_error = "固定代理写入结果未确认，请到 Sub2API 核对该账号代理"
+        elif creation_defaults.get("group_ids") and not set(creation_defaults["group_ids"]) <= set(sub2api_client.account_group_ids(remote)):
+            configuration_error = "账号分组写入结果未确认，请到 Sub2API 核对该账号分组"
+    if configuration_error:
+        payload = {**base_result, "success": False, "ok": False, "status": "partial", "partial": True,
+                   "outcome": "verification_failed", "error_code": "configuration_unconfirmed",
+                   "message": f"远端账号已创建，{configuration_error}", "error": configuration_error}
+        await operation_store.mark_step(db, operation, "read_after_write", state="partial", result=payload)
+        await operation_store.finish(db, operation, payload)
+        await db.commit()
+        return present_action_result({"operation_id": operation.public_id, **payload})
     if schedulable_error:
         payload = {
             **base_result,
@@ -815,7 +863,8 @@ async def account_sub2api_push(
         await db.commit()
         return present_action_result({"operation_id": operation.public_id, **payload})
 
-    group_label = "继承/保持" if normalized_groups is None else (",".join(str(x) for x in normalized_groups) or "已清空")
+    effective_groups = creation_defaults.get("group_ids") if action == "create" else normalized_groups
+    group_label = "沿用默认" if effective_groups is None else ("已配置" if effective_groups else "沿用远端默认")
     sync_meta = (written or {}).get("_credential_sync") if isinstance(written, dict) else None
     if isinstance(sync_meta, dict):
         apply_final_assessment(sync_meta, remote, remote_id, account.email, expected_ws)

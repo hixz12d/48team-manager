@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PositiveInt, model_validator
 
 
 class ConnectionSettings(BaseModel):
@@ -44,7 +44,22 @@ class PasswordSettings(BaseModel):
     confirm_password: str = Field(min_length=6)
 
 
+class Sub2ApiPushDefaults(BaseModel):
+    concurrency: int = Field(default=5, ge=1, le=1000)
+    group_ids: list[PositiveInt] = Field(default_factory=list, max_length=100)
+    proxy_id: PositiveInt | None = None
+    proxy_group_id: PositiveInt | None = None
+
+    @model_validator(mode="after")
+    def validate_selection(self):
+        if self.proxy_id is not None and self.proxy_group_id is not None:
+            raise ValueError("固定代理和代理分组只能选择一种")
+        self.group_ids = list(dict.fromkeys(self.group_ids))
+        return self
+
+
 class SettingsPatch(BaseModel):
+    sub2api_push: Sub2ApiPushDefaults | None = None
     connections: ConnectionSettings | None = None
     automation: AutomationSettings | None = None
     resources: ResourceSettings | None = None

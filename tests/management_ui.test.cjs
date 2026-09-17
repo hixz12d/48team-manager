@@ -44,3 +44,29 @@ test('official owner role does not change local child filtering', () => {
   assert.equal(matches(a, null, new URLSearchParams('purpose=child')), true);
   assert.equal(matches(a, null, new URLSearchParams('purpose=mother')), false);
 });
+
+const {filteredEntries, pageWindow} = window.Team48Accounts;
+test('pagination splits large teams while retaining each workspace context', () => {
+  const members = Array.from({length: 25}, (_, i) => ({id:i + 1, email:`child${i}@example.com`, workspace_id:7}));
+  const data = {groups:[{id:7, members}], unassigned:[{id:30, email:'free@example.com'}]};
+  const entries = filteredEntries(data, 'teams', new URLSearchParams());
+  const first = pageWindow(entries, 1, 20), second = pageWindow(entries, 2, 20);
+  assert.equal(first.items.length, 20); assert.equal(second.items.length, 6);
+  assert.equal(second.items[0].account.id, 21);
+  assert.equal(second.items[0].group.id, 7);
+  assert.equal(second.items[5].group, null);
+});
+test('filters apply before pagination and deleting the final page clamps to the last page', () => {
+  const accounts = Array.from({length: 21}, (_, i) => ({id:i + 1, purpose:i < 10 ? 'child' : 'standby'}));
+  const entries = filteredEntries({accounts}, 'all', new URLSearchParams('purpose=standby'));
+  assert.equal(entries.length, 11);
+  assert.equal(pageWindow(entries, 5, 10).page, 2);
+  assert.equal(pageWindow(entries.slice(0, 10), 2, 10).page, 1);
+  assert.equal(pageWindow(entries, '-3', 'bad').size, 20);
+  assert.equal(pageWindow([], 100, 20).page, 1);
+});
+test('attention and remote filters still inspect all rows before slicing', () => {
+  const accounts = [{id:1, health:{code:'healthy'}, remote_status:{state:'missing'}}, {id:2, health:{code:'healthy'}, remote_status:{state:'healthy'}}];
+  assert.equal(filteredEntries({accounts}, 'attention', new URLSearchParams()).length, 1);
+  assert.equal(filteredEntries({accounts}, 'all', new URLSearchParams('remote=missing'))[0].account.id, 1);
+});

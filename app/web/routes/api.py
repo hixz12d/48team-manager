@@ -834,6 +834,11 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=400, detail=_error_detail(result, "preview failed"))
         return result
 
+    @router.get("/sub2api/push-options")
+    async def sub2api_push_options(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.sub2api_defaults import push_options
+        return await push_options(db)
+
     @router.get("/sub2api/status")
     async def sub2api_status(
         _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)
