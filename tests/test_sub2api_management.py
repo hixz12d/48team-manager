@@ -261,6 +261,7 @@ class Sub2ApiManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertNotIn("proxy_id", preview["would_update"])
         self.assertNotIn("proxy_id", create_account.await_args.args[1])
+        self.assertEqual(create_account.await_args.args[1]["concurrency"], 5)
         create_proxy.assert_not_awaited()
 
     async def test_refreshed_token_push_requires_verified_exact_binding(self):

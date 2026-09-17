@@ -473,7 +473,7 @@ async def account_sub2api_push(
             "source": "team48-manager",
             "team48_context_key": team48_context_key(expected_ws, account.id),
         },
-        "concurrency": 1,
+        "concurrency": 5,
         "priority": 1,
     }
     update_body: dict[str, Any] = {} if metadata_only else {"credentials": credentials}

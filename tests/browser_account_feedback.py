@@ -18,6 +18,7 @@ from tests.helpers import make_client
 def main():
     remotes = [{"id": 42, "status": "active", "schedulable": True, "credentials": {"email": "existing@example.com"}}]
     runtime = {"failure": False, "reads": 0, "email": "new@example.com"}
+    pushes = []
     async def inventory(*args):
         runtime["reads"] += 1
         if runtime["failure"]:
@@ -59,6 +60,10 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             def route(intercept):
                 request = intercept.request
+                if request.method == "POST" and any(request.url.split("?")[0].endswith(f"/sub2api/{action}") for action in ("preview", "push")):
+                    pushes.append(request.url)
+                    intercept.fulfill(json={"ok": True, "action": "create", "message": "Sub2API 推送完成"})
+                    return
                 url = urlsplit(request.url)
                 if url.netloc != "testserver":
                     external.append(url.netloc); intercept.abort(); return
@@ -70,6 +75,7 @@ def main():
             page.goto("http://testserver/accounts")
             existing = page.locator(f'.management-table tr[data-account="{child_id}"]')
             existing.locator('[data-remote-state="healthy"]').wait_for()
+            expect(existing.get_by_role("button", name="更新 Sub2API", exact=True)).to_have_count(0)
             # One click from the list opens the actual link + authorization flow.
             page.get_by_role("button", name="接入并授权", exact=True).click()
             page.locator(".team-auth-form").wait_for()
@@ -83,6 +89,14 @@ def main():
             new_row.get_by_text("已授权 · 等待额度检测", exact=True).wait_for()
             page.keyboard.press("Escape")
             expect(new_row.get_by_role("button", name="详情", exact=True)).to_have_count(1)
+            push = new_row.get_by_role("button", name="推送到 Sub2API", exact=True)
+            expect(push).to_have_class("button primary")
+            push.click()
+            expect(push).to_be_enabled()
+            assert len(pushes) == 2, pushes
+            assert "/sub2api/preview?workspace_id=" in pushes[0], pushes
+            assert "/sub2api/push?workspace_id=" in pushes[1], pushes
+            assert urlsplit(pushes[0]).query == urlsplit(pushes[1]).query
             # Standalone authorization also refreshes the main list immediately.
             runtime["email"] = "existing@example.com"
             existing.get_by_role("button", name="授权", exact=True).click()
@@ -92,6 +106,7 @@ def main():
             page.locator("#reauth-submit").click()
             existing.get_by_text("已授权 · 等待额度检测", exact=True).wait_for()
             # A complete empty remote inventory must show deletion, not quota alone.
+            expect(existing.get_by_role("button", name="更新 Sub2API", exact=True)).to_be_visible()
             page.wait_for_load_state("networkidle")
             remotes.clear()
             existing.locator('[data-remote-state="missing"]').wait_for(timeout=45000)
@@ -109,6 +124,8 @@ def main():
             existing.locator('[data-remote-state="paused"]').wait_for()
             for width in (1440, 1024, 390):
                 page.set_viewport_size({"width": width, "height": 900})
+                # The row actions must stay inside their cell without overlapping the check time.
+                assert new_row.locator(".management-actions").evaluate("node => { const cell = node.parentElement.getBoundingClientRect(); return [...node.children].every(button => { const box = button.getBoundingClientRect(); return box.left >= cell.left && box.right <= cell.right; }); }"), width
                 if os.environ.get("TEAM48_FEEDBACK_SCREENSHOTS"):
                     output = Path(os.environ["TEAM48_FEEDBACK_SCREENSHOTS"])
                     output.mkdir(parents=True, exist_ok=True)
@@ -116,7 +133,7 @@ def main():
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
             assert not errors, errors
             assert not external, external
-            print(json.dumps({"ok": True, "checks": ["direct link", "team OAuth refresh", "standalone OAuth refresh", "remote deletion", "remote filter", "network failure", "pause readback", "responsive layout"], "page_errors": errors}))
+            print(json.dumps({"ok": True, "checks": ["direct link", "team OAuth refresh", "inline push with workspace context", "standalone OAuth refresh", "inline update", "remote deletion", "remote filter", "network failure", "pause readback", "responsive layout"], "page_errors": errors}))
             browser.close()
 
 

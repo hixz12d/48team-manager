@@ -190,7 +190,21 @@
         if (account.health?.needs_auth) return api.entityActions.account.find(a => a.id === "account.reauth")?.run(account, b);
         else openAccount(account, b, group);
       }, `button${account.health?.needs_auth ? " danger" : ""}`, `primary:${id}`);
-      actions.append(primary, api.menuButton("account", account));
+      actions.append(primary);
+      const pushAction = account.purpose === "child" && !account.health?.needs_auth
+        ? api.entityActions.account.find(a => ["account.sub2api.push", "account.sub2api.update"].includes(a.id) && a.visible(account))
+        : null;
+      if (pushAction) {
+        const push = button(pushAction.label, async b => {
+          if (b.disabled) return;
+          b.disabled = true;
+          b.setAttribute("aria-busy", "true");
+          try { await pushAction.run(account, b); }
+          finally { b.disabled = false; b.removeAttribute("aria-busy"); }
+        }, "button primary", `sub2api:${id}`);
+        actions.append(push);
+      }
+      actions.append(api.menuButton("account", account));
     } else if (group) {
       if (account.kind === "unmanaged") {
         actions.append(button("接入并授权", b => api.linkTeamMember(group, account, b), "button primary", `link:${id}`));
@@ -204,7 +218,7 @@
     const scroll = el("div", "management-table-scroll"); scroll.tabIndex = 0; scroll.setAttribute("aria-label", "账号明细");
     scroll.dataset.scrollKey = group ? `team-${group.id}` : "all";
     const table = el("table", "management-table");
-    const colgroup = el("colgroup"); [4, 25, 16, 17, 13, 12, 13].forEach(width => { const col = el("col"); col.style.width = `${width}%`; colgroup.append(col); });
+    const colgroup = el("colgroup"); [4, 25, 16, 17, 13, 12, 13].forEach((width, i) => { const col = el("col"); col.style.width = i === 6 ? "250px" : `${width}%`; colgroup.append(col); });
     const head = el("thead"); const tr = el("tr");
     const selectable = items.filter(canSelect);
     const selectHead = el("th", "management-select"); selectHead.scope = "col";
