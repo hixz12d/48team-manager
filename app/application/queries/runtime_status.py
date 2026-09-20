@@ -27,7 +27,7 @@ SAFE_ERRORS = {
     "cancelled": "已取消",
     "http_429": "请求受限，等待重试",
 }
-SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动"}
+SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动", "auto": "自动轮转", "auto_sync": "同步重试"}
 
 
 def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None):
@@ -115,7 +115,32 @@ async def runtime_status(db, *, now=None):
     age = (stamp - as_utc(heartbeat)).total_seconds() if heartbeat else None
     runner_state = "unavailable" if not scheduling.scheduler.running else ("unknown" if age is None else ("healthy" if 0 <= age <= 15 else "stale"))
     busy = browser.lock().locked()
+    import json
+    from app.application.settings import get_setting_value
+    try:
+        last_scan = json.loads(await get_setting_value(db, "auto_rotate_last_scan", "{}"))
+    except (ValueError, TypeError):
+        last_scan = {}
+    if not isinstance(last_scan, dict):
+        last_scan = {}
+    last_scan = {key: value for key, value in last_scan.items() if key in {
+        "state", "started_at", "finished_at", "scanned", "rotated", "kicked_only", "skipped", "failed", "capped", "conflict", "error_code",
+    }}
+    rotation_blocked = list(await db.scalars(select(Operation.workspace_id).where(
+        Operation.op_type == "rotate", Operation.source == "auto", Operation.archived_at.is_(None),
+        Operation.state.in_(("partial", "manual_required")),
+    ).distinct()))
+    last_rotation = await db.scalar(select(Operation).where(
+        Operation.op_type == "rotate", Operation.source.in_(("auto", "auto_sync")),
+        Operation.archived_at.is_(None),
+    ).order_by(Operation.updated_at.desc(), Operation.id.desc()).limit(1))
     return {
+        "auto_rotation": {
+            "enabled": rotate["auto_rotate_enabled"], "daily_limit": rotate["auto_rotate_daily_limit"],
+            "scope": rotate["auto_rotate_scope"], "workspace_ids": rotate["auto_rotate_workspace_ids"],
+            "scan_seconds": 60, "blocked_workspaces": len(rotation_blocked), "last_scan": last_scan,
+            "last_operation": runtime_operation(last_rotation, now=stamp) if last_rotation else None,
+        },
         "generated_at": isoformat(stamp),
         "runner": {"state": runner_state, "last_heartbeat_at": isoformat(heartbeat),
                    "scheduler_running": bool(scheduling.scheduler.running),

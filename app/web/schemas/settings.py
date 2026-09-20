@@ -25,6 +25,10 @@ class ConnectionSettings(BaseModel):
 class AutomationSettings(BaseModel):
     official_quota_probe: bool | None = None
     auto_reauth: bool | None = None
+    auto_rotate: bool | None = None
+    auto_rotate_daily_limit: int | None = Field(default=None, ge=0, le=50)
+    auto_rotate_scope: Literal["selected", "all"] | None = None
+    auto_rotate_workspace_ids: list[PositiveInt] | None = Field(default=None, max_length=500)
 
 
 class ConnectionProbeRequest(BaseModel):

@@ -867,6 +867,8 @@
     currentOperations.delete(stableKey);
     persistCurrentOperations();
     if (entry.entityType === "account" && entry.action === "auto-reauth") syncAutoReauthButtons(entry.entityId);
+    // Initial page loading already reads current data; old terminal jobs must not fan out refreshes.
+    if (entry.restored) return;
     const state = String(result?.state || result?.status || "").toLowerCase();
     result = { ...(result?.result || {}), ...result, success: state === "success", operation_id: entry.operationId };
     const failed = !result.success || result.partial || ["partial", "failed", "manual_required"].includes(state);
@@ -3517,6 +3519,10 @@ function hmeRow(item) {
       cf_mail_admin_password: data.get("cf_mail_admin_password"),
       official_quota_probe: form.official_quota_probe.checked,
       auto_reauth: form.auto_reauth.checked,
+      auto_rotate: form.auto_rotate.checked,
+      auto_rotate_daily_limit: Number(form.auto_rotate_daily_limit.value),
+      auto_rotate_scope: form.auto_rotate_scope.value,
+      auto_rotate_workspace_ids: rotationWorkspaceIds(form),
       sms_max_uses_per_phone: data.get("sms_max_uses_per_phone"),
       sms_cooldown_min: data.get("sms_cooldown_min"),
       sms_reserve_min: data.get("sms_reserve_min"),
@@ -3536,6 +3542,45 @@ function hmeRow(item) {
       status.className = "muted";
       status.textContent = settingsDirty ? "有未保存的修改" : "没有未保存的修改";
     }
+  }
+
+  function rotationWorkspaceIds(form) {
+    return [...form.querySelectorAll('[data-rotation-workspace]:checked')].map(input => Number(input.value));
+  }
+
+  function fillRotationScope(form, automation) {
+    const rotation = automation.auto_rotate || {};
+    form.auto_rotate_scope.value = rotation.auto_rotate_scope || "selected";
+    const selected = new Set(rotation.auto_rotate_workspace_ids || []);
+    const list = document.getElementById("auto-rotation-workspace-list");
+    list.replaceChildren();
+    (automation.rotation_workspaces || []).forEach(workspace => {
+      const label = document.createElement("label");
+      label.className = "setting-row";
+      const text = document.createElement("span");
+      text.textContent = `${workspace.name} · #${workspace.id}${workspace.status !== "active" ? "（未激活，暂不执行）" : ""}`;
+      const input = document.createElement("input");
+      input.type = "checkbox"; input.value = String(workspace.id);
+      input.dataset.rotationWorkspace = ""; input.checked = selected.has(workspace.id);
+      label.append(text, input); list.append(label);
+    });
+    if (!list.children.length) list.textContent = "尚无工作空间，请先添加团队。";
+    const updateHint = () => {
+      const all = form.auto_rotate_scope.value === "all";
+      document.getElementById("auto-rotation-workspaces").hidden = all;
+      document.getElementById("auto-rotation-scope-hint").textContent = all
+        ? "全局范围包含以后新增的工作空间。打开总开关并保存后生效。"
+        : `已选择 ${rotationWorkspaceIds(form).length} 个工作空间。只会在这些工作空间轮转；总开关关闭时均不执行。`;
+    };
+    form.auto_rotate_scope.onchange = updateHint;
+    list.onchange = updateHint;
+    for (const [id, checked] of [["auto-rotation-select-listed", true], ["auto-rotation-clear-listed", false]]) {
+      document.getElementById(id).onclick = () => {
+        list.querySelectorAll("input").forEach(input => { input.checked = checked; });
+        updateHint(); form.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+    }
+    updateHint();
   }
 
   function fillSettings(payload) {
@@ -3562,6 +3607,9 @@ function hmeRow(item) {
     const quotaHint = document.getElementById("settings-automation-hint");
     if (quotaRuntime && quotaHint) quotaHint.textContent = `${quotaRuntime.effective_enabled ? '已启用' : quotaRuntime.disabled_reason} · ${quotaRuntime.queued_count} 个排队 · 最近一小时 ${quotaRuntime.requests_last_hour} 次检查 · ${quotaRuntime.uncovered_contexts} 个未覆盖`;
     form.auto_reauth.checked = Boolean(automation.auto_reauth?.requested);
+    form.auto_rotate.checked = Boolean(automation.auto_rotate?.auto_rotate_enabled);
+    form.auto_rotate_daily_limit.value = automation.auto_rotate?.auto_rotate_daily_limit ?? 2;
+    fillRotationScope(form, automation);
     const autoReauthHint = document.getElementById("auto-reauth-effective");
     if (autoReauthHint) {
       const state = automation.auto_reauth || {};
@@ -3745,6 +3793,10 @@ function hmeRow(item) {
       automation: {
         official_quota_probe: form.official_quota_probe.checked,
         auto_reauth: form.auto_reauth.checked,
+      auto_rotate: form.auto_rotate.checked,
+      auto_rotate_daily_limit: Number(form.auto_rotate_daily_limit.value),
+      auto_rotate_scope: form.auto_rotate_scope.value,
+      auto_rotate_workspace_ids: rotationWorkspaceIds(form),
       },
       resources: {
         sms_max_uses_per_phone: numberOrNull(form.sms_max_uses_per_phone.value),

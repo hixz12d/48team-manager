@@ -13,7 +13,7 @@ from app.integrations.openai.chatgpt import chatgpt_client
 async def run_invited_oauth_signup(
     db, *, child, workspace, password, pickup_url, use_cloudflare, cf_config,
     job_id=None, executable_path="", phone_line="",
-    browser_session=None,
+    browser_session=None, use_phone_pool=False,
 ):
     from app.integrations.sms.client import parse_optional_sms
 
@@ -36,6 +36,9 @@ async def run_invited_oauth_signup(
     oauth_sessions.mark_session(ticket, job_id=job_id or "")
     stored = None
     success = False
+    pooled_phone = None
+    browser_result = {}
+    from app.application.resources.phones import phone_pool_service, PhonePoolEmpty
     try:
         stored = await oauth_session_store.persist(
             db, oauth_sessions.get_session(ticket), purpose="account_reauth",
@@ -43,9 +46,19 @@ async def run_invited_oauth_signup(
             credential_revision=int(child.credential_revision or 1),
         )
         await db.commit()
+        if use_phone_pool and not phone and job_id:
+            try:
+                pooled_phone = await phone_pool_service.acquire(db, job_id)
+                phone, sms_url = pooled_phone.number, pooled_phone.sms_url
+            except PhonePoolEmpty:
+                # OAuth can succeed without SMS. If required, keep this same account.
+                pass
+
         async def on_stage(stage, message):
             from app.application.invitation_flow import browser_progress
             await browser_progress(db, job_id, stage, message)
+            if pooled_phone is not None:
+                await phone_pool_service.heartbeat(db, job_id)
 
         runner = browser_session.run if browser_session is not None else browser_slot.run_reauth_isolated
         result = await runner(
@@ -68,6 +81,7 @@ async def run_invited_oauth_signup(
             executable_path=executable_path,
             on_stage=on_stage,
         )
+        browser_result = result
         if not result.get("ok"):
             # Do not expose callback URLs, tokens or browser diagnostics to the CLI.
             return {
@@ -100,6 +114,17 @@ async def run_invited_oauth_signup(
     except OAuthSessionError as exc:
         return {"ok": False, "error_code": exc.error_code, "error": str(exc)}
     finally:
+        if pooled_phone is not None:
+            outcome = "success" if browser_result.get("sms_verified") else "cancelled"
+            sms_error = str(browser_result.get("error_code") or "")
+            if not browser_result.get("sms_verified") and sms_error.startswith("sms_"):
+                from app.core.time import utcnow
+                pooled_phone.last_used_at = utcnow()
+                outcome = "no_sms" if sms_error in {"sms_failed", "sms_timeout"} else "provider_error"
+            await phone_pool_service.record_result(
+                db, result=outcome, job_id=job_id, phone_id=pooled_phone.id,
+                purpose="reauth", account_id=child.id,
+            )
         oauth_sessions.pop_session(ticket)
         if stored is not None:
             await oauth_session_store.finish(db, stored, success=success)

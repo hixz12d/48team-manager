@@ -22,8 +22,8 @@ from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account, ExternalBinding
 from app.persistence.models.sub2api_status import Sub2ApiAccountStatus
 
-REFRESH_SECONDS = 30
-STALE_SECONDS = 90
+REFRESH_SECONDS = 15
+STALE_SECONDS = 45
 _LOCK = asyncio.Lock()
 LABELS = {
     "healthy": ("远端正常", "success"),
@@ -152,6 +152,21 @@ async def payloads(db):
                "missing": sum(item["state"] == "missing" for item in items),
                "refresh_seconds": REFRESH_SECONDS}
     return by_context, summary
+
+
+async def record_readback(db, binding, account, remote):
+    """Publish a verified write's readback immediately; older inventory reads cannot overwrite it."""
+    if not isinstance(remote, dict) or str(remote.get("id")) != str(binding.remote_account_id):
+        return
+    config = await sub2api_client.load_config(db)
+    stamp = utcnow()
+    values = dict(binding_id=binding.id, remote_account_id=str(binding.remote_account_id),
+                  source_signature=source_signature(config), binding_signature=binding_signature(binding, account),
+                  last_attempt_at=stamp, checked_at=stamp, last_error_code=None,
+                  **observe(binding, account, remote))
+    await db.execute(insert(Sub2ApiAccountStatus).values(**values).on_conflict_do_update(
+        index_elements=["binding_id"], set_={k: v for k, v in values.items() if k != "binding_id"},
+        where=Sub2ApiAccountStatus.last_attempt_at <= stamp))
 
 
 async def refresh(db, *, force=False):

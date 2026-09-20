@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, time, timedelta
 from typing import Any
 
@@ -17,7 +18,7 @@ from app.application.quota import quota_service
 from app.application.settings import as_bool, get_setting_value
 from app.application.workspaces import workspace_service
 from app.core.config import load_settings
-from app.core.time import utcnow
+from app.core.time import as_utc, utcnow
 from app.domain.automation import WORKSPACE_LOCK_ACTIONS
 from app.domain.identity import MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_UNKNOWN, PROVIDER_SUB2API
 from app.domain.identity.ids import normalize_email
@@ -35,12 +36,13 @@ from app.domain.rotate import (
     official_weekly_reset_at,
     rotate_backoff_at,
     rotate_terminal_status,
+    rotation_workspace_enabled,
     should_unbind_sub2api,
 )
 from app.domain.vacancy import chatgpt_member_ids, is_safe_to_refill, summarize_for_message
 from app.integrations.sub2api.client import sub2api_client
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
-from app.persistence.models.operations import Operation
+from app.persistence.models.operations import Operation, OperationStep
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +66,21 @@ class RotateService:
         force_raw = await get_setting_value(db, "auto_rotate_force_refill", str(bool(env.force_refill)).lower())
         limit_raw = await get_setting_value(db, "auto_rotate_daily_limit", str(DEFAULT_AUTO_ROTATE_DAILY_LIMIT))
         try:
-            daily_limit = max(0, int(limit_raw or DEFAULT_AUTO_ROTATE_DAILY_LIMIT))
+            daily_limit = min(50, max(0, int(limit_raw if limit_raw is not None else DEFAULT_AUTO_ROTATE_DAILY_LIMIT)))
         except (TypeError, ValueError):
             daily_limit = DEFAULT_AUTO_ROTATE_DAILY_LIMIT
+        scope = await get_setting_value(db, "auto_rotate_scope", "selected")
+        try:
+            workspace_ids = json.loads(await get_setting_value(db, "auto_rotate_workspace_ids", "[]"))
+            if not isinstance(workspace_ids, list):
+                workspace_ids = []
+            workspace_ids = sorted({value for value in workspace_ids if type(value) is int and value > 0})
+        except (ValueError, TypeError):
+            workspace_ids = []
         return {
-            "auto_rotate_enabled": as_bool(enabled_raw, DEFAULT_AUTO_ROTATE_ENABLED) and bool(env.auto_rotate_enabled),
+            "auto_rotate_scope": scope if scope in {"all", "selected"} else "selected",
+            "auto_rotate_workspace_ids": workspace_ids,
+            "auto_rotate_enabled": as_bool(enabled_raw, DEFAULT_AUTO_ROTATE_ENABLED),
             "auto_rotate_on_deactivated": as_bool(deactivated_raw, DEFAULT_AUTO_ROTATE_ON_DEACTIVATED),
             "auto_rotate_on_weekly_limit": as_bool(weekly_raw, DEFAULT_AUTO_ROTATE_ON_WEEKLY_LIMIT),
             "auto_rotate_force_refill": as_bool(force_raw, DEFAULT_AUTO_ROTATE_FORCE_REFILL) and bool(env.force_refill),
@@ -100,6 +112,7 @@ class RotateService:
             error_code=error_code,
             error_message=error_message,
         )
+        await db.commit()
 
     async def _active_child(
         self,
@@ -133,21 +146,23 @@ class RotateService:
                 return None
         return account
 
-    async def _joined_workspace(self, db: AsyncSession, account: Account) -> Workspace | None:
-        membership = (
-            await db.execute(
-                select(WorkspaceMembership)
-                .options(selectinload(WorkspaceMembership.workspace))
-                .where(
-                    WorkspaceMembership.account_id == account.id,
-                    WorkspaceMembership.membership_state.in_((MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_UNKNOWN)),
-                )
-                .order_by(WorkspaceMembership.id.desc())
-            )
-        ).scalars().first()
-        if membership is None:
+    async def _joined_workspace(self, db: AsyncSession, account: Account, remote_id=None) -> Workspace | None:
+        binding = await db.scalar(select(ExternalBinding).where(
+            ExternalBinding.provider == PROVIDER_SUB2API,
+            ExternalBinding.local_account_id == account.id,
+            ExternalBinding.remote_account_id == str(remote_id),
+            ExternalBinding.binding_state.in_(("verified", "conflict")),
+        ))
+        if binding is None:
             return None
-        return membership.workspace
+        query = select(WorkspaceMembership).options(selectinload(WorkspaceMembership.workspace)).where(
+            WorkspaceMembership.account_id == account.id,
+            WorkspaceMembership.membership_state == MEMBERSHIP_STATE_JOINED,
+        )
+        if binding.workspace_id is not None:
+            query = query.where(WorkspaceMembership.workspace_id == binding.workspace_id)
+        memberships = list(await db.scalars(query))
+        return memberships[0].workspace if len(memberships) == 1 else None
 
     async def _remote_binding_for(
         self,
@@ -250,8 +265,9 @@ class RotateService:
         return str(resolved.get("remote_id") or "")
 
     async def count_today_auto_rotates(self, db: AsyncSession, workspace_id: int, now: datetime | None = None) -> int:
-        stamp = now or utcnow()
-        start = datetime.combine(stamp.date(), time.min, tzinfo=stamp.tzinfo)
+        from zoneinfo import ZoneInfo
+        stamp = as_utc(now or utcnow()).astimezone(ZoneInfo("Asia/Shanghai"))
+        start = as_utc(datetime.combine(stamp.date(), time.min, tzinfo=stamp.tzinfo))
         result = await db.execute(
             select(func.count())
             .select_from(Operation)
@@ -259,11 +275,35 @@ class RotateService:
                 Operation.workspace_id == int(workspace_id),
                 Operation.op_type == "rotate",
                 Operation.source == "auto",
-                Operation.state == "success",
+                (Operation.state == "success") | Operation.id.in_(select(OperationStep.operation_id).where(
+                    OperationStep.step_name.in_(("kicked", "official_removed")), OperationStep.state == "success",
+                )),
                 Operation.created_at >= start,
+                Operation.created_at < start + timedelta(days=1),
             )
         )
         return int(result.scalar() or 0)
+
+    async def _confirm_unauthorized(self, db, *, account, workspace_id):
+        """Only a new official 401 for the current credentials may trigger replacement."""
+        if account is None:
+            return {"ok": False, "skipped": True, "code": "unauthorized_not_confirmed"}
+        try:
+            # The probe already tries the permitted token refresh and rechecks after success.
+            result = await self.quota.probe_account(db, account, workspace_id=workspace_id)
+            await db.refresh(account, ["credential_revision"])
+        except Exception:
+            return {"ok": False, "failed": True, "code": "unauthorized_confirm_failed"}
+        confirmed = bool(
+            result is not None and not result.success
+            and getattr(result, "source", None) == "official"
+            and getattr(result, "error_source", None) == "official_quota"
+            and getattr(result, "http_status", None) == 401
+            and getattr(result, "error_code", None) not in {"superseded", "already_running", "transport"}
+            and getattr(result, "credential_revision", None) == int(account.credential_revision or 1)
+        )
+        return {"ok": confirmed, "skipped": not confirmed,
+                "code": "" if confirmed else "unauthorized_not_confirmed"}
 
     async def _confirm_weekly_limit(
         self,
@@ -273,6 +313,7 @@ class RotateService:
         remote_id: Any,
         usage: Any = None,
         skip_fetch: bool = False,
+        workspace_id: int | None = None,
     ) -> dict[str, Any]:
         if usage is not None:
             still_full = official_weekly_limit_full(usage)
@@ -282,10 +323,8 @@ class RotateService:
                 return {"ok": False, "skipped": True, "code": "weekly_limit_not_confirmed", "usage": usage}
         if account is not None and not skip_fetch:
             try:
-                snapshot = await self.quota.latest_official(db, account.id)
-                if snapshot is None or not snapshot.success:
-                    await self.quota.probe_account(db, account)
-                    snapshot = await self.quota.latest_official(db, account.id)
+                # Use this probe, never a previous successful quota snapshot.
+                snapshot = await self.quota.probe_account(db, account, workspace_id=workspace_id)
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "failed": True, "code": "usage_confirm_failed", "error": str(exc)}
             if snapshot is None or not snapshot.success or snapshot.seven_day_used_percent is None:
@@ -350,6 +389,7 @@ class RotateService:
             op = await operation_store.get_by_public_id(db, job_id)
             if op is not None:
                 await operation_store.note(db, op, "paused", f"已暂停 Sub2API 调度 account_id={remote_id}")
+        await db.commit()
         wait_for = 0 if in_test else max(0, int(drain_seconds))
         if wait_for:
             import asyncio
@@ -530,6 +570,7 @@ class RotateService:
         if job_id:
             op = await operation_store.get_by_public_id(db, job_id)
             if op is not None:
+                await db.refresh(op, ["cancel_requested"])
                 cancelled = await operation_store.check_cancel(db, op, destructive_started=False)
                 if cancelled:
                     return cancelled
@@ -616,6 +657,8 @@ class RotateService:
             return {**result, "success": False, "error": result.get("error") or "踢人失败", "error_code": result.get("error_code") or "kick_failed"}
         from app.application.member_lifecycle import has_other_active_context, record_confirmed_departure
         await record_confirmed_departure(db, workspace, target)
+        await db.commit()
+        await self._mark_step(db, job_id, "official_removed", state="success", result={"workspace_id": workspace.id})
         other_context = bool(child and await has_other_active_context(db, child, workspace.id))
         unbind = bool(unbind_sub2api or should_unbind_sub2api(reason) or purge_local)
         deleted_sub = None
@@ -784,6 +827,14 @@ class RotateService:
                 )
                 return kick_result
             await self._mark_step(db, job_id, "kicked", state="success", result=kick_result)
+        if job_id:
+            await db.commit()
+            op = await operation_store.get_by_public_id(db, job_id)
+            if op is not None:
+                await db.refresh(op)
+                cancelled = await operation_store.check_cancel(db, op, destructive_started=True)
+                if cancelled:
+                    return {**cancelled, "kick": kick_result, "rotated": True}
 
         vacancy = kick_result.get("vacancy")
         if not force_refill and not kick_result.get("skipped_duplicate_kick") and not is_safe_to_refill(vacancy):
@@ -816,6 +867,10 @@ class RotateService:
             return {
                 "success": False,
                 "error": invite_result.get("error") or "补位失败，未完成轮转",
+                "error_code": invite_result.get("error_code") or "refill_failed",
+                "partial": True,
+                "status": "partial",
+                "rotated": True,
                 "kick": kick_result,
                 "invite": invite_result,
             }
@@ -897,7 +952,7 @@ class RotateService:
 
         confirmed = {"ok": True, "usage": usage, "next_eligible_at": next_eligible_at, "code": ""}
         if not already_kicked:
-            if op is not None and await operation_store.step_succeeded(db, op, "confirm_trigger"):
+            if reason != "unauthorized" and op is not None and await operation_store.step_succeeded(db, op, "confirm_trigger"):
                 confirmed = {"ok": True, "usage": usage, "next_eligible_at": next_eligible_at, "code": ""}
             elif skip_confirm:
                 confirmed = {"ok": True, "usage": usage, "next_eligible_at": next_eligible_at, "code": ""}
@@ -909,6 +964,7 @@ class RotateService:
                     remote_id=remote_id,
                     usage=usage,
                     skip_fetch=False,
+                    workspace_id=workspace_id,
                 )
                 if confirmed.get("ok"):
                     await self._mark_step(
@@ -936,6 +992,14 @@ class RotateService:
                         "failed": bool(confirmed.get("failed")),
                         "usage": confirmed.get("usage"),
                     }
+            elif reason == "unauthorized":
+                confirmed = await self._confirm_unauthorized(db, account=child, workspace_id=workspace_id)
+                await self._mark_step(db, job_id, "confirm_trigger",
+                                      state="success" if confirmed["ok"] else "failed",
+                                      result={"reason": reason, **confirmed}, error_code=confirmed.get("code"))
+                if not confirmed["ok"]:
+                    return {"success": False, "skipped": True,
+                            "error_code": confirmed["code"], "error": "当前官方401未确认，未踢人"}
             else:
                 await self._mark_step(db, job_id, "confirm_trigger", state="success", result={"reason": reason})
             eligible = confirmed.get("next_eligible_at") or next_eligible_at
@@ -985,155 +1049,142 @@ class RotateService:
         return result
 
     async def run_once(
-        self,
-        db: AsyncSession,
-        *,
-        now: datetime | None = None,
-        settings: dict[str, Any] | None = None,
-        accounts: list[dict[str, Any]] | None = None,
-        refill: Any = None,
-        in_test: bool = False,
+        self, db: AsyncSession, *, now: datetime | None = None,
+        settings: dict[str, Any] | None = None, accounts: list[dict[str, Any]] | None = None,
+        refill: Any = None, in_test: bool = False,
     ) -> dict[str, Any]:
-        cfg = settings or await self.load_settings(db)
-        stamp = now or utcnow()
-        daily_limit = int(cfg.get("auto_rotate_daily_limit") or DEFAULT_AUTO_ROTATE_DAILY_LIMIT)
-        stats: dict[str, Any] = {
-            "enabled": bool(cfg.get("auto_rotate_enabled")),
-            "scanned": 0,
-            "rotated": 0,
-            "kicked_only": 0,
-            "skipped": 0,
-            "failed": 0,
-            "capped": 0,
-            "conflict": 0,
-            "email": "",
-            "reason": "",
-        }
-        if not cfg.get("auto_rotate_enabled"):
+        import asyncio
+        from app.application.automatic_rotation import preflight, refill_and_publish, refresh_after_rotation
+
+        cfg = settings if settings is not None else await self.load_settings(db)
+        stamp = as_utc(now or utcnow())
+        daily_limit = int(cfg.get("auto_rotate_daily_limit", DEFAULT_AUTO_ROTATE_DAILY_LIMIT))
+        stats = dict(enabled=bool(cfg.get("auto_rotate_enabled")), scanned=0, rotated=0,
+                     kicked_only=0, skipped=0, failed=0, capped=0, conflict=0, email="", reason="")
+        if not stats["enabled"] or await operation_store.browser_busy(db):
             stats["skipped"] = 1
-            return stats
-        busy = await operation_store.browser_busy(db)
-        if busy:
-            stats["skipped"] = 1
-            stats["email"] = busy.email or ""
             return stats
         remote_accounts = accounts if accounts is not None else await self.sub2api.list_status_accounts(db)
-        occupied: set[int] = set()
-        for op_row in await operation_store.iter_running(db, WORKSPACE_LOCK_ACTIONS):
-            if op_row.workspace_id:
-                occupied.add(int(op_row.workspace_id))
-        candidates: list[tuple[datetime, dict[str, Any], Account, Workspace, str]] = []
+        official_snapshots = await self.quota.latest_official_by_contexts(db)
+        # An unfinished automatic replacement blocks this workspace, not all other teams.
+        occupied = {row.workspace_id for row in await operation_store.iter_running(db, WORKSPACE_LOCK_ACTIONS)}
+        occupied.update(await db.scalars(select(Operation.workspace_id).where(
+            Operation.op_type == "rotate", Operation.source == "auto", Operation.archived_at.is_(None),
+            Operation.state.in_(("partial", "manual_required")),
+        )))
+        candidates = []
         for remote in remote_accounts:
-            remote_id = remote.get("id")
-            schedule = self.sub2api.schedule_kind(remote)
-            email = self.sub2api.account_email(remote)
-            child = await self._active_child(db, remote_id=remote_id, email=email)
-            last_reauth = str(child.last_reauth_code or "") if child is not None else ""
+            child = await self._active_child(db, remote_id=remote.get("id"), email=self.sub2api.account_email(remote))
+            if child is None:
+                continue
+            workspace = await self._joined_workspace(db, child, remote.get("id"))
+            kind = self.sub2api.schedule_kind(remote).get("kind") or ""
+            snapshot = official_snapshots.get((child.id, workspace.id)) if workspace else None
+            if (snapshot is not None and not snapshot.success and snapshot.http_status == 401
+                    and snapshot.error_source == "official_quota"
+                    and snapshot.credential_revision == int(child.credential_revision or 1)):
+                kind = "401"
             reason = classify_rotate_reason(
-                kind=schedule.get("kind") or "",
-                last_reauth_code=last_reauth,
+                kind=kind, last_reauth_code=child.last_reauth_code or "",
                 on_deactivated=bool(cfg.get("auto_rotate_on_deactivated", True)),
                 on_weekly_limit=bool(cfg.get("auto_rotate_on_weekly_limit", True)),
             )
-            if not reason:
+            if not reason or (child.next_eligible_at and as_utc(child.next_eligible_at) > stamp):
                 continue
-            if child is None:
+            if (workspace is None or workspace.status != "active" or workspace.id in occupied
+                    or not rotation_workspace_enabled(cfg, workspace.id)):
                 stats["skipped"] += 1
                 continue
-            if child.next_eligible_at and child.next_eligible_at > stamp:
-                continue
-            workspace = await self._joined_workspace(db, child)
-            if workspace is None or workspace.id in occupied:
-                stats["skipped"] += 1
-                continue
-            gate = await automation_gate(db, remote_account_id=remote_id, email=email, workspace_id=workspace.id)
+            gate = await automation_gate(db, remote_account_id=remote.get("id"), email=child.email, workspace_id=workspace.id)
             if not gate.get("allow"):
                 stats["skipped"] += 1
-                if gate.get("error_code") == "identity_conflict":
-                    stats["conflict"] += 1
-                    if child is not None:
-                        child.last_reauth_code = "identity_conflict"
+                stats["conflict"] += int(gate.get("error_code") == "identity_conflict")
                 continue
-            due_at = child.next_eligible_at or stamp
-            candidates.append((due_at, remote, child, workspace, reason))
+            if daily_auto_rotate_limit_reached(await self.count_today_auto_rotates(db, workspace.id, stamp), daily_limit):
+                stats["capped"] += 1
+                continue
+            candidates.append((as_utc(child.next_eligible_at) if child.next_eligible_at else stamp, child.id, remote, child, workspace, reason))
         stats["scanned"] = len(candidates)
-        if not candidates:
-            await db.commit()
-            return stats
-        candidates.sort(key=lambda item: (item[0], int(item[2].id)))
-        remote, child, workspace, reason = candidates[0][1], candidates[0][2], candidates[0][3], candidates[0][4]
-        email = self.sub2api.account_email(remote) or child.email
-        today_count = await self.count_today_auto_rotates(db, workspace.id, stamp)
-        if daily_auto_rotate_limit_reached(today_count, daily_limit):
-            stats["capped"] = 1
-            stats["skipped"] = 1
-            stats["email"] = email
-            return stats
-        confirmed = {"ok": True, "usage": None, "next_eligible_at": None}
-        if reason == "weekly_limit":
-            confirmed = await self._confirm_weekly_limit(db, account=child, remote_id=remote.get("id"))
+        for _, _, remote, child, workspace, reason in sorted(candidates, key=lambda item: item[:2]):
+            stats.update(email=child.email, reason=reason)
+            confirmed = {"ok": True}
+            if reason == "weekly_limit":
+                confirmed = await self._confirm_weekly_limit(db, account=child, remote_id=remote.get("id"), workspace_id=workspace.id)
+            elif reason == "unauthorized":
+                confirmed = await self._confirm_unauthorized(db, account=child, workspace_id=workspace.id)
             if not confirmed.get("ok"):
-                code = str(confirmed.get("code") or "")
-                stats["email"] = email
-                stats["reason"] = reason
-                if code == "weekly_limit_not_confirmed":
-                    child.next_eligible_at = stamp + timedelta(hours=1)
-                    stats["skipped"] = 1
-                elif code == "usage_confirm_failed":
-                    child.next_eligible_at = rotate_backoff_at(stamp, int(child.quota_probe_fail_count or 0) + 1)
-                    stats["failed"] = 1
-                else:
-                    stats["skipped"] = 1
+                child.next_eligible_at = stamp + timedelta(minutes=5)
+                stats["skipped"] += 1
                 await db.commit()
-                return stats
-        next_eligible_at = confirmed.get("next_eligible_at")
-        op = await operation_store.create(
-            db,
-            op_type="rotate",
-            workspace_id=workspace.id,
-            account_id=child.id,
-            email=email,
-            input_payload={
-                "workspace_id": workspace.id,
-                "email": email,
-                "reason": reason,
-                "force_refill": bool(cfg.get("auto_rotate_force_refill")),
-                "account_id": remote.get("id"),
-            },
-            source="auto",
-        )
-        result = await self.run_rotate_saga(
-            db,
-            job_id=op.public_id,
-            workspace_id=workspace.id,
-            email=email,
-            reason=reason,
-            force_refill=bool(cfg.get("auto_rotate_force_refill")),
-            next_eligible_at=next_eligible_at,
-            account=remote,
-            usage=confirmed.get("usage"),
-            skip_confirm=True,
-            now=stamp,
-            refill=refill,
-            in_test=in_test,
-        )
-        code = str(result.get("error_code") or "")
-        status = rotate_terminal_status(success=bool(result.get("success")), error_code=code)
-        await operation_store.finish(db, op, {"success": bool(result.get("success")), "status": status, **result})
-        stats["email"] = email
-        stats["reason"] = reason
-        if result.get("success"):
-            stats["rotated"] = 1
-            child.next_eligible_at = stamp + timedelta(hours=12)
-        elif code == "vacancy_not_safe_to_refill":
-            stats["kicked_only"] = 1
-            child.next_eligible_at = stamp + timedelta(hours=12)
-        elif code == "identity_conflict":
-            stats["conflict"] = 1
-            stats["failed"] = 1
-        else:
-            stats["failed"] = 1
-            child.next_eligible_at = rotate_backoff_at(stamp, 1)
+                continue
+            if settings is None:
+                cfg = await self.load_settings(db)
+            if not rotation_workspace_enabled(cfg, workspace.id):
+                stats["skipped"] += 1
+                continue
+            op, blocker = await operation_store.create_workspace_locked(
+                db, op_type="rotate", workspace_id=workspace.id, account_id=child.id,
+                email=child.email, source="auto",
+                input_payload={"workspace_id": workspace.id, "email": child.email, "reason": reason},
+            )
+            if blocker:
+                stats["skipped"] += 1
+                continue
+            await db.commit()
+            context = {"role": "owner", "seat_intent": "workspace_default"}
+            preflight_passed = False
+            try:
+                if not in_test:
+                    context = await preflight(self, db, workspace, child)
+                async def automatic_refill(session, **kwargs):
+                    return await refill_and_publish(self, session, seat_intent=context["seat_intent"], **kwargs)
+                preflight_passed = True
+                await self._mark_step(db, op.public_id, "preflight", state="success", result=context)
+                await db.refresh(op)
+                cancelled = await operation_store.check_cancel(db, op)
+                current_cfg = cfg if settings is not None else await self.load_settings(db)
+                if not rotation_workspace_enabled(current_cfg, workspace.id):
+                    result = {"success": False, "status": "cancelled", "error_code": "rotation_scope_disabled",
+                              "error": "自动轮转已关闭或此工作空间已移出启用范围，未踢人"}
+                elif cancelled:
+                    result = cancelled
+                else:
+                    await operation_store.note(db, op, "confirm_trigger", "已确认轮转条件，开始暂停、移出和补位")
+                    await db.commit()
+                    result = await self.run_rotate_saga(
+                        db, job_id=op.public_id, workspace_id=workspace.id, email=child.email,
+                        reason=reason, force_refill=bool(cfg.get("auto_rotate_force_refill")),
+                        next_eligible_at=confirmed.get("next_eligible_at"), account=remote,
+                        usage=confirmed.get("usage"), skip_confirm=True, now=stamp,
+                        refill=refill or automatic_refill, in_test=in_test, role=context["role"],
+                    )
+            except asyncio.CancelledError:
+                result = {"success": False, "status": "manual_required", "error_code": "rotation_interrupted",
+                          "error": "轮转已中断，保留账号和已完成步骤，请核对后继续"}
+            except Exception:
+                logger.exception("automatic rotation failed operation_id=%s", op.public_id)
+                result = {"success": False, "status": "manual_required" if preflight_passed else "failed",
+                          "error_code": "rotation_failed" if preflight_passed else "rotation_preflight_failed",
+                          "error": "轮转未完成，请核对任务；不会自动重复踢人或注册" if preflight_passed else
+                          "前置检查未通过：请核对母号代理、HME、验证码邮箱、Sub2API分组和原席位；5分钟后重查"}
+            code = str(result.get("error_code") or "")
+            result.setdefault("status", rotate_terminal_status(success=bool(result.get("success")), error_code=code))
+            await db.refresh(op)
+            await db.refresh(child)
+            await operation_store.finish(db, op, result)
+            if result.get("success"):
+                stats["rotated"] = 1
+            elif code == "vacancy_not_safe_to_refill":
+                stats["kicked_only"] = 1
+            else:
+                stats["failed"] += 1
+            # Keep the official reset time set during departure; never shorten it to 12h.
+            if child.operational_state != "standby":
+                child.next_eligible_at = stamp + timedelta(minutes=5)
+            await db.commit()
+            if not in_test:
+                await refresh_after_rotation(db, op.workspace_id)
+            return stats
         await db.commit()
         return stats
 

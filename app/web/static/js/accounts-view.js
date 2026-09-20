@@ -620,7 +620,7 @@
         const node = document.getElementById("management-remote-status");
         if (node) node.textContent = "Sub2API 核对失败，将自动重试；显示的是上次状态";
       },
-      delay: result => result.refreshing ? 2000 : 30000,
+      delay: result => result.refreshing ? 2000 : 15000,
     });
     await poller.refresh();
     void remotePoller.refresh();

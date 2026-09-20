@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -34,9 +34,10 @@ class RotatePolicyTests(unittest.TestCase):
         self.assertTrue(daily_auto_rotate_limit_reached(2))
         self.assertFalse(daily_auto_rotate_limit_reached(1))
 
-    def test_rotate_queue_skips_five_hour_and_token_401(self):
+    def test_rotate_queue_includes_401_but_skips_five_hour(self):
         self.assertIsNone(classify_rotate_reason(kind="5h"))
-        self.assertIsNone(classify_rotate_reason(kind="401"))
+        self.assertEqual(classify_rotate_reason(kind="401"), "unauthorized")
+        self.assertIsNone(classify_rotate_reason(kind="403"))
         self.assertEqual(
             classify_rotate_reason(kind="401", last_reauth_code="account_deactivated"),
             "deactivated",
@@ -113,10 +114,13 @@ class _FakeQuota:
         self.snapshot = snapshot
         self.probed = 0
 
+    async def latest_official_by_contexts(self, db):
+        return {}
+
     async def latest_official(self, db, account_id):
         return self.snapshot
 
-    async def probe_account(self, db, account):
+    async def probe_account(self, db, account, **kwargs):
         self.probed += 1
         return self.snapshot
 
@@ -181,6 +185,7 @@ class RotateSagaTests(unittest.IsolatedAsyncioTestCase):
     def _settings(self, **overrides):
         payload = {
             "auto_rotate_enabled": True,
+            "auto_rotate_scope": "all",
             "auto_rotate_on_deactivated": True,
             "auto_rotate_on_weekly_limit": True,
             "auto_rotate_force_refill": False,

@@ -794,6 +794,9 @@ async def account_sub2api_push(
         except Exception as exc:
             schedulable_error = str(exc)
 
+    if binding is not None and not schedulable_error:
+        from app.application.sub2api_status import record_readback
+        await record_readback(db, binding, account, remote)
     updated_fields = sorted(update_body.keys()) if action == "update" else sorted(create_body.keys())
     if schedulable is not None:
         updated_fields.append("schedulable")

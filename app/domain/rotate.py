@@ -1,4 +1,4 @@
-"""Auto rotate policy. 5h and 401 never kick; weekly limit needs official 7d=100%."""
+"""Auto rotate candidates require fresh official confirmation; 5h alone never kicks."""
 
 from __future__ import annotations
 
@@ -16,8 +16,18 @@ DEFAULT_AUTO_ROTATE_DRAIN_SECONDS = 2
 KICK_COOLDOWN_SECONDS = 10 * 60
 MAX_ROTATE_BACKOFF_HOURS = 6
 
-UNBIND_SUB2API_REASONS = frozenset({"weekly_limit", "deactivated"})
+UNBIND_SUB2API_REASONS = frozenset({"weekly_limit", "deactivated", "unauthorized"})
 WORKSPACE_LOCK_ACTIONS = ("rotate", "onboard", "reregister")
+
+
+def rotation_workspace_enabled(settings: dict, workspace_id: int | None) -> bool:
+    """Fail closed unless the master switch and explicit workspace scope both allow it."""
+    if not settings.get("auto_rotate_enabled") or workspace_id is None:
+        return False
+    if settings.get("auto_rotate_scope") == "all":
+        return True
+    return (settings.get("auto_rotate_scope", "selected") == "selected"
+            and workspace_id in settings.get("auto_rotate_workspace_ids", []))
 
 
 def classify_rotate_reason(
@@ -27,12 +37,14 @@ def classify_rotate_reason(
     on_deactivated: bool = True,
     on_weekly_limit: bool = True,
 ) -> str | None:
-    """Layer 3 candidates: deactivated or confirmed weekly limit. 5h and 401 stay out."""
+    """Classify candidates only; the caller must confirm weekly limits and 401 live."""
     code = str(last_reauth_code or "")
     label = str(kind or "")
     if on_deactivated and code == "account_deactivated":
         return "deactivated"
-    if label in {"401", "5h", "phone", "403"}:
+    if label == "401":
+        return "unauthorized"
+    if label in {"5h", "phone", "403"}:
         return None
     if on_weekly_limit and label == "429":
         return "weekly_limit"

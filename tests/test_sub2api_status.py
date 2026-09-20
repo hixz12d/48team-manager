@@ -181,6 +181,22 @@ class RemoteAccountStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已授权", health["health"]["label"])
 
 
+    async def test_write_readback_is_visible_without_waiting_for_inventory(self):
+        await status.record_readback(self.db, self.binding, self.account, self.remote)
+        await self.db.commit()
+        self.assertEqual((await self.current())["state"], "healthy")
+        self.list_mock.assert_not_awaited()
+
+    async def test_older_inflight_inventory_cannot_overwrite_new_write_receipt(self):
+        async def old_inventory(*args):
+            await status.record_readback(self.db, self.binding, self.account, self.remote)
+            await self.db.commit()
+            return [{**self.remote, "status": "inactive", "schedulable": False}]
+        self.list_mock.side_effect = old_inventory
+        await status.refresh(self.db, force=True)
+        self.assertEqual((await self.current())["state"], "healthy")
+
+
 class InventoryTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_malformed_success_response_is_not_an_empty_inventory(self):
         from app.integrations.sub2api.client import Sub2ApiClient

@@ -22,6 +22,7 @@ function environment() {
     document,
     Option: function(label, value) { this.label = label; this.value = value; },
     setButtonBusy() {},
+    watchInviteProgress: () => () => {},
     postAction: async (key, url, body) => { calls.push({key, url, body}); return {ok: true}; },
     handleActionResult: async () => {},
     reloadTeamDetails: async () => {},

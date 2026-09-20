@@ -120,6 +120,17 @@
           </div>
         </section>
         {% elif page == 'accounts' %}
+        <section class="panel" aria-label="自动轮转">
+          <div class="panel-header">
+            <span class="panel-title">自动轮转</span>
+            <button type="button" class="button" id="auto-rotation-toggle" aria-pressed="false" disabled>读取状态…</button>
+          </div>
+          <div class="panel-body stack">
+            <p class="hint">开启后持续检查周额度耗尽、确认的 401 或已停用的子号，自动补位、授权并同步到 Sub2API。使用 HME 和已配置的手机号池。</p>
+            <p id="auto-rotation-status" class="muted" role="status">正在读取后台状态…</p>
+            <a href="/settings#auto-rotation-scope">选择工作空间、批量启用或设置全局范围</a>
+          </div>
+        </section>
         <section class="management-summary" aria-label="账号与团队摘要">
           <button type="button" data-management-view="teams"><span>团队</span><strong id="summary-teams">—</strong><small>已登记团队</small></button>
           <button type="button" data-management-view="all"><span>已管理账号</span><strong id="summary-accounts">—</strong><small>跨团队去重</small></button>
@@ -453,6 +464,33 @@
                     </span>
                     <input type="checkbox" name="auto_reauth">
                   </label>
+                  <label class="setting-row">
+                    <span>
+                      <strong>自动轮转并同步 Sub2API</strong>
+                      <span class="hint">每分钟检查周额度耗尽、确认的 401 或已停用的子号；补位继承原角色和席位。401 先重新检测，授权恢复则不换号；5h 用尽不直接踢人。</span>
+                      <span class="hint">关闭后不再启动新轮转或同步重试，正在执行的任务请在任务页取消。</span>
+                    </span>
+                    <input type="checkbox" name="auto_rotate">
+                  </label>
+                  <label id="auto-rotation-scope">自动轮转启用范围
+                    <select name="auto_rotate_scope">
+                      <option value="selected">仅选中的工作空间（小范围测试）</option>
+                      <option value="all">全部工作空间（包括以后新增的）</option>
+                    </select>
+                  </label>
+                  <fieldset id="auto-rotation-workspaces" class="stack">
+                    <legend>选择一个或多个工作空间</legend>
+                    <div class="toolbar">
+                      <button type="button" class="button ghost" id="auto-rotation-select-listed">全选列表</button>
+                      <button type="button" class="button ghost" id="auto-rotation-clear-listed">清空选择</button>
+                    </div>
+                    <div id="auto-rotation-workspace-list" class="stack"></div>
+                  </fieldset>
+                  <p class="hint" id="auto-rotation-scope-hint">默认关闭且不选择任何工作空间。勾选范围后，还需打开总开关并保存。</p>
+                  <label>每个团队每日最多轮转
+                    <input name="auto_rotate_daily_limit" type="number" min="0" max="50" required>
+                    <span class="hint">按北京时间统计已移出的次数，补位失败也计入；0 表示不轮转。同步重试不占次数。</span>
+                  </label>
                 </div>
               </article>
               <article class="panel">
@@ -661,6 +699,7 @@
   <script src="/static/js/workspace-switch-count.js"></script>
   <script src="/static/js/polling.js"></script>
   <script src="/static/js/accounts-view.js"></script>
+  {% if page == 'accounts' %}<script src="/static/js/auto-rotation.js"></script>{% endif %}
   <script src="/static/js/sub2api-defaults.js"></script>
   <script src="/static/js/sub2api-state-view.js"></script>
   {% if page == 'overview' %}<script src="/static/js/runtime-status.js"></script>{% endif %}

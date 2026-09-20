@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from sqlalchemy import select
@@ -16,14 +17,14 @@ SECRET_MASK = "••••••"
 
 
 async def get_setting_value(db: AsyncSession, key: str, default: str | None = None) -> str | None:
-    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == key))).scalar_one_or_none()
+    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == key).execution_options(populate_existing=True))).scalar_one_or_none()
     if row is None or row.value is None:
         return default
     return row.value
 
 
 async def upsert_setting(db: AsyncSession, key: str, value: str, description: str | None = None) -> SystemSetting:
-    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == key))).scalar_one_or_none()
+    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == key).execution_options(populate_existing=True))).scalar_one_or_none()
     if row is None:
         row = SystemSetting(key=key, value=value, description=description)
         db.add(row)
@@ -88,6 +89,11 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     from app.application.reauth import reauth_service
 
     reauth_cfg = await reauth_service.load_settings(db)
+    from app.application.rotate import rotate_service
+    rotate_cfg = await rotate_service.load_settings(db)
+    from app.persistence.models.identity import Workspace
+    rotation_workspaces = [{"id": row.id, "name": row.name or f"Workspace {row.id}", "status": row.status}
+                           for row in await db.scalars(select(Workspace).order_by(Workspace.id))]
     from app.application.quota import quota_service
     quota_runtime = await quota_service.runtime_summary(db)
     stored_quota = quota_runtime["effective_enabled"]
@@ -124,6 +130,8 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
             "official_quota_probe": stored_quota,
             "quota_runtime": quota_runtime,
             "auto_reauth": reauth_cfg,
+            "auto_rotate": rotate_cfg,
+            "rotation_workspaces": rotation_workspaces,
             "invite_seat_wire": invite_seat_wire,
         },
         "resources": {
@@ -198,6 +206,29 @@ async def save_console_settings(db: AsyncSession, payload) -> dict[str, Any]:
             "auto_reauth_enabled",
             "true" if payload.automation.auto_reauth else "false",
         )
+    if payload.automation is not None:
+        from app.application.rotate import rotate_service
+        from app.persistence.models.identity import Workspace
+        automation = payload.automation
+        current = await rotate_service.load_settings(db)
+        scope = automation.auto_rotate_scope or current["auto_rotate_scope"]
+        ids = (sorted(set(automation.auto_rotate_workspace_ids)) if automation.auto_rotate_workspace_ids is not None
+               else current["auto_rotate_workspace_ids"])
+        enabled = automation.auto_rotate if automation.auto_rotate is not None else current["auto_rotate_enabled"]
+        if automation.auto_rotate_workspace_ids is not None and ids:
+            existing = set(await db.scalars(select(Workspace.id).where(Workspace.id.in_(ids))))
+            if existing != set(ids):
+                raise ValueError("所选工作空间已不存在，请刷新后重新选择")
+        if enabled and scope == "selected" and not ids:
+            raise ValueError("请先选择至少一个工作空间，或明确选择全部工作空间")
+        if automation.auto_rotate_scope is not None:
+            await upsert_setting(db, "auto_rotate_scope", scope)
+        if automation.auto_rotate_workspace_ids is not None:
+            await upsert_setting(db, "auto_rotate_workspace_ids", json.dumps(ids))
+        if payload.automation.auto_rotate is not None:
+            await upsert_setting(db, "auto_rotate_enabled", "true" if payload.automation.auto_rotate else "false")
+        if payload.automation.auto_rotate_daily_limit is not None:
+            await upsert_setting(db, "auto_rotate_daily_limit", str(payload.automation.auto_rotate_daily_limit))
     if payload.sub2api_push is not None:
         from app.application.sub2api_defaults import save_defaults
 

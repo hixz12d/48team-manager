@@ -70,6 +70,13 @@ OPERATION_TYPE_LABELS = {
 }
 
 BUSINESS_STEP_LABELS = {
+    "preflight": "核对补位资源和原席位",
+    "confirm_trigger": "确认轮转条件",
+    "paused": "已暂停旧账号调度",
+    "drained": "等待旧请求结束",
+    "official_removed": "已确认旧账号离组",
+    "kicked": "旧账号已移出",
+    "refill": "完成补位与同步",
     "queued": "排队",
     "done": "结束",
     "success": "结束",

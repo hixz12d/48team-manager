@@ -108,6 +108,8 @@ Long commands return immediately:
 
 Operations persist across refresh, navigation, browser close, and container restart. Completed steps are not replayed.
 
+自动轮转支持账号页开关、每团队每日上限、补位 OAuth 与号码池、Sub2API 推送及有界同步重试。后台每分钟扫描，远端状态每15秒核对；启用与失败处理见 [自动轮转说明](docs/automatic-rotation.md)。
+
 ## Deployment
 
 Default machine is documented in [VPS.md](VPS.md). This project only lives in `/opt/team48`.

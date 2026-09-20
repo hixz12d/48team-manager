@@ -20,7 +20,7 @@ from app.application.resources.phones import phone_source_for
 from app.application.resources.proxies import proxy_profile_service
 from app.application.tokens import auth_service, decrypt_secret, encrypt_secret
 from app.application.workspaces import workspace_service
-from app.core.time import utcnow
+from app.core.time import as_utc, utcnow
 from app.domain.automation import WORKSPACE_LOCK_ACTIONS
 from app.domain.identity import (
     LOCAL_PURPOSE_CHILD,
@@ -211,6 +211,7 @@ class OnboardService:
         seat_intent: str = "workspace_default",
         oauth_signup: bool = False,
         browser_executable: str = "",
+        use_phone_pool: bool = False,
     ) -> dict[str, Any]:
         seat_intent = parse_invite_seat_intent(seat_intent).value
         from app.core.config import load_settings
@@ -284,7 +285,7 @@ class OnboardService:
                 result = await authorize_joined(
                     self, db, result, workspace_id=workspace_id, phone_line=phone_line,
                     role=role, seat_intent=seat_intent, job_id=job_id, executable_path=browser_executable,
-                    browser_session=browser_session,
+                    browser_session=browser_session, use_phone_pool=use_phone_pool,
                 )
             return result
         except hme_service.HmeError as exc:
@@ -750,7 +751,7 @@ class OnboardService:
         for item in rows:
             if skip and item.email == skip:
                 continue
-            if item.updated_at and item.updated_at > cooldown and item.next_eligible_at is None:
+            if item.updated_at and as_utc(item.updated_at) > as_utc(cooldown) and item.next_eligible_at is None:
                 continue
             return item
         return None
@@ -769,6 +770,9 @@ class OnboardService:
         skip_email: str = "",
         in_test: bool = False,
         role: str = "owner",
+        seat_intent: str = "workspace_default",
+        oauth_signup: bool = False,
+        use_phone_pool: bool = False,
     ) -> dict[str, Any]:
         replacement = await self.pick_replacement(db, skip_email=skip_email, child_id=child_id, email_line=email_line)
         if replacement is None and not str(email_line or "").strip():
@@ -788,6 +792,9 @@ class OnboardService:
             job_id=job_id,
             in_test=in_test,
             role=role,
+            seat_intent=seat_intent,
+            oauth_signup=oauth_signup,
+            use_phone_pool=use_phone_pool,
         )
 
 

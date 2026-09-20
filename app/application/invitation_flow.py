@@ -106,7 +106,7 @@ async def prepare(service, db, *, workspace_id, email_line, phone_line, role, se
     return email_line, None
 
 
-async def authorize_joined(service, db, result, *, workspace_id, phone_line, role, seat_intent, job_id, executable_path, browser_session=None):
+async def authorize_joined(service, db, result, *, workspace_id, phone_line, role, seat_intent, job_id, executable_path, browser_session=None, use_phone_pool=False):
     """Only the live membership gate can unlock OAuth; never register in OAuth."""
     from app.application.oauth_signup import run_invited_oauth_signup
 
@@ -129,7 +129,7 @@ async def authorize_joined(service, db, result, *, workspace_id, phone_line, rol
             db, child=child, workspace=workspace, password=decrypt_secret(child.password_encrypted),
             pickup_url=parsed.get("pickup_url") or "", use_cloudflare=not parsed.get("pickup_url"),
             cf_config=cf, job_id=job_id, executable_path=executable_path, phone_line=phone_line,
-            browser_session=browser_session,
+            browser_session=browser_session, use_phone_pool=use_phone_pool,
         )
         if not outcome.get("ok"):
             child.auth_state = "oauth_required"
