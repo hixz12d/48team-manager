@@ -120,14 +120,16 @@ def main():
         page.locator('[data-focus-key="team:1"]').click()
         row = page.locator(f'.team-member-row[data-member-email="{email}"]')
         row.locator("summary").click()
-        page.on("dialog", lambda dialog: dialog.accept())
         row.get_by_role("button", name="移出官方团队").click()
+        page.wait_for_selector("#confirm-sheet:not([hidden]) #confirm-submit")
+        page.click("#confirm-submit")
+        page.wait_for_selector("#confirm-sheet", state="hidden")
         page.locator(".team-former-members").wait_for()
         page.locator(".team-former-members").get_by_role("button", name="重新邀请").click()
-        assert page.locator(".team-reinvite-form select").input_value() == "member"
+        assert page.locator('.team-reinvite-form select[name="role"]').input_value() == "member"
         page.locator(".team-reinvite-form").get_by_role("button", name="发送邀请").click()
         page.wait_for_function('!document.querySelector(".team-reinvite-form [role=alert]").hidden')
-        assert page.locator(".team-reinvite-form select").input_value() == "member"
+        assert page.locator('.team-reinvite-form select[name="role"]').input_value() == "member"
         page.wait_for_timeout(5000)
         for width in (1440, 390):
             page.set_viewport_size({"width": width, "height": 1000 if width > 500 else 844})
@@ -138,7 +140,7 @@ def main():
         page.locator(".team-reinvite-form").get_by_role("button", name="发送邀请").click()
         page.wait_for_function('!document.querySelector(".team-former-members")')
         assert "等待接受邀请" in page.locator(f'.team-member-row[data-member-email="{email}"]').inner_text()
-        assert writes[-1]["body"] == {"email": email, "role": "member"}
+        assert writes[-1]["body"] == {"email": email, "role": "member", "seat_intent": "workspace_default"}
         assert not any("onboard" in w["path"] or "reauth" in w["path"] or "sub2api" in w["path"] for w in writes)
         page.goto(BASE + "/")
         page.wait_for_selector(".runtime-operation")

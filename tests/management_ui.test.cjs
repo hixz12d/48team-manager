@@ -70,3 +70,38 @@ test('attention and remote filters still inspect all rows before slicing', () =>
   assert.equal(filteredEntries({accounts}, 'attention', new URLSearchParams()).length, 1);
   assert.equal(filteredEntries({accounts}, 'all', new URLSearchParams('remote=missing'))[0].account.id, 1);
 });
+
+const {sortAccounts, activeFilters} = window.Team48Accounts;
+test('column sorting orders the whole filtered set, not just the visible page', () => {
+  const accounts = [
+    {id:1, email:'b@example.com', quota:{seven_day_used_percent:10}, latest_check:{checked_at:'2026-09-01T00:00:00Z'}},
+    {id:2, email:'a@example.com', quota:{seven_day_used_percent:90}, latest_check:{checked_at:'2026-09-03T00:00:00Z'}},
+    {id:3, email:'c@example.com', quota:{}, latest_check:{}},
+  ];
+  const ids = (sort) => [...sortAccounts(accounts, new URLSearchParams(sort))].map(a => a.id);
+  assert.deepEqual(ids('sort=email'), [2, 1, 3]);
+  assert.deepEqual(ids('sort=-email'), [3, 1, 2]);
+  assert.deepEqual(ids('sort=quota'), [3, 1, 2]);
+  assert.deepEqual(ids('sort=-checked'), [2, 1, 3]);
+  assert.deepEqual(ids(''), [1, 2, 3]);
+  assert.deepEqual(ids('sort=unknown'), [1, 2, 3]);
+  const entries = filteredEntries({accounts}, 'all', new URLSearchParams('sort=-quota'));
+  assert.deepEqual([...entries].map(entry => entry.account.id), [2, 1, 3]);
+  assert.deepEqual([...accounts].map(a => a.id), [1, 2, 3], 'sorting must not mutate the source list');
+});
+test('active filters ignore defaults so the clear control only appears when filtering', () => {
+  assert.deepEqual([...activeFilters(new URLSearchParams('view=all&purpose=all&health=all'))], []);
+  assert.deepEqual([...activeFilters(new URLSearchParams('q=north&team=7&remote=missing'))], ['q', 'team', 'remote']);
+  assert.deepEqual([...activeFilters(new URLSearchParams('q=all'))], ['q']);
+});
+
+test('numeric sorting distinguishes unknown from zero and keeps equal rows stable', () => {
+  const accounts = [
+    {id: 1, quota: {seven_day_used_percent: 0}},
+    {id: 2, quota: {seven_day_used_percent: null}},
+    {id: 3, quota: {seven_day_used_percent: 0}},
+  ];
+  const ids = sort => [...sortAccounts(accounts, new URLSearchParams({sort}))].map(a => a.id);
+  assert.deepEqual(ids('quota'), [2, 1, 3]);
+  assert.deepEqual(ids('-quota'), [1, 3, 2]);
+});

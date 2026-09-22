@@ -13,6 +13,19 @@ from tests.helpers import make_client
 from tests.test_sub2api_remote_state import fixture, INSTANCE
 
 
+def dismiss_confirm(page):
+    """In-app confirmation replaced window.confirm; cancel it and wait for the drawer to come back."""
+    page.wait_for_selector("#confirm-sheet:not([hidden]) #confirm-submit")
+    page.click("#confirm-sheet .confirm-actions [data-close-confirm]")
+    page.wait_for_selector("#confirm-sheet", state="hidden")
+
+
+def accept_confirm(page):
+    page.wait_for_selector("#confirm-sheet:not([hidden]) #confirm-submit")
+    page.click("#confirm-submit")
+    page.wait_for_selector("#confirm-sheet", state="hidden")
+
+
 def main():
     observed = {"snapshot": fixture(), "fail": False, "reads": 0, "retries": 0}
     observed["readbacks"] = 0
@@ -132,12 +145,14 @@ def main():
             assert observed["retries"] == 1
             observed["snapshot"]["access_token_readback"] = True
             delegate = panel.get_by_role("button", name="委托远端刷新", exact=True)
-            page.once("dialog", lambda dialog: dialog.dismiss())
             delegate.click()
+            dismiss_confirm(page)
+            # 确认弹窗关闭后抽屉必须恢复轮询与可用按钮，不能被当作已关闭。
+            page.wait_for_function("Array.from(document.querySelectorAll('[data-sub2api-state] button')).filter(b => !b.disabled).length >= 3")
             page.wait_for_function("!document.querySelector('[data-sub2api-state] button').disabled")
             assert observed["readbacks"] == 0, "preview/cancel fetched a secret"
-            page.once("dialog", lambda dialog: dialog.accept())
             delegate.click()
+            accept_confirm(page)
             page.wait_for_function("document.querySelector('[data-sub2api-state]').textContent.includes('当前刷新方：Sub2API')")
             assert observed["readbacks"] == 1
             assert panel.get_by_role("button", name="重新采用远端访问令牌").is_visible()
@@ -157,27 +172,27 @@ def main():
                     await db.commit()
             client.portal.call(local_reauthorized)
             recover_button = panel.get_by_role("button", name="验证新授权并恢复认证")
-            page.once("dialog", lambda dialog: dialog.dismiss())
             recover_button.click()
+            dismiss_confirm(page)
             page.wait_for_function("document.querySelector('[data-sub2api-state]').textContent.includes('已取消，未提交新授权')")
             assert observed["recoveries"] == 0
-            page.once("dialog", lambda dialog: dialog.accept())
             recover_button.click()
+            accept_confirm(page)
             page.wait_for_function("document.querySelector('[data-sub2api-state]').textContent.includes('匹配的认证错误已清除')")
             assert observed["recoveries"] == 1
             page.wait_for_function("document.querySelector('[data-sub2api-state]').textContent.includes('此版本身份与 Codex 服务访问已验证')")
             handback = panel.get_by_role("button", name="安全交回 Team", exact=True)
-            page.once("dialog", lambda dialog: dialog.dismiss())
             handback.click()
+            dismiss_confirm(page)
             page.wait_for_function("document.querySelector('[data-sub2api-state]').textContent.includes('已取消交回')")
             assert observed["handoff_calls"] == []
-            page.once("dialog", lambda dialog: dialog.accept())
             handback.click()
+            accept_confirm(page)
             panel.get_by_role("button", name="继续交回 Team", exact=True).wait_for()
             assert observed["handoff_calls"] == ["prepare"]
             observed["handoff_waiting"] = False
-            page.once("dialog", lambda dialog: dialog.accept())
             panel.get_by_role("button", name="继续交回 Team", exact=True).click()
+            accept_confirm(page)
             page.wait_for_function("document.querySelector('[data-sub2api-state]').textContent.includes('当前刷新方：Team（已安全交回）')")
             assert observed["handoff_calls"] == ["prepare", "prepare", "read", "ack"]
             assert len(observed["handoff_ids"]) == 1

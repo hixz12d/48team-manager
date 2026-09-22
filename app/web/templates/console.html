@@ -168,6 +168,7 @@
             <select class="filter" id="management-workspace" aria-label="团队"><option value="">全部团队</option></select>
             <button type="button" class="button" data-action-page="workspace-sync-all" title="同步全部团队的官方成员"><span aria-hidden="true">↻</span> 同步全部团队</button>
             <span class="toolbar-count muted" id="accounts-count"></span>
+            <button type="button" class="button ghost" id="accounts-clear-filters" hidden>清除筛选</button>
             <select class="filter" id="management-remote" aria-label="Sub2API 远端状态">
               <option value="all">全部 Sub2API 状态</option>
               <option value="missing">远端已删除 / 不存在</option><option value="healthy">远端正常</option>
@@ -178,6 +179,7 @@
             <button type="button" class="button" id="refresh-remote-status">核对 Sub2API 状态</button>
             <span id="management-remote-status" class="muted" role="status"></span>
           </div>
+          <div id="accounts-active-filters" class="management-filter-chips" aria-label="当前筛选" hidden></div>
           <p id="management-sync-status" class="management-sync-status" role="status" hidden></p>
           <div id="accounts-portfolio" class="management-list" aria-live="polite"></div>
           <nav id="accounts-pagination" class="management-pagination" aria-label="账号分页"></nav>
@@ -285,12 +287,12 @@
             <table class="data-table">
               <thead>
                 <tr>
-                  <th scope="col">号码</th>
-                  <th scope="col">状态</th>
-                  <th scope="col" class="num">成功 / 上限</th>
-                  <th scope="col" class="num">风险</th>
+                  <th scope="col" data-sort="number">号码</th>
+                  <th scope="col" data-sort="status">状态</th>
+                  <th scope="col" class="num" data-sort="uses">成功 / 上限</th>
+                  <th scope="col" class="num" data-sort="risk">风险</th>
                   <th scope="col">当前租约</th>
-                  <th scope="col">冷却到</th>
+                  <th scope="col" data-sort="cooldown">冷却到</th>
                   <th scope="col">最后结果</th>
                   <th scope="col" class="actions">操作</th>
                 </tr>
@@ -310,12 +312,12 @@
             <table class="data-table">
               <thead>
                 <tr>
-                  <th scope="col">别名</th>
-                  <th scope="col">本地状态</th>
+                  <th scope="col" data-sort="email">别名</th>
+                  <th scope="col" data-sort="state">本地状态</th>
                   <th scope="col">目标标签</th>
-                  <th scope="col">同步状态</th>
+                  <th scope="col" data-sort="pending">同步状态</th>
                   <th scope="col">任务租约</th>
-                  <th scope="col">到期</th>
+                  <th scope="col" data-sort="expires">到期</th>
                   <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>
@@ -334,13 +336,13 @@
             <table class="data-table">
               <thead>
                 <tr>
-                  <th scope="col">名称</th>
-                  <th scope="col">地区</th>
+                  <th scope="col" data-sort="name">名称</th>
+                  <th scope="col" data-sort="region">地区</th>
                   <th scope="col">出口 IP</th>
-                  <th scope="col">状态</th>
-                  <th scope="col">健康</th>
+                  <th scope="col" data-sort="status">状态</th>
+                  <th scope="col" data-sort="health">健康</th>
                   <th scope="col">地址</th>
-                  <th scope="col">检测时间</th>
+                  <th scope="col" data-sort="checked">检测时间</th>
                   <th scope="col" class="actions">操作</th>
                 </tr>
               </thead>

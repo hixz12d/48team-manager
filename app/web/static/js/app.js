@@ -469,20 +469,54 @@
       const textNode = document.createElement("span");
       textNode.textContent = message;
       item.append(textNode);
+      let timer = null;
+      let hovered = false, focused = false;
+      const hold = () => {
+        if (timer == null) return;
+        window.clearTimeout(timer);
+        timer = null;
+      };
+      const dismiss = () => {
+        hold();
+        item.remove();
+      };
+      // 失败和警告由人工关闭，避免批量结果被后续提示冲掉。
+      const sticky = tone === "error" || tone === "warning";
+      const schedule = () => {
+        if (sticky || hovered || focused || timer != null) return;
+        timer = window.setTimeout(dismiss, 6500);
+      };
       if (action && action.label && action.onClick) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "button ghost";
         button.textContent = action.label;
         button.addEventListener("click", () => {
-          item.remove();
+          dismiss();
           action.onClick();
         });
         item.append(button);
       }
-      while (region.children.length >= 3) region.firstElementChild.remove();
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "toast-close";
+      close.setAttribute("aria-label", "关闭提示");
+      close.textContent = "✕";
+      close.addEventListener("click", dismiss);
+      item.append(close);
+      item.dismissToast = dismiss;
+      item.addEventListener("mouseenter", () => { hovered = true; hold(); });
+      item.addEventListener("mouseleave", () => { hovered = false; schedule(); });
+      item.addEventListener("focusin", () => { focused = true; hold(); });
+      item.addEventListener("focusout", (event) => {
+        focused = item.contains(event.relatedTarget);
+        schedule();
+      });
+      item.dataset.sticky = String(sticky);
+      const transient = Array.from(region.children).filter(node => node.dataset.sticky !== "true");
+      if (!sticky) while (transient.length >= 3) transient.shift().dismissToast();
       region.append(item);
-      window.setTimeout(() => item.remove(), 6500);
+      schedule();
     }
 
   function operationTone(result) {
@@ -509,8 +543,10 @@
       return result;
     }
 
-  function confirmDanger(message) {
-    return window.confirm(message);
+  // 统一走应用内确认弹窗，不再使用阻塞的系统 window.confirm。
+  function confirmDanger(message, options = {}, trigger) {
+    const { title = "确认操作", subtitle = "", hint = "", items = [], confirmLabel = "确认", tone = "danger" } = options;
+    return openConfirm({ title, subtitle, message, hint, items, confirmLabel, tone }, trigger);
   }
 
   let confirmResolver = null;
@@ -521,7 +557,9 @@
     else closeOverlay();
     resolve?.(Boolean(ok));
   }
-  function openConfirm({ title, subtitle = "", message = "", hint = "", items = [], confirmLabel = "确认删除" } = {}, trigger) {
+  function openConfirm({ title, subtitle = "", message = "", hint = "", items = [], confirmLabel = "确认删除", tone = "danger" } = {}, trigger) {
+    // 后到的请求不能覆盖正在等待用户回答的确认。
+    if (confirmResolver) return Promise.resolve(false);
     return new Promise((resolve) => {
       confirmResolver = resolve;
       const titleEl = document.getElementById("confirm-title");
@@ -543,7 +581,10 @@
           listEl.append(li);
         });
       }
-      if (submit) submit.textContent = confirmLabel;
+      if (submit) {
+        submit.textContent = confirmLabel;
+        submit.className = `button ${tone === "danger" ? "danger" : "primary"}`;
+      }
       const options = { returnFocus: trigger, context: { kind: "confirm" }, initialFocus: "[data-close-confirm]" };
       if (getActiveOverlay() && getActiveOverlay() !== "confirm") replaceOverlay("confirm", options);
       else openOverlay("confirm", options);
@@ -974,6 +1015,61 @@
     items.forEach((item) => body.append(renderItem(item)));
   }
 
+  // 表头点击排序：仅用于一次性读入全量数据的资源表。
+  const tableSort = new Map();
+  const tableSnapshots = new Map();
+  const sortText = (value) => String(value ?? "").toLowerCase();
+  const sortTime = (value) => (value ? Date.parse(value) || 0 : 0);
+  const sortNumber = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : -1;
+  };
+
+  function renderSortableRows(bodyId, items, columns, renderItem, empty, sorters) {
+    tableSnapshots.set(bodyId, [bodyId, items, columns, renderItem, empty, sorters]);
+    const body = document.getElementById(bodyId);
+    const table = body?.closest("table");
+    const state = tableSort.get(bodyId) || { key: "", descending: false };
+    if (table && !table.dataset.sortBound) {
+      table.dataset.sortBound = "1";
+      table.querySelectorAll("th[data-sort]").forEach((th) => {
+        const key = th.dataset.sort;
+        if (!sorters[key]) return;
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.className = "table-sort";
+        trigger.textContent = th.textContent.trim();
+        trigger.title = "点击切换排序";
+        trigger.addEventListener("click", () => {
+          const current = tableSort.get(bodyId) || { key: "", descending: false };
+          const next = current.key !== key
+            ? { key, descending: false }
+            : current.descending ? { key: "", descending: false } : { key, descending: true };
+          tableSort.set(bodyId, next);
+          renderSortableRows(...tableSnapshots.get(bodyId));
+        });
+        th.replaceChildren(trigger);
+      });
+    }
+    table?.querySelectorAll("th[data-sort]").forEach((th) => {
+      const active = state.key === th.dataset.sort;
+      th.setAttribute("aria-sort", active ? (state.descending ? "descending" : "ascending") : "none");
+      const trigger = th.querySelector(".table-sort");
+      if (trigger) trigger.dataset.direction = active ? (state.descending ? "desc" : "asc") : "";
+    });
+    const read = sorters[state.key];
+    let ordered = items;
+    if (read) {
+      ordered = [...items].sort((left, right) => {
+        const a = read(left), b = read(right);
+        if (typeof a === "number" && typeof b === "number") return a - b;
+        return String(a).localeCompare(String(b), "zh-CN");
+      });
+      if (state.descending) ordered.reverse();
+    }
+    renderRows(bodyId, ordered, columns, renderItem, empty);
+  }
+
   function menuButton(kind, item) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1328,7 +1424,7 @@
     toggle.textContent = enable ? "启用" : "停用";
     toggle.addEventListener("click", async (event) => {
       event.stopPropagation();
-      if (!confirmDanger(`${enable ? "启用" : "停用"}手机号 ${item.number}？`)) return;
+      if (!await confirmDanger(`${enable ? "启用" : "停用"}手机号 ${item.number}？`, { title: enable ? "启用手机号" : "停用手机号", confirmLabel: enable ? "启用" : "停用", tone: "primary" })) return;
       toggle.disabled = true;
       try {
         const result = await patchAction(`phone-status-${item.id}`, `/api/resources/phones/${item.id}`, {
@@ -1693,7 +1789,7 @@ function hmeRow(item) {
     }
     if (kind === "account" && document.body.dataset.page === "accounts") window.Team48Accounts.decorateDetails(item, body, trigger);
     openOverlay("entity", { returnFocus: trigger, context: { kind, item }, initialFocus: "[data-close-sheet]" });
-    if (kind === "account") window.Team48Sub2ApiState?.mount(body, item, {get: fetchEntity, post: postAction, kvSection});
+    if (kind === "account") window.Team48Sub2ApiState?.mount(body, item, {get: fetchEntity, post: postAction, kvSection, confirm: confirmDanger});
   }
 
   function closeSheet() {
@@ -2046,7 +2142,7 @@ function hmeRow(item) {
         label: "清除记录",
         visible: (item) => !item.archived && ["success", "partial", "failed", "cancelled", "manual_required"].includes(item.state || item.status),
         run: async (item) => {
-          if (!confirmDanger(`确认清除任务 ${item.id}？记录会软归档，可在“已清除”恢复。`)) return;
+          if (!await confirmDanger(`确认清除任务 ${item.id}？`, { title: "清除任务记录", hint: "记录会软归档，可在“已清除”里恢复。", confirmLabel: "清除记录", tone: "primary" })) return;
           const result = await patchAction(`operation-archive-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/archive`, { reason: "manual_clear" });
           toast(result.ok ? "已清除记录" : (result.error || "清除失败"), result.ok ? "success" : "error");
           await bootPage();
@@ -2079,7 +2175,7 @@ function hmeRow(item) {
         label: "启用/停用",
         run: async (item) => {
           const enable = item.status !== "active";
-          if (!confirmDanger(`${enable ? "启用" : "停用"}手机号 ${item.number}？`)) return;
+          if (!await confirmDanger(`${enable ? "启用" : "停用"}手机号 ${item.number}？`, { title: enable ? "启用手机号" : "停用手机号", confirmLabel: enable ? "启用" : "停用", tone: "primary" })) return;
           const result = await patchAction(`phone-status-${item.id}`, `/api/resources/phones/${item.id}`, {
             status: enable ? "active" : "disabled",
           });
@@ -2091,7 +2187,7 @@ function hmeRow(item) {
         id: "phone.reset-cooldown",
         label: "重置冷却",
         run: async (item) => {
-          if (!confirmDanger(`确认重置 ${item.number} 的冷却时间？`)) return;
+          if (!await confirmDanger(`确认重置 ${item.number} 的冷却时间？`, { title: "重置冷却", hint: "重置后该号码会立刻回到可分配状态。", confirmLabel: "重置", tone: "primary" })) return;
           const result = await postAction(`phone-reset-${item.id}`, `/api/resources/phones/${item.id}/reset-cooldown`);
           toast(result.ok ? "冷却已重置" : (result.error || "重置失败"), result.ok ? "success" : "error");
           await bootPage();
@@ -2115,7 +2211,7 @@ function hmeRow(item) {
         label: "安全释放",
         visible: (item) => item.state === "reserved" && !item.pending,
         run: async (item) => {
-          if (!window.confirm(`确认安全释放 ${item.email}？仅 reserved 且未进入注册的租约可释放。`)) return;
+          if (!await confirmDanger(`确认安全释放 ${item.email}？`, { title: "安全释放 HME 别名", hint: "仅 reserved 且未进入注册的租约可释放。", confirmLabel: "释放" })) return;
           const result = await postAction(`hme-release-${item.id}`, `/api/resources/hme/${item.id}/release`);
           toast(result.ok ? "已释放" : (result.error || "释放失败"), result.ok ? "success" : "error");
           await bootPage();
@@ -2697,7 +2793,7 @@ function hmeRow(item) {
       form.append(emailLabel, replacementLabel, forceLabel, submit);
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!confirmDanger(`确认对 ${email.value} 执行受控轮转？这会修改官方 Team 席位。`)) return;
+        if (!await confirmDanger(`确认对 ${email.value} 执行受控轮转？`, { title: "执行受控轮转", items: ["会修改官方 Team 席位", "补位账号继承原角色和席位"], confirmLabel: "执行轮转" }, submit)) return;
         setButtonBusy(submit, true, "轮转中");
         try {
           const result = await postAction(`rotate-${workspace.id}-${email.value}`, `/api/workspaces/${workspace.id}/rotate`, {
@@ -3066,7 +3162,7 @@ function hmeRow(item) {
 
     async function changeTeamMemberRole(workspace, row, button, role) {
       const email = String(row.email || "").trim();
-      if (!email || !confirmDanger(`确认把 ${email} 的官方角色改为 ${role === "owner" ? "Owner" : "Member"}？`)) return;
+      if (!email || !(await confirmDanger(`确认把 ${email} 的官方角色改为 ${role === "owner" ? "Owner" : "Member"}？`, { title: "修改官方角色", confirmLabel: "修改角色" }, button))) return;
       setButtonBusy(button, true, "更新中");
       try {
         const body = { email, role };
@@ -3084,14 +3180,34 @@ function hmeRow(item) {
       const email = String(row.email || "").trim();
       const accountId = row.id || row.local_account_id;
       const kind = presentTeamMember(row).code;
-      const copy = mode === "purge"
-        ? `永久删除本地档案 ${email}？这会移出官方席位、下架 Sub2API 并清理本地档案，且不可恢复。`
+      const confirmCopy = mode === "purge"
+        ? {
+          title: "永久删除本地档案",
+          message: `永久删除 ${email} ？此操作不可恢复。`,
+          items: ["移出官方席位", "下架已绑定的 Sub2API 账号", "清理本地档案、凭据与历史"],
+          confirmLabel: "永久删除",
+        }
         : mode === "official"
           ? (kind === "invited"
-            ? `撤销官方邀请：${email}？保留本地账号与历史，以后可重新邀请。`
-            : `将此成员移出官方团队：${email}？保留本地账号、授权凭据、历史与费用记录；不会调整已购买席位数量。确认移出后会尝试暂停已绑定的 Sub2API 远端调度（不解绑、不删远端账号）。`)
-          : `只从本地移除 ${email}？官方 Team 不会改变。`;
-      if (!confirmDanger(copy)) return;
+            ? {
+              title: "撤销官方邀请",
+              message: `撤销对 ${email} 的官方邀请？`,
+              hint: "保留本地账号与历史，以后可重新邀请。",
+              confirmLabel: "撤销邀请",
+            }
+            : {
+              title: "移出官方团队",
+              message: `将 ${email} 移出官方团队？`,
+              items: ["保留本地账号、授权凭据、历史与费用记录", "不调整已购买的席位数量", "会尝试暂停已绑定的 Sub2API 远端调度（不解绑、不删远端账号）"],
+              confirmLabel: "移出团队",
+            })
+          : {
+            title: "从本地移除成员",
+            message: `只从本地移除 ${email} ？`,
+            hint: "官方 Team 不会改变。",
+            confirmLabel: "本地移除",
+          };
+      if (!await confirmDanger(confirmCopy.message, confirmCopy, button)) return;
       setButtonBusy(button, true, "处理中");
       try {
         let result;
@@ -4223,7 +4339,7 @@ function hmeRow(item) {
       bulk.addEventListener("click", async () => {
         const ids = Array.from(document.querySelectorAll(".operation-select:checked")).map((node) => node.dataset.publicId).filter(Boolean);
         if (!ids.length) return;
-        if (!confirmDanger(`确认清除当前选中的 ${ids.length} 条已完成任务？`)) return;
+        if (!await confirmDanger(`确认清除当前选中的 ${ids.length} 条已完成任务？`, { title: "批量清除任务记录", hint: "记录会软归档，可在“已清除”里恢复。", confirmLabel: "清除", tone: "primary" })) return;
         const result = await postAction("operations-bulk-archive", "/api/operations/bulk-archive", { public_ids: ids, reason: "bulk_clear" });
         toast(result.ok ? `已清除 ${result.count || ids.length} 条` : (result.error || "清除失败"), result.ok ? "success" : "error");
         await bootOperations();
@@ -4290,12 +4406,19 @@ function hmeRow(item) {
   async function bootPhones() {
     const payload = await fetchEntity("phone-list", "/api/resources/phones");
     const items = payload.items || [];
-    renderRows(
+    renderSortableRows(
       "phones-body",
       items,
       8,
       phoneRow,
-      emptyState("还没有手机号", "点「导入号码」，按 号码----接码链接 批量入库。")
+      emptyState("还没有手机号", "点「导入号码」，按 号码----接码链接 批量入库。"),
+      {
+        number: (item) => sortText(item.number),
+        status: (item) => sortText(item.status),
+        uses: (item) => sortNumber(item.used_count),
+        risk: (item) => sortNumber(item.risk_count),
+        cooldown: (item) => sortTime(item.cooldown_until),
+      }
     );
     setCount("phones-count", items.length, items.length);
   }
@@ -4303,12 +4426,18 @@ function hmeRow(item) {
   async function bootHme() {
     const payload = await fetchEntity("hme-list", "/api/resources/hme");
     const items = payload.items || [];
-    renderRows(
+    renderSortableRows(
       "hme-body",
       items,
       7,
       hmeRow,
-      emptyState("还没有 HME 占用记录", "领用别名后会显示本地占用和同步状态。")
+      emptyState("还没有 HME 占用记录", "领用别名后会显示本地占用和同步状态。"),
+      {
+        email: (item) => sortText(item.email),
+        state: (item) => sortText(item.state),
+        pending: (item) => (item.pending ? 0 : 1),
+        expires: (item) => sortTime(item.expires_at),
+      }
     );
     setCount("hme-count", items.length, items.length);
   }
@@ -4316,12 +4445,19 @@ function hmeRow(item) {
   async function bootProxies() {
     const payload = await fetchEntity("proxy-list", "/api/resources/proxies");
     const items = payload.items || [];
-    renderRows(
+    renderSortableRows(
       "proxies-body",
       items,
       8,
       proxyRow,
-      emptyState("暂无远端代理", "Sub2API 尚未返回可用的远端代理目录。")
+      emptyState("暂无远端代理", "Sub2API 尚未返回可用的远端代理目录。"),
+      {
+        name: (item) => sortText(item.name),
+        region: (item) => sortText(item.region),
+        status: (item) => sortText(item.status),
+        health: (item) => sortText(item.health),
+        checked: (item) => sortTime(item.checked_at),
+      }
     );
     setCount("proxies-count", items.length, items.length);
   }
@@ -4383,19 +4519,58 @@ function hmeRow(item) {
     }
   }
 
+  let paletteIndex = 0;
+
+  function paletteItems() {
+    return Array.from(commandList?.querySelectorAll("li[data-href]") || []);
+  }
+
+  function highlightPalette(index) {
+    const items = paletteItems();
+    if (!items.length) {
+      paletteIndex = 0;
+      return;
+    }
+    paletteIndex = (index + items.length) % items.length;
+    items.forEach((li, position) => {
+      const active = position === paletteIndex;
+      li.classList.toggle("is-active", active);
+      li.firstElementChild?.setAttribute("aria-current", String(active));
+    });
+    items[paletteIndex].scrollIntoView({ block: "nearest" });
+  }
+
+  function runPaletteItem(index) {
+    const target = paletteItems()[index]?.dataset.href;
+    if (!target) return;
+    palette?.close();
+    window.location.href = target;
+  }
+
   function renderPalette(query) {
+    if (!commandList) return;
     const q = query.trim().toLowerCase();
     commandList.replaceChildren();
     destinations
       .filter((item) => item.label.toLowerCase().includes(q) || item.label.includes(query.trim()))
       .forEach((item) => {
         const li = document.createElement("li");
-        li.textContent = item.label;
-        li.addEventListener("click", () => {
-          window.location.href = item.href;
-        });
+        li.dataset.href = item.href;
+        const option = document.createElement("button");
+        option.type = "button";
+        option.textContent = item.label;
+        option.addEventListener("click", () => runPaletteItem(paletteItems().indexOf(li)));
+        option.addEventListener("mousemove", () => highlightPalette(paletteItems().indexOf(li)));
+        li.append(option);
         commandList.append(li);
       });
+    if (!commandList.children.length) {
+      const empty = document.createElement("li");
+      empty.className = "palette-empty";
+      empty.textContent = "没有匹配的入口";
+      commandList.append(empty);
+    }
+    highlightPalette(0);
   }
 
   document.querySelector("[data-close-sheet]")?.addEventListener("click", closeSheet);
@@ -4476,6 +4651,7 @@ function hmeRow(item) {
     if (!getActiveOverlay() && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       palette.showModal();
+      commandInput.value = "";
       renderPalette("");
       commandInput.focus();
     }
@@ -4494,6 +4670,11 @@ function hmeRow(item) {
     handleFocusTrap(event);
   });
   commandInput?.addEventListener("input", () => renderPalette(commandInput.value));
+  commandInput?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") { event.preventDefault(); highlightPalette(paletteIndex + 1); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); highlightPalette(paletteIndex - 1); }
+    else if (event.key === "Enter") { event.preventDefault(); runPaletteItem(paletteIndex); }
+  });
   window.addEventListener("beforeunload", (event) => {
     stopPolling();
     if (!settingsDirty) return;

@@ -41,8 +41,8 @@
   function setQuery(key, value) {
     if (["q", "purpose", "health", "team", "view", "remote"].includes(key)) selected.clear();
     const params = query();
-    if (["q", "purpose", "health", "team", "view", "remote", "page_size"].includes(key)) params.delete("page");
-    if (!value || value === "all" && key !== "view") params.delete(key); else params.set(key, value);
+    if (["q", "purpose", "health", "team", "view", "remote", "sort", "page_size"].includes(key)) params.delete("page");
+    if (!value || value === "all" && ["purpose", "health", "remote"].includes(key)) params.delete(key); else params.set(key, value);
     history.replaceState(null, "", `${location.pathname}${params.size ? "?" + params : ""}`);
   }
   function button(text, action, cls = "button", key) {
@@ -53,6 +53,72 @@
       try { await action(node); } catch (error) { api?.toast(api.friendlyError(error), "error"); }
     });
     return node;
+  }
+  const FILTER_KEYS = ["q", "purpose", "health", "team", "remote"];
+  const filterSelectors = {purpose: "[data-filter='purpose']", health: "#management-health", team: "#management-workspace", remote: "#management-remote"};
+  const filterNames = {purpose: "用途", health: "检测", team: "团队", remote: "Sub2API"};
+  const activeFilters = params => FILTER_KEYS.filter(key => {
+    const value = params.get(key);
+    return Boolean(value) && (key === "q" || value !== "all");
+  });
+  function filterText(key, value) {
+    if (key === "q") return `搜索：${value}`;
+    const node = document.querySelector(filterSelectors[key] || "");
+    const option = node && [...node.options].find(item => item.value === value);
+    return `${filterNames[key]}：${option ? option.textContent : value}`;
+  }
+  function clearFilters(keys) {
+    keys.forEach(key => setQuery(key, ""));
+    if (keys.includes("q")) {
+      const search = document.getElementById("accounts-search");
+      if (search) search.value = "";
+    }
+    render(payload);
+  }
+  function renderActiveFilters(params) {
+    const box = document.getElementById("accounts-active-filters");
+    const clear = document.getElementById("accounts-clear-filters");
+    const active = activeFilters(params);
+    if (clear) clear.hidden = !active.length;
+    if (!box) return;
+    box.hidden = !active.length;
+    box.replaceChildren();
+    for (const key of active) {
+      const text = filterText(key, params.get(key));
+      const chip = el("span", "management-chip");
+      chip.append(el("span", "", text));
+      const remove = button("✕", () => clearFilters([key]), "management-chip-clear", `chip:${key}`);
+      remove.setAttribute("aria-label", `清除筛选 ${text}`);
+      chip.append(remove);
+      box.append(chip);
+    }
+  }
+  const severityOrder = {error: 0, warning: 1, info: 2, muted: 3, success: 4};
+  const numeric = value => {
+    if (value == null || value === "" || typeof value === "boolean") return -1;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : -1;
+  };
+  const sortValues = {
+    email: account => String(account?.email || account?.name || "").toLowerCase(),
+    health: account => `${severityOrder[account?.health?.severity] ?? 9}-${account?.health?.label || ""}`,
+    quota: account => Math.max(...contexts(account).map(context =>
+      numeric((context.last_success_quota || context.quota || {}).seven_day_used_percent))),
+    cost: account => numeric(fmt.usageWindow(account?.usage)?.user_cost),
+    checked: account => numeric(Date.parse(account?.latest_check?.checked_at)),
+  };
+  function sortAccounts(items, params) {
+    const raw = (params || query()).get("sort") || "";
+    const descending = raw.startsWith("-");
+    const read = sortValues[descending ? raw.slice(1) : raw];
+    if (!read) return items;
+    const sorted = [...items].sort((left, right) => {
+      const a = read(left), b = read(right);
+      const order = typeof a === "number" && typeof b === "number"
+        ? a - b : String(a).localeCompare(String(b), "zh-CN");
+      return descending ? -order : order;
+    });
+    return sorted;
   }
   function status(account) {
     const h = account.health || { label: kindLabels[account.kind] || "尚未检测", severity: "muted" };
@@ -236,7 +302,20 @@
       selectHead.append(box);
     }
     tr.append(selectHead);
-    ["账号 / 本地用途", "授权与检测", "官方额度 · 已用", "Sub2API 状态 / 计费", "最近检查", "操作"].forEach((text, i) => { const th = el("th", i === 3 || i === 5 ? "num" : "", text); th.scope = "col"; tr.append(th); });
+    const sortRaw = query().get("sort") || "";
+    [["账号 / 本地用途", "email"], ["授权与检测", "health"], ["官方额度 · 已用", "quota"],
+      ["Sub2API 状态 / 计费", "cost"], ["最近检查", "checked"], ["操作", ""]].forEach(([text, key], i) => {
+      const th = el("th", i === 3 || i === 5 ? "num" : ""); th.scope = "col";
+      if (!key) { th.textContent = text; tr.append(th); return; }
+      const active = sortRaw === key || sortRaw === `-${key}`;
+      const descending = sortRaw === `-${key}`;
+      th.setAttribute("aria-sort", active ? (descending ? "descending" : "ascending") : "none");
+      const trigger = button(`${text}${active ? (descending ? " ↓" : " ↑") : ""}`,
+        () => { setQuery("sort", active ? (descending ? "" : `-${key}`) : key); render(payload); },
+        "management-sort", `sort:${key}`);
+      trigger.title = descending ? "点击取消排序" : active ? "点击改为降序" : "点击按此列升序";
+      th.append(trigger); tr.append(th);
+    });
     head.append(tr); const body = el("tbody"); items.forEach(a => body.append(accountRow(a, group)));
     table.append(colgroup, head, body); scroll.append(table); return scroll;
   }
@@ -323,18 +402,18 @@
       const entries = [];
       for (const group of data.groups || []) {
         if (params.get("team") && String(group.id) !== params.get("team")) continue;
-        const items = (group.members || []).filter(a => matches(a, group, params));
+        const items = sortAccounts((group.members || []).filter(a => matches(a, group, params)), params);
         if (items.length) entries.push(...items.map(account => ({account, group})));
         else if (!(group.members || []).length && !["q", "health", "purpose", "remote"].some(key => params.get(key) && params.get(key) !== "all")) entries.push({account: null, group});
       }
-      entries.push(...(data.unassigned || []).filter(a => matches(a, null, params)).map(account => ({account, group: null})));
+      entries.push(...sortAccounts((data.unassigned || []).filter(a => matches(a, null, params)), params).map(account => ({account, group: null})));
       return entries;
     }
     let items = view === "unassigned" ? data.unassigned || [] : data.accounts || [];
     if (params.get("purpose") === "archived") items = [...(data.groups || []).flatMap(g => g.history || []), ...(data.unassigned || []).filter(a => a.state === "archived")];
     items = items.filter(a => matches(a, null, params));
     if (view === "attention") items = items.filter(a => !["healthy", "disabled"].includes(a.health?.code) || remoteItems(a).some(s => ["missing", "auth_error", "error", "identity_mismatch"].includes(s.state)));
-    return items.map(account => ({account, group: null}));
+    return sortAccounts(items, params).map(account => ({account, group: null}));
   }
   function pageWindow(entries, requestedPage, requestedSize) {
     const size = [10, 20, 50, 100].includes(Number(requestedSize)) ? Number(requestedSize) : 20;
@@ -392,6 +471,7 @@
     const remoteRefresh = document.getElementById("refresh-remote-status");
     if (remoteRefresh) remoteRefresh.disabled = !remoteInfo?.configured || !remoteInfo.bindings;
     document.querySelector("[data-filter='purpose']").value = params.get("purpose") || "all";
+    renderActiveFilters(params);
     let savedSize;
     try { savedSize = localStorage.getItem("team48:page-size"); } catch (_) {}
     const entries = filteredEntries(data, view, params);
@@ -414,9 +494,9 @@
     } else if (page.items.length) root.append(table(page.items.map(entry => entry.account)));
     renderPagination(page);
     if (!root.children.length) {
-      const empty = el("div", "management-empty"); empty.append(el("h2", "", "没有匹配的记录"), button("清除筛选", () => {
-        ["q", "purpose", "health", "team", "remote"].forEach(k => setQuery(k, "")); document.getElementById("accounts-search").value = ""; render(payload);
-      })); root.append(empty);
+      const empty = el("div", "management-empty");
+      empty.append(el("h2", "", "没有匹配的记录"), button("清除筛选", () => clearFilters(FILTER_KEYS)));
+      root.append(empty);
     }
     document.getElementById("accounts-count").textContent = `共 ${entries.length} 条${view === "teams" ? "关系记录" : "账号记录"} · 本页 ${page.items.length} 条`;
     for (const node of root.querySelectorAll("[data-scroll-key]")) node.scrollLeft = scrolls.get(node.dataset.scrollKey) || 0;
@@ -539,6 +619,7 @@
         finally { b.disabled = false; }
       });
       document.getElementById("management-workspace").addEventListener("change", event => { setQuery("team", event.target.value); render(payload); });
+      document.getElementById("accounts-clear-filters")?.addEventListener("click", () => clearFilters(FILTER_KEYS));
       document.querySelectorAll("[data-management-view]").forEach(b => b.addEventListener("click", () => { setQuery("view", b.dataset.managementView); render(payload); }));
       document.querySelectorAll("[data-management-health]").forEach(b => b.addEventListener("click", () => { setQuery("view", "all"); setQuery("health", b.dataset.managementHealth); render(payload); }));
       document.getElementById("check-all-accounts").addEventListener("click", async event => {
@@ -645,5 +726,5 @@
     const group = payload?.groups?.find(item => item.id === id);
     if (group) { group.expiry = expiry; render(payload); }
   }
-  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, filteredEntries, pageWindow, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refreshRemote, refresh: () => poller?.refresh() };
+  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, filteredEntries, pageWindow, sortAccounts, activeFilters, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refreshRemote, refresh: () => poller?.refresh() };
 })();

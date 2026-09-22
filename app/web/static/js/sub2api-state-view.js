@@ -110,7 +110,17 @@
         const preview = await api.post(key + ":authority-preview", authorityPath + "/preview" + query, {});
         if (disposed) return;
         if (!preview.ok) { ownerActionMessage.textContent = preview.message || "远端状态未确认"; return; }
-        const confirmed = window.confirm(`${preview.email}\n将采用远端账号 #${preview.remote_account_id} 的访问令牌，并移除本地刷新、ID 和会话凭据。\n此后日常刷新由 Sub2API 负责，Team 只接收访问令牌。暂停和认证错误不会自动清除。\n确认以这次核对的远端凭据为准？`);
+        const confirmed = await api.confirm(`确认以这次核对的远端凭据为准？`, {
+          title: "委托远端刷新",
+          subtitle: preview.email || "",
+          items: [
+            `采用远端账号 #${preview.remote_account_id} 的访问令牌`,
+            "移除本地刷新、ID 和会话凭据",
+            "此后日常刷新由 Sub2API 负责，Team 只接收访问令牌",
+          ],
+          hint: "暂停和认证错误不会自动清除。",
+          confirmLabel: "采用远端凭据",
+        }, delegate);
         if (!confirmed || disposed) return;
         const result = await api.post(key + ":authority-adopt", authorityPath + query, preview.preconditions);
         if (disposed) return;
@@ -132,7 +142,14 @@
         const preview = await api.post(key + ":recovery-preview", recoveryPath + "/preview" + query, {});
         if (disposed) return;
         if (!preview.ok) { ownerActionMessage.textContent = preview.message || "状态未确认"; return; }
-        if (!window.confirm(`${preview.email}\n将验证并推送本地新授权，只清除有凭据版本证据的远端认证错误。\n人工暂停、额度及权限限制不会解除。确认继续？`)) { ownerActionMessage.textContent = "已取消，未提交新授权"; return; }
+        const confirmedRecovery = await api.confirm("确认验证并推送本地新授权？", {
+          title: "推送本地新授权",
+          subtitle: preview.email || "",
+          items: ["只清除有凭据版本证据的远端认证错误", "人工暂停、额度及权限限制不会解除"],
+          confirmLabel: "推送新授权",
+        }, recover);
+        if (disposed) return;
+        if (!confirmedRecovery) { ownerActionMessage.textContent = "已取消，未提交新授权"; return; }
         ownerActionMessage.textContent = "正在验证新授权；请等待操作回执";
         const result = await api.post(key + ":recovery", recoveryPath + query, preview.preconditions);
         if (!disposed) ownerActionMessage.textContent = result.message || result.error || "请核对操作回执";
@@ -152,7 +169,22 @@
         const preview = await api.post(key + ":return-preview", returnPath + "/preview" + query, {});
         if (disposed) return;
         if (!preview.ok) { ownerActionMessage.textContent = preview.message || "暂不能交接"; return; }
-        if (!window.confirm(preview.resume ? "继续同一交接？不会重新发起令牌刷新。" : `${preview.email || item.email || "此账号"}\n停止远端新刷新并等待在途结果，再用远端最后确定的访问和刷新凭据替换本地凭据。\n暂停和认证状态保持不变。确认交回 Team？`)) { ownerActionMessage.textContent = "已取消交回，未发起交接"; return; }
+        const confirmedReturn = preview.resume
+          ? await api.confirm("继续同一交接？", {
+            title: "继续交接",
+            hint: "不会重新发起令牌刷新。",
+            confirmLabel: "继续交接",
+            tone: "primary",
+          }, handback)
+          : await api.confirm("确认把刷新权交回 Team？", {
+            title: "交回刷新权",
+            subtitle: preview.email || item.email || "",
+            items: ["停止远端新刷新并等待在途结果", "用远端最后确定的访问和刷新凭据替换本地凭据"],
+            hint: "暂停和认证状态保持不变。",
+            confirmLabel: "交回 Team",
+          }, handback);
+        if (disposed) return;
+        if (!confirmedReturn) { ownerActionMessage.textContent = "已取消交回，未发起交接"; return; }
         ownerActionMessage.textContent = "正在排空远端刷新并处理交接";
         const result = await api.post(key + ":return", returnPath + query, preview.preconditions);
         if (!disposed) ownerActionMessage.textContent = result.message || "请继续同一交接以核对结果";
@@ -163,8 +195,10 @@
         if (!disposed) { check.disabled = false; renderAuthority(latest?.refresh_authority); retry.disabled = !latest?.can_retry; void poller.refresh(); }
       }
     });
+    // 确认弹窗会暂时隐藏抽屉并在回答后恢复，不能当作抽屉已关闭。
+    const replacedTemporarily = () => Boolean(window.Team48?.overlayState?.previousContext);
     const observer = new MutationObserver(() => {
-      if (!panel.isConnected || panel.closest(".sheet")?.hidden) dispose();
+      if (!panel.isConnected || (panel.closest(".sheet")?.hidden && !replacedTemporarily())) dispose();
     });
     observer.observe(parent, {childList: true});
     const overlay = panel.closest(".sheet");

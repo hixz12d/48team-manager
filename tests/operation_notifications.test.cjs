@@ -142,15 +142,66 @@ test('persisted terminal records are pruned without fetching', () => {
   assert.deepEqual(e.stored(), []);
 });
 
-test('toast region never grows beyond three visible messages', () => {
+function toastEnv() {
   const region = {children: [], get firstElementChild() { return this.children[0]; }, append(item) { this.children.push(item); }};
+  const timers = [];
   const context = vm.createContext({document: {getElementById: () => region, createElement: () => {
-    const node = {append() {}, setAttribute() {}, remove() { region.children = region.children.filter(n => n !== node); }};
+    const node = {
+      children: [], handlers: {}, dataset: {},
+      contains(child) { return node.children.includes(child); },
+      append(child) { node.children.push(child); },
+      setAttribute() {},
+      addEventListener(name, handler) { node.handlers[name] = handler; },
+      remove() { region.children = region.children.filter(n => n !== node); },
+    };
     return node;
-  }}, window: {setTimeout() {}}});
+  }}, window: {setTimeout(fn) { timers.push(fn); return timers.length; }, clearTimeout() {}}});
   vm.runInContext(declaration('toast'), context);
-  for (let i = 0; i < 20; i++) context.toast('error', 'error');
-  assert.equal(region.children.length, 3);
+  return {context, region, timers};
+}
+
+test('transient notices are capped without discarding failures', () => {
+  const {context, region} = toastEnv();
+  context.toast('keep this failure', 'error');
+  context.toast('keep this warning', 'warning');
+  for (let i = 0; i < 20; i++) context.toast('saved', 'success');
+  assert.equal(region.children.length, 5);
+  assert.equal(region.children[0].children[0].textContent, 'keep this failure');
+  assert.equal(region.children[1].children[0].textContent, 'keep this warning');
+});
+
+test('hover and keyboard focus independently keep a notice open', () => {
+  const {context, region, timers} = toastEnv();
+  context.toast('saved', 'success');
+  const item = region.children[0];
+  item.handlers.mouseenter();
+  item.handlers.focusin();
+  item.handlers.mouseleave();
+  assert.equal(timers.length, 1, 'focus still holds the timer');
+  item.handlers.focusout({relatedTarget: item.children.at(-1)});
+  assert.equal(timers.length, 1, 'moving focus inside must keep holding');
+  item.handlers.focusout({relatedTarget: null});
+  assert.equal(timers.length, 2, 'leaving the notice resumes expiration');
+});
+
+test('failures stay until dismissed while neutral notices expire on their own', () => {
+  const {context, region, timers} = toastEnv();
+  context.toast('batch failure', 'error');
+  context.toast('partial result', 'warning');
+  assert.equal(timers.length, 0, 'failures and warnings must not auto-dismiss');
+  context.toast('saved', 'success');
+  assert.equal(timers.length, 1);
+  timers[0]();
+  assert.equal(region.children.length, 2);
+});
+
+test('every notification exposes a close control that removes it', () => {
+  const {context, region} = toastEnv();
+  context.toast('batch failure', 'error');
+  const close = region.children[0].children.at(-1);
+  assert.equal(typeof close.handlers.click, 'function');
+  close.handlers.click();
+  assert.equal(region.children.length, 0);
 });
 
 test('local team deletion requires confirmation and sends only the local DELETE endpoint', async () => {

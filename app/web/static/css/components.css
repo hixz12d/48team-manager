@@ -87,6 +87,24 @@
   overscroll-behavior-x: contain;
 }
 
+/* 宽屏下表格不需要横向滚动容器，取消滚动容器后表头才能跟随页面滚动吸顶。*/
+@media (min-width: 1120px) {
+  .page-workspaces,
+  .page-operations,
+  .page-phones,
+  .page-hme,
+  .page-proxies { overflow: visible; }
+  .table-shell { overflow: clip; }
+  .table-scroll { overflow: visible; }
+  .data-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--border);
+  }
+}
+
 .data-table {
   width: 100%;
   min-width: 760px;
@@ -117,6 +135,42 @@
 
 .data-table tbody tr:last-child td {
   border-bottom: 0;
+}
+
+.data-table th .table-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.data-table th .table-sort::after {
+  content: "↕";
+  font-size: 10px;
+  opacity: 0.35;
+}
+
+.data-table th .table-sort:hover {
+  color: var(--text);
+}
+
+.data-table th .table-sort[data-direction="asc"]::after { content: "↑"; opacity: 1; }
+.data-table th .table-sort[data-direction="desc"]::after { content: "↓"; opacity: 1; }
+
+.data-table th[aria-sort="ascending"],
+.data-table th[aria-sort="descending"] {
+  color: var(--text);
+}
+
+.data-table .num .table-sort {
+  justify-content: flex-end;
 }
 
 .data-table .num {
@@ -952,6 +1006,10 @@
 
 /* 提示通知 Toast */
 .toast-region {
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  align-content: start;
   position: fixed;
   right: 16px;
   bottom: 16px;
@@ -993,6 +1051,34 @@
   border-color: var(--warning-border);
   background: var(--warning-bg);
   color: var(--warning-text);
+}
+
+.toast>span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast-close:hover {
+  opacity: 1;
+  background: rgba(15, 23, 42, 0.08);
 }
 
 /* 命令面板 Command Palette */
@@ -1082,6 +1168,12 @@
   background: var(--accent-bg);
   color: var(--accent-text);
   font-weight: 500;
+}
+
+.palette-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 /* 响应式断点适配 */
