@@ -195,15 +195,15 @@ input:disabled, select:disabled, .button:disabled {
 }
 
 .button.primary {
-  background: var(--text);
-  color: #ffffff;
-  border-color: var(--text);
+  background: var(--primary-bg);
+  color: var(--primary-text);
+  border-color: var(--primary-bg);
   font-weight: 600;
 }
 
 .button.primary:hover:not(:disabled) {
-  background: #000000;
-  border-color: #000000;
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
 }
 
 .button.ghost {
@@ -231,8 +231,8 @@ input:disabled, select:disabled, .button:disabled {
 }
 
 .button.danger:hover:not(:disabled) {
-  background: #fee2e2;
-  border-color: #fca5a5;
+  background: var(--danger-hover-bg);
+  border-color: var(--danger-hover-border);
 }
 
 .error {
@@ -394,6 +394,24 @@ input:disabled, select:disabled, .button:disabled {
   display: none;
 }
 
+select.theme-select {
+  width: auto;
+  min-width: 96px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.auth-theme {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-md);
+}
+
+.topbar-actions {
+  flex-wrap: wrap;
+}
+
+
 /* 页面内容容器 Pages */
 .page {
   width: 100%;
@@ -494,6 +512,11 @@ input:disabled, select:disabled, .button:disabled {
   .page {
     padding: var(--space-xs) var(--space-xs) 80px;
   }
+}
+
+@media (max-width: 540px) {
+  .topbar { flex-wrap: wrap; padding-block: var(--space-sm); }
+  .topbar-actions { width: 100%; justify-content: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -44,6 +44,14 @@
   --neutral-bg: #f1f5f9;
   --neutral-border: #e2e8f0;
   --neutral-text: #475569;
+
+  --primary-bg: var(--text);
+  --primary-hover: #000000;
+  --primary-text: #ffffff;
+  --danger-hover-bg: #fee2e2;
+  --danger-hover-border: #fca5a5;
+  --overlay-strong: rgba(15, 23, 42, 0.64);
+  --toast-close-hover: rgba(15, 23, 42, 0.08);
   
   /* 圆角规范 */
   --radius-xs: 3px;
@@ -90,9 +98,61 @@
   --shadow-overlay: 0 20px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.08);
   
   /* 焦点 */
-  --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px var(--accent);
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
   
   /* 字体与排版 */
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", Menlo, Monaco, Consolas, monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #11161e;
+  --surface: #1a2230;
+  --surface-subtle: #1e2836;
+  --surface-muted: #263244;
+  --surface-hover: #2b394d;
+  --sidebar: #161e2a;
+  --overlay: rgba(3, 7, 13, 0.65);
+  --overlay-strong: rgba(3, 7, 13, 0.78);
+
+  --border: #344256;
+  --border-subtle: #2a3647;
+  --border-strong: #52647c;
+  --text: #e0e7f0;
+  --text-secondary: #bdc9d9;
+  --muted: #9aaac0;
+  --muted-light: #8c9bb0;
+
+  --danger: #f87171;
+  --danger-text: #fda4af;
+  --danger-bg: #39232e;
+  --danger-border: #70404e;
+  --danger-hover-bg: #4b2937;
+  --danger-hover-border: #985565;
+  --warning: #fbbf24;
+  --warning-text: #f5ce82;
+  --warning-bg: #352e21;
+  --warning-border: #6e5935;
+  --success: #34d399;
+  --success-text: #7dddb4;
+  --success-bg: #1b342e;
+  --success-border: #356451;
+  --accent: #8baeff;
+  --accent-hover: #a9c2ff;
+  --accent-text: #a9c2ff;
+  --accent-bg: #243450;
+  --accent-border: #465f90;
+  --neutral-bg: var(--surface-muted);
+  --neutral-border: var(--border);
+  --neutral-text: var(--text-secondary);
+
+  --primary-bg: #8baeff;
+  --primary-hover: #a9c2ff;
+  --primary-text: #111c30;
+  --toast-close-hover: rgba(255, 255, 255, 0.1);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.15);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.3);
+  --shadow-overlay: 0 20px 32px rgba(0, 0, 0, 0.45);
 }

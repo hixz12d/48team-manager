@@ -469,7 +469,7 @@
 /* 骨架加载 Skeleton */
 .skeleton-row {
   height: 12px;
-  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background: linear-gradient(90deg, var(--surface-muted) 25%, var(--border) 50%, var(--surface-muted) 75%);
   background-size: 200% 100%;
   animation: skeletonPulse 1.5s infinite;
   border-radius: var(--radius-xs);
@@ -763,7 +763,7 @@
   font-size: 12px;
   border: 1px solid var(--accent);
   border-radius: var(--radius-xs);
-  background: #fff;
+  background: var(--surface);
   width: auto;
 }
 
@@ -794,7 +794,7 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(15, 23, 42, 0.64);
+  background: var(--overlay-strong);
   isolation: isolate;
 }
 .confirm-panel {
@@ -803,7 +803,7 @@
   width: min(440px, 100%);
   max-height: min(80vh, 640px);
   overflow: auto;
-  background: #ffffff;
+  background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -1078,7 +1078,7 @@
 
 .toast-close:hover {
   opacity: 1;
-  background: rgba(15, 23, 42, 0.08);
+  background: var(--toast-close-hover);
 }
 
 /* 命令面板 Command Palette */

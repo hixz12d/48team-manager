@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }} · 48 Team Manager</title>
+  <script src="/static/js/theme.js"></script>
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="stylesheet" href="/static/css/components.css">
@@ -44,6 +45,7 @@
           <p class="muted" id="page-subtitle">{{ subtitle }}</p>
         </div>
         <div class="topbar-actions">
+          {% include 'theme-select.html' %}
           {% if page == 'accounts' %}
           <button type="button" class="button" id="check-all-accounts"><span aria-hidden="true">↻</span> 立即检查</button>
           <button type="button" class="button primary" data-open-register><span aria-hidden="true">＋</span> 登记团队</button>
