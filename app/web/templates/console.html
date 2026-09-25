@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title }} · 48 Team Manager</title>
-  <script src="/static/js/theme.js"></script>
-  <link rel="stylesheet" href="/static/css/tokens.css">
-  <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="stylesheet" href="/static/css/components.css">
-  <link rel="stylesheet" href="/static/css/management.css">
-  {% if page == 'overview' %}<link rel="stylesheet" href="/static/css/runtime.css">{% endif %}
-  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <script src="{{ static_url('js/theme.js') }}"></script>
+  <link rel="stylesheet" href="{{ static_url('css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ static_url('css/app.css') }}">
+  <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
+  <link rel="stylesheet" href="{{ static_url('css/management.css') }}">
+  {% if page == 'overview' %}<link rel="stylesheet" href="{{ static_url('css/runtime.css') }}">{% endif %}
+  <link rel="icon" href="{{ static_url('logo.svg') }}" type="image/svg+xml">
 </head>
 <body data-page="{{ page }}">
   <div class="shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <img class="brand-logo" src="/static/logo.svg" alt="">
+        <img class="brand-logo" src="{{ static_url('logo.svg') }}" alt="">
         <div>
           <strong>48 Team Manager</strong>
           <span>团队号后台</span>
@@ -698,15 +698,15 @@
     <input id="command-input" placeholder="去哪…">
     <ul id="command-list"></ul>
   </dialog>
-  <script src="/static/js/formatters.js"></script>
-  <script src="/static/js/workspace-expiry.js"></script>
-  <script src="/static/js/workspace-switch-count.js"></script>
-  <script src="/static/js/polling.js"></script>
-  <script src="/static/js/accounts-view.js"></script>
-  {% if page == 'accounts' %}<script src="/static/js/auto-rotation.js"></script>{% endif %}
-  <script src="/static/js/sub2api-defaults.js"></script>
-  <script src="/static/js/sub2api-state-view.js"></script>
-  {% if page == 'overview' %}<script src="/static/js/runtime-status.js"></script>{% endif %}
-  <script src="/static/js/app.js"></script>
+  <script src="{{ static_url('js/formatters.js') }}"></script>
+  <script src="{{ static_url('js/workspace-expiry.js') }}"></script>
+  <script src="{{ static_url('js/workspace-switch-count.js') }}"></script>
+  <script src="{{ static_url('js/polling.js') }}"></script>
+  <script src="{{ static_url('js/accounts-view.js') }}"></script>
+  {% if page == 'accounts' %}<script src="{{ static_url('js/auto-rotation.js') }}"></script>{% endif %}
+  <script src="{{ static_url('js/sub2api-defaults.js') }}"></script>
+  <script src="{{ static_url('js/sub2api-state-view.js') }}"></script>
+  {% if page == 'overview' %}<script src="{{ static_url('js/runtime-status.js') }}"></script>{% endif %}
+  <script src="{{ static_url('js/app.js') }}"></script>
 </body>
 </html>

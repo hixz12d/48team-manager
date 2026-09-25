@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +26,23 @@ from app.web.routes.api import build_api_router
 from app.web.routes.pages import build_pages_router
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+STATIC_DIR = WEB_DIR / "static"
+_asset_versions: dict[str, tuple[int, str]] = {}
+
+
+def static_url(path: str) -> str:
+    """Content-hashed static URL so a deploy never mixes fresh HTML with cached CSS/JS."""
+    path = path.lstrip("/")
+    file = STATIC_DIR / path
+    try:
+        mtime = file.stat().st_mtime_ns
+    except OSError:
+        return f"/static/{path}"
+    cached = _asset_versions.get(path)
+    if cached is None or cached[0] != mtime:
+        cached = (mtime, hashlib.sha256(file.read_bytes()).hexdigest()[:10])
+        _asset_versions[path] = cached
+    return f"/static/{path}?v={cached[1]}"
 
 
 def configure_logging(settings: Settings) -> None:
@@ -95,9 +113,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-    app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
     templates.env.globals["app_version"] = __version__
+    templates.env.globals["static_url"] = static_url
 
     app.include_router(build_pages_router(templates, __version__))
     app.include_router(build_auth_router(get_db, settings))

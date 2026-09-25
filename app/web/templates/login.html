@@ -4,15 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>登录 · 48 Team Manager</title>
-  <script src="/static/js/theme.js"></script>
-  <link rel="stylesheet" href="/static/css/tokens.css">
-  <link rel="stylesheet" href="/static/css/app.css">
-  <link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+  <script src="{{ static_url('js/theme.js') }}"></script>
+  <link rel="stylesheet" href="{{ static_url('css/tokens.css') }}">
+  <link rel="stylesheet" href="{{ static_url('css/app.css') }}">
+  <link rel="icon" href="{{ static_url('logo.svg') }}" type="image/svg+xml">
 </head>
 <body class="auth-body">
   <main class="auth-card">
     <div class="auth-brand">
-      <img class="brand-logo" src="/static/logo.svg" alt="">
+      <img class="brand-logo" src="{{ static_url('logo.svg') }}" alt="">
       <div>
         <p class="eyebrow">48 Team Manager</p>
         <h1>登录</h1>
@@ -34,6 +34,6 @@
     <div class="auth-theme">{% include 'theme-select.html' %}</div>
     <p class="version">{{ app_version }}</p>
   </main>
-  <script src="/static/js/login.js"></script>
+  <script src="{{ static_url('js/login.js') }}"></script>
 </body>
 </html>
