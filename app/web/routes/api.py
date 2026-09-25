@@ -684,6 +684,9 @@ def build_api_router(get_db) -> APIRouter:
             account_id,
             ticket=payload.ticket,
             callback_url=payload.callback_url,
+            workspace_id=payload.workspace_id,
+            push_sub2api=payload.push_sub2api,
+            count_switch=payload.count_switch,
         )
         if result.get("error_code") in {"not_found", "account_not_found"}:
             raise HTTPException(status_code=404, detail=_error_detail(result, "account not found"))

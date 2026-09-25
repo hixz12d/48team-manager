@@ -18,7 +18,12 @@ async def seed_workspaces(tmp):
         db.add(owner)
         await db.flush()
         db.add_all([Workspace(owner_account_id=owner.id, official_workspace_id=str(i), name=f"测试团队 {i}", status="active") for i in (1, 2)])
+        await db.flush()
+        from app.application.operations import operation_store
+        stuck = await operation_store.create(db, op_type="rotate", workspace_id=1, source="auto")
+        await operation_store.finish(db, stuck, {"success": False, "partial": True, "error_code": "oauth_failed"})
         await db.commit()
+        return stuck.public_id
     await engine.dispose()
 
 
@@ -26,7 +31,7 @@ def main():
     with TemporaryDirectory(prefix="team48-night-browser-") as tmp, \
          patch("app.application.jobs.scheduler.in_test_process", return_value=True), \
          make_client(Path(tmp), _env_file=None, official_quota_probe_enabled=False) as client:
-        asyncio.run(seed_workspaces(tmp))
+        stuck_id = asyncio.run(seed_workspaces(tmp))
         client.post("/auth/login", json={"username": "hixz12", "password": "test-password"})
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
@@ -66,6 +71,9 @@ def main():
             assert client.get("/api/settings").json()["automation"]["auto_rotate"]["auto_rotate_enabled"]
             page.reload()
             page.wait_for_function("document.querySelector('#auto-rotation-toggle').textContent === '关闭自动轮转'")
+            blocked = page.locator(f'#auto-rotation-status a[href="/operations?op={stuck_id}"]')
+            assert blocked.filter(has_text="测试团队 1（部分完成）").count() == 1, blocked.all_inner_texts()
+            assert "1 个团队自动轮转已暂停" in page.locator("#auto-rotation-status").inner_text()
             for width in (1440, 390):
                 page.set_viewport_size({"width": width, "height": 1000})
                 assert toggle.is_visible()
@@ -96,7 +104,7 @@ def main():
             assert not external, external
             assert all(path == "/api/settings" for _, path in writes), writes
             browser.close()
-            print("PASS: off by default, single/batch/global scope, persistence, master switch, 1440/390px layout; no browser errors or provider writes")
+            print("PASS: blocked team link, off by default, single/batch/global scope, persistence, master switch, 1440/390px layout; no browser errors or provider writes")
 
 
 if __name__ == "__main__":

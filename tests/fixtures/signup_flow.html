@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><style>
+*{box-sizing:border-box} body{margin:0;background:#202020;color:#fafafa;font:18px system-ui}
+main{width:min(400px,90vw);margin:90px auto 160px}h1{font-size:30px}a{color:inherit}
+.field{position:relative;margin:20px 0;height:62px}input{width:100%;height:100%;border-radius:32px;border:1px solid #777;background:transparent;color:inherit;font:inherit;padding:20px}
+label{position:absolute;inset:0;padding:4px 20px;cursor:text}button{width:100%;height:56px;border-radius:30px;border:0;margin:20px 0;font:inherit;cursor:pointer}button:disabled{opacity:.45}
+</style></head><body><main id="app"></main><script>
+const app=document.querySelector('#app');
+const path=location.pathname;
+const MODAL=false;
+window.trace=[];
+const save=(key,value)=>sessionStorage.setItem(key,value);
+const remember=e=>{ if(e.target.matches('input')) trace.push({type:e.type,name:e.target.name,value:e.target.value,data:e.data,trusted:e.isTrusted}); };
+for(const type of ['input','paste']) document.addEventListener(type,remember);
+document.addEventListener('click',e=>{ if(e.target.closest('button,a')) save('clicks',JSON.stringify([...JSON.parse(sessionStorage.getItem('clicks')||'[]'),e.isTrusted])); },true);
+document.addEventListener('wheel',e=>save('wheel',JSON.stringify([...JSON.parse(sessionStorage.getItem('wheel')||'[]'),e.isTrusted])),{passive:true});
+document.addEventListener('keydown',e=>{if(e.isTrusted)save('keys',JSON.stringify([...JSON.parse(sessionStorage.getItem('keys')||'[]'),e.key]));},true);
+const field=(name,type,label,extra='')=>`<div class="field"><input id="${name}" name="${name}" type="${type}" ${extra}><label for="${name}">${label}</label></div>`;
+const form=(title,fields)=>{app.innerHTML=`<h1>${title}</h1><form>${fields}<button type="submit">Continue</button></form>`;return app.querySelector('form')};
+const busy=form=>{form.setAttribute('aria-busy','true');form.querySelectorAll('input,button').forEach(el=>el.disabled=true);form.querySelector('button').textContent='Loading…'};
+// sessionStorage is per origin; carry the homepage modal's results to the auth origin.
+if(location.hash.startsWith('#carry=')) {
+ const carry=JSON.parse(decodeURIComponent(location.hash.slice(7)));
+ for(const key in carry) save(key,carry[key]);
+ history.replaceState(null,'',location.pathname);
+}
+if(location.hostname==='chatgpt.com') {
+ if(path==='/done') {app.innerHTML='<div id="prompt-textarea" contenteditable="true"></div>';}
+ else if(MODAL) {
+  // Like the live homepage: a fixed login dialog, scroll-locked body, a zero-height clipping
+  // ancestor above the dialog and a rounded overflow:hidden wrapper exactly around the input.
+  document.body.style.overflow='hidden';
+  app.innerHTML=`<div id="prompt-textarea" contenteditable="true"></div><div style="height:0;overflow:hidden"><div role="dialog" aria-modal="true" style="position:fixed;inset:0;display:grid;place-items:center;background:#0008">
+   <div style="width:400px;max-height:90vh;overflow-y:auto;background:#303030;padding:24px;border-radius:24px"><h2>Log in or sign up</h2>
+   <button type="button">Continue with Google</button><form><div style="height:62px;border-radius:32px;overflow:hidden"><input type="email" name="email" autocomplete="email" placeholder="Email address" required></div>
+   <button type="submit">Continue</button></form></div></div></div>`;
+  const f=app.querySelector('form');
+  f.onsubmit=e=>{e.preventDefault();busy(f);const carry={email:f.email.value,emailTrace:JSON.stringify(trace)};
+   setTimeout(()=>location.assign('https://auth.openai.com/create-account/password#carry='+encodeURIComponent(JSON.stringify(carry))),200)};
+ }
+ // The logged-out homepage also renders the prompt box next to Sign up.
+ else {app.innerHTML='<h1>ChatGPT</h1><div id="prompt-textarea" contenteditable="true"></div><a href="https://auth.openai.com/create-account">Sign up</a>';}
+} else if(path==='/create-account') {
+ const f=form('Create your account',field('email','email','Email address','autocomplete="email" required'));
+ f.onsubmit=e=>{e.preventDefault();save('email',f.email.value);save('emailTrace',JSON.stringify(trace));busy(f);setTimeout(()=>location.assign('/create-account/password'),200)};
+} else if(path==='/create-account/password') {
+ const f=form('Create a password',field('password','password','Password','autocomplete="new-password" required minlength="12"'));
+ f.onsubmit=e=>{e.preventDefault();save('password',f.password.value);save('passwordTrace',JSON.stringify(trace));busy(f);setTimeout(()=>location.assign('/email-verification'),200)};
+} else if(path==='/email-verification') {
+ const f=form('Check your inbox',field('code','text','Code','autocomplete="one-time-code" inputmode="numeric" maxlength="6" required pattern="[0-9]{6}"'));
+ f.code.focus();
+ f.onsubmit=e=>{e.preventDefault();save('code',f.code.value);save('codeTrace',JSON.stringify(trace));busy(f);setTimeout(()=>location.assign('/about-you'),200)};
+} else if(path==='/about-you') {
+ const f=form('How old are you?',field('name','text','Full name','autocomplete="name" required')+field('age','number','Age','min="18" max="100" required'));
+ // A controlled field can be replaced during a render without changing its current value.
+ f.addEventListener('input',event=>{const old=event.target;const fresh=old.cloneNode(true);fresh.value=old.value;old.replaceWith(fresh);fresh.focus()});
+ f.onsubmit=e=>{e.preventDefault();save('profile',JSON.stringify({name:f.elements.name.value,age:f.age.value}));save('profileTrace',JSON.stringify(trace));busy(f);setTimeout(()=>location.assign('https://chatgpt.com/done'),800)};
+}
+</script></body></html>

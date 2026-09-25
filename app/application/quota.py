@@ -349,6 +349,18 @@ class QuotaService:
             stats["probed" if result.success else "failed"] += 1
         return stats
 
+    async def peek_official(self, db, account, *, workspace=None):
+        """Read-only official read for automation checks; records nothing and ignores local disabled flags."""
+        token = decrypt_access_token(account)
+        official_id = resolve_chatgpt_account_id(account, workspace)
+        if not token or (workspace is not None and not official_id):
+            return QuotaResult(False, error_code="missing_token" if not token else "workspace_id_missing", error_source="local")
+        try:
+            return await asyncio.wait_for(self.client.fetch_quota(access_token=token, db_session=db,
+                workspace_id=official_id, identifier=account.email or "default"), timeout=90)
+        except Exception:
+            return QuotaResult(False, error_code="transport", error_source="official_quota")
+
     async def probe_account(self, db, account, *, now=None, workspace_id=None, workspace=None):
         stamp = now or utcnow()
         if account.operational_state in SKIP_OPERATIONAL_STATES or account.auth_state == "deactivated":

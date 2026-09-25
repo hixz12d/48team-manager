@@ -23,6 +23,7 @@ from app.persistence.migrations.bootstrap import bootstrap_schema
 from app.web.deps import html_login_redirect, session_dependency
 from app.web.routes.auth import build_auth_router
 from app.web.routes.api import build_api_router
+from app.web.routes.extension import build_extension_router
 from app.web.routes.pages import build_pages_router
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -121,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(build_pages_router(templates, __version__))
     app.include_router(build_auth_router(get_db, settings))
     app.include_router(build_api_router(get_db))
+    app.include_router(build_extension_router(get_db, settings))
 
     @app.get("/health")
     async def health():

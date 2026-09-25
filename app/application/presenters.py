@@ -103,6 +103,7 @@ BUSINESS_STEP_LABELS = {
     "invited": "邀请已确认",
     "invite_mail": "等待邀请邮件",
     "browser": "注册与入组",
+    "signup_runner": "新版注册流程",
     "browser_open": "打开邀请或授权页面",
     "email_otp": "等待邮箱验证码",
     "about_you": "填写注册资料",

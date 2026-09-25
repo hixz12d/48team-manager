@@ -24,13 +24,25 @@
       const scope = rotation.scope === "all" ? "全部工作空间（含新增）" : `仅选中的 ${(rotation.workspace_ids || []).length} 个工作空间`;
       const pieces = [enabled ? "已开启 · 每分钟检查" : "已关闭", scope, `每团队每日上限 ${rotation.daily_limit ?? 2} 次`];
       if (enabled && data.runner?.state !== "healthy") pieces.push("后台心跳未就绪，请核对运行状态");
-      if (rotation.blocked_workspaces) pieces.push(`${rotation.blocked_workspaces} 个团队有未完成轮转，暂停进一步换号`);
+      const blocked = rotation.blocked || [];
+      if (rotation.blocked_workspaces && !blocked.length) pieces.push(`${rotation.blocked_workspaces} 个团队有未完成轮转，暂停进一步换号`);
       const scan = rotation.last_scan || {};
       if (scan.state === "failed") pieces.push("最近巡检失败，将在下一分钟重试");
       else if (scan.state === "running") pieces.push("巡检执行中");
       else if (scan.finished_at) pieces.push(`最近巡检 ${new Date(scan.finished_at).toLocaleTimeString("zh-CN")}，${scan.capped || 0} 个团队达日限`);
       else if (enabled) pieces.push("等待首次巡检");
       status.replaceChildren(document.createTextNode(pieces.join(" · ")));
+      if (blocked.length) {
+        // Name each stalled team so a single stuck task cannot silently stop its rotation.
+        status.append(document.createTextNode(` · ${blocked.length} 个团队自动轮转已暂停，需核对并归档：`));
+        blocked.forEach((item, index) => {
+          const link = document.createElement("a");
+          link.href = `/operations?op=${encodeURIComponent(item.operation_id)}`;
+          link.textContent = `${item.workspace_name}（${states[item.state] || "待核对"}）`;
+          if (index) status.append(document.createTextNode("、"));
+          status.append(link);
+        });
+      }
       if (rotation.last_operation) {
         const op = rotation.last_operation;
         const link = document.createElement("a");

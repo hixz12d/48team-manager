@@ -27,7 +27,7 @@ SAFE_ERRORS = {
     "cancelled": "已取消",
     "http_429": "请求受限，等待重试",
 }
-SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动", "auto": "自动轮转", "auto_sync": "同步重试"}
+SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动", "auto": "自动轮转", "auto_sync": "同步重试", "extension": "插件"}
 
 
 def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None):
@@ -126,10 +126,22 @@ async def runtime_status(db, *, now=None):
     last_scan = {key: value for key, value in last_scan.items() if key in {
         "state", "started_at", "finished_at", "scanned", "rotated", "kicked_only", "skipped", "failed", "capped", "conflict", "error_code",
     }}
-    rotation_blocked = list(await db.scalars(select(Operation.workspace_id).where(
+    # Each unarchived partial/manual automatic rotation stops further automatic swaps in its team.
+    blocking_rows = list(await db.scalars(select(Operation).where(
         Operation.op_type == "rotate", Operation.source == "auto", Operation.archived_at.is_(None),
         Operation.state.in_(("partial", "manual_required")),
-    ).distinct()))
+    ).order_by(Operation.updated_at.desc(), Operation.id.desc())))
+    rotation_blocked = {}
+    for row in blocking_rows:
+        rotation_blocked.setdefault(row.workspace_id, row)
+    missing = {value for value in rotation_blocked if value and value not in names}
+    if missing:
+        for row in await db.scalars(select(Workspace).where(Workspace.id.in_(missing))):
+            names[row.id] = row.custom_name or row.official_name or row.name or f"工作区 #{row.id}"
+    blocked = [{"workspace_id": workspace_id,
+                "workspace_name": names.get(workspace_id) or f"工作区 #{workspace_id}",
+                "operation_id": row.public_id, "state": row.state}
+               for workspace_id, row in rotation_blocked.items()]
     last_rotation = await db.scalar(select(Operation).where(
         Operation.op_type == "rotate", Operation.source.in_(("auto", "auto_sync")),
         Operation.archived_at.is_(None),
@@ -138,7 +150,7 @@ async def runtime_status(db, *, now=None):
         "auto_rotation": {
             "enabled": rotate["auto_rotate_enabled"], "daily_limit": rotate["auto_rotate_daily_limit"],
             "scope": rotate["auto_rotate_scope"], "workspace_ids": rotate["auto_rotate_workspace_ids"],
-            "scan_seconds": 60, "blocked_workspaces": len(rotation_blocked), "last_scan": last_scan,
+            "scan_seconds": 60, "blocked_workspaces": len(rotation_blocked), "blocked": blocked, "last_scan": last_scan,
             "last_operation": runtime_operation(last_rotation, now=stamp) if last_rotation else None,
         },
         "generated_at": isoformat(stamp),

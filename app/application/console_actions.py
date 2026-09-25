@@ -435,16 +435,31 @@ async def account_reauth_complete(
     *,
     ticket: str,
     callback_url: str,
+    workspace_id: int | None = None,
+    push_sub2api: bool = False,
+    count_switch: bool = False,
 ) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
         return {"ok": False, "error": "account not found", "error_code": "account_not_found"}
-    return await reauth_service.complete_manual_reauth(
+    result = await reauth_service.complete_manual_reauth(
         db,
         account,
         ticket=ticket,
         callback_url=callback_url,
     )
+    if result.get("ok") and (push_sub2api or count_switch):
+        from app.application.member_handoff import finish_after_authorization
+
+        result["followups"] = await finish_after_authorization(
+            db,
+            account.id,
+            workspace_id=workspace_id,
+            token_sync=result.get("sub2api_token_sync"),
+            push_sub2api=push_sub2api,
+            count_switch=count_switch,
+        )
+    return result
 
 
 async def account_sub2api_sync(db: AsyncSession, account_id: int) -> dict[str, Any]:

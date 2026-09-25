@@ -1354,6 +1354,21 @@
   align-content: start;
 }
 
+.team-auth-followups {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.team-auth-followups legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .service-management-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

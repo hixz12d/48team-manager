@@ -153,6 +153,8 @@ class WorkspaceMembership(Base):
     local_purpose: Mapped[str] = mapped_column(String(20), nullable=False)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set once when this membership's first authorization was counted as a team switch.
+    switch_counted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_mapping_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

@@ -57,6 +57,7 @@ nul
 # Environment variables
 .env
 VPS.local.md
+extensions/chatgpt-signup/private-config.mjs
 !.env.example
 接口.md
 任务.md

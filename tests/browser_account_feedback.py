@@ -83,8 +83,12 @@ def main():
             link = page.locator(".team-auth-form textarea").first.input_value()
             state = parse_qs(urlsplit(link).query)["state"][0]
             callback = "http://localhost:1455/auth/callback?" + urlencode({"state": state, "code": "fixture-code"})
+            # Follow-ups default on; keep the manual push path under test here, but count the switch.
+            expect(page.get_by_label("今日切换 +1（同一成员只计一次）")).to_be_checked()
+            page.get_by_label("推送到 Sub2API（使用设置里的默认分组和代理）").uncheck()
             page.locator(".team-auth-form textarea").nth(1).fill(callback)
             page.get_by_role("button", name="完成授权", exact=True).click()
+            page.locator(".toast").filter(has_text="切换次数：今日切换 +1，现为 1 次").wait_for()
             new_row = page.locator(".management-table tr").filter(has_text="new@example.com")
             new_row.get_by_text("已授权 · 等待额度检测", exact=True).wait_for()
             page.keyboard.press("Escape")
@@ -102,8 +106,11 @@ def main():
             existing.get_by_role("button", name="授权", exact=True).click()
             page.wait_for_function("document.querySelector('#reauth-authorize-url').value.includes('state=')")
             state = parse_qs(urlsplit(page.locator("#reauth-authorize-url").input_value()).query)["state"][0]
-            page.locator('#reauth-form [name="callback_url"]').fill("http://localhost:1455/auth/callback?" + urlencode({"state": state, "code": "fixture-code-2"}))
-            page.locator("#reauth-submit").click()
+            # Pasting a complete callback submits it without clicking the button.
+            page.locator('#reauth-form [name="callback_url"]').focus()
+            page.evaluate("text => { const field = document.querySelector('#reauth-form [name=callback_url]'); field.value = text;"
+                          " field.dispatchEvent(new ClipboardEvent('paste', {bubbles: true})); }",
+                          "http://localhost:1455/auth/callback?" + urlencode({"state": state, "code": "fixture-code-2"}))
             existing.get_by_text("已授权 · 等待额度检测", exact=True).wait_for()
             # A complete empty remote inventory must show deletion, not quota alone.
             expect(existing.get_by_role("button", name="更新 Sub2API", exact=True)).to_be_visible()
@@ -133,7 +140,7 @@ def main():
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
             assert not errors, errors
             assert not external, external
-            print(json.dumps({"ok": True, "checks": ["direct link", "team OAuth refresh", "inline push with workspace context", "standalone OAuth refresh", "inline update", "remote deletion", "remote filter", "network failure", "pause readback", "responsive layout"], "page_errors": errors}))
+            print(json.dumps({"ok": True, "checks": ["direct link", "team OAuth refresh", "inline push with workspace context", "standalone OAuth refresh", "paste auto-submit", "switch follow-up", "inline update", "remote deletion", "remote filter", "network failure", "pause readback", "responsive layout"], "page_errors": errors}))
             browser.close()
 
 

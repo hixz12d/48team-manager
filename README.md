@@ -82,6 +82,12 @@ Implementation, configuration, verification and rollback notes: [docs/unified-ma
 
 计数器回归检查：`python -m unittest tests.test_workspace_switch_count`、`node --test tests/workspace_switch_count_ui.test.cjs`、`python -m tests.browser_workspace_switch_count`（隔离的本地浏览器预览）。
 
+## ChatGPT 注册插件
+
+`extensions/chatgpt-signup` 提供 Chrome / Edge 无痕窗口单账号注册插件：自用包内置 Cloudflare 配置和接码逻辑，只需输入邮箱即可开始，不依赖 Team48 登录或部署。安装和使用见 [插件说明](extensions/chatgpt-signup/README.md)。
+
+项目内也可通过 `BROWSER_SIGNUP_FLOW=extension` 复用这套填写逻辑，在现有 Chromium / Chromix 中注册并衔接原有邀请入组和 OAuth；默认仍为 `legacy`。启用、回退与离线验证见 [项目内新版注册流程](docs/managed-signup.md)。
+
 ## Database
 
 SQLite, WAL. New tables are created by `app/persistence/migrations/bootstrap.py`.

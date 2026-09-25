@@ -19,3 +19,5 @@ data/
 docs/
 tests/
 deploy/
+dist/
+extensions/chatgpt-signup/private-config.mjs

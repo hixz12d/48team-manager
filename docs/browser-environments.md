@@ -2,6 +2,8 @@
 
 注册、邀请入组、OAuth、独立重新授权通过同一个浏览器配置函数启动。轮转到其他 Team 不改变邮箱对应的浏览器档案；注册到 OAuth 的现有同页交接继续保留。
 
+页面注册逻辑可独立选择 `BROWSER_SIGNUP_FLOW=legacy|extension`。`extension` 复用新版插件的页面填写代码，浏览器引擎、代理、档案与同页 OAuth 交接仍按本文件执行；详见 [项目内新版注册流程](managed-signup.md)。
+
 ## 启用
 
 默认仍为 `chromium`，可通过 `.env` 启用 Chromix：

@@ -1204,6 +1204,24 @@ def run_browser_onboard(
         page.set_default_timeout(60000)
         try:
             target = start_url or (REGISTER_START_URL if mode == "register" else LOGIN_START_URL)
+            if settings.browser_signup_flow == "extension" and mode == "register":
+                target = start_url or "https://chatgpt.com/"
+                from app.integrations.openai.browser.signup import run_managed_signup
+
+                # Exactly one UI driver; a failed new runner never retries via legacy.
+                phone, sms_url = "", ""
+                outcome = run_managed_signup(
+                    browser=browser, page=page, email=email, password=password,
+                    profile_dir=profile_dir, start_url=target, invite_entry=invite_entry,
+                    team_name=team_name, report=report,
+                    mail_kwargs=_mail_kwargs(email=email, pickup_url=pickup_url, proxy=proxy,
+                        use_cloudflare=use_cloudflare, cf_base_url=cf_base_url,
+                        cf_address=cf_address, cf_admin_password=cf_admin_password),
+                )
+                result.update(outcome)
+                if result.get("ok") and continue_in_browser is not None:
+                    continue_in_browser(result, browser, page)
+                return result
             report("browser_open", "正在打开邀请注册页" if invite_entry else "正在打开注册/登录页")
             goto_with_retries(page, target, report=report)
             if not wait_cloudflare(page):

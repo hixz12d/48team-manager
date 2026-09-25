@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Team48 ChatGPT 注册助手",
+  "description": "输入邮箱，自动完成 ChatGPT 网页注册与 Cloudflare 接码；可选自动接入 Team48 并授权。自用配置已内置。",
+  "version": "0.5.0",
+  "minimum_chrome_version": "120",
+  "incognito": "split",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "debugger",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "https://apimail.xiaozhudf2026.foo/*",
+    "https://48team.xiaozhudf2026.foo/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ChatGPT 注册助手",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://auth.openai.com/*",
+        "https://auth0.openai.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     browser_channel: str = ""
     browser_executable: str = ""
     browser_engine: Literal["chromium", "chromix"] = "chromium"
+    browser_signup_flow: Literal["legacy", "extension"] = "legacy"
     browser_locale: str = "en-US"
     browser_timezone: str = ""
     openai_ca_bundle: str = ""
@@ -46,6 +47,10 @@ class Settings(BaseSettings):
     auto_reauth_enabled: bool = False
     auto_rotate_enabled: bool = False
     force_refill: bool = False
+
+    # Bearer token for the personal signup extension's narrow /api/ext endpoints.
+    # Empty (or shorter than 24 characters) disables those endpoints entirely.
+    extension_api_token: str = ""
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

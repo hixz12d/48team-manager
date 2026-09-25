@@ -36,7 +36,7 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
         await self.db.close()
         await self.engine.dispose()
 
-    async def run_signup(self, *, browser_ok=True, joined=True, bad_state=False, token_email="kid@icloud.com", invite_error=None, use_hme=False, isolated=False):
+    async def run_signup(self, *, browser_ok=True, joined=True, bad_state=False, token_email="kid@icloud.com", invite_error=None, use_hme=False, isolated=False, signup_flow="legacy"):
         client = fixtures._FakeChatGPT(auto_join=joined)
         client.invite_error = invite_error
         async def get_invites(*args, **kwargs):
@@ -44,7 +44,8 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
         client.get_invites = get_invites
         registration = []
         def register(**kwargs):
-            self.assertEqual(kwargs["start_url"], "https://chatgpt.com/accept-invite?token=test")
+            self.assertEqual(kwargs["start_url"], "https://chatgpt.com/" if signup_flow == "extension" else "https://chatgpt.com/accept-invite?token=test")
+            self.assertEqual(kwargs["invite_entry"], signup_flow != "extension")
             self.assertFalse(kwargs["allow_sms"])
             self.assertEqual(len(client.invites), 1)
             registration.append(True)
@@ -67,9 +68,9 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
             return {"ok": True, "callback_url": "http://localhost:1455/auth/callback?" + urlencode({"state": "wrong" if bad_state else state, "code": "one-code"})}
 
         with (
-            patch("app.integrations.mail.otp.wait_for_mailbox_item", return_value="https://chatgpt.com/accept-invite?token=test"),
+            patch("app.integrations.mail.otp.wait_for_mailbox_item", return_value="https://chatgpt.com/accept-invite?token=test") as invite_mail,
             patch("app.application.onboard.browser_slot.InvitedBrowserSession") as session_factory,
-            patch("app.core.config.load_settings", return_value=Settings(_env_file=None, browser_executable="C:/Chromix/chrome.exe")),
+            patch("app.core.config.load_settings", return_value=Settings(_env_file=None, browser_executable="C:/Chromix/chrome.exe", browser_signup_flow=signup_flow)),
             patch("app.application.invitation_flow.load_cf_config", new=AsyncMock(return_value={"base_url": "https://mail.test", "address": "mail@test.example", "admin_password": "secret"})),
             patch("app.application.oauth_signup.browser_slot.run_reauth_isolated", new=AsyncMock(side_effect=callback)) as run_browser,
             patch("app.application.oauth_signup.chatgpt_client.exchange_oauth_code", new=AsyncMock(return_value={"success": True, "access_token": "token", "refresh_token": "refresh"})) as exchange,
@@ -84,7 +85,35 @@ class InvitedOAuthSignupTests(unittest.IsolatedAsyncioTestCase):
                 email_line="" if use_hme else "kid@icloud.com----https://mail.example/pickup",
                 phone_line="", oauth_signup=True, in_test=not isolated,
             )
+        if signup_flow == "extension":
+            invite_mail.assert_not_called()
         return result, run_browser, exchange
+
+    async def test_managed_invitation_registers_at_home_without_invitation_email(self):
+        result, calls, exchange = await self.run_signup(isolated=True, signup_flow="extension")
+        self.assertTrue(result["success"])
+        self.assertTrue(result["authorized"])
+        self.assertEqual(calls.await_count, 2)
+        self.assertEqual(calls.await_args_list[0].kwargs["start_url"], "https://chatgpt.com/")
+        self.assertEqual(calls.await_args_list[0].kwargs["team_name"], "Signup Team")
+        self.browser_session.close.assert_awaited_once()
+        exchange.assert_awaited_once()
+
+    async def test_managed_home_login_still_requires_official_membership_before_oauth(self):
+        with (patch("app.application.onboard.JOIN_CONFIRM_ATTEMPTS", 1),
+              patch("app.application.onboard.JOIN_CONFIRM_INTERVAL", 0)):
+            result, calls, exchange = await self.run_signup(isolated=True, signup_flow="extension", joined=False)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "not_joined")
+        calls.assert_awaited_once()
+        exchange.assert_not_awaited()
+        self.browser_session.close.assert_awaited_once()
+
+    async def test_managed_home_signup_does_not_start_when_invite_fails(self):
+        result, calls, exchange = await self.run_signup(isolated=True, signup_flow="extension", invite_error="forbidden")
+        self.assertEqual(result["error_code"], "invite_failed")
+        calls.assert_not_awaited()
+        exchange.assert_not_awaited()
 
     async def test_runtime_hands_registration_session_to_oauth_and_closes(self):
         result, calls, exchange = await self.run_signup(isolated=True)

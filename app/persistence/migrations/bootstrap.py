@@ -26,6 +26,10 @@ from app.persistence.models import (  # noqa: F401
     WorkspaceOfficialMemberSnapshot,
 )
 
+MEMBERSHIP_COLUMNS = (
+    ("switch_counted_at", "DATETIME"),
+)
+
 PROXY_PROFILE_COLUMNS = (
     ("health_state", "VARCHAR(20) DEFAULT 'unchecked' NOT NULL"),
     ("last_success_at", "DATETIME"),
@@ -182,6 +186,16 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
         await _ensure_sqlite_columns(conn, "workspace_official_member_snapshots", SNAPSHOT_COLUMNS)
         await _ensure_sqlite_columns(conn, "operations", OPERATION_COLUMNS)
         await _ensure_sqlite_columns(conn, "workspaces", WORKSPACE_COLUMNS)
+        membership_existing = {str(row[1]) for row in (await conn.execute(text("PRAGMA table_info(workspace_memberships)"))).fetchall()}
+        await _ensure_sqlite_columns(conn, "workspace_memberships", MEMBERSHIP_COLUMNS)
+        if membership_existing and "switch_counted_at" not in membership_existing:
+            # Members already authorized before automatic counting are treated as counted;
+            # linked-but-unauthorized members still count once when first authorized.
+            await conn.execute(text(
+                "UPDATE workspace_memberships SET switch_counted_at = strftime('%Y-%m-%d %H:%M:%S.000000', 'now') "
+                "WHERE account_id IN (SELECT id FROM accounts WHERE access_token_encrypted IS NOT NULL "
+                "OR refresh_token_encrypted IS NOT NULL)"
+            ))
         await _ensure_sqlite_columns(conn, "quota_snapshots", QUOTA_COLUMNS)
         await _ensure_sqlite_columns(conn, "external_bindings", BINDING_COLUMNS)
         await _ensure_sqlite_columns(conn, "accounts", ACCOUNT_COLUMNS)

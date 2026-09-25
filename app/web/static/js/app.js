@@ -3301,7 +3301,36 @@ function hmeRow(item) {
       submit.type = "submit";
       submit.className = "button primary";
       submit.textContent = "完成授权";
-      form.append(linkLabel, linkActions, callbackLabel, status, submit);
+      // Follow-ups for a child joining this team; mother accounts never use them.
+      const isOwner = Boolean(teamDetailState.workspace?.owner_account_id) && teamDetailState.workspace.owner_account_id === account.id;
+      const followupPrefs = readAuthFollowups();
+      const followups = document.createElement("fieldset");
+      followups.className = "team-auth-followups";
+      followups.hidden = isOwner || !account.workspace_id;
+      const legend = document.createElement("legend");
+      legend.textContent = "授权成功后";
+      const followupBox = (key, text) => {
+        const label = document.createElement("label");
+        label.className = "check";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = followupPrefs[key];
+        input.addEventListener("change", () => writeAuthFollowups({ ...readAuthFollowups(), [key]: input.checked }));
+        label.append(input, document.createTextNode(text));
+        followups.append(label);
+        return input;
+      };
+      followups.append(legend);
+      const pushBox = followupBox("push", "推送到 Sub2API（使用设置里的默认分组和代理）");
+      const countBox = followupBox("count", "今日切换 +1（同一成员只计一次）");
+      const autoLabel = document.createElement("label");
+      autoLabel.className = "check";
+      const autoBox = document.createElement("input");
+      autoBox.type = "checkbox";
+      autoBox.checked = followupPrefs.autoSubmit;
+      autoBox.addEventListener("change", () => writeAuthFollowups({ ...readAuthFollowups(), autoSubmit: autoBox.checked }));
+      autoLabel.append(autoBox, document.createTextNode("粘贴回调地址后自动提交"));
+      form.append(linkLabel, linkActions, callbackLabel, followups, autoLabel, status, submit);
       body.append(back, form);
       activateFocusTrap(panel || sheet);
       back.focus();
@@ -3346,15 +3375,25 @@ function hmeRow(item) {
           return;
         }
         setButtonBusy(submit, true, "授权中");
+        const wantPush = !followups.hidden && pushBox.checked;
+        const wantCount = !followups.hidden && countBox.checked;
+        if (wantPush || wantCount) status.textContent = "正在换票，随后推送 / 计数…";
         try {
           const result = await fetchEntity(`account:${account.id}:reauth:complete:${ticket}`, `/api/accounts/${account.id}/reauth/complete`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({ ticket, callback_url: callback.value.trim() }),
+            body: JSON.stringify({
+              ticket,
+              callback_url: callback.value.trim(),
+              ...(wantPush || wantCount ? { workspace_id: account.workspace_id, push_sub2api: wantPush, count_switch: wantCount } : {}),
+            }),
           });
+          const steps = [["授权", { ok: true, message: result.message || "授权成功" }],
+            ["Sub2API", result.followups?.sub2api], ["切换次数", result.followups?.switch_count]].filter(([, step]) => step);
+          const failed = steps.some(([, step]) => step.ok === false);
           teamDetailState.stage = "authorization_completed";
           await reloadTeamDetails();
-          toast(result.message || "授权成功", "success");
+          toast(steps.map(([name, step]) => `${name}：${step.message}`).join("；"), failed ? "warning" : "success");
           void window.Team48Accounts?.refreshRemote(true).catch(() => {});
         } catch (error) {
           const code = extractErrorCode(error);
@@ -3366,6 +3405,12 @@ function hmeRow(item) {
           setButtonBusy(submit, false);
         }
       });
+      callback.addEventListener("paste", () => {
+        // Let the pasted text land first, then submit only a complete localhost callback.
+        setTimeout(() => {
+          if (autoBox.checked && ticket && !submit.disabled && isOAuthCallback(callback.value)) form.requestSubmit(submit);
+        }, 0);
+      });
       try {
         await startAuth();
       } catch (error) {
@@ -3375,6 +3420,29 @@ function hmeRow(item) {
         regenerate.hidden = false;
       }
     }
+
+  const AUTH_FOLLOWUPS_KEY = "team48:auth-followups";
+  function readAuthFollowups() {
+    const defaults = { push: true, count: true, autoSubmit: true };
+    try {
+      const saved = JSON.parse(localStorage.getItem(AUTH_FOLLOWUPS_KEY) || "{}");
+      return Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, typeof saved[key] === "boolean" ? saved[key] : value]));
+    } catch (_) {
+      return defaults;
+    }
+  }
+  function writeAuthFollowups(value) {
+    try { localStorage.setItem(AUTH_FOLLOWUPS_KEY, JSON.stringify(value)); } catch (_) {}
+  }
+  function isOAuthCallback(value) {
+    try {
+      const url = new URL(String(value || "").trim());
+      return ["localhost", "127.0.0.1"].includes(url.hostname) && url.port === "1455" && url.pathname === "/auth/callback" &&
+        (url.searchParams.has("code") || url.searchParams.has("error")) && url.searchParams.has("state");
+    } catch (_) {
+      return false;
+    }
+  }
 
   function proxyOptionLabel(item) {
     const name = item.name || `Sub2API #${item.id}`;
@@ -4581,6 +4649,14 @@ function hmeRow(item) {
   document.getElementById("register-form")?.addEventListener("submit", submitRegister);
   document.querySelector("[data-close-reauth]")?.addEventListener("click", closeReauth);
   document.getElementById("reauth-form")?.addEventListener("submit", submitReauth);
+  document.querySelector("#reauth-form [name='callback_url']")?.addEventListener("paste", (event) => {
+    const field = event.currentTarget;
+    setTimeout(() => {
+      const form = field.form;
+      const button = form?.querySelector("#reauth-submit");
+      if (readAuthFollowups().autoSubmit && form?.ticket.value && !button?.disabled && isOAuthCallback(field.value)) form.requestSubmit(button || undefined);
+    }, 0);
+  });
   document.querySelectorAll("[data-open-phone-import]").forEach((button) => {
     button.addEventListener("click", () => openPhoneImport(button));
   });

@@ -34,6 +34,25 @@ class CompleteWorkspaceOAuthRequest(BaseModel):
 class CompleteAccountOAuthRequest(BaseModel):
     ticket: str = Field(min_length=8, max_length=200)
     callback_url: str = Field(min_length=8, max_length=4000)
+    # Optional follow-ups after a successful exchange; omitted means the old behaviour.
+    workspace_id: int | None = Field(default=None, gt=0)
+    push_sub2api: bool = False
+    count_switch: bool = False
+
+
+class ExtensionHandoffRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    workspace_id: int = Field(gt=0)
+    sync_operation_id: str | None = Field(default=None, min_length=4, max_length=80)
+
+
+class ExtensionHandoffCompleteRequest(BaseModel):
+    account_id: int = Field(gt=0)
+    workspace_id: int = Field(gt=0)
+    ticket: str = Field(min_length=8, max_length=200)
+    callback_url: str = Field(min_length=8, max_length=4000)
+    push_sub2api: bool = True
+    count_switch: bool = True
 
 
 class WorkspaceExpiryPatch(BaseModel):

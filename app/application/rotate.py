@@ -305,6 +305,39 @@ class RotateService:
         return {"ok": confirmed, "skipped": not confirmed,
                 "code": "" if confirmed else "unauthorized_not_confirmed"}
 
+    async def _confirm_deactivated(self, db, *, account, workspace):
+        """A recorded ban must match local auth state, and a live official read may veto it."""
+        if (account is None or account.auth_state != "deactivated"
+                or str(account.last_reauth_code or "") != "account_deactivated"):
+            return {"ok": False, "skipped": True, "code": "deactivated_not_confirmed"}
+        try:
+            live = await self.quota.peek_official(db, account, workspace=workspace)
+        except Exception:
+            live = None
+        finally:
+            await db.commit()  # Release reads opened by proxy resolution.
+        # Only an official rejection confirms; success vetoes and transport errors stay unknown.
+        rejected = bool(
+            live is not None and not live.success
+            and getattr(live, "error_source", None) == "official_quota"
+            and (getattr(live, "http_status", None) in {401, 403}
+                 or "deactivated" in str(getattr(live, "error_code", "") or ""))
+        )
+        return {"ok": rejected, "skipped": not rejected,
+                "code": "" if rejected else "deactivated_not_confirmed"}
+
+    async def _consecutive_auto_failures(self, db, account_id: int, limit: int = 10) -> int:
+        """Failed automatic attempts since this account's last non-failed automatic rotation."""
+        states = list(await db.scalars(select(Operation.state).where(
+            Operation.op_type == "rotate", Operation.source == "auto", Operation.account_id == int(account_id),
+        ).order_by(Operation.created_at.desc(), Operation.id.desc()).limit(limit)))
+        count = 0
+        for state in states:
+            if state != "failed":
+                break
+            count += 1
+        return count
+
     async def _confirm_weekly_limit(
         self,
         db: AsyncSession,
@@ -1085,7 +1118,8 @@ class RotateService:
                     and snapshot.credential_revision == int(child.credential_revision or 1)):
                 kind = "401"
             reason = classify_rotate_reason(
-                kind=kind, last_reauth_code=child.last_reauth_code or "",
+                # A leftover ban code after credentials were restored must not trigger rotation.
+                kind=kind, last_reauth_code=(child.last_reauth_code or "") if child.auth_state == "deactivated" else "",
                 on_deactivated=bool(cfg.get("auto_rotate_on_deactivated", True)),
                 on_weekly_limit=bool(cfg.get("auto_rotate_on_weekly_limit", True)),
             )
@@ -1112,6 +1146,10 @@ class RotateService:
                 confirmed = await self._confirm_weekly_limit(db, account=child, remote_id=remote.get("id"), workspace_id=workspace.id)
             elif reason == "unauthorized":
                 confirmed = await self._confirm_unauthorized(db, account=child, workspace_id=workspace.id)
+            elif reason == "deactivated":
+                confirmed = await self._confirm_deactivated(db, account=child, workspace=workspace)
+            else:
+                confirmed = {"ok": False, "code": "rotate_reason_unknown"}
             if not confirmed.get("ok"):
                 child.next_eligible_at = stamp + timedelta(minutes=5)
                 stats["skipped"] += 1
@@ -1180,7 +1218,8 @@ class RotateService:
                 stats["failed"] += 1
             # Keep the official reset time set during departure; never shorten it to 12h.
             if child.operational_state != "standby":
-                child.next_eligible_at = stamp + timedelta(minutes=5)
+                failures = await self._consecutive_auto_failures(db, child.id) if op.state == "failed" else 0
+                child.next_eligible_at = rotate_backoff_at(stamp, failures) if failures else stamp + timedelta(minutes=5)
             await db.commit()
             if not in_test:
                 await refresh_after_rotation(db, op.workspace_id)

@@ -18,6 +18,7 @@ from app.application.rotate import RotateService
 from app.application.settings import upsert_setting
 from app.core.config import Settings
 from app.core.time import utcnow
+from app.domain.quota import QuotaResult
 from app.persistence.database import Base
 from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
 from app.persistence.models.operations import Operation
@@ -32,6 +33,10 @@ class AutomaticRotationTests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
         self.db = async_sessionmaker(self.engine, expire_on_commit=False)()
         self.now = utcnow()
+        peek = patch("app.application.quota.QuotaService.peek_official", new=AsyncMock(
+            return_value=QuotaResult(False, error_code="http_401", http_status=401)))
+        self.peek = peek.start()
+        self.addCleanup(peek.stop)
         self.cfg = {"auto_rotate_enabled": True, "auto_rotate_daily_limit": 2, "auto_rotate_scope": "all", "auto_rotate_workspace_ids": []}
 
     async def asyncTearDown(self):
@@ -41,7 +46,7 @@ class AutomaticRotationTests(unittest.IsolatedAsyncioTestCase):
     async def seed(self, suffix="1"):
         owner = Account(email=f"owner{suffix}@example.com", local_purpose="mother", operational_state="active")
         child = Account(email=f"child{suffix}@example.com", local_purpose="child", operational_state="active",
-                        auth_state="healthy", credential_revision=1, last_reauth_code="account_deactivated")
+                        auth_state="deactivated", credential_revision=1, last_reauth_code="account_deactivated")
         self.db.add_all([owner, child]); await self.db.flush()
         ws = Workspace(owner_account_id=owner.id, official_workspace_id=str(uuid4()), status="active", seat_limit=3)
         self.db.add(ws); await self.db.flush()
@@ -164,6 +169,7 @@ class AutomaticRotationTests(unittest.IsolatedAsyncioTestCase):
 
     async def pending(self):
         child, ws, _ = await self.seed()
+        child.auth_state = "healthy"  # The pending account is the authorized replacement.
         op = await operation_store.create(self.db, op_type="rotate", workspace_id=ws.id, source="auto", account_id=child.id)
         invite = {"child": {"id": child.id}, "authorized": True, "publish_revision": 1,
                   "publish_attempts": 1, "publish_retry_at": (self.now - timedelta(seconds=1)).isoformat()}
@@ -291,6 +297,51 @@ class AutomaticRotationTests(unittest.IsolatedAsyncioTestCase):
         op = await self.db.scalar(select(Operation))
         self.assertEqual(op.state, "failed")
         self.assertEqual(op.error_code, "rotation_preflight_failed")
+
+    async def test_stale_ban_code_after_restored_credentials_is_not_a_candidate(self):
+        child, _, remote = await self.seed()
+        child.auth_state = "healthy"
+        await self.db.commit()
+        service = RotateService(sub2api=_FakeSub2Api([remote]))
+        service.run_rotate_saga = AsyncMock()
+        stats = await service.run_once(self.db, now=self.now, settings=self.cfg, in_test=True)
+        self.assertEqual(stats["scanned"], 0)
+        service.run_rotate_saga.assert_not_awaited()
+        self.peek.assert_not_awaited()
+        self.assertIsNone(await self.db.scalar(select(Operation)))
+
+    async def test_ban_requires_official_rejection_of_live_credentials(self):
+        child, _, remote = await self.seed()
+        for live in (QuotaResult(True, seven_day_used_percent=10),
+                     QuotaResult(False, error_code="transport", error_source="official_quota")):
+            self.peek.return_value = live
+            child.next_eligible_at = None
+            await self.db.commit()
+            service = RotateService(sub2api=_FakeSub2Api([remote]))
+            service.run_rotate_saga = AsyncMock()
+            await service.run_once(self.db, now=self.now, settings=self.cfg, in_test=True)
+            service.run_rotate_saga.assert_not_awaited()
+            self.assertIsNone(await self.db.scalar(select(Operation)))
+        self.peek.return_value = QuotaResult(False, error_code="http_403", http_status=403)
+        child.next_eligible_at = None
+        await self.db.commit()
+        service = RotateService(sub2api=_FakeSub2Api([remote]))
+        service.run_rotate_saga = AsyncMock(return_value={"success": True})
+        stats = await service.run_once(self.db, now=self.now, settings=self.cfg, in_test=True)
+        self.assertEqual(stats["rotated"], 1)
+        self.assertEqual(service.run_rotate_saga.await_args.kwargs["reason"], "deactivated")
+
+    async def test_repeated_preflight_failures_back_off(self):
+        child, _, remote = await self.seed()
+        service = RotateService(sub2api=_FakeSub2Api([remote]))
+        service.run_rotate_saga = AsyncMock()
+        with patch.object(automatic, "preflight", new=AsyncMock(side_effect=ValueError("resource unavailable"))),              patch.object(automatic, "refresh_after_rotation", new=AsyncMock()):
+            for attempt, minutes in enumerate((30, 60)):
+                stamp = self.now + timedelta(hours=attempt * 2)
+                await service.run_once(self.db, now=stamp, settings=self.cfg)
+                await self.db.refresh(child)
+                self.assertEqual(child.next_eligible_at.replace(tzinfo=None), (stamp + timedelta(minutes=minutes)).replace(tzinfo=None))
+        service.run_rotate_saga.assert_not_awaited()
 
     async def test_preflight_preserves_live_owner_premium_and_rejects_unknown_seat(self):
         child, ws, _ = await self.seed()

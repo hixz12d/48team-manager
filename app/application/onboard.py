@@ -218,7 +218,12 @@ class OnboardService:
         from app.integrations.openai.browser.environment import BrowserEnvironmentError, validate_configuration
 
         try:
-            validate_configuration(load_settings(), browser_executable)
+            browser_settings = load_settings()
+            validate_configuration(browser_settings, browser_executable)
+            if browser_settings.browser_signup_flow == "extension":
+                from app.integrations.openai.browser.signup import validate_signup_assets
+
+                validate_signup_assets()
         except BrowserEnvironmentError as exc:
             return {"success": False, "error_code": exc.error_code, "error": str(exc)}
         claimed = None
@@ -542,8 +547,11 @@ class OnboardService:
             await self._progress(db, job_id=job_id, stage="mail_missing", message=error, error=error, error_code="mail_missing")
             return {"success": False, "error": error, "error_code": "mail_missing", "status": "mail_missing"}
 
-        invite_url = ""
-        if oauth_signup:
+        from app.core.config import load_settings
+
+        homepage_signup = oauth_signup and load_settings().browser_signup_flow == "extension"
+        invite_url = "https://chatgpt.com/" if homepage_signup else ""
+        if oauth_signup and not homepage_signup:
             from app.integrations.mail.otp import wait_for_mailbox_item, extract_invite_url
 
             await self._progress(db, job_id=job_id, stage="invite_mail", message="等待邀请邮件链接")
@@ -561,7 +569,7 @@ class OnboardService:
                 return {"success": False, "error_code": "invite_link_missing", "status": "invited",
                         "error": "未收到有效邀请链接，请继续此邮箱，不会改走普通注册页",
                         "child": serialize_child(child)}
-        browser_options = {"allow_sms": False, "executable_path": browser_executable, "invite_entry": True} if oauth_signup else {}
+        browser_options = {"allow_sms": False, "executable_path": browser_executable, "invite_entry": not homepage_signup} if oauth_signup else {}
 
         if claimed is not None:
             await hme_service.mark_signup_started(db, claimed, stage="browser")

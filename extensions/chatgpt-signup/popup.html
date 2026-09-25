@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ChatGPT 注册</title><link rel="stylesheet" href="popup.css"></head>
+<body><main>
+  <header><div class="topline"><span class="brand">TEAM48</span></div><h1>ChatGPT 注册<span id="window-badge" class="badge">连接中</span></h1><p id="mode">正在连接插件…</p></header>
+  <form id="register">
+    <label for="email">邮箱地址</label><input id="email" type="email" required autocomplete="off" placeholder="you@example.com" spellcheck="false">
+    <label for="workflow">操作方式</label><select id="workflow">
+      <option value="auto">自动填写并提交</option><option value="review">自动填写，手动提交</option>
+      <option value="submit">手工填写，确认后由插件提交</option><option value="manual">全程手工，仅记录流程</option>
+    </select><p id="workflow-hint" class="hint"></p>
+    <details id="profile-options"><summary>注册资料（可选）</summary>
+      <p class="hint">两项都留空时沿用随机资料；填写后，本次使用你提供的资料。</p>
+      <label for="profile-name">姓名</label><input id="profile-name" maxlength="80" autocomplete="off">
+      <label for="profile-birthday">生日</label><input id="profile-birthday" type="date" autocomplete="off">
+    </details>
+    <label class="check-option"><input id="hide-panel" type="checkbox">隐藏网页进度卡片，在插件弹窗中查看</label>
+    <div id="team48-auto" class="team48-box" hidden>
+      <label for="auto-workspace">注册完成后自动接入团队</label>
+      <select id="auto-workspace"><option value="">不自动接入</option></select>
+      <p class="hint">完成后自动：同步团队 → 接入本地 → 在本页授权 → 推送 Sub2API → 今日切换 +1。邀请需已发出。</p>
+    </div>
+    <button id="start" type="submit" disabled>开始注册 <span aria-hidden="true">↗</span></button>
+  </form>
+  <section id="progress" hidden aria-label="注册进度">
+    <div class="status-line"><strong id="state"></strong><span id="account"></span></div>
+    <p id="run-mode" class="hint"></p><p id="message" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="focus" type="button" class="secondary">查看网页</button><button id="pause" type="button" class="secondary">暂停</button><button id="resume" type="button">继续</button><button id="stop" type="button" class="text-button">停止</button></div>
+    <div id="handoff" class="team48-box" hidden>
+      <div class="status-line"><strong id="handoff-title">接入 Team48</strong><span id="handoff-team"></span></div>
+      <p id="handoff-message" class="hint" role="status" aria-live="polite"></p>
+      <ul id="handoff-steps" hidden></ul>
+      <div id="handoff-form" class="handoff-form">
+        <select id="handoff-workspace" aria-label="选择团队"><option value="">选择团队…</option></select>
+        <button id="handoff-start" type="button">接入并授权</button>
+      </div>
+      <button id="handoff-retry" type="button" class="secondary" hidden>重新提交回调</button>
+    </div>
+    <div class="credentials"><div id="generated-credentials"><label for="password">本次生成的密码</label><div class="password-row"><input id="password" type="password" readonly autocomplete="off"><button id="reveal" class="text-button" type="button" aria-label="显示密码" aria-pressed="false">显示</button></div></div>
+      <div class="actions"><button id="copy" type="button" class="secondary">复制账号密码</button><button id="clear" type="button" class="text-button">清除</button></div>
+      <p id="credential-hint" class="hint">密码仅在网页要求设置时使用，请在关闭浏览器前保存。</p>
+      <label for="codex-result">后续 Codex 授权结果（手动记录）</label><select id="codex-result" disabled>
+        <option value="unknown">尚未记录</option><option value="no_phone">未要求手机号</option>
+        <option value="phone_required">要求手机号</option><option value="failed">其他失败</option>
+      </select>
+      <button id="diagnostics" type="button" class="secondary">复制脱敏诊断记录</button>
+      <p class="hint">记录步骤、耗时及你选择的授权结果，不含邮箱、密码、验证码或令牌。关闭浏览器后清除。</p>
+    </div>
+  </section>
+  <p id="feedback" role="status" aria-live="polite"></p>
+  <footer>单次注册 · 自动模式支持 Cloudflare 接码</footer>
+</main><script type="module" src="popup.js"></script></body></html>

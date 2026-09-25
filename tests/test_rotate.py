@@ -132,6 +132,11 @@ class RotateSagaTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         self.session = self.session_maker()
+        # A recorded ban is confirmed only by an official rejection of the live credentials.
+        peek = patch("app.application.quota.QuotaService.peek_official", new=AsyncMock(
+            return_value=QuotaResult(False, error_code="http_401", http_status=401)))
+        peek.start()
+        self.addCleanup(peek.stop)
 
     async def asyncTearDown(self):
         await self.session.close()
@@ -151,6 +156,7 @@ class RotateSagaTests(unittest.IsolatedAsyncioTestCase):
             local_purpose="child",
             operational_state="active",
             last_reauth_code=last_reauth or None,
+            auth_state="deactivated" if last_reauth == "account_deactivated" else "unknown",
         )
         self.session.add_all([owner, child])
         await self.session.flush()
@@ -287,6 +293,7 @@ class RotateSagaTests(unittest.IsolatedAsyncioTestCase):
             "credentials": {"email": child.email},
         }
         child.last_reauth_code = "account_deactivated"
+        child.auth_state = "deactivated"
         await self.session.commit()
         service = RotateService(sub2api=_FakeSub2Api([remote]))
         service.kick_to_standby = AsyncMock()

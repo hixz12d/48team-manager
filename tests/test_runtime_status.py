@@ -49,6 +49,20 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret-", json.dumps(payload))
         self.assertNotIn("input_json", json.dumps(payload))
 
+    async def test_stuck_automatic_rotation_names_blocked_workspace(self):
+        from app.persistence.models.identity import Account, Workspace
+        owner = Account(email="owner@example.com", local_purpose="mother", operational_state="active")
+        self.db.add(owner); await self.db.flush()
+        ws = Workspace(owner_account_id=owner.id, official_workspace_id="ws-1", status="active", custom_name="Alpha")
+        self.db.add(ws); await self.db.flush()
+        row = await operation_store.create(self.db, op_type="rotate", workspace_id=ws.id, source="auto")
+        await operation_store.finish(self.db, row, {"success": False, "partial": True, "error_code": "oauth_failed"})
+        await self.db.commit()
+        rotation = (await runtime_status(self.db))["auto_rotation"]
+        self.assertEqual(rotation["blocked_workspaces"], 1)
+        self.assertEqual(rotation["blocked"], [{"workspace_id": ws.id, "workspace_name": "Alpha",
+                                                "operation_id": row.public_id, "state": "partial"}])
+
     async def test_counts_are_not_truncated_by_recent_history(self):
         await operation_store.create(self.db, op_type="workspace_sync", state="queued")
         await operation_store.create(self.db, op_type="reauth", state="manual_required")
