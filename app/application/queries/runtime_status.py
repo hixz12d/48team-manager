@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from sqlalchemy import func, select
+import json
 
 from app.application.jobs import browser, scheduler as scheduling
 from app.application.jobs.dispatcher import reauth_dispatcher
-from app.application.presenters import BUSINESS_STEP_LABELS, OPERATION_TYPE_LABELS
+from app.application.presenters import BUSINESS_STEP_LABELS, OPERATION_TYPE_LABELS, operation_stage_plan
 from app.application.quota import quota_service
 from app.application.reauth import reauth_service
 from app.application.rotate import rotate_service
@@ -45,13 +46,26 @@ def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None)
         display_state, reason = state, None
     start = as_utc(row.started_at) if row.started_at else None
     error_code = row.error_code if row.error_code in SAFE_ERRORS else ("operation_failed" if row.error_code else None)
+    # Only allowlisted stage codes, never log messages or inputs.
+    try:
+        logs = json.loads(row.log_json or "[]")
+    except (TypeError, ValueError):
+        logs = []
+    plan = operation_stage_plan(row.op_type)
+    known = set(BUSINESS_STEP_LABELS) | {code for stage in plan for code in stage["stages"]}
+    observed = list(dict.fromkeys(item.get("stage") for item in logs
+                                 if isinstance(item, dict) and isinstance(item.get("stage"), str)
+                                 and item["stage"] in known)) if isinstance(logs, list) else []
     return {
         "id": row.public_id, "operation_id": row.public_id,
         "kind": row.op_type if row.op_type in OPERATION_TYPE_LABELS else "other",
         "operation_label": OPERATION_TYPE_LABELS.get(row.op_type, "后台任务"),
         "state": state, "status": display_state, "wait_reason": reason,
         "stage_label": BUSINESS_STEP_LABELS.get(row.current_step, "执行中" if state == "running" else "等待状态更新"),
-        "stage_code": row.current_step if row.current_step in BUSINESS_STEP_LABELS else None,
+        "stage_code": row.current_step if row.current_step in known else None,
+        "stage_plan": plan, "observed_stages": observed,
+        "cancel_requested": bool(row.cancel_requested),
+        "can_cancel": state in {"queued", "running", "waiting"} and not row.cancel_requested,
         "target": {"kind": "workspace" if row.workspace_id else ("account" if row.account_id else "system"),
                    "id": row.workspace_id or row.account_id},
         "target_label": workspace_name or (f"工作区 #{row.workspace_id}" if row.workspace_id else (f"账号 #{row.account_id}" if row.account_id else "系统")),
@@ -86,7 +100,7 @@ async def runtime_status(db, *, now=None):
     ).group_by(Operation.state))).all())
     active = list(await db.scalars(select(Operation).where(
         Operation.archived_at.is_(None), Operation.state.in_(active_states),
-    ).order_by((Operation.state == "running").desc(), Operation.created_at, Operation.id).limit(8)))
+    ).order_by((Operation.state == "running").desc(), Operation.created_at, Operation.id).limit(200)))
     recent = list(await db.scalars(select(Operation).where(
         Operation.archived_at.is_(None), Operation.state.in_(TERMINAL_STATES),
     ).order_by(Operation.finished_at.desc(), Operation.id.desc()).limit(5)))

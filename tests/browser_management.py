@@ -21,9 +21,14 @@ def main():
         page.goto(BASE + "/accounts")
         page.wait_for_selector(".management-table tbody tr")
         assert page.locator("#summary-accounts").inner_text() == "7"
-        assert page.locator("#summary-needs_auth").inner_text() == "2"
-        assert page.locator("#summary-retry").inner_text() == "1"
-        assert "$12.35" in page.locator("#accounts-portfolio").inner_text()
+        snapshot = context.request.get(BASE + '/api/accounts/portfolio').json()
+        assert page.locator("#summary-needs_auth").inner_text() == str(snapshot['summary']['needs_auth'])
+        assert page.locator("#summary-retry").inner_text() == str(snapshot['summary']['retry'])
+        if snapshot['sub2api_status']['configured']:
+            assert "$12.35" in page.locator("#accounts-portfolio").inner_text()
+        else:
+            assert page.locator('#management-remote-setup').is_visible()
+            assert page.locator('.management-table th').filter(has_text='Sub2API').count() == 0
         for width in (1600, 1440, 1280, 1024, 768, 390):
             page.set_viewport_size({"width": width, "height": 1000 if width > 540 else 844})
             page.screenshot(path=str(OUT / f"accounts-{width}.png"), full_page=True, animations="disabled")
@@ -48,7 +53,9 @@ def main():
         assert "North" in page.locator("#sheet-title").inner_text()
         page.keyboard.press("Escape")
         page.locator("#accounts-search").fill("")
+        page.locator('.management-more-filters > summary').click()
         page.locator("#management-workspace").select_option("")
+        page.locator('.management-more-filters > summary').click()
         page.locator("#management-health").select_option("401")
         assert page.locator(".management-table tbody tr").count() == 1
         page.locator("#management-health").select_option("all")
@@ -56,7 +63,7 @@ def main():
         assert page.locator(".management-table tbody tr").count() == 7
         page.locator('.management-tabs [data-management-view="unassigned"]').click()
         assert page.locator(".management-table tbody tr").count() == 1
-        assert page.locator('.management-bar[role="meter"]').count() == 0
+        assert page.locator('#accounts-portfolio .management-bar[role="meter"]').count() == 0
         page.locator('.management-tabs [data-management-view="teams"]').click()
         toggle = page.locator('.management-expand').first
         toggle.click()

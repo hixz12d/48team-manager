@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Team48 ChatGPT 注册助手",
   "description": "输入邮箱，自动完成 ChatGPT 网页注册与 Cloudflare 接码；可选自动接入 Team48 并授权。自用配置已内置。",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "minimum_chrome_version": "120",
   "incognito": "split",
   "icons": {

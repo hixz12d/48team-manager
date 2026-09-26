@@ -157,7 +157,14 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
             )
 
 
-    payload["attention"] = attention[:30]
+    portfolio_data = await portfolio_query(db)
+    account_attention = [{"kind": "account", "account_id": item["id"], "email": item.get("email"),
+                          "message": " · ".join(reason["label"] for reason in item["attention_reasons"]),
+                          "result": "warning", "action": "查看账号", "href": f"/accounts?account={item['id']}"}
+                         for item in portfolio_data["accounts"] if item["needs_attention"]]
+    payload["attention"] = account_attention[:30]
+    payload["resource_attention"] = [item for item in attention if item.get("kind") in {"phone", "hme", "operation", "proxy"}][:30]
+    payload["attention_breakdown"] = portfolio_data["attention_breakdown"]
     payload["running_operations"] = running[:4]
     payload["recent_events"] = [
         {
@@ -171,7 +178,7 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
     ]
     summary = dict(payload.get("summary") or {})
     summary["running_operations"] = len(running)
-    summary["attention"] = len(attention)
+    summary["attention"] = portfolio_data["summary"]["attention"]
     payload["summary"] = summary
     payload["healthy"] = not attention
     payload["freshness"] = {

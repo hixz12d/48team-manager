@@ -49,7 +49,7 @@ export function publicJob(job) {
   if (!job) return null;
   return {id: job.id, email: job.email, status: job.status, stage: job.stage, message: job.message,
     mode: job.mode || 'auto', codexResult: job.codexResult || 'unknown', password: job.password, tabId: job.tabId, expiresAt: job.expiresAt,
-    phase: job.phase === 'oauth' ? 'oauth' : 'signup', handoff: publicHandoff(job.handoff),
+    phase: job.phase === 'oauth' ? 'oauth' : 'signup', handoff: publicHandoff(job.handoff), formSeen: !!job.entryFormSeen,
     autoHandoff: job.autoHandoff ? {workspaceId: job.autoHandoff.workspaceId, workspaceName: job.autoHandoff.workspaceName || ''} : null};
 }
 
@@ -69,7 +69,7 @@ export const STAGES = new Set(['signup', 'email', 'password', 'otp', 'profile', 
 const EVENTS = new Set(['started', 'page', 'filled', 'submit_attempt', 'form_submit', 'manual_submit',
   'waiting_manual', 'code_received', 'paused', 'resumed', 'stopped', 'expired', 'session_check',
   'session_error', 'email_mismatch', 'email_unverified', 'completed', 'captcha', 'phone', 'rate_limit', 'entry_fallback', 'click_response', 'continue_retry',
-  'oauth_started', 'oauth_callback']);
+  'oauth_started', 'oauth_callback', 'session_anonymous', 'manual_complete']);
 const PAGES = new Set(['chatgpt', 'signup', 'password', 'email_verification', 'profile', 'phone', 'consent', 'auth_other', 'unknown']);
 const CLICK_OUTCOMES = new Set(['submitted', 'loading', 'advanced', 'validation', 'timeout']);
 

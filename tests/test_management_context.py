@@ -80,6 +80,26 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
         await self.session.close()
         await self.engine.dispose()
 
+    async def test_attention_summary_is_shared_and_interrupted_tasks_clear_on_recovery(self):
+        from app.application.queries.console import overview
+        from app.application.operations import operation_store
+        op = await operation_store.create(self.session, op_type="onboard", account_id=self.alice.id, workspace_id=self.ws_a.id)
+        await operation_store.finish(self.session, op, {"success": False, "partial": True})
+        await self.session.commit()
+        portfolio = await portfolio_query(self.session)
+        account = next(a for a in portfolio["accounts"] if a["id"] == self.alice.id)
+        self.assertTrue(account["needs_attention"])
+        self.assertIn("onboarding", [r["code"] for r in account["attention_reasons"]])
+        page = await overview(self.session)
+        self.assertEqual(page["summary"]["attention"], portfolio["summary"]["attention"])
+        self.assertEqual(len({a["account_id"] for a in page["attention"]}), len(page["attention"]))
+        self.assertEqual(page["attention_breakdown"], portfolio["attention_breakdown"])
+        recovered = await operation_store.create(self.session, op_type="onboard", account_id=self.alice.id, workspace_id=self.ws_a.id)
+        await operation_store.finish(self.session, recovered, {"success": True})
+        await self.session.commit()
+        account = next(a for a in (await portfolio_query(self.session))["accounts"] if a["id"] == self.alice.id)
+        self.assertNotIn("onboarding", [r["code"] for r in account["attention_reasons"]])
+
     async def test_cross_join_roles_and_canonical_names(self):
         self.assertEqual(management_role(self.ws_a, self.alice.id), "mother")
         self.assertEqual(management_role(self.ws_a, self.bob.id), "child")
@@ -200,7 +220,7 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
             async def lookup_live_member(self, db, workspace, email):
                 return {"success": True, "lookup_state": "absent_confirmed"}, None
 
-            async def invite_member(self, db, workspace_id, email, role="owner"):
+            async def invite_member(self, db, workspace_id, email, role="owner", seat_intent="workspace_default"):
                 self.invites.append((email, role))
                 return {"success": True, "message": f"已邀请 {email}"}
 
@@ -253,7 +273,7 @@ class ManagementContextTests(unittest.IsolatedAsyncioTestCase):
             async def lookup_live_member(self, db, workspace, email):
                 return {"success": True, "lookup_state": "absent_confirmed"}, None
 
-            async def invite_member(self, db, workspace_id, email, role="owner"):
+            async def invite_member(self, db, workspace_id, email, role="owner", seat_intent="workspace_default"):
                 return {"success": False, "error": "invite rejected", "error_code": "invite_failed"}
 
         failed = await add_local_child(

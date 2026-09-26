@@ -22,7 +22,7 @@ function environment() {
     document,
     Option: function(label, value) { this.label = label; this.value = value; },
     setButtonBusy() {},
-    watchInviteProgress: () => () => {},
+    collapseTaskForm: () => () => {},
     postAction: async (key, url, body) => { calls.push({key, url, body}); return {ok: true}; },
     handleActionResult: async () => {},
     reloadTeamDetails: async () => {},
@@ -47,7 +47,8 @@ test('invite and replenish send the selected intent, defaulting without Premium'
   for (const seat of [undefined, 'workspace_default', 'standard', 'premium']) {
     const {context, calls} = environment();
     await context.inviteTeamMember({id: 7}, {email_line: 'fixture@example.test', role: 'member', seat_intent: seat}, {});
-    await context.replenishTeam({id: 7}, {}, {seat_intent: seat});
+    await context.replenishTeam({id: 7}, {}, {role: 'member', seat_intent: seat});
+    assert.equal(calls[1].body.role, 'member');
     assert.equal(calls.length, 2);
     for (const call of calls) assert.equal(call.body.seat_intent, seat || 'workspace_default');
     assert.equal(calls[0].body.role, 'member');

@@ -122,6 +122,58 @@ BUSINESS_STEP_LABELS = {
 }
 
 
+# Presentation only: these are workflow stages, not a percentage or proof of completion.
+_BROWSER_STAGES = ("browser", "signup_runner", "browser_open", "email_otp", "about_you", "workspace", "add_phone", "sms_otp", "oauth", "browser_failed")
+_ONBOARD_PLAN = (
+    ("checking", ("checking", "blocked")),
+    ("hme", ("hme", "hme_failed")),
+    ("inviting", ("inviting", "invited", "invite_mail", "skip_invite", "invite_failed", "invite_role_mismatch")),
+    ("browser", _BROWSER_STAGES),
+    ("reconciling", ("reconciling", "not_joined")),
+    ("authorizing", ("authorizing", "authorized", "auth_failed")),
+    ("active", ("active",)),
+)
+OPERATION_STAGE_PLANS = {
+    "onboard": _ONBOARD_PLAN,
+    "replenish": _ONBOARD_PLAN,
+    "rotate": (
+        ("preflight", ("preflight",)), ("confirm_trigger", ("confirm_trigger",)),
+        ("paused", ("paused",)), ("drained", ("drained",)),
+        ("official_removed", ("official_removed", "kicked")),
+        ("refill", tuple(code for _, codes in _ONBOARD_PLAN for code in codes) + ("refill",)),
+    ),
+    "kick_member": (("official_removed", ("official_removed",)), ("paused", ("paused", "drained")), ("kicked", ("kicked",))),
+}
+
+
+def operation_stage_plan(kind: str) -> list[dict[str, Any]]:
+    return [{"code": code, "label": BUSINESS_STEP_LABELS.get(code, code), "stages": list(stages)}
+            for code, stages in OPERATION_STAGE_PLANS.get(kind, ())]
+
+
+def account_attention(item: dict[str, Any]) -> list[dict[str, str]]:
+    """Shared local read-model evidence; categories may overlap on one account."""
+    reasons = {}
+    for context in item.get("contexts") or [item]:
+        health = context.get("health") or {}
+        code = health.get("code")
+        if health.get("needs_auth") or context.get("needs_auth"):
+            reasons["auth"] = "需要授权"
+        quota = context.get("last_success_quota") or context.get("quota") or {}
+        if code == "quota_exhausted" or any(isinstance(quota.get(key), (int, float)) and quota[key] >= 100
+                                           for key in ("five_hour_used_percent", "seven_day_used_percent")):
+            reasons["quota"] = "额度用尽"
+        if code not in {None, "healthy", "disabled", "quota_exhausted"} and not health.get("needs_auth"):
+            reasons["check"] = health.get("label") or "检测需处理"
+        remote = context.get("remote_status") or {}
+        if any(state.get("state") in {"missing", "auth_error", "error", "forbidden", "phone_required", "identity_mismatch", "identity_unconfirmed", "binding_review"}
+               for state in remote.get("bindings") or [remote]):
+            reasons["remote"] = "远端状态需核对"
+        if context.get("state") == "conflict":
+            reasons["identity"] = "身份冲突"
+    return [{"code": code, "label": label} for code, label in reasons.items()]
+
+
 AUTH_NEED_STATES = frozenset({
     "refresh_due",
     "oauth_required",

@@ -9,7 +9,7 @@ const shared = import(pathToFileURL(path.join(root, 'shared.mjs')).href);
 const mail = import(pathToFileURL(path.join(root, 'cloudflare.mjs')).href);
 const MAILBOX = {baseUrl:'https://apimail.xiaozhudf2026.foo',address:'inbox@example.com',adminPassword:'fixture-secret'};
 
-async function worker({incognito = true, session = {}, local = {}, failMail = false, debuggerAPI = false, commandHook, team48, fetch} = {}) {
+async function worker({incognito = true, session = {}, local = {}, failMail = false, debuggerAPI = false, commandHook, team48, fetch, poll} = {}) {
   const handlers = {}, apiCalls = [], createdTabs = [], commands = [], navigation = {}, updatedTabs = [];
   const area = store => ({
     setAccessLevel: async () => {}, get: async key => ({[key]: structuredClone(store[key])}),
@@ -40,7 +40,7 @@ async function worker({incognito = true, session = {}, local = {}, failMail = fa
       if(failMail) throw new Error('Cloudflare 邮箱返回 HTTP 401。');
       return {started:Date.now(),seen:['old-mail'],codes:['123456']};
     },
-    pollMailbox: async (config,email,baseline,ignored) => {apiCalls.push({config,email,baseline,ignored});return '654321';},
+    pollMailbox: async (config,email,baseline,ignored) => {apiCalls.push({config,email,baseline,ignored});return poll ? poll() : '654321';},
   });
   const source = fs.readFileSync(path.join(root, 'background.js'), 'utf8').replace(/^import .*;\r?\n/gm, '');
   vm.runInContext(source, context);
@@ -224,6 +224,44 @@ test('resume retries only the timed-out stage and keeps an overall submission li
     assert.equal(w.session.job.attempts[stage],2);
     await w.send({type:'resume'});
   }
+});
+
+test('slow mailbox read no longer blocks page state or pause; a stale result is dropped', async () => {
+  let release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const w=await worker({poll:()=>gate});
+  await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id;
+  const reading=w.send({type:'code',jobId},w.content);
+  await new Promise(resolve=>setTimeout(resolve,20));
+  // Before 0.5.2 these waited for Cloudflare (up to 25 s) behind the mailbox request.
+  assert.equal((await w.send({type:'state'},w.content)).active,true);
+  assert.equal((await w.send({type:'code',jobId},w.content)).code,null);
+  await w.send({type:'pause',jobId,reason:'manual'},w.content);
+  release('654321');
+  assert.equal((await reading).code,null);
+  assert.equal(w.session.job.pendingCode,undefined);
+  await w.send({type:'resume'});
+  w.session.job.lastPoll=0;
+  assert.equal((await w.send({type:'code',jobId},w.content)).code,'654321');
+  assert.equal(w.session.job.pendingCode,'654321');
+});
+
+test('waiting too long for a new OTP pauses with a resend hint and resume restarts the wait', async () => {
+  const w=await worker({poll:async()=>null});
+  await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id;
+  assert.equal((await w.send({type:'code',jobId},w.content)).code,null);
+  assert.equal(w.session.job.status,'running');
+  w.session.job.codeWaitSince=Date.now()-121000; w.session.job.lastPoll=0;
+  assert.equal((await w.send({type:'code',jobId},w.content)).code,null);
+  assert.equal(w.session.job.status,'paused');
+  assert.match(w.session.job.message,/重新发送/);
+  await w.send({type:'resume'});
+  assert.equal(w.session.job.codeWaitSince,undefined);
+  w.session.job.lastPoll=0;
+  await w.send({type:'code',jobId},w.content);
+  assert.equal(w.session.job.status,'running');
 });
 
 test('paused OTP stays available until an actual submit, and stop blocks all later edits', async () => {
@@ -657,4 +695,25 @@ test('closing the tab during authorization fails the handoff; a manual restart w
   assert.equal(server.calls.filter(call=>call.url.endsWith('/complete')).length,0);
   await w.send({type:'handoff-start',workspaceId:3,workspaceName:'Alpha'});
   await until(()=>w.session.job.handoff?.status==='authorizing','authorizing again');
+});
+
+test('manual completion is only offered after signup forms and starts the chosen handoff', async () => {
+  const server=team48Server();
+  const w=await worker({team48:TEAM48,fetch:server.fetch});
+  await w.send({type:'start',email:'test@icloud.com',handoff:{workspaceId:3,workspaceName:'Alpha'}});
+  const jobId=w.session.job.id;
+  const early=await w.send({type:'mark-complete'});
+  assert.equal(early.ok,false);
+  assert.equal(w.session.job.status,'running');
+  assert.equal((await w.send({type:'view'})).job.formSeen,false);
+  await w.send({type:'event',event:'page',stage:'profile',jobId},{...w.content,url:'https://auth.openai.com/about-you'});
+  await w.send({type:'event',event:'session_anonymous',stage:'home',jobId},{...w.content,url:'https://chatgpt.com/'});
+  assert.equal((await w.send({type:'view'})).job.formSeen,true);
+  w.session.job.status='paused';
+  assert.equal((await w.send({type:'mark-complete'})).ok,true);
+  assert.equal(w.session.job.status,'done');
+  assert.equal(w.session.job.events.at(-1).event,'manual_complete');
+  assert.ok(w.session.job.events.some(entry=>entry.event==='session_anonymous'));
+  await until(()=>w.session.job.handoff?.status==='authorizing','authorizing after manual completion');
+  assert.equal((await w.send({type:'mark-complete'})).ok,false);
 });

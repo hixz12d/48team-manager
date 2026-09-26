@@ -19,6 +19,7 @@
     const id = node.dataset.switchWorkspace;
     node.querySelector("[data-switch-label]").textContent = `今日切换 ${countForToday(records.get(id))} 次`;
     const button = node.querySelector("button");
+    if (!button) return;
     button.disabled = pending.has(id);
     button.textContent = pending.has(id) ? "保存中…" : "＋1";
     button.setAttribute("aria-busy", String(pending.has(id)));
@@ -31,9 +32,10 @@
     refresh();
     timer = setTimeout(scheduleReset, millisecondsUntilReset() + 20);
   }
-  function widget(workspace, {increment, onError}) {
+  function widget(workspace, {increment, onError, readOnly = false} = {}) {
     const id = String(workspace.id);
     remember(id, workspace.switch_count);
+    refresh();
     if (!started) {
       started = true;
       scheduleReset();
@@ -43,7 +45,7 @@
     const node = document.createElement("div");
     node.className = "workspace-switch-counter";
     node.dataset.switchWorkspace = id;
-    node.title = "手动记录切换次数，北京时间每天 00:00 清零";
+    node.title = "授权闭环计数及手工补记；北京时间每天 00:00 清零，与自动轮转日限分开";
     const label = document.createElement("span");
     label.dataset.switchLabel = "";
     label.setAttribute("role", "status");
@@ -67,7 +69,8 @@
     const hint = document.createElement("small");
     hint.className = "muted";
     hint.textContent = "北京时间 00:00 清零";
-    node.append(label, button, hint);
+    node.append(label);
+    if (!readOnly) node.append(button, hint);
     paint(node);
     return node;
   }

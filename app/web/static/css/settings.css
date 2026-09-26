@@ -1,0 +1,204 @@
+/* Settings keep the console palette and share the existing form contracts. */
+body:has(#settings-savebar:not([hidden])) .toast-region {
+  bottom: 112px;
+  max-height: calc(100dvh - 144px);
+}
+.page-settings { overflow: visible; }
+.settings-page { min-width: 0; }
+.settings-column,
+.settings-security .panel-body {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.settings-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: var(--space-lg);
+  align-items: start;
+}
+
+.settings-column { align-content: start; }
+.settings-security { margin-top: var(--space-lg); }
+.settings-page .panel-header { padding-block: var(--space-sm); }
+.settings-page .panel-title,
+.settings-security .panel-title { font-size: 16px; }
+.settings-page p,
+.settings-security p { margin: 0; }
+
+.service-card .panel-header > div:first-child { min-width: 0; }
+.service-meta {
+  padding-top: var(--space-xxs);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.service-summary { overflow-wrap: anywhere; }
+.service-edit {
+  display: grid;
+  gap: var(--space-sm);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-md);
+}
+.settings-page .service-management-grid {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.settings-page .service-management-grid > :last-child { grid-column: auto; width: auto; }
+.settings-page .sub2api-push-defaults .panel-header {
+  padding: var(--space-xs) 0;
+  background: transparent;
+}
+
+.settings-page fieldset,
+.settings-security fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.settings-page legend,
+.settings-security legend {
+  padding: 0 0 var(--space-xs);
+  font-size: 14px;
+  font-weight: 600;
+}
+.settings-page .automation-card .panel-body {
+  display: grid;
+  gap: var(--space-md);
+}
+.settings-page .setting-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: var(--space-sm);
+  align-items: start;
+  padding-block: var(--space-xs);
+  cursor: pointer;
+}
+.setting-row > span {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+.setting-row strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+.setting-row .hint {
+  display: block;
+  margin-top: var(--space-xxs);
+  font-weight: 400;
+}
+.setting-row > input[type="checkbox"] {
+  grid-column: 1;
+  grid-row: 1;
+  width: 36px;
+  height: 22px;
+  margin: 0;
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+.setting-row > input[type="checkbox"]::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: 3px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.setting-row > input[type="checkbox"]:checked {
+  background: var(--primary-bg);
+  border-color: var(--primary-bg);
+}
+.setting-row > input[type="checkbox"]:checked::before {
+  transform: translateX(14px);
+  background: var(--primary-text);
+}
+/* Selecting a scope remains a checkbox; only automation on/off uses switches. */
+#auto-rotation-workspace-list .setting-row { grid-template-columns: 18px minmax(0, 1fr); }
+#auto-rotation-workspace-list input[type="checkbox"] {
+  appearance: auto;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+#auto-rotation-workspace-list input::before { content: none; }
+#auto-rotation-workspaces .toolbar {
+  min-height: 0;
+  padding: 0 0 var(--space-xs);
+  background: transparent;
+}
+
+.settings-page label:has(> input:not([type="checkbox"])),
+.settings-page label:has(> select),
+.settings-page label:has(> .input-with-unit) {
+  max-width: 520px;
+  gap: var(--space-xs);
+}
+.input-with-unit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  max-width: 320px;
+}
+.settings-page .input-with-unit input { grid-area: 1 / 1 / 2 / 3; padding-right: 80px; }
+.input-with-unit > span {
+  grid-area: 1 / 2;
+  padding-inline: var(--space-sm) 36px;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.settings-page input[type="number"] { font-variant-numeric: tabular-nums; }
+.settings-page :is(label, fieldset).is-dirty {
+  border-inline-start: 2px solid var(--accent);
+  padding-inline-start: var(--space-xs);
+}
+
+.settings-savebar {
+  position: sticky;
+  bottom: var(--space-sm);
+  z-index: 5;
+  margin-top: var(--space-md);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.settings-savebar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+.settings-page-tools { display: flex; justify-content: flex-end; margin-bottom: var(--space-md); }
+.password-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+@media (max-width: 1024px) {
+  .settings-columns { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 720px) {
+  .password-fields { grid-template-columns: minmax(0, 1fr); }
+  .settings-savebar { bottom: 0; }
+  .settings-savebar-actions { margin-left: auto; }
+  .settings-page .panel-header { flex-wrap: wrap; }
+}
+@media (forced-colors: active) {
+  .setting-row > input[type="checkbox"] { appearance: auto; }
+  .setting-row > input[type="checkbox"]::before { content: none; }
+}

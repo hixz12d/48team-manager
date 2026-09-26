@@ -145,7 +145,7 @@ def serialize_operation(
     account_email: str | None = None,
     proxy_label: str | None = None,
 ) -> dict[str, Any]:
-    from app.application.presenters import business_step_label, operation_type_label
+    from app.application.presenters import business_step_label, operation_type_label, operation_stage_plan
 
     log_items = _loads(row.log_json, [])
     if not isinstance(log_items, list):
@@ -182,6 +182,7 @@ def serialize_operation(
         "workspace_name": workspace_name,
         "current_step": row.current_step or "",
         "business_step": business_step,
+        "stage_plan": operation_stage_plan(row.op_type),
         "started": isoformat(row.started_at or row.created_at),
         "duration": duration_text(row),
         "email": row.email or account_email or "",

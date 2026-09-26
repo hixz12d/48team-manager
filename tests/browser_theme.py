@@ -80,7 +80,8 @@ def check(base, output):
         assert page.locator(".management-table-scroll").first.evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(26, 34, 48)"
         page.locator(".workspace-expiry-trigger").first.click()
         expect(page.locator(".workspace-expiry-editor")).to_be_visible()
-        assert page.locator(".workspace-expiry-editor").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(26, 34, 48)"
+        assert page.locator(".workspace-expiry-editor").evaluate("n => getComputedStyle(n).backgroundColor") == "rgba(0, 0, 0, 0)"
+        assert page.locator('#entity-sheet .sheet-panel').evaluate('n => getComputedStyle(n).backgroundColor') == 'rgb(26, 34, 48)'
         page.screenshot(animations="disabled", path=str(output / "expiry-dark.png"))
         page.keyboard.press("Escape")
         page.get_by_role("button", name="登记账号或团队", exact=True).click()
@@ -93,7 +94,8 @@ def check(base, output):
         page.screenshot(animations="disabled", path=str(output / "palette-dark.png"))
         page.keyboard.press("Escape")
 
-        page.get_by_role("button", name="删除本地团队：North · 研究团队", exact=True).click()
+        page.locator('[data-focus-key="team-menu:1"]').click()
+        page.get_by_role('menuitem', name='移除本地记录', exact=True).click()
         expect(page.locator("#confirm-sheet")).to_be_visible()
         assert page.locator(".confirm-panel").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(26, 34, 48)"
         page.screenshot(animations="disabled", path=str(output / "confirm-dark.png"))

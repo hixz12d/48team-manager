@@ -13,3 +13,4 @@ a{font-size:11px;color:#1c6b50;text-underline-offset:3px}#feedback{font-size:12p
 .handoff-form{display:flex;gap:6px}.handoff-form select{flex:1;padding:7px;font-size:12px}.handoff-form button{font-size:11px;padding:7px 10px;flex-shrink:0}
 #handoff-steps{margin:0 0 8px;padding-left:16px;font-size:11px}#handoff-steps li.ok{color:#2c6b46}#handoff-steps li.fail{color:#9b3829}#handoff-steps li.skip{color:#7a877c}
 #handoff[data-status="failed"]{border-color:#e5c2b8;background:#fcf4f1}#handoff[data-status="done"]{border-color:#b9d9c5}
+#mark-complete{width:100%;margin-top:8px;font-size:11px;padding:7px 10px}

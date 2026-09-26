@@ -264,12 +264,13 @@ class SignupExtensionBrowserTests(unittest.TestCase):
         self.assertIn('备用注册入口', page.evaluate('testState.message'))
 
     def test_fallback_does_not_interrupt_manual_modes_existing_forms_or_challenges(self):
-        cases = [('<script>testState.mode="manual"</script><button>Sign up</button>', False),
-                 ('<script>testState.mode="submit"</script><button>Sign up</button>', False),
-                 ('<script>testState.entryFormSeen=true</script><p>Loading</p>', False),
-                 ('<p>Verify you are human</p>', True), ('<p>Too many requests</p>', True),
-                 ('<input autocomplete="tel" name="phone">', True)]
-        for html, paused in cases:
+        # After the signup forms, a logged-in session completes even while the page still loads.
+        cases = [('<script>testState.mode="manual"</script><button>Sign up</button>', 'running'),
+                 ('<script>testState.mode="submit"</script><button>Sign up</button>', 'running'),
+                 ('<script>testState.entryFormSeen=true</script><p>Loading</p>', 'done'),
+                 ('<p>Verify you are human</p>', 'paused'), ('<p>Too many requests</p>', 'paused'),
+                 ('<input autocomplete="tel" name="phone">', 'paused')]
+        for html, status in cases:
             with self.subTest(html=html):
                 page = self.fixture(html, url='https://chatgpt.com/')
                 page.wait_for_function("testMessages.filter(m=>m.type==='state').length>=2")
@@ -278,7 +279,7 @@ class SignupExtensionBrowserTests(unittest.TestCase):
                 page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+2", arg=count)
                 self.assertEqual(page.url, 'https://chatgpt.com/')
                 self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='entry-fallback')"))
-                self.assertEqual(page.evaluate('testState.status'), 'paused' if paused else 'running')
+                self.assertEqual(page.evaluate('testState.status'), status)
                 page.close()
 
     def test_email_semantics_and_active_dialog_are_detected(self):
@@ -1038,6 +1039,28 @@ class SignupExtensionBrowserTests(unittest.TestCase):
         page.wait_for_timeout(3500)
         self.assertEqual(page.evaluate('testMessages.length'), count)
         self.assertEqual(page.locator('input').input_value(), '')
+
+    def test_home_without_prompt_box_completes_from_token_email_after_signup(self):
+        # A logged-in page variant with no known home element, and a session without user.email.
+        claims = json.dumps({"https://api.openai.com/profile": {"email": "test@icloud.com"}}).encode()
+        token = "x." + __import__("base64").urlsafe_b64encode(claims).decode().rstrip("=") + ".y"
+        page = self.fixture('<h1>A workspace needs attention</h1><script>testState.entryFormSeen=true</script>',
+                            'https://chatgpt.com/')
+        page.route("**/api/auth/session", lambda route: route.fulfill(json={"user": {"id": "u"}, "accessToken": token}))
+        page.wait_for_function("testState.status==='done' || testState.status==='paused'", timeout=20000)
+        self.assertEqual(page.evaluate("testState.status"), "done", page.evaluate("testState.message"))
+        self.assertEqual(page.evaluate("testMessages.find(m=>m.type==='complete').email"), "test@icloud.com")
+
+    def test_unconfirmed_home_after_signup_pauses_instead_of_waiting_forever(self):
+        page = self.fixture('<div id="prompt-textarea" contenteditable="true"></div><script>testState.entryFormSeen=true</script>',
+                            'https://chatgpt.com/')
+        page.route("**/api/auth/session", lambda route: route.fulfill(json={}))
+        page.wait_for_function("testMessages.some(m=>m.event==='session_anonymous')")
+        self.assertEqual(page.evaluate("testState.status"), "running")
+        page.evaluate('window.realNow=Date.now;Date.now=()=>realNow()+41000')
+        page.wait_for_function("testState.status==='paused'", timeout=10000)
+        self.assertIn("确认已注册完成", page.evaluate("testState.message"))
+        self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='entry-fallback')"))
 
     def test_phone_and_captcha_pause_and_completion_checks_email(self):
         for html, reason in [('<input type="tel" name="phone">', '手机验证'), ('<h1>Verify you are human</h1>', '人机验证')]:

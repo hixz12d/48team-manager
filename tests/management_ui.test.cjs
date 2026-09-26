@@ -105,3 +105,24 @@ test('numeric sorting distinguishes unknown from zero and keeps equal rows stabl
   assert.deepEqual(ids('quota'), [2, 1, 3]);
   assert.deepEqual(ids('-quota'), [1, 3, 2]);
 });
+
+
+test('team pagination keeps each complete group together including oversized teams', () => {
+  const {teamPageWindow} = window.Team48Accounts;
+  const groups = [6,6,6,6,25].map((size,i)=>({id:i+1,members:Array.from({length:size},(_,j)=>({id:i*30+j,email:`${i}-${j}`}))}));
+  const entries = filteredEntries({groups},'teams',new URLSearchParams());
+  assert.equal(teamPageWindow(entries,1,20).items.length,18);
+  assert.deepEqual([...new Set(teamPageWindow(entries,2,20).items.map(e=>e.group.id))] ,[4]);
+  assert.equal(teamPageWindow(entries,3,20).items.length,25);
+  assert.equal(teamPageWindow(entries,99,20).page,3);
+});
+test('quota sorting orders groups by their worst member without interleaving them', () => {
+  const groups=[{id:1,members:[{id:1,quota:{seven_day_used_percent:20}},{id:2,quota:{seven_day_used_percent:90}}]},
+    {id:2,members:[{id:3,quota:{seven_day_used_percent:100}},{id:4,quota:{seven_day_used_percent:10}}]}];
+  const entries=filteredEntries({groups},'teams',new URLSearchParams('sort=-quota'));
+  assert.deepEqual([...entries].map(e=>e.account.id),[3,4,2,1]);
+});
+test('attention view honors the shared server flag over a stale health label', () => {
+  const accounts=[{id:1,health:{code:'healthy'},needs_attention:true}, {id:2,health:{code:'pending'},needs_attention:false}];
+  assert.deepEqual([...filteredEntries({accounts},'attention',new URLSearchParams())].map(e=>e.account.id),[1]);
+});

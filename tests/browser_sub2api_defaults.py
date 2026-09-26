@@ -19,6 +19,7 @@ def main():
                  "remote_status": {"state": "unbound", "label": "未绑定 Sub2API"},
                  "workspace_id": 7 if i <= 23 else None} for i in range(1, 46)]
     removed, deletes, errors, external = set(), [], [], []
+    failures = {"save": False, "probe": False}
     options = [{"id": 9, "name": "IPv6 美国", "max_accounts_per_proxy": 2,
                 "proxy_ids": [101, 102], "available_proxy_ids": [101, 102]}]
     proxy_groups = AsyncMock(return_value=options)
@@ -38,6 +39,12 @@ def main():
                 request = intercept.request; url = urlsplit(request.url)
                 if url.netloc != "testserver":
                     external.append(url.netloc); intercept.abort(); return
+                if url.path == "/api/settings" and request.method == "PATCH" and failures["save"]:
+                    return intercept.fulfill(status=503, body="unavailable")
+                if url.path == "/api/settings/probe":
+                    if failures["probe"]:
+                        return intercept.fulfill(status=502, body="unavailable")
+                    return intercept.fulfill(json={"sub2api": {"ok": True, "group_count": 1, "account_count": 3}})
                 if url.path == "/api/accounts/portfolio":
                     current = [copy.deepcopy(a) for a in accounts if a["id"] not in removed]
                     return intercept.fulfill(json={"accounts": current, "unassigned": [a for a in current if not a["workspace_id"]],
@@ -53,6 +60,40 @@ def main():
             page.route("**/*", route)
             page.goto("http://testserver/settings")
             expect(page.locator('[data-service="codex"]')).to_have_count(0)
+            expect(page.locator('[name="sub2api_concurrency"]')).to_have_value("5")
+            expect(page.locator("#settings-savebar")).to_be_hidden()
+            # A single-service probe must not overwrite other services' status.
+            hme_status = page.locator('[data-service-meta="hme"]').inner_text()
+            page.locator('[data-probe="sub2api"]').click()
+            expect(page.locator('[data-service-meta="sub2api"]')).to_contain_text("连接正常")
+            expect(page.locator('[data-service-meta="hme"]')).to_have_text(hme_status)
+            failures["probe"] = True
+            page.locator('[data-probe="sub2api"]').click()
+            expect(page.locator('[data-service-meta="sub2api"]')).to_contain_text("操作没有完成（检测服务连接）")
+            failures["probe"] = False
+            page.locator('[data-probe="sub2api"]').click()
+            expect(page.locator('[data-service-meta="sub2api"]')).to_contain_text("连接正常")
+            page.locator('[name="sub2api_concurrency"]').fill("6")
+            expect(page.locator("#settings-status")).to_have_text("1 项未保存")
+            expect(page.locator('label.is-dirty [name="sub2api_concurrency"]')).to_have_count(1)
+            page.locator('[name="sms_max_uses_per_phone"]').fill("4")
+            expect(page.locator("#settings-status")).to_have_text("2 项未保存")
+            page.locator("#settings-discard").click()
+            expect(page.locator('[name="sub2api_concurrency"]')).to_have_value("5")
+            expect(page.locator("#settings-savebar")).to_be_hidden()
+            expect(page.locator("#settings-form .is-dirty")).to_have_count(0)
+            page.get_by_label("默认代理方式", exact=True).select_option("group")
+            expect(page.locator("#settings-status")).to_have_text("1 项未保存")
+            page.locator("#settings-discard").click()
+            expect(page.get_by_label("默认代理方式", exact=True)).to_have_value("none")
+            page.locator('[name="sub2api_concurrency"]').fill("6")
+            failures["save"] = True
+            page.locator("#settings-save").click()
+            expect(page.locator("#settings-status")).to_contain_text("操作没有完成（保存设置）")
+            expect(page.locator('[name="sub2api_concurrency"]')).to_have_value("6")
+            expect(page.locator("#settings-savebar")).to_be_visible()
+            failures["save"] = False
+            page.locator("#settings-discard").click()
             expect(page.locator('[name="sub2api_concurrency"]')).to_have_value("5")
             page.get_by_label("OpenAI 默认分组", exact=True).check()
             page.locator('[name="sub2api_concurrency"]').fill("8")
@@ -81,10 +122,26 @@ def main():
             expect(page.locator("#settings-status")).to_have_text("已保存 · 刚刚")
             saved = client.get("/api/settings").json()["sub2api_push"]
             assert saved["proxy_id"] == 101 and saved["proxy_group_id"] is None
-            for width in (1440, 390):
-                page.set_viewport_size({"width": width, "height": 950})
-                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
-                screenshot(page, f"settings-{width}")
+            for theme in ("dark", "light"):
+                page.locator("[data-theme-select]").select_option(theme)
+                for width in (1440, 1024, 390):
+                    page.set_viewport_size({"width": width, "height": 950})
+                    page.evaluate("window.scrollTo(0, 0)")
+                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+                    columns = page.locator(".settings-columns").evaluate("n => getComputedStyle(n).gridTemplateColumns.split(' ').length")
+                    assert columns == (2 if width > 1024 else 1), (width, columns)
+                    for unit in page.locator(".input-with-unit").all():
+                        assert unit.evaluate("n => {const a=n.querySelector('input').getBoundingClientRect(), b=n.querySelector('span').getBoundingClientRect(); return b.top >= a.top && b.bottom <= a.bottom && b.right <= a.right;}")
+                    screenshot(page, f"settings-{theme}-{width}")
+                    page.locator('[name="sub2api_concurrency"]').fill("9")
+                    expect(page.locator("#settings-status")).to_have_text("1 项未保存")
+                    page.evaluate("window.scrollTo(0, 0)")
+                    assert page.locator("#settings-savebar").evaluate("n => { const r=n.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }"), (theme, width)
+                    assert page.locator("#settings-save").evaluate("n => {const r=n.getBoundingClientRect(); return n.contains(document.elementFromPoint(r.x+r.width/2, r.y+r.height/2));}"), "save action is covered"
+                    screenshot(page, f"settings-dirty-{theme}-{width}")
+                    page.locator("#settings-discard").click()
+                    expect(page.locator('[name="sub2api_concurrency"]')).to_have_value("8")
+                    expect(page.locator("#settings-savebar")).to_be_hidden()
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.goto("http://testserver/accounts")
             rows = page.locator(".management-table tbody tr")

@@ -79,7 +79,7 @@ def check(base, output):
         page.on("request", lambda request: writes.append(request.post_data_json) if request.method == "PATCH" else None)
         page.goto(base + "/accounts")
         first = page.locator('[data-workspace="1"] .workspace-expiry-trigger')
-        expect(first).to_contain_text("填写到期日期")
+        expect(first).to_contain_text("到期未填")
         expect(page.locator('[data-workspace="2"] .workspace-expiry-trigger')).to_contain_text("剩余 4 天")
         expect(page.locator('[data-workspace="3"] .workspace-expiry-trigger')).to_contain_text("已过期 2 天")
         first.click()
@@ -123,10 +123,10 @@ def check(base, output):
         form.get_by_role("button", name="清空日期", exact=True).click()
         submit.click()
         expect(form.locator('[role="status"]')).to_contain_text("日期已清空")
-        expect(first).to_contain_text("填写到期日期")
+        expect(first).to_contain_text("到期未填")
         page.keyboard.press("Escape")
         page.reload()
-        expect(first).to_contain_text("填写到期日期")
+        expect(first).to_contain_text("到期未填")
         for width in (1440, 768, 390):
             page.set_viewport_size({"width": width, "height": 1000 if width > 540 else 844})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width

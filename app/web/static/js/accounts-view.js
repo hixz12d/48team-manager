@@ -120,10 +120,14 @@
     });
     return sorted;
   }
-  function status(account) {
-    const h = account.health || { label: kindLabels[account.kind] || "尚未检测", severity: "muted" };
-    return el("span", `management-badge tone-${h.severity}`, h.label);
-  }
+  function status(account, compact = false) {
+      const h = account.health || { label: kindLabels[account.kind] || "尚未检测", severity: "muted" };
+      const actual401 = account.latest_check?.http_status === 401 && account.latest_check?.current_credential !== false;
+      const short = actual401 ? "401" : ({healthy: "正常", auth_required: "需 OAuth", credential_error: "缺凭据", pending: "待验证", quota_exhausted: "额度用尽", temporary_failure: "暂时失败", rate_limited: "限流", forbidden: "访问被拒", parse_error: "解析失败", partial: "需处理"}[h.code] || (h.needs_auth ? "需授权" : h.label));
+      const badge = el("span", `management-badge tone-${h.needs_auth && !actual401 ? "warning" : h.severity}`, compact ? short : h.label);
+      badge.title = [h.label, account.latest_check?.message].filter(Boolean).join(" · ");
+      return badge;
+    }
   const contexts = account => account.contexts?.length ? account.contexts : [account];
   function matches(account, group, params) {
     const text = (params.get("q") || "").trim().toLowerCase();
@@ -177,24 +181,29 @@
     if (node && !result.ok) node.textContent = result.message || "Sub2API 暂时无法核对，保留上次状态";
     return result;
   }
-  function quota(account) {
-    const wrap = el("div", "management-quota");
-    const data = account.last_success_quota || account.quota || {};
-    if (account.contexts?.length > 1) return el("span", "muted", `${account.contexts.length} 个工作区 · 分别查看`);
-    for (const [label, value] of [["5h", data.five_hour_used_percent], ["7d", data.seven_day_used_percent]]) {
-      const line = el("div", "management-meter");
-      line.append(el("span", "", label));
-      const bar = el("div", `management-bar${data.stale ? " is-stale" : ""}`);
-      if (value != null && Number.isFinite(Number(value))) {
-        bar.setAttribute("role", "meter"); bar.setAttribute("aria-label", `${label} 已用额度${data.stale ? "，旧快照" : ""}`);
-        bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-valuenow", String(value));
-        const fill = el("span"); fill.style.width = `${Math.max(0, Math.min(100, Number(value)))}%`; bar.append(fill);
+  function quota(account, compact = false) {
+      const wrap = el("div", "management-quota");
+      const data = account.last_success_quota || account.quota || {};
+      if (account.contexts?.length > 1) return el("span", "muted", `${account.contexts.length} 个团队 · 分别查看`);
+      const age = Date.now() - Date.parse(data.queried_at);
+      const stale = Number.isFinite(age) ? age > 6 * 3600000 : Boolean(data.stale);
+      for (const [label, value] of [["5h", data.five_hour_used_percent], ["7d", data.seven_day_used_percent]]) {
+        const line = el("div", "management-meter"); line.append(el("span", "", label));
+        const bar = el("div", `management-bar${stale ? " is-stale" : ""}`);
+        if (value != null && Number.isFinite(Number(value))) {
+          bar.setAttribute("role", "meter"); bar.setAttribute("aria-label", `${label} 已用额度${stale ? "，旧快照" : ""}`);
+          bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-valuenow", String(value));
+          const fill = el("span"); fill.style.width = `${Math.max(0, Math.min(100, Number(value)))}%`; bar.append(fill);
+        }
+        line.append(bar, el("span", "tabular", value == null ? "—" : `${value}%`)); wrap.append(line);
       }
-      line.append(bar, el("span", "tabular", value == null ? "—" : `${value}%`)); wrap.append(line);
+      const reset = new Date(data.seven_day_reset_at || "");
+      const resetText = Number.isFinite(reset.getTime()) ? `${new Intl.DateTimeFormat("zh-CN", {weekday: "short"}).format(reset)}重置` : "";
+      const facts = compact ? [resetText, stale ? "旧快照" : ""] : [resetText, data.queried_at ? `${stale ? "旧快照" : "成功"} · ${api.relativeTime(data.queried_at)}` : "无成功快照"];
+      if (facts.some(Boolean)) wrap.append(el("small", stale ? "text-warning" : "muted", facts.filter(Boolean).join(" · ")));
+      wrap.title = [data.queried_at ? `快照：${new Date(data.queried_at).toLocaleString("zh-CN")}` : "无成功快照", resetText ? `7d 重置：${reset.toLocaleString("zh-CN")}` : "7d 重置时间未知"].join("；");
+      return wrap;
     }
-    wrap.append(el("small", data.stale ? "text-warning" : "muted", data.queried_at ? `${data.stale ? "旧快照" : "成功"} · ${api.relativeTime(data.queried_at)}` : "无成功快照"));
-    return wrap;
-  }
   function openAccount(account, trigger, group) {
     setQuery("account", account.id);
     if (account.workspace_id) setQuery("workspace", account.workspace_id);
@@ -209,85 +218,72 @@
     }, "button ghost management-back"));
   }
   function accountRow(account, group) {
-    const row = el("tr");
-    const id = `${account.id || account.email}:${account.workspace_id || "none"}`;
-    row.dataset.account = String(account.id || "");
-    const selectCell = el("td", "management-select");
-    if (canSelect(account)) {
-      const box = el("input"); box.type = "checkbox"; box.checked = selected.has(account.id);
-      box.setAttribute("aria-label", `选择 ${account.email}`);
-      box.addEventListener("click", event => event.stopPropagation());
-      box.addEventListener("change", () => {
-        if (box.checked) selected.add(account.id); else selected.delete(account.id);
-        render(payload);
-      });
-      selectCell.append(box);
-    }
-    const identity = el("td");
-    const identityWrap = el("div", "management-identity");
-    const avatar = el("span", "management-avatar", (purposeLabels[account.purpose] || "外").slice(0, 1));
-    const identityText = el("div");
-    const canOpen = account.managed !== false && Boolean(account.id);
-    const label = canOpen ? button(account.email || account.name, b => openAccount(account, b, group), "management-email", `account:${id}`) : el("span", "management-email", account.email || account.name || "未知账号");
-    label.title = account.email || "";
-    identityText.append(label, el("small", "muted", [purposeLabels[account.purpose], kindLabels[account.kind], !group ? account.workspace || account.workspace_name : null].filter(Boolean).join(" · ")));
-    const subscription = subscriptionLabel(account, group);
-    if (subscription) {
-      const tier = el("small", "management-subscription", subscription);
-      tier.title = account.subscription?.observed_at
-        ? `观察于 ${account.subscription.observed_at} · ${account.subscription.source || "来源未知"}`
-        : "席位档位尚无已验证证据";
-      identityText.append(tier);
-    }
-    identityWrap.append(avatar, identityText); identity.append(identityWrap);
-    const health = el("td"); health.append(status(account));
-    if (account.queued) health.append(el("small", "muted", "检查已排队 / 运行中"));
-    else if (account.latest_check?.current_credential === false) health.append(el("small", "muted", "上次检查属于旧凭证"));
-    else if (account.latest_check?.state === "temporary_failure" && account.health?.code === "auth_required") health.append(el("small", "text-warning", "最近复查超时 / 暂时失败"));
-    const quotaCell = el("td"); quotaCell.append(canOpen ? quota(account) : el("span", "muted", kindLabels[account.kind] || "尚未接入"));
-    const money = el("td", "management-money tabular");
-    if (canOpen) money.append(remoteStatus(account));
-    const usage = fmt.usageWindow(account.usage);
-    money.append(el("strong", "", fmt.formatCost(usage?.user_cost)), el("small", "muted", usage ? `${usage.label} · 成本 ${fmt.formatCost(usage.account_cost)}` : "无计费快照"));
-    if (usage?.stale) money.append(el("small", "text-warning", "旧计费快照"));
-    const time = el("td");
-    time.append(el("span", "", account.latest_check?.checked_at ? api.relativeTime(account.latest_check.checked_at) : "未检查"));
-    time.append(el("small", "muted", account.next_check_at ? `下次 ${api.relativeTime(account.next_check_at)}` : account.health?.needs_auth ? "等待授权" : "尚无计划"));
-    const actionCell = el("td"); const actions = el("div", "management-actions");
-    if (canOpen) {
-      const primary = button(account.health?.needs_auth ? "授权" : "详情", b => {
-        if (account.health?.needs_auth) return api.entityActions.account.find(a => a.id === "account.reauth")?.run(account, b);
-        else openAccount(account, b, group);
-      }, `button${account.health?.needs_auth ? " danger" : ""}`, `primary:${id}`);
-      actions.append(primary);
-      const pushAction = account.purpose === "child" && !account.health?.needs_auth
-        ? api.entityActions.account.find(a => ["account.sub2api.push", "account.sub2api.update"].includes(a.id) && a.visible(account))
-        : null;
-      if (pushAction) {
-        const push = button(pushAction.label, async b => {
-          if (b.disabled) return;
-          b.disabled = true;
-          b.setAttribute("aria-busy", "true");
-          try { await pushAction.run(account, b); }
-          finally { b.disabled = false; b.removeAttribute("aria-busy"); }
-        }, "button primary", `sub2api:${id}`);
-        actions.append(push);
+      const row = el("tr");
+      const id = `${account.id || account.email}:${account.workspace_id || "none"}`;
+      row.dataset.account = String(account.id || "");
+      const selectCell = el("td", "management-select");
+      if (canSelect(account)) {
+        const box = el("input"); box.type = "checkbox"; box.checked = selected.has(account.id);
+        box.setAttribute("aria-label", `选择 ${account.email}`);
+        box.addEventListener("change", () => { if (box.checked) selected.add(account.id); else selected.delete(account.id); render(payload); });
+        selectCell.append(box);
       }
-      actions.append(api.menuButton("account", account));
-    } else if (group) {
-      if (account.kind === "unmanaged") {
-        actions.append(button("接入并授权", b => api.linkTeamMember(group, account, b), "button primary", `link:${id}`));
-      }
-      else actions.append(button("管理成员", b => api.openWorkspaceDetails(b, group), "button", `remote:${id}`));
+      const identity = el("td"), identityText = el("div", "management-identity-line");
+      const canOpen = account.managed !== false && Boolean(account.id);
+      const label = canOpen ? button(account.email || account.name, b => openAccount(account, b, group), "management-email", `account:${id}`) : el("span", "management-email", account.email || account.name || "未知账号");
+      label.title = [account.email, subscriptionLabel(account, group), kindLabels[account.kind], !group ? account.workspace || account.workspace_name : null].filter(Boolean).join(" · ");
+      identityText.append(label, el("span", "management-purpose", purposeLabels[account.purpose] || kindLabels[account.kind] || "外部"));
+      identity.append(identityText);
+      const health = el("td"); const healthState = el("span"); healthState.append(status(account, true)); health.append(healthState);
+      if (account.interrupted_operation_id) {
+      healthState.replaceChildren(button("入组中断", b => api.openOperationById(account.interrupted_operation_id,b), "management-badge tone-warning"));
     }
-    actionCell.append(actions); row.append(selectCell, identity, health, quotaCell, money, time, actionCell);
-    return row;
-  }
+    const task = el("span"); health.append(task);
+      window.Team48TaskProgress?.mount(task, {account, density: "badge", metadata: healthState});
+      if (account.queued) healthState.title = "检查已排队或运行中";
+      else if (account.latest_check?.current_credential === false) healthState.title = "上次检查属于旧凭证";
+      const quotaCell = el("td"); quotaCell.append(canOpen ? quota(account, true) : el("span", "muted", kindLabels[account.kind] || "尚未接入"));
+      const money = el("td", "management-money tabular");
+      const remote = remoteItems(account), first = remote[0] || {};
+      const remoteLabels = {healthy:"远端正常",unbound:"未绑定",paused:"已暂停",missing:"远端不存在",unknown:"待核对",auth_error:"授权异常",error:"同步失败",rate_limited:"远端限流"};
+      const badge = el("span", `management-badge tone-${first.severity || "muted"}`, remote.length > 1 ? `${remote.length} 个绑定` : remoteLabels[first.state] || first.label || "待核对");
+      badge.dataset.remoteState = first.state || "unknown"; money.append(badge);
+      const usage = fmt.usageWindow(account.usage);
+      if (usage) money.append(el("small", "muted", fmt.formatCost(usage.user_cost)));
+      money.title = [...remote.map(s => [s.label, s.remote_id ? `远端 #${s.remote_id}` : "", s.stale ? "旧状态，待核对" : "", s.message].filter(Boolean).join(" · ")), usage ? `${usage.label} · 用户计费 ${fmt.formatCost(usage.user_cost)} · 成本 ${fmt.formatCost(usage.account_cost)}${usage.stale ? " · 旧计费快照" : ""}` : "无计费快照"].join("；");
+      const time = el("td", "management-check-time");
+      time.append(el("span", "", account.latest_check?.checked_at ? api.relativeTime(account.latest_check.checked_at) : "未检查"));
+      time.title = account.next_check_at ? `下次检查：${new Date(account.next_check_at).toLocaleString("zh-CN")}` : "尚无下次检查计划";
+      const actionCell = el("td", "management-action-cell"); const actions = el("div", "management-actions");
+      if (canOpen) {
+        const primary = button(account.health?.needs_auth ? "授权" : "详情", b => {
+          if (account.health?.needs_auth) return api.entityActions.account.find(a => a.id === "account.reauth")?.run(account, b);
+          return openAccount(account, b, group);
+        }, `button${account.health?.needs_auth ? " primary" : ""}`, `primary:${id}`);
+        actions.append(primary);
+        const pushAction = account.purpose === "child" && !account.health?.needs_auth
+          ? api.entityActions.account.find(a => ["account.sub2api.push", "account.sub2api.update"].includes(a.id) && a.visible(account)) : null;
+        if (pushAction) actions.append(button(pushAction.label, async b => {
+          if (b.disabled) return; b.disabled = true; b.setAttribute("aria-busy", "true");
+          try { await pushAction.run(account, b); } finally { b.disabled = false; b.removeAttribute("aria-busy"); }
+        }, "button", `sub2api:${id}`));
+        actions.append(api.menuButton("account", account));
+      } else if (group) {
+        if (account.kind === "unmanaged") actions.append(button("接入并授权", b => api.linkTeamMember(group, account, b), "button primary", `link:${id}`));
+        else actions.append(button("管理成员", b => api.openWorkspaceDetails(b, group), "button", `remote:${id}`));
+      }
+      actionCell.append(actions); row.append(selectCell, identity, health, quotaCell);
+      if (payload?.sub2api_status?.configured !== false) row.append(money);
+      row.append(time, actionCell);
+      return row;
+    }
   function table(items, group) {
     const scroll = el("div", "management-table-scroll"); scroll.tabIndex = 0; scroll.setAttribute("aria-label", "账号明细");
     scroll.dataset.scrollKey = group ? `team-${group.id}` : "all";
     const table = el("table", "management-table");
-    const colgroup = el("colgroup"); [4, 25, 16, 17, 13, 12, 13].forEach((width, i) => { const col = el("col"); col.style.width = i === 6 ? "250px" : `${width}%`; colgroup.append(col); });
+    const colgroup = el("colgroup");
+    const hasRemote = payload?.sub2api_status?.configured !== false;
+    (hasRemote ? [36, 230, 115, 180, 125, 94, 180] : [36, 270, 125, 220, 115, 180]).forEach(width => { const col = el("col"); col.style.width = `${width}px`; colgroup.append(col); });
     const head = el("thead"); const tr = el("tr");
     const selectable = items.filter(canSelect);
     const selectHead = el("th", "management-select"); selectHead.scope = "col";
@@ -304,8 +300,9 @@
     tr.append(selectHead);
     const sortRaw = query().get("sort") || "";
     [["账号 / 本地用途", "email"], ["授权与检测", "health"], ["官方额度 · 已用", "quota"],
-      ["Sub2API 状态 / 计费", "cost"], ["最近检查", "checked"], ["操作", ""]].forEach(([text, key], i) => {
-      const th = el("th", i === 3 || i === 5 ? "num" : ""); th.scope = "col";
+      ["Sub2API", "cost"], ["最近检查", "checked"], ["操作", ""]].forEach(([text, key], i) => {
+      if (key === "cost" && !hasRemote) return;
+      const th = el("th", i === 5 ? "num management-action-cell" : i === 3 ? "num" : ""); th.scope = "col";
       if (!key) { th.textContent = text; tr.append(th); return; }
       const active = sortRaw === key || sortRaw === `-${key}`;
       const descending = sortRaw === `-${key}`;
@@ -328,79 +325,58 @@
     return `Business · ${tier}${info.status === "stale" ? " · 数据待刷新" : ""}`;
   }
   function groupNode(group, items, params) {
-    const section = el("section", "management-group");
-    section.dataset.workspace = String(group.id);
-    const header = el("header", "management-group-head");
-    const closed = collapsed.has(String(group.id)) && !params.get("q");
-    const toggle = button(closed ? "›" : "⌄", () => {
-      const key = String(group.id); collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
-      try { localStorage.setItem("team48:collapsed-teams", JSON.stringify([...collapsed])); } catch (_) {}
-      render(payload);
-    }, "button ghost management-expand", `expand:${group.id}`);
-    toggle.setAttribute("aria-expanded", String(!closed)); toggle.setAttribute("aria-label", `展开或收起 ${group.display_name || group.name}`);
-    toggle.setAttribute("aria-controls", `management-team-${group.id}`);
-    const title = el("div", "management-group-title");
-    const top = el("div", "management-group-name"); top.append(el("h2", "", group.display_name || group.name || "未命名团队"));
-    const counts = group.counts || {};
-    if (counts.health_auth) top.append(el("span", "management-badge tone-error", `${counts.health_auth} 个需授权`));
-    if (counts.health_retry) top.append(el("span", "management-badge tone-warning", `${counts.health_retry} 个待重试`));
-    if (counts.invited) top.append(el("span", "management-badge tone-info", `${counts.invited} 个待邀请接受`));
-    if (counts.unmanaged) top.append(el("span", "management-badge tone-warning", `${counts.unmanaged} 个未接入`));
-    const seats = counts.joined_people == null ? "人数尚未同步" : `已加入 ${counts.joined_people} 人`;
-    title.append(top, el("small", "muted", `${seats} · ${items.length} 条${params.get("q") ? "命中" : "记录"} · 成员同步 ${group.last_sync ? api.relativeTime(group.last_sync) : "尚未同步"}`));
-    const metadata = el("div", "workspace-manual-metadata");
-    metadata.append(window.Team48Expiry.trigger(group, b => api.openWorkspaceExpiry(b, group)),
-      window.Team48SwitchCount.widget(group, {
-        increment: async () => {
-          const result = await api.postAction(`switch-count:${group.id}`, `/api/workspaces/${group.id}/switch-count/increment`);
-          if (!result?.ok) throw new Error(result?.error || "次数保存失败");
-          const current = payload?.groups?.find(item => item.id === group.id);
-          if (current) current.switch_count = result.switch_count;
-          return result.switch_count;
-        },
-        onError: error => api.toast(`计数未确认：${api.friendlyError(error)}，请刷新核对后再操作`, "error"),
-      }));
-    title.append(metadata);
-    const proxyLabel = group.sub2api_proxy_id ? `Sub2API #${group.sub2api_proxy_id}` : (group.owner_proxy_set ? "已配置" : "直连");
-    const proxyStatus = el("small", "muted", `团队代理：${proxyLabel}`);
-    proxyStatus.title = group.owner_proxy || "未配置代理";
-    title.append(proxyStatus);
-    const usage = fmt.usageWindow(group.usage); const money = el("div", "management-group-money");
-    if (usage) {
-      money.append(el("small", "muted", `${usage.label} · Sub2API`), el("span", "tabular", `用户计费 ${fmt.formatCost(usage.user_cost)} / 成本 ${fmt.formatCost(usage.account_cost)}`));
-      if (usage.stale || usage.coverage?.synced < usage.coverage?.total) money.append(el("small", "text-warning", `${usage.coverage ? `覆盖 ${usage.coverage.synced}/${usage.coverage.total}` : ""}${usage.stale ? " · 含旧快照" : ""}`));
+      const section = el("section", "management-group"); section.dataset.workspace = String(group.id);
+      const header = el("header", "management-group-head");
+      const closed = collapsed.has(String(group.id)) && !params.get("q");
+      const toggle = button(closed ? "›" : "⌄", () => {
+        const key = String(group.id); collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
+        try { localStorage.setItem("team48:collapsed-teams", JSON.stringify([...collapsed])); } catch (_) {}
+        render(payload);
+      }, "button ghost management-expand", `expand:${group.id}`);
+      toggle.setAttribute("aria-expanded", String(!closed)); toggle.setAttribute("aria-label", `展开或收起 ${group.display_name || group.name}`);
+      toggle.setAttribute("aria-controls", `management-team-${group.id}`);
+      const title = el("div", "management-group-title"), top = el("div", "management-group-name");
+      top.append(el("h2", "", group.display_name || group.name || "未命名团队"));
+      const counts = group.counts || {};
+      if (counts.health_auth) top.append(el("span", "management-badge tone-warning", `${counts.health_auth} 需授权`));
+      if (counts.health_retry) top.append(el("span", "management-badge tone-warning", `${counts.health_retry} 待重试`));
+      if (counts.unmanaged) top.append(el("span", "management-badge tone-warning", `${counts.unmanaged} 未接入`));
+      title.append(top);
+      const metadata = el("div", "workspace-manual-metadata");
+      const official = group.official || {};
+      const seats = official.occupied_seats != null && official.seat_limit != null ? `${official.occupied_seats}/${official.seat_limit} 席` : counts.joined_people != null ? `已加入 ${counts.joined_people} 人` : "席位未同步";
+      metadata.append(el("span", "muted", seats));
+      if (counts.invited) metadata.append(el("span", "muted", `${counts.invited} 待接受邀请`));
+      const expiry = window.Team48Expiry.trigger(group, b => api.openWorkspaceExpiry(b, group));
+      const expiryInfo = window.Team48Expiry.summary(group.expiry);
+      expiry.replaceChildren(document.createTextNode(expiryInfo.date ? `到期 ${expiryInfo.date} · ${expiryInfo.label}` : "到期未填"));
+      metadata.append(expiry);
+      const count = window.Team48SwitchCount.widget(group, {readOnly:true});
+      metadata.append(count); title.append(metadata);
+      const task = el("section"); task.dataset.teamTask = String(group.id); title.append(task);
+      window.Team48TaskProgress?.mount(task, {workspaceId: group.id, density: "compact", metadata});
+      const op = group.sync_operation || group.last_sync_operation;
+      if (op && (group.sync_operation || ["failed", "partial", "manual_required"].includes(op.state))) {
+        const outcome = el("a", "group-sync-outcome text-warning", group.sync_operation ? (op.state === "queued" ? "同步已排队" : op.stage_label || "同步中") : "最近同步未完成，保留上次快照");
+        outcome.href = `/operations?op=${encodeURIComponent(op.id)}`; title.append(outcome);
+      }
+      const controls = el("div", "management-team-controls");
+      const more = api.menuButton("workspace-card", group); more.dataset.focusKey = `team-menu:${group.id}`;
+      more.setAttribute("aria-label", `${group.display_name || group.name}：更多团队操作`);
+      controls.append(button("管理团队", b => { setQuery("workspace", group.id); api.openWorkspaceDetails(b, group); }, "button", `team:${group.id}`), more);
+      header.append(toggle, title, controls);
+      const body = el("div"); body.id = `management-team-${group.id}`; body.hidden = closed; body.append(table(items, group));
+      section.append(header, body); return section;
     }
-    const activeSync = group.sync_operation;
-    const sync = button(activeSync ? (activeSync.state === "queued" ? "已排队" : "同步中") : "同步本团队", b => api.entityActions.workspace.find(a => a.id === "workspace.sync").run(group, b), "button team-sync-button", `sync:${group.id}`);
-    sync.dataset.workspaceSync = String(group.id);
-    sync.disabled = Boolean(activeSync);
-    sync.setAttribute("aria-busy", String(Boolean(activeSync)));
-    sync.setAttribute("aria-label", `${group.display_name || group.name}：${activeSync ? "同步已排队或运行中" : "同步本团队"}`);
-    sync.title = activeSync ? "等待后台同步完成" : "同步本团队的官方成员";
-    if (activeSync || group.last_sync_operation) {
-      const op = activeSync || group.last_sync_operation;
-      const outcome = el("a", `group-sync-outcome${["failed", "partial"].includes(op.state) ? " text-warning" : ""}`,
-        activeSync ? (activeSync.state === "queued" ? "同步已排队" : op.stage_label) : ({ success: "最近同步成功", failed: "最近同步失败，保留上次快照", partial: "最近同步部分完成", cancelled: "最近同步已取消", manual_required: "同步需人工确认" }[op.state] || "最近同步记录"));
-      outcome.href = `/operations?op=${encodeURIComponent(op.id)}`;
-      title.append(outcome);
-    }
-    const controls = el("div", "management-team-controls");
-    controls.append(sync, button("管理团队", b => { setQuery("workspace", group.id); api.openWorkspaceDetails(b, group); }, "button", `team:${group.id}`));
-    if (group.owner_account_id && group.owner_purpose === "mother") {
-      controls.append(button("切换代理", b => api.openWorkspaceProxy(b, group), "button", `proxy:${group.id}`));
-    }
-    const remove = button("删除团队", b => api.deleteLocalTeam(group, b), "button danger", `delete-team:${group.id}`);
-    remove.title = "删除本地团队，不解散官方团队";
-    remove.setAttribute("aria-label", `删除本地团队：${group.display_name || group.name || group.id}`);
-    controls.append(remove);
-    header.append(toggle, el("span", "management-team-icon", String(group.display_name || group.name || "T").slice(0, 1)), title, money, controls);
-    const body = el("div"); body.id = `management-team-${group.id}`; body.hidden = closed; body.append(table(items, group));
-    section.append(header, body); return section;
-  }
   function filteredEntries(data, view, params) {
     if (view === "teams") {
       const entries = [];
-      for (const group of data.groups || []) {
+      const groups = [...(data.groups || [])];
+      if (["quota", "-quota"].includes(params.get("sort"))) groups.sort((a,b) => {
+        const worst = group => Math.max(-1,...(group.members || []).filter(a=>matches(a,group,params)).map(sortValues.quota));
+        return params.get("sort") === "-quota" ? worst(b)-worst(a) : worst(a)-worst(b);
+      });
+      for (const group of groups) {
         if (params.get("team") && String(group.id) !== params.get("team")) continue;
         const items = sortAccounts((group.members || []).filter(a => matches(a, group, params)), params);
         if (items.length) entries.push(...items.map(account => ({account, group})));
@@ -412,7 +388,7 @@
     let items = view === "unassigned" ? data.unassigned || [] : data.accounts || [];
     if (params.get("purpose") === "archived") items = [...(data.groups || []).flatMap(g => g.history || []), ...(data.unassigned || []).filter(a => a.state === "archived")];
     items = items.filter(a => matches(a, null, params));
-    if (view === "attention") items = items.filter(a => !["healthy", "disabled"].includes(a.health?.code) || remoteItems(a).some(s => ["missing", "auth_error", "error", "identity_mismatch"].includes(s.state)));
+    if (view === "attention") items = items.filter(a => a.needs_attention ?? (!["healthy", "disabled"].includes(a.health?.code) || remoteItems(a).some(s => ["missing", "auth_error", "error", "identity_mismatch"].includes(s.state))));
     return sortAccounts(items, params).map(account => ({account, group: null}));
   }
   function pageWindow(entries, requestedPage, requestedSize) {
@@ -420,6 +396,21 @@
     const pages = Math.max(1, Math.ceil(entries.length / size));
     const page = Math.max(1, Math.min(pages, Math.floor(Number(requestedPage)) || 1));
     return {items: entries.slice((page - 1) * size, page * size), page, pages, size, total: entries.length};
+  }
+  function teamPageWindow(entries, requestedPage, requestedSize) {
+    const base = pageWindow(entries, 1, requestedSize), buckets = [], chunks = [];
+    for (const entry of entries) {
+      const last = chunks.at(-1);
+      if (entry.group && last?.[0].group?.id === entry.group.id) last.push(entry); else chunks.push([entry]);
+    }
+    let current = [];
+    for (const chunk of chunks) {
+      if (current.length && current.length + chunk.length > base.size) { buckets.push(current); current = []; }
+      current.push(...chunk);
+    }
+    if (current.length) buckets.push(current);
+    const pages = Math.max(1,buckets.length), page = Math.max(1,Math.min(pages,Math.floor(Number(requestedPage))||1));
+    return {...base, pages, page, items:buckets[page-1] || []};
   }
   function renderPagination(page) {
     const pager = document.getElementById("accounts-pagination"); if (!pager) return;
@@ -450,6 +441,9 @@
     root.replaceChildren();
     document.querySelectorAll(".management-tabs [data-management-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.managementView === view)));
     for (const [key, value] of Object.entries(data.summary || {})) { const node = document.getElementById(`summary-${key}`); if (node) node.textContent = value; }
+    const attentionCount = document.getElementById("accounts-attention-count"); if (attentionCount) attentionCount.textContent = data.summary?.attention ?? "";
+    const breakdown = document.getElementById("accounts-attention-breakdown");
+    if (breakdown) { breakdown.hidden = view !== "attention"; breakdown.textContent = Object.entries(data.attention_breakdown || {}).filter(([,n])=>n).map(([key,n])=>`${({auth:"授权",onboarding:"入组中断",quota:"额度用尽",check:"检测",remote:"远端",identity:"身份",sync:"同步"})[key]} ${n}`).join(" · ") + "（同一账号可能有多项原因）"; }
     const runtime = data.probe_runtime || {};
     const runtimeText = runtime.effective_enabled ? `目标每 ${runtime.interval_minutes || 60} 分钟 · ${runtime.queued_count || 0} 个排队${runtime.max_overdue_seconds > 60 ? ` · 延后 ${Math.ceil(runtime.max_overdue_seconds / 60)} 分钟` : ""}` : `${runtime.disabled_reason || "定时检测未开启"} · ${runtime.queued_count || 0} 个手动任务`;
     document.getElementById("probe-runtime").textContent = runtimeText;
@@ -466,16 +460,22 @@
     if (remoteFilter) remoteFilter.value = params.get("remote") || "all";
     const remoteInfo = data.sub2api_status;
     const remoteLine = document.getElementById("management-remote-status");
-    if (remoteLine && remoteInfo) remoteLine.textContent = !remoteInfo.configured ? "Sub2API 尚未配置"
-      : `远端状态每 30 秒核对 · ${remoteInfo.bindings} 个绑定${remoteInfo.missing ? ` · ${remoteInfo.missing} 个远端已不存在` : ""}${remoteInfo.stale ? " · 有状态待更新" : ""}`;
+    const remoteSetup = document.getElementById("management-remote-setup");
+    if (remoteSetup) remoteSetup.hidden = remoteInfo?.configured !== false;
+    const moreCount = ["team", "remote"].filter(key => params.get(key) && params.get(key) !== "all").length;
+    const moreLabel = document.getElementById("accounts-more-label");
+    if (moreLabel) moreLabel.textContent = `更多筛选${moreCount ? `（${moreCount}）` : ""}`;
+    if (remoteLine && remoteInfo) remoteLine.textContent = !remoteInfo.configured ? "未配置 Sub2API，暂时无法核对"
+      : `远端状态每 15 秒核对 · ${remoteInfo.bindings} 个绑定${remoteInfo.missing ? ` · ${remoteInfo.missing} 个远端已不存在` : ""}${remoteInfo.stale ? " · 有状态待更新" : ""}`;
     const remoteRefresh = document.getElementById("refresh-remote-status");
     if (remoteRefresh) remoteRefresh.disabled = !remoteInfo?.configured || !remoteInfo.bindings;
+    if (remoteLine && remoteInfo?.configured && !remoteInfo.bindings) remoteLine.textContent = "尚无远端绑定，暂时无需核对";
     document.querySelector("[data-filter='purpose']").value = params.get("purpose") || "all";
     renderActiveFilters(params);
     let savedSize;
     try { savedSize = localStorage.getItem("team48:page-size"); } catch (_) {}
     const entries = filteredEntries(data, view, params);
-    const page = pageWindow(entries, params.get("page"), params.get("page_size") || savedSize);
+    const page = view === "teams" ? teamPageWindow(entries, params.get("page"), params.get("page_size") || savedSize) : pageWindow(entries, params.get("page"), params.get("page_size") || savedSize);
     if (params.has("page") && params.get("page") !== String(page.page)) setQuery("page", String(page.page));
     if (view === "teams") {
       const groups = new Map();
@@ -486,7 +486,7 @@
       }
       for (const {group, items} of groups.values()) {
         if (!group) { root.append(el("h2", "management-section-title", `未分配 · 本页 ${items.length}`), table(items)); continue; }
-        const renderKey = JSON.stringify([group, items, params.toString(), collapsed.has(String(group.id)), [...selected], window.Team48Expiry.today()]);
+        const renderKey = JSON.stringify([group, items, params.toString(), collapsed.has(String(group.id)), [...selected], window.Team48Expiry.today(), data.sub2api_status?.configured]);
         const old = previousGroups.get(String(group.id));
         const node = old?._renderKey === renderKey ? old : groupNode(group, items, params);
         node._renderKey = renderKey; root.append(node);
@@ -540,6 +540,20 @@
     const block = el("section"); block.id = "account-health-content";
     block.dataset.account = account.id; block.dataset.workspace = account.workspace_id || ""; block.append(healthDetails(account));
     body.append(block);
+    if (account.interrupted_operation_id) {
+      const recovery = el("section", "sheet-section");
+      recovery.append(el("h3", "", "入组中断"), el("p", "hint", "先核对任务与官方成员状态。继续时沿用此邮箱；不会自动领取新号或撤回已发出的邀请。"));
+      recovery.append(button("查看中断任务", b => api.openOperationById(account.interrupted_operation_id,b)));
+      const workspace = payload?.groups?.find(g=>String(g.id)===String(account.workspace_id));
+      if (workspace) recovery.append(button("继续此邮箱", b => {
+        api.openWorkspaceDetails(b,workspace);
+        const form = document.querySelector('[data-team-action-forms] form textarea[name="email_line"]')?.closest('form');
+        if (!form) return;
+        form._toggle.click(); form.elements.email_line.value=account.email;
+        if (["owner","member"].includes(account.official_role)) form.elements.role.value=account.official_role;
+      }, "button primary"));
+      body.append(recovery);
+    }
     if (account.contexts?.length > 1) {
       const section = el("section", "sheet-section"); section.append(el("h3", "", "工作区检测状态"));
       account.contexts.forEach(c => section.append(button(`${c.workspace_name || c.workspace_id} · ${c.health.label}`, b => openAccount(c, b), "button management-context")));
@@ -557,17 +571,29 @@
     const actions = el("div", "management-detail-actions");
     for (const id of ["account.reauth", "account.quota"]) {
       const action = api.entityActions.account.find(a => a.id === id);
-      if (action && (!action.when || action.when(account))) actions.append(button(action.label, b => action.run(account, b), "button"));
+      if (action && (!action.visible || action.visible(account))) actions.append(button(action.label, b => action.run(account, b), id === "account.reauth" ? "button primary" : "button"));
     }
     actions.append(api.menuButton("account", account)); body.append(actions, advanced);
   }
   function decorateTeam(workspace, body) {
-    const group = payload?.groups?.find(g => g.id === workspace.id); if (!group) return;
-    const section = el("section", "sheet-section"); section.append(el("h3", "", "已管理账号"));
-    for (const account of group.members || []) if (account.managed && account.kind !== "history") {
-      section.append(button(`${account.email} · ${account.health?.label || "尚未检测"}`, b => openAccount(account, b, group), "button management-context"));
+      // Managed accounts are integrated with the official member rows by renderTeamDetails.
     }
-    body.prepend(section);
+  function openSwitchCount(workspace, trigger) {
+    const body = document.getElementById("sheet-body");
+    document.getElementById("sheet-title").textContent = "校正今日切换次数";
+    document.getElementById("sheet-subtitle").textContent = workspace.display_name || workspace.name;
+    body.replaceChildren(el("p", "hint", "授权闭环可自动计数。这里只补记漏记的次数，不会执行轮转，也不会修改自动轮转日限。当前仅支持增加。"));
+    body.append(window.Team48SwitchCount.widget(workspace, {
+      increment: async () => {
+        const result = await api.postAction(`switch-count:${workspace.id}`, `/api/workspaces/${workspace.id}/switch-count/increment`);
+        if (!result?.ok) throw new Error(result?.error || "次数保存失败");
+        const current = payload?.groups?.find(item => item.id === workspace.id);
+        if (current) current.switch_count = result.switch_count;
+        render(payload); return result.switch_count;
+      },
+      onError: error => api.toast(`计数未确认：${api.friendlyError(error)}，请刷新核对后再操作`, "error"),
+    }));
+    api.openOverlay("entity", {returnFocus:trigger, context:{kind:"switch-count"}, initialFocus:".workspace-switch-counter button"});
   }
   function registerLocal(trigger) {
     const body = document.getElementById("sheet-body"); body.replaceChildren();
@@ -597,6 +623,13 @@
     api = bridge;
     if (!bound) {
       bound = true;
+      api.entityActions["workspace-card"] = [
+        {...api.entityActions.workspace.find(action => action.id === "workspace.sync"), disabled: item => Boolean(item.sync_operation)},
+        {id:"workspace.proxy", label:"切换代理", visible:item => Boolean(item.owner_account_id && item.owner_purpose === "mother"), run:(item,b) => api.openWorkspaceProxy(b,item)},
+        {id:"workspace.expiry", label:"修改到期日期", run:(item,b) => api.openWorkspaceExpiry(b,item)},
+        {id:"workspace.count", label:"校正今日切换次数", run:(item,b) => openSwitchCount(item,b)},
+        {id:"workspace.delete-local", label:"移除本地记录", danger:true, run:(item,b) => api.deleteLocalTeam(item,b)},
+      ];
       api.entityActions.registration = [
         {id: "registration.account", label: "登记账号", run: (_item, trigger) => registerLocal(trigger)},
         {id: "registration.team", label: "登记团队", run: (_item, trigger) => api.openRegister(trigger)},
@@ -621,7 +654,7 @@
       document.getElementById("management-workspace").addEventListener("change", event => { setQuery("team", event.target.value); render(payload); });
       document.getElementById("accounts-clear-filters")?.addEventListener("click", () => clearFilters(FILTER_KEYS));
       document.querySelectorAll("[data-management-view]").forEach(b => b.addEventListener("click", () => { setQuery("view", b.dataset.managementView); render(payload); }));
-      document.querySelectorAll("[data-management-health]").forEach(b => b.addEventListener("click", () => { setQuery("view", "all"); setQuery("health", b.dataset.managementHealth); render(payload); }));
+      document.querySelectorAll("[data-management-health]").forEach(b => b.addEventListener("click", () => { clearFilters(FILTER_KEYS); setQuery("view", "attention"); setQuery("health", b.dataset.managementHealth); render(payload); }));
       document.getElementById("check-all-accounts").addEventListener("click", async event => {
         const b = event.currentTarget; b.disabled = true;
         try {
@@ -726,5 +759,5 @@
     const group = payload?.groups?.find(item => item.id === id);
     if (group) { group.expiry = expiry; render(payload); }
   }
-  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, matches, viewName, filteredEntries, pageWindow, sortAccounts, activeFilters, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refreshRemote, refresh: () => poller?.refresh() };
+  window.Team48Accounts = { boot, render, decorateDetails, decorateTeam, quota, memberAccount: (workspace, row) => (payload?.groups?.find(g => g.id === workspace.id)?.members || []).find(a => a.email?.toLowerCase() === row.email?.toLowerCase()), matches, viewName, filteredEntries, pageWindow, teamPageWindow, sortAccounts, activeFilters, closeSelection, subscriptionLabel, reportSyncErrors, updateExpiry, refreshRemote, refresh: () => poller?.refresh() };
 })();

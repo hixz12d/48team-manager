@@ -98,6 +98,11 @@ function render(job) {
   $('pause').hidden = job.status !== 'running';
   $('resume').hidden = job.status !== 'paused';
   $('stop').hidden = !ACTIVE.has(job.status);
+  // Fallback when the logged-in page is not recognized; not offered before any signup form.
+  $('mark-complete').hidden = !ACTIVE.has(job.status) || job.phase === 'oauth' || !job.formSeen;
+  $('mark-complete').disabled = busy;
+  if ($('mark-complete').hidden) confirmArmed = false;
+  $('mark-complete').textContent = confirmArmed ? '再点一次确认：网页已是本邮箱登录后的 ChatGPT' : '网页已登录本邮箱，确认已注册完成';
   $('clear').disabled = ACTIVE.has(job.status) || HANDOFF_BUSY.has(job.handoff?.status);
   renderHandoff(job);
 }
@@ -141,6 +146,12 @@ $('handoff-start').addEventListener('click', () => {
 });
 $('handoff-retry').addEventListener('click', () => act(() => request('handoff-retry')));
 for (const type of ['pause', 'stop', 'resume', 'clear']) $(type).addEventListener('click', () => act(() => request(type)));
+let confirmArmed = false;
+$('mark-complete').addEventListener('click', () => {
+  if (!confirmArmed) { confirmArmed = true; render(currentJob); return; }
+  confirmArmed = false;
+  act(() => request('mark-complete'));
+});
 $('focus').addEventListener('click', () => act(async () => {
   const tab = await chrome.tabs.update(currentJob.tabId, {active: true});
   await chrome.windows.update(tab.windowId, {focused: true});

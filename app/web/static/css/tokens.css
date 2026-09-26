@@ -45,8 +45,8 @@
   --neutral-border: #e2e8f0;
   --neutral-text: #475569;
 
-  --primary-bg: var(--text);
-  --primary-hover: #000000;
+  --primary-bg: var(--accent);
+  --primary-hover: var(--accent-hover);
   --primary-text: #ffffff;
   --danger-hover-bg: #fee2e2;
   --danger-hover-border: #fca5a5;

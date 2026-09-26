@@ -16,7 +16,11 @@ def check(base, output):
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.on("request", lambda request: writes.append(request.url) if request.method == "POST" else None)
         page.goto(base + "/accounts")
-        counter = page.locator('[data-switch-workspace="1"]')
+        def open_counter(tab):
+            tab.locator('[data-focus-key="team-menu:1"]').click()
+            tab.get_by_role('menuitem', name='校正今日切换次数').click()
+        open_counter(page)
+        counter = page.locator('#sheet-body [data-switch-workspace="1"]')
         label = counter.get_by_role("status")
         button = counter.get_by_role("button")
         expect(label).to_have_text("今日切换 0 次")
@@ -26,6 +30,7 @@ def check(base, output):
         expect(label).to_have_text("今日切换 2 次")
         expect(page.locator('[data-switch-workspace="2"] [role="status"]')).to_have_text("今日切换 0 次")
         page.reload()
+        open_counter(page)
         expect(label).to_have_text("今日切换 2 次")
         # Failures must leave the displayed count intact and permit a deliberate retry.
         page.route("**/api/workspaces/1/switch-count/increment", lambda route: route.fulfill(status=503, json={"detail": "测试网络故障"}), times=1)
@@ -42,7 +47,7 @@ def check(base, output):
         before = len(writes)
         button.click()
         expect(button).to_be_disabled()
-        page.wait_for_function("document.querySelector('[data-switch-workspace=\"1\"] button').disabled")
+        page.wait_for_function("document.querySelector('#sheet-body [data-switch-workspace=\"1\"] button').disabled")
         stale = context.request.get(base + "/api/accounts/portfolio").json()
         stale["groups"][0]["display_name"] = "North · 研究团队（刷新）"
         page.evaluate("data => Team48Accounts.render(data)", stale)
@@ -59,7 +64,8 @@ def check(base, output):
         # A second browser tab sees the durable record and its updates are read back.
         second = context.new_page()
         second.goto(base + "/accounts")
-        second_counter = second.locator('[data-switch-workspace="1"]')
+        open_counter(second)
+        second_counter = second.locator('#sheet-body [data-switch-workspace="1"]')
         expect(second_counter.get_by_role("status")).to_have_text("今日切换 4 次")
         second_counter.get_by_role("button").click()
         expect(second_counter.get_by_role("status")).to_have_text("今日切换 5 次")
@@ -68,7 +74,9 @@ def check(base, output):
         second.close()
         # Counting also works while the member table is collapsed, without toggling it.
         toggle = page.locator('[data-focus-key="expand:1"]')
+        page.keyboard.press('Escape')
         toggle.click()
+        open_counter(page)
         expect(toggle).to_have_attribute("aria-expanded", "false")
         button.focus()
         page.keyboard.press("Enter")
@@ -77,6 +85,7 @@ def check(base, output):
         for width in (1440, 768, 390):
             page.set_viewport_size({"width": width, "height": 1000 if width > 540 else 844})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+            page.locator('#entity-sheet').evaluate('async n => await Promise.all(n.getAnimations({subtree:true}).map(a=>a.finished))')
             bounds = counter.bounding_box()
             assert bounds and bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width, (width, bounds)
             page.screenshot(path=str(output / f"switch-count-{width}.png"), full_page=True)
@@ -88,6 +97,7 @@ def check(base, output):
         page.clock.install(time=before_midnight)
         page.clock.pause_at(before_midnight)
         page.reload()
+        open_counter(page)
         expect(label).to_have_text("今日切换 6 次")
         page.route("**/api/accounts/portfolio", lambda route: route.abort())
         page.clock.run_for(2100)

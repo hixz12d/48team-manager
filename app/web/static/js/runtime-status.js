@@ -66,20 +66,11 @@
     });
     document.getElementById("runtime-recent-empty").hidden = Boolean(data.recent_operations?.length);
   }
-  const poller = window.Team48Polling.createPoller({
-    read: async signal => {
-      const response = await fetch("/api/runtime/status", { headers: { Accept: "application/json" }, signal, cache: "no-store" });
-      if (!response.ok) throw new Error("runtime_unavailable");
-      return response.json();
-    },
-    onData: render,
-    onError: () => {
-      const error = document.getElementById("runtime-error"); error.hidden = false;
-      text(error, `状态更新中断${updatedAt ? `，上次更新于 ${time(updatedAt)}` : "，尚未取得数据"}`);
-    },
-    delay: data => (data.counts?.running || data.counts?.queued || data.counts?.waiting) ? 2000 : 15000,
+  let lastData = null;
+  window.Team48Runtime.subscribe((data, stale) => {
+    if (data && data !== lastData) { render(data); lastData = data; }
+    const error = document.getElementById("runtime-error"); error.hidden = !stale;
+    if (stale) text(error, `状态更新中断${updatedAt ? `，上次更新于 ${time(updatedAt)}` : "，尚未取得数据"}`);
   });
-  document.getElementById("runtime-refresh").addEventListener("click", () => void poller.refresh());
-  window.Team48Runtime = { refresh: poller.refresh, destroy: poller.destroy };
-  void poller.refresh();
+  document.getElementById("runtime-refresh").addEventListener("click", () => void window.Team48Runtime.refresh());
 })();

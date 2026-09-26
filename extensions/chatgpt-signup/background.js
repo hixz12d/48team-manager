@@ -343,7 +343,7 @@ async function openAuthorization(id) {
       claims: {}, attempts: {}, continueClicks: {}, continueRetries: {}, clickReservations: {}, reviewSteps: {},
       baseline, lastPoll: 0, ignoredCodes: current.ignoredCodes || [], entryFormSeen: true, entryFallbackUsed: true,
       expiresAt: Date.now() + (current.mode === 'auto' ? RUN_TTL : 30 * 60 * 1000)});
-    delete current.retryClaim; delete current.pendingCode;
+    delete current.retryClaim; delete current.pendingCode; delete current.codeWaitSince;
     current.handoff.status = 'authorizing';
     current.handoff.message = '正在授权；拿到回调后自动提交 Team48';
     recordEvent(current, 'oauth_started');
@@ -410,6 +410,17 @@ function captureCallback(tabId, url) {
   }).catch(() => {});
 }
 
+// Signup is finished: stop the page runner and, if chosen, start the Team48 handoff.
+function finishSignup(job, verified, event) {
+  job.emailVerified = typeof verified === 'boolean' ? verified : null;
+  recordEvent(job, event, {verified: job.emailVerified});
+  job.status = 'done';
+  job.message = event === 'manual_complete' ? '你已确认注册完成；Team48 授权时仍会核对登录邮箱。' :
+    '已确认目标邮箱登录 ChatGPT；后续 Codex 验证要求需在授权时确认。';
+  delete job.baseline; delete job.pendingCode; delete job.retryClaim;
+  if (job.autoHandoff && TEAM48 && !job.handoff) beginHandoff(job, job.autoHandoff.workspaceId, job.autoHandoff.workspaceName);
+}
+
 async function resumeJob(job) {
   if (job.status !== 'paused') throw new Error('当前任务无法继续，请重新开始。');
   // Only a timed-out submission may be retried, and the total attempt limit remains in force.
@@ -425,6 +436,7 @@ async function resumeJob(job) {
     delete job.retryClaim;
   }
   job.status = 'running'; job.message = '继续本次注册';
+  delete job.codeWaitSince;
   recordEvent(job, 'resumed');
   job.resumeCount = (job.resumeCount || 0) + 1;
   await saveJob(job);
@@ -518,6 +530,15 @@ async function popupMessage(message) {
   }
   if (message.type === 'resume') {
     return resumeJob(job);
+  }
+  if (message.type === 'mark-complete') {
+    // The user confirms the page is logged in when automatic detection could not.
+    // OAuth still logs in with this job's email and Team48 checks the token email.
+    if (!ACTIVE.has(job.status) || job.phase === 'oauth' || !job.entryFormSeen) throw new Error('当前注册任务无需手动确认。');
+    finishSignup(job, undefined, 'manual_complete');
+    await saveJob(job);
+    if (job.handoff?.status === 'syncing') ensureHandoff();
+    return {};
   }
   throw new Error('未知操作。');
 }
@@ -625,7 +646,7 @@ async function contentMessage(message, sender) {
     return {};
   }
   if (message.type === 'event') {
-    if (['page', 'filled', 'form_submit', 'manual_submit', 'waiting_manual', 'session_check', 'session_error', 'captcha', 'phone', 'rate_limit', 'click_response'].includes(message.event) &&
+    if (['page', 'filled', 'form_submit', 'manual_submit', 'waiting_manual', 'session_check', 'session_error', 'session_anonymous', 'captcha', 'phone', 'rate_limit', 'click_response'].includes(message.event) &&
         recordEvent(job, message.event, {page: pageKind(sender.url), stage: message.stage, verified: message.verified, outcome: message.outcome})) {
       if (message.event === 'page' && ['email', 'password', 'otp', 'profile'].includes(message.stage)) job.entryFormSeen = true;
       if (message.event === 'phone' && job.phase === 'oauth') job.codexResult = 'phone_required';
@@ -656,13 +677,7 @@ async function contentMessage(message, sender) {
     } else if (message.verified === false) {
       job.emailVerified = false; recordEvent(job, 'email_unverified');
       job.status = 'paused'; job.message = '已登录，但会话报告邮箱尚未验证，请在网页完成验证后继续。';
-    } else {
-      job.emailVerified = typeof message.verified === 'boolean' ? message.verified : null;
-      recordEvent(job, 'completed', {verified: job.emailVerified});
-      job.status = 'done'; job.message = '已确认目标邮箱登录 ChatGPT；后续 Codex 验证要求需在授权时确认。';
-      delete job.baseline; delete job.pendingCode;
-      if (job.autoHandoff && TEAM48 && !job.handoff) beginHandoff(job, job.autoHandoff.workspaceId, job.autoHandoff.workspaceName);
-    }
+    } else finishSignup(job, message.verified, 'completed');
     await saveJob(job);
     if (job.handoff?.status === 'syncing') ensureHandoff();
     return {};
@@ -717,21 +732,47 @@ async function contentMessage(message, sender) {
       return {code: null};
     }
     if (job.pendingCode) return {code: job.pendingCode};
-    if (Date.now() - job.lastPoll < 4000) return {code: null};
+    if (mailPolling || Date.now() - job.lastPoll < 4000) return {code: null};
+    job.codeWaitSince ||= Date.now();
+    if (Date.now() - job.codeWaitSince > OTP_WAIT) {
+      delete job.codeWaitSince;
+      recordEvent(job, 'paused', {page: pageKind(sender.url), stage: 'otp'});
+      job.status = 'paused';
+      job.message = `${OTP_WAIT / 1000} 秒内没有收到新的邮箱验证码。请在网页点「重新发送邮件」，再点击继续。`;
+      await saveJob(job);
+      return {code: null};
+    }
     job.stage = 'otp';
     job.lastPoll = Date.now(); job.message = '等待 Cloudflare 收到新的邮箱验证码';
     await saveJob(job);
-    const code = await pollMailbox(MAILBOX, job.email, job.baseline, job.ignoredCodes);
-    if (code) {
-      if (!/^\d{6}$/.test(code)) throw new Error('邮箱验证码格式异常，请手动检查。');
-      job.pendingCode = code;
-      recordEvent(job, 'code_received', {stage: 'otp'});
-      job.message = '已收到验证码，正在逐位输入';
-      await saveJob(job);
-    }
-    return {code};
+    // The mailbox request can take up to 25 s; run it outside the job queue (see finishCodePoll).
+    mailPolling = true;
+    return {mailPoll: {id: job.id, email: job.email, baseline: job.baseline, ignored: [...job.ignoredCodes]}};
   }
   return {active: false};
+}
+
+// Reading the mailbox used to hold the job queue, so page state, popup and pause
+// requests all froze until Cloudflare answered. Only the result is stored under the queue.
+const OTP_WAIT = 120000;
+let mailPolling = false;
+async function finishCodePoll({id, email, baseline, ignored}) {
+  let code;
+  try { code = await pollMailbox(MAILBOX, email, baseline, ignored); }
+  finally { mailPolling = false; }
+  if (!code) return {code: null};
+  if (!/^\d{6}$/.test(code)) throw new Error('邮箱验证码格式异常，请手动检查。');
+  return serial(async () => {
+    const job = await loadJob();
+    // Paused, stopped or replaced while reading: the next poll finds the same mail again.
+    if (!job || job.id !== id || job.status !== 'running' || !job.baseline || job.ignoredCodes.includes(code)) return {code: null};
+    if (job.pendingCode) return {code: job.pendingCode};
+    job.pendingCode = code; delete job.codeWaitSince;
+    recordEvent(job, 'code_received', {stage: 'otp'});
+    job.message = '已收到验证码，正在逐位输入';
+    await saveJob(job);
+    return {code};
+  });
 }
 
 let inputQueue = Promise.resolve();
@@ -758,7 +799,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id) throw new Error('来源无效。');
     if (fromPopup) return popupMessage(message);
     return input || message?.type === 'input-ready' ? inputMessage(message, sender) : contentMessage(message, sender);
-  }).then(data => respond({ok: true, ...data}), error => respond({ok: false, error: error.message}));
+  }).then(data => data?.mailPoll ? finishCodePoll(data.mailPoll) : data)
+    .then(data => respond({ok: true, ...data}), error => respond({ok: false, error: error.message}));
   return true;
 });
 chrome.debugger?.onDetach.addListener(({tabId}, reason) => {

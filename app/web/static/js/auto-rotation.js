@@ -6,12 +6,7 @@
   let enabled = false, saving = false, scopeReady = false;
   const states = { running: "执行中", queued: "排队中", waiting: "等待中", partial: "部分完成",
     success: "已完成", failed: "失败", manual_required: "待核对", cancelled: "已取消" };
-  const poller = window.Team48Polling.createPoller({
-    read: async signal => {
-      const response = await fetch("/api/runtime/status", { signal, cache: "no-store" });
-      if (!response.ok) throw new Error("后台状态暂时无法读取");
-      return response.json();
-    },
+  const callbacks = {
     onData: data => {
       if (saving) return;
       const rotation = data.auto_rotation || {};
@@ -23,6 +18,8 @@
       button.classList.toggle("primary", enabled);
       const scope = rotation.scope === "all" ? "全部工作空间（含新增）" : `仅选中的 ${(rotation.workspace_ids || []).length} 个工作空间`;
       const pieces = [enabled ? "已开启 · 每分钟检查" : "已关闭", scope, `每团队每日上限 ${rotation.daily_limit ?? 2} 次`];
+      const summary = document.getElementById("auto-rotation-summary");
+      if (summary) summary.textContent = `${enabled ? "已开启" : "已关闭"} · ${rotation.scope === "all" ? "全部团队" : `范围 ${(rotation.workspace_ids || []).length} 个团队`} · 每日上限 ${rotation.daily_limit ?? 2}${rotation.blocked_workspaces ? ` · ${rotation.blocked_workspaces} 个需核对` : ""}`;
       if (enabled && data.runner?.state !== "healthy") pieces.push("后台心跳未就绪，请核对运行状态");
       const blocked = rotation.blocked || [];
       if (rotation.blocked_workspaces && !blocked.length) pieces.push(`${rotation.blocked_workspaces} 个团队有未完成轮转，暂停进一步换号`);
@@ -51,8 +48,13 @@
         status.append(link);
       }
     },
-    onError: () => { status.textContent = "后台状态读取失败，保留开关状态；稍后自动重试"; button.disabled = true; },
-    delay: data => data?.counts?.running ? 2000 : 15000,
+    onError: () => { status.textContent = "后台状态读取失败，保留开关状态；稍后自动重试"; button.disabled = true; const summary = document.getElementById("auto-rotation-summary"); if (summary) summary.textContent = "状态更新中断，保留上次设置"; },
+  };
+  const poller = window.Team48Runtime;
+  let lastData = null;
+  poller.subscribe((data, stale) => {
+    if (stale) { callbacks.onError(); lastData = null; }
+    else if (data && data !== lastData && !saving) { lastData = data; callbacks.onData(data); }
   });
   button.addEventListener("click", async () => {
     if (saving) return;
@@ -72,5 +74,4 @@
       await poller.refresh();
     }
   });
-  void poller.refresh();
 })();

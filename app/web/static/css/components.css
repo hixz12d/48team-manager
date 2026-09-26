@@ -45,6 +45,25 @@
   flex-shrink: 0;
 }
 
+/* Shared by page failures and authorization drawers. */
+.page-feedback {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-md);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+#page-feedback-text { flex: 1; min-width: 0; }
+.settings-probe-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+.text-ok { color: var(--success-text); }
+.text-warn { color: var(--warning-text); }
+
 /* 工具栏 Toolbar */
 .toolbar {
   min-height: 48px;

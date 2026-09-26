@@ -98,6 +98,34 @@ class RuntimeStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(auth["next_run_at"], now.isoformat())
         self.assertFalse(any(p["id"] == "workspace_sync" for p in payload["policies"]))
 
+    async def test_stage_plan_matches_detail_without_leaking_log_messages(self):
+        from app.application.console_actions import get_operation_detail
+        row = await operation_store.create(self.db, op_type="onboard", workspace_id=7)
+        row.current_step = "sms_otp"
+        row.log_json = json.dumps([{"stage": "checking", "message": "secret-check"},
+                                   {"stage": "sms_otp", "message": "secret-otp"},
+                                   {"stage": "secret-stage", "message": "secret-message"}])
+        await self.db.commit()
+        await self.db.refresh(row)
+        runtime = runtime_operation(row)
+        detail = await get_operation_detail(self.db, row.public_id)
+        self.assertEqual(runtime["stage_plan"], detail["stage_plan"])
+        self.assertEqual(len(runtime["stage_plan"]), 7)
+        self.assertIn("sms_otp", runtime["stage_plan"][3]["stages"])
+        self.assertEqual(runtime["observed_stages"], ["checking", "sms_otp"])
+        self.assertNotIn("secret-", json.dumps(runtime))
+        self.assertTrue(runtime["can_cancel"])
+        row.cancel_requested = True
+        self.assertFalse(runtime_operation(row)["can_cancel"])
+
+    async def test_active_team_tracking_is_not_limited_to_eight_cards(self):
+        for i in range(12):
+            await operation_store.create(self.db, op_type="onboard", workspace_id=i + 1)
+        await self.db.commit()
+        payload = await runtime_status(self.db)
+        self.assertEqual(len(payload["active_operations"]), 12)
+        self.assertEqual(payload["active_total"], 12)
+
     async def test_wait_reasons_have_distinct_evidence(self):
         now = utcnow()
         row = await operation_store.create(self.db, op_type="quota_probe", state="queued")

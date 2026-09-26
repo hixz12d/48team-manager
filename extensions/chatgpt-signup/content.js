@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.5.0';
+  const VERSION = '0.5.2';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -26,12 +26,18 @@
     (location.pathname === '/' || (job?.entryFallbackUsed && location.pathname === '/auth/login'));
   let lastSessionCheck = 0;
   let sessionCandidate = '', sessionErrors = 0;
+  // After the signup forms, the logged-in homepage must be confirmed within this time,
+  // otherwise pause with a clear message instead of waiting silently.
+  const HOME_CONFIRM_WAIT = 40000;
+  let homeSince = 0;
   let currentStage = 'unknown', lastObservation = '';
   let manualStep, approvedStep, userEditing = false, resumeCount = 0;
   let submittedForms = new WeakMap();
   let pendingClick, clickForm;
   const intendedValues = new WeakMap();
   const CONTINUE_WAIT = 2000;
+  // How long a submit button may stay disabled, covered or moving before pausing.
+  const SUBMIT_BUTTON_WAIT = 15000;
   // A DOM submit alone cannot establish the server outcome. Only the existing
   // idle, unchanged, no-click/no-loading branch may release this observation guard.
   const SUBMISSION_WAIT = 3000;
@@ -381,8 +387,11 @@
     await scrollToControl(element);
     let restoreProgress = moveProgressAside(element), reservation, dispatched = false;
     try {
-      const deadline = Date.now() + 5000;
-      let point, previous;
+      // Submit buttons often stay disabled while the site validates; give them longer
+      // before asking the user. Field focus and the signup entry keep the short wait.
+      const patience = stage && stage !== 'signup' ? SUBMIT_BUTTON_WAIT : 5000;
+      const waitStarted = Date.now(), deadline = waitStarted + patience;
+      let point, previous, told = false;
       while (Date.now() < deadline) {
         if (!(await send('state')).active || userEditing) return false;
         requireForeground();
@@ -397,6 +406,10 @@
         point = enabled(element) ? hitPoint(element) : null;
         if (point && previous && ['left', 'top', 'width', 'height'].every(key => Math.abs(point.rect[key] - previous.rect[key]) < 1)) break;
         previous = point; point = null;
+        if (stage && !told && Date.now() - waitStarted > 2000) {
+          told = true;
+          renderProgress({...job, message: '等待网页按钮可用，就绪后自动点击。'});
+        }
         await sleep(100);
       }
       if (!point) {
@@ -406,7 +419,7 @@
         }
         const control = stage === 'profile' ? '资料页的继续按钮' : element.matches('input') ? '当前输入框' : '当前按钮';
         const reason = !enabled(element) ? '仍被网页禁用或隐藏' : !hitPoint(element) ? '被页面其他元素遮挡' : '位置仍在变化';
-        await pause(`${control}${reason}，已暂停点击；请处理后继续。`);
+        await pause(`${control}等待 ${Math.round(patience / 1000)} 秒后${reason}，已暂停点击；请处理后继续。`);
         return false;
       }
       const ready = () => {
@@ -976,20 +989,34 @@
   }
 
   async function checkSession() {
-    const interval = sessionCandidate ? 2000 : 10000;
+    // Right after the signup forms the session usually appears within seconds; check it sooner.
+    const interval = sessionCandidate ? 2000 : job.entryFormSeen ? 3000 : 10000;
     if (Date.now() - lastSessionCheck < interval) return;
     lastSessionCheck = Date.now();
     try {
       const response = await fetch('/api/auth/session', {credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(10000)});
       if (!response.ok) throw new Error('session unavailable');
       const session = await response.json();
-      const email = typeof session.user?.email === 'string' ? session.user.email.trim().toLowerCase() : '';
+      // Some session payloads omit user.email; the access token's profile claim carries it.
+      const tokenEmail = () => {
+        try {
+          const part = String(session.accessToken || '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+          const claims = JSON.parse(atob(part.padEnd(Math.ceil(part.length / 4) * 4, '=')));
+          return claims['https://api.openai.com/profile']?.email;
+        } catch { return ''; }
+      };
+      const rawEmail = typeof session.user?.email === 'string' && session.user.email.trim() ? session.user.email : tokenEmail();
+      const email = typeof rawEmail === 'string' ? rawEmail.trim().toLowerCase() : '';
       const verified = typeof session.user?.emailVerified === 'boolean' ? session.user.emailVerified :
         typeof session.user?.email_verified === 'boolean' ? session.user.email_verified : undefined;
       await trace('session_check', {verified});
       sessionErrors = 0;
       sessionAnonymous = !email;
-      if (!email) { sessionCandidate = ''; return; }
+      if (!email) {
+        sessionCandidate = '';
+        if (job.entryFormSeen) await trace('session_anonymous');
+        return;
+      }
       if (email !== job.email || verified === false) {
         await send('complete', {email, verified}); return;
       }
@@ -1108,7 +1135,7 @@
       for (const record of loadingWatches) record.stop();
       submittedForms = new WeakMap(); userEditing = false; pendingClick = null;
       resumeCount = job.resumeCount || 0;
-      entryWaitSince = 0;
+      entryWaitSince = 0; homeSince = 0; sessionErrors = 0;
     }
     renderProgress(job);
     if (job.active && job.mode !== 'manual' && trustedInput === null) {
@@ -1134,11 +1161,16 @@
     const password = first('input[type="password"]');
     const profile = first('input[name="name"],input[name="fullName"],input[autocomplete="name"],input[type="date"],select[autocomplete="bday-year"]') || ageField();
     const signup = button(/^(sign up( for free)?|create account|get started|免费注册|注册|创建账户|创建帐户)$/i);
-    const home = location.hostname === 'chatgpt.com' && first('#prompt-textarea,[data-testid="profile-button"],[data-testid="accounts-profile-button"]');
+    // Once the signup forms were seen, any form-free chatgpt.com page is checked through the
+    // session API; the logged-in UI changes too often to depend on one element id.
+    const home = location.hostname === 'chatgpt.com' && !signup &&
+      (!!first('#prompt-textarea,[data-testid="profile-button"],[data-testid="accounts-profile-button"],[data-testid="composer-plus-btn"],[data-testid="create-new-chat-button"]') ||
+       (!!job.entryFormSeen && !oauthPhase()));
     const stage = otp || boxes.length === 6 ? 'otp' : /about-you/.test(path) || profile ? 'profile' :
       // The logged-out homepage also shows the prompt box; a visible Sign up button means not logged in.
       password ? 'password' : email ? 'email' : signup ? 'signup' : home ? 'home' : 'unknown';
     currentStage = stage;
+    if (stage !== 'home') homeSince = 0;
     const observation = `${location.hostname}:${path}:${stage}`;
     if (observation !== lastObservation) {
       lastObservation = observation; manualStep = null; approvedStep = null;
@@ -1182,8 +1214,13 @@
       return;
     }
     if (stage === 'home') {
-      unknownSince = Date.now(); await checkSession();
+      unknownSince = Date.now(); homeSince ||= Date.now();
+      await checkSession();
       if (sessionAnonymous) await recoverEntry();
+      // Only after the signup forms: never while the logged-out homepage is still loading.
+      if (job.entryFormSeen && Date.now() - homeSince > HOME_CONFIRM_WAIT) {
+        await pause('已进入 ChatGPT 首页，但 40 秒内未能确认登录邮箱。若网页已登录本次邮箱，请在插件弹窗点「确认已注册完成」；否则请手动登录后点继续。');
+      }
       return;
     }
     if (['signup', 'unknown'].includes(stage)) {

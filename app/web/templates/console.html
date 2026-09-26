@@ -8,8 +8,10 @@
   <link rel="stylesheet" href="{{ static_url('css/tokens.css') }}">
   <link rel="stylesheet" href="{{ static_url('css/app.css') }}">
   <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
+  <link rel="stylesheet" href="{{ static_url('css/task-progress.css') }}">
   <link rel="stylesheet" href="{{ static_url('css/management.css') }}">
   {% if page == 'overview' %}<link rel="stylesheet" href="{{ static_url('css/runtime.css') }}">{% endif %}
+  {% if page == 'settings' %}<link rel="stylesheet" href="{{ static_url('css/settings.css') }}">{% endif %}
   <link rel="icon" href="{{ static_url('logo.svg') }}" type="image/svg+xml">
 </head>
 <body data-page="{{ page }}">
@@ -33,7 +35,7 @@
         <a href="/settings" class="nav-link{% if page == 'settings' %} is-active{% endif %}">设置</a>
       </nav>
       <div class="sidebar-foot">
-        <div class="health-line"><span class="dot"></span> 控制台已连接</div>
+        <div class="health-line" id="global-runner-status">正在读取调度状态</div>
         <div class="muted">{{ app_version }}</div>
       </div>
     </aside>
@@ -46,6 +48,7 @@
         </div>
         <div class="topbar-actions">
           {% include 'theme-select.html' %}
+          <button type="button" class="button" id="task-center-open" aria-haspopup="dialog" aria-controls="task-center">任务</button>
           {% if page == 'accounts' %}
           <button type="button" class="button" id="check-all-accounts"><span aria-hidden="true">↻</span> 立即检查</button>
           <button type="button" class="button primary" data-open-register><span aria-hidden="true">＋</span> 登记团队</button>
@@ -66,7 +69,7 @@
         <section class="summary-strip" id="overview-summary" aria-label="运营摘要">
           <a class="summary-item" href="/workspaces"><span class="summary-label">工作区</span><strong class="tabular" data-summary="workspaces">—</strong></a>
           <a class="summary-item" href="/accounts"><span class="summary-label">账号</span><strong class="tabular" data-summary="accounts">—</strong></a>
-          <a class="summary-item" href="/"><span class="summary-label">待处理</span><strong class="tabular" data-summary="attention">—</strong></a>
+          <a class="summary-item" href="/accounts?view=attention"><span class="summary-label">待处理账号</span><strong class="tabular" data-summary="attention">—</strong><small id="overview-attention-breakdown"></small></a>
           <a class="summary-item" href="/accounts?purpose=conflict"><span class="summary-label">身份冲突</span><strong class="tabular" data-summary="conflicts">—</strong></a>
         </section>
         <section class="runtime-status" id="runtime-status" aria-labelledby="runtime-title">
@@ -95,6 +98,7 @@
             <section class="panel" id="overview-attention-panel">
               <div class="panel-header"><span class="panel-title">待处理</span></div>
               <div class="panel-body compact" id="overview-attention">正在加载总览…</div>
+              <details class="panel-body"><summary>资源与任务提醒</summary><div id="overview-resource-attention"></div></details>
             </section>
           </aside>
         </div>
@@ -122,17 +126,15 @@
           </div>
         </section>
         {% elif page == 'accounts' %}
-        <section class="panel" aria-label="自动轮转">
-          <div class="panel-header">
-            <span class="panel-title">自动轮转</span>
+        <details class="auto-rotation-disclosure" aria-label="自动轮转">
+          <summary><strong>自动轮转</strong><span id="auto-rotation-summary" class="muted">正在读取状态…</span><span class="muted">设置</span></summary>
+          <div class="auto-rotation-options stack">
             <button type="button" class="button" id="auto-rotation-toggle" aria-pressed="false" disabled>读取状态…</button>
-          </div>
-          <div class="panel-body stack">
-            <p class="hint">开启后持续检查周额度耗尽、确认的 401 或已停用的子号，自动补位、授权并同步到 Sub2API。使用 HME 和已配置的手机号池。</p>
+            <p class="hint">检查周额度耗尽、确认的 401 或已停用的子号；使用 HME 和已配置的手机号池自动补位、授权并同步到 Sub2API。</p>
             <p id="auto-rotation-status" class="muted" role="status">正在读取后台状态…</p>
             <a href="/settings#auto-rotation-scope">选择工作空间、批量启用或设置全局范围</a>
           </div>
-        </section>
+        </details>
         <section class="management-summary" aria-label="账号与团队摘要">
           <button type="button" data-management-view="teams"><span>团队</span><strong id="summary-teams">—</strong><small>已登记团队</small></button>
           <button type="button" data-management-view="all"><span>已管理账号</span><strong id="summary-accounts">—</strong><small>跨团队去重</small></button>
@@ -144,14 +146,15 @@
             <button type="button" data-management-view="teams" aria-pressed="true">按团队</button>
             <button type="button" data-management-view="all" aria-pressed="false">全部账号</button>
             <button type="button" data-management-view="unassigned" aria-pressed="false">未分配</button>
-            <button type="button" data-management-view="attention" aria-pressed="false">待处理</button>
+            <button type="button" data-management-view="attention" aria-pressed="false">待处理 <span id="accounts-attention-count"></span></button>
           </div>
           <span id="probe-runtime" class="muted" role="status"></span>
         </div>
+        <p id="management-remote-setup" class="management-service-notice" hidden>Sub2API 未配置，计费与远端同步不可用 · <a href="/settings">去设置</a></p>
         <section class="management-content">
           <div class="toolbar">
-            <input class="search" id="accounts-search" placeholder="搜邮箱、团队、Workspace ID、远端 ID" data-entity="account" autocomplete="off">
-            <select class="filter" data-filter="purpose">
+            <input class="search" id="accounts-search" aria-label="搜索账号或团队" placeholder="搜邮箱、团队或 Workspace ID" data-entity="account" autocomplete="off">
+            <select class="filter" data-filter="purpose" aria-label="本地用途">
               <option value="all">全部</option>
               <option value="mother">母号</option>
               <option value="child">子号</option>
@@ -167,23 +170,29 @@
               <option value="healthy">检测正常</option><option value="forbidden">访问被拒绝</option>
               <option value="credential_error">本地凭证异常</option><option value="pending">待验证</option>
             </select>
-            <select class="filter" id="management-workspace" aria-label="团队"><option value="">全部团队</option></select>
-            <button type="button" class="button" data-action-page="workspace-sync-all" title="同步全部团队的官方成员"><span aria-hidden="true">↻</span> 同步全部团队</button>
-            <span class="toolbar-count muted" id="accounts-count"></span>
+            <details class="management-more-filters">
+              <summary class="button" id="accounts-more-label">更多筛选</summary>
+              <div class="management-filter-options">
+                <select class="filter" id="management-workspace" aria-label="团队"><option value="">全部团队</option></select>
+                <select class="filter" id="management-remote" aria-label="Sub2API 远端状态">
+                  <option value="all">全部 Sub2API 状态</option>
+                  <option value="missing">远端已删除 / 不存在</option><option value="healthy">远端正常</option>
+                  <option value="paused">远端已暂停</option><option value="attention">远端异常 / 待核对</option>
+                  <option value="rate_limited">远端限流 / 限额</option><option value="unknown">远端状态未确认</option>
+                  <option value="unbound">未绑定 Sub2API</option>
+                </select>
+                <button type="button" class="button" id="refresh-remote-status">核对 Sub2API 状态</button>
+                <span id="management-remote-status" class="muted" role="status"></span>
+                <button type="button" class="button" data-action-page="workspace-sync-all">同步全部团队</button>
+              </div>
+            </details>
             <button type="button" class="button ghost" id="accounts-clear-filters" hidden>清除筛选</button>
-            <select class="filter" id="management-remote" aria-label="Sub2API 远端状态">
-              <option value="all">全部 Sub2API 状态</option>
-              <option value="missing">远端已删除 / 不存在</option><option value="healthy">远端正常</option>
-              <option value="paused">远端已暂停</option><option value="attention">远端异常 / 待核对</option>
-              <option value="rate_limited">远端限流 / 限额</option><option value="unknown">远端状态未确认</option>
-              <option value="unbound">未绑定 Sub2API</option>
-            </select>
-            <button type="button" class="button" id="refresh-remote-status">核对 Sub2API 状态</button>
-            <span id="management-remote-status" class="muted" role="status"></span>
           </div>
+          <p id="accounts-attention-breakdown" class="hint" hidden></p>
           <div id="accounts-active-filters" class="management-filter-chips" aria-label="当前筛选" hidden></div>
           <p id="management-sync-status" class="management-sync-status" role="status" hidden></p>
-          <div id="accounts-portfolio" class="management-list" aria-live="polite"></div>
+          <p class="muted management-count" id="accounts-count" role="status"></p>
+          <div id="accounts-portfolio" class="management-list"></div>
           <nav id="accounts-pagination" class="management-pagination" aria-label="账号分页"></nav>
           <div id="account-selection-bar" class="management-selection" hidden>
             <span id="account-selection-count" aria-live="polite">已选 0 个</span>
@@ -354,6 +363,9 @@
         </section>
         {% elif page == 'settings' %}
         <form id="settings-form" class="settings-page">
+          <div class="settings-page-tools">
+            <button class="button" type="button" id="settings-probe-all">全部检测</button>
+          </div>
           <div class="settings-columns">
             <div class="settings-column settings-column-main">
               <article class="panel service-card" data-service="sub2api">
@@ -525,11 +537,10 @@
               </article>
             </div>
           </div>
-          <div class="settings-savebar" id="settings-savebar">
-            <p id="settings-status" class="muted">没有未保存的修改</p>
+          <div class="settings-savebar" id="settings-savebar" hidden>
+            <p id="settings-status" class="muted" role="status">没有未保存的修改</p>
             <div class="settings-savebar-actions">
               <button class="button ghost" type="button" id="settings-discard" hidden>放弃修改</button>
-              <button class="button" type="button" id="settings-probe-all">全部检测</button>
               <button class="button primary" type="submit" id="settings-save">保存设置</button>
             </div>
           </div>
@@ -564,7 +575,7 @@
           <strong id="sheet-title">详情</strong>
           <p class="muted" id="sheet-subtitle"></p>
         </div>
-        <button type="button" class="button ghost" data-close-sheet>关掉</button>
+        <button type="button" class="button ghost" data-close-sheet>关闭</button>
       </header>
       <div class="sheet-body" id="sheet-body"></div>
     </div>
@@ -693,6 +704,19 @@
       </div>
     </div>
   </div>
+  <div class="sheet" id="task-center" hidden>
+    <section class="sheet-panel task-center-panel" role="dialog" aria-modal="true" aria-labelledby="task-center-title" tabindex="-1">
+      <header class="sheet-header"><h2 id="task-center-title">任务中心</h2><button type="button" class="button ghost" data-close-tasks>关闭</button></header>
+      <div class="sheet-body">
+        <p class="hint">进行中与需人工任务，以及最近 5 条已结束任务。</p>
+        <div class="task-progress-actions"><button type="button" class="button" id="task-center-refresh">刷新任务</button><a class="button" href="/operations">全部任务记录</a></div>
+        <p id="task-center-error" class="text-warning" hidden>状态更新中断，保留上次记录；可以刷新重试。</p>
+        <p id="task-center-empty" class="muted">正在读取任务…</p>
+        <div id="task-center-list"></div>
+      </div>
+    </section>
+  </div>
+  <div class="task-announcement" id="task-stage-announcement" role="status" aria-live="polite"></div>
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
   <dialog class="palette" id="command-palette">
     <input id="command-input" placeholder="去哪…">
@@ -702,6 +726,8 @@
   <script src="{{ static_url('js/workspace-expiry.js') }}"></script>
   <script src="{{ static_url('js/workspace-switch-count.js') }}"></script>
   <script src="{{ static_url('js/polling.js') }}"></script>
+  <script src="{{ static_url('js/runtime-store.js') }}"></script>
+  <script src="{{ static_url('js/task-progress.js') }}"></script>
   <script src="{{ static_url('js/accounts-view.js') }}"></script>
   {% if page == 'accounts' %}<script src="{{ static_url('js/auto-rotation.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/sub2api-defaults.js') }}"></script>

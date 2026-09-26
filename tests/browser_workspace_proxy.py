@@ -79,7 +79,8 @@ def check(base):
         editor = page.locator("#proxy-edit-sheet")
         select = editor.locator('select[name="proxy_remote_id"]')
         submit = editor.get_by_role("button", name="保存", exact=True)
-        team.get_by_role("button", name="切换代理", exact=True).click()
+        team.locator('.management-team-controls [data-menu-trigger]').click()
+        page.get_by_role('menuitem', name='切换代理', exact=True).click()
         expect(editor).to_be_visible()
         expect(select).to_be_enabled()
         expect(select).to_have_value("1")
@@ -97,34 +98,37 @@ def check(base):
         expect(submit).to_be_enabled()
         submit.click()
         expect(editor).to_be_hidden()
-        expect(team).to_contain_text("团队代理：Sub2API #2")
-        expect(page.locator('[data-workspace="3"]')).to_contain_text("团队代理：Sub2API #2")
+        assert next(g for g in context.request.get(base + '/api/accounts/portfolio').json()['groups'] if g['id'] == 1)['sub2api_proxy_id'] == 2
+        assert next(g for g in context.request.get(base + '/api/accounts/portfolio').json()['groups'] if g['id'] == 3)['sub2api_proxy_id'] == 2
         assert all("secret" not in json.dumps(body) for _, body in writes)
         assert writes[-1][1] == {"proxy_selection": {"source": "sub2api", "remote_id": 2}}
         page.reload()
-        expect(team).to_contain_text("团队代理：Sub2API #2")
+        assert next(g for g in context.request.get(base + '/api/accounts/portfolio').json()['groups'] if g['id'] == 1)['sub2api_proxy_id'] == 2
         # Team details must replace the current overlay, then restore it on Escape or save.
         team.get_by_role("button", name="管理团队", exact=True).click()
         details = page.locator("#entity-sheet")
+        page.locator('.team-information').evaluate('n => n.open = true')
         details.get_by_role("button", name="切换代理", exact=True).click()
         expect(editor).to_be_visible()
         expect(details).to_be_hidden()
         page.keyboard.press("Escape")
         expect(editor).to_be_hidden()
         expect(details).to_be_visible()
+        page.locator('.team-information').evaluate('n => n.open = true')
         details.get_by_role("button", name="切换代理", exact=True).click()
         expect(select).to_be_enabled()
         editor.locator('input[name="clear"]').check()
         submit.click()
         expect(editor).to_be_hidden()
         expect(details).to_be_visible()
-        expect(team).to_contain_text("团队代理：直连")
-        expect(page.locator('[data-workspace="2"]')).to_contain_text("团队代理：Sub2API #2")
-        expect(page.locator('[data-workspace="3"]')).to_contain_text("团队代理：直连")
+        assert not next(g for g in context.request.get(base + '/api/accounts/portfolio').json()['groups'] if g['id'] == 1)['owner_proxy_set']
+        assert next(g for g in context.request.get(base + '/api/accounts/portfolio').json()['groups'] if g['id'] == 2)['sub2api_proxy_id'] == 2
+        assert not next(g for g in context.request.get(base + '/api/accounts/portfolio').json()['groups'] if g['id'] == 3)['owner_proxy_set']
         page.keyboard.press("Escape")
         # A failed catalog load cannot silently clear the saved configuration.
         page.route("**/api/resources/proxies?*", lambda route: route.fulfill(status=503, json={"detail": "测试目录不可用"}))
-        team.get_by_role("button", name="切换代理", exact=True).click()
+        team.locator('.management-team-controls [data-menu-trigger]').click()
+        page.get_by_role('menuitem', name='切换代理', exact=True).click()
         expect(select).to_contain_text("代理目录读取失败")
         before = len(writes)
         submit.click()
@@ -135,10 +139,12 @@ def check(base):
         # A late response from team 1 must not overwrite team 2's selected proxy.
         held = []
         page.route("**/api/resources/proxies?*", lambda route: held.append(route), times=1)
-        team.get_by_role("button", name="切换代理", exact=True).click()
+        team.locator('.management-team-controls [data-menu-trigger]').click()
+        page.get_by_role('menuitem', name='切换代理', exact=True).click()
         expect(select).to_contain_text("正在读取代理目录")
         page.keyboard.press("Escape")
-        page.locator('[data-workspace="2"]').get_by_role("button", name="切换代理", exact=True).click()
+        page.locator('[data-focus-key="team-menu:2"]').click()
+        page.get_by_role('menuitem', name='切换代理', exact=True).click()
         expect(select).to_be_enabled()
         expect(select).to_have_value("2")
         assert len(held) == 1
@@ -149,7 +155,8 @@ def check(base):
         for width in (1440, 768, 390):
             page.set_viewport_size({"width": width, "height": 1000})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
-            team.get_by_role("button", name="切换代理", exact=True).click()
+            team.locator('.management-team-controls [data-menu-trigger]').click()
+            page.get_by_role('menuitem', name='切换代理', exact=True).click()
             expect(editor).to_be_visible()
             expect(select).to_be_enabled()
             editor.evaluate("async n => await Promise.all(n.getAnimations({subtree: true}).map(a => a.finished))")

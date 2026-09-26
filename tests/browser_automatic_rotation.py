@@ -57,6 +57,7 @@ def main():
             toggle = page.locator("#auto-rotation-toggle")
             page.wait_for_function("document.querySelector('#auto-rotation-toggle').textContent === '选择工作空间后启用'")
             assert not writes, writes
+            page.locator('.auto-rotation-disclosure > summary').click()
             toggle.click()
             page.wait_for_selector('[data-rotation-workspace]')
             page.locator('[data-rotation-workspace][value="1"]').check()
@@ -67,10 +68,12 @@ def main():
             assert cfg['auto_rotate_scope'] == 'selected' and cfg['auto_rotate_workspace_ids'] == [1]
             page.goto('http://testserver/accounts')
             page.wait_for_function("document.querySelector('#auto-rotation-toggle').getAttribute('aria-pressed') === 'true'")
+            page.locator('.auto-rotation-disclosure > summary').click()
             assert '仅选中的 1 个工作空间' in page.locator('#auto-rotation-status').inner_text()
             assert client.get("/api/settings").json()["automation"]["auto_rotate"]["auto_rotate_enabled"]
             page.reload()
             page.wait_for_function("document.querySelector('#auto-rotation-toggle').textContent === '关闭自动轮转'")
+            page.locator('.auto-rotation-disclosure > summary').click()
             blocked = page.locator(f'#auto-rotation-status a[href="/operations?op={stuck_id}"]')
             assert blocked.filter(has_text="测试团队 1（部分完成）").count() == 1, blocked.all_inner_texts()
             assert "1 个团队自动轮转已暂停" in page.locator("#auto-rotation-status").inner_text()
@@ -99,6 +102,7 @@ def main():
             page.wait_for_function("document.querySelector('#settings-status').textContent.includes('已保存')")
             page.goto("http://testserver/accounts")
             page.wait_for_function("document.querySelector('#auto-rotation-toggle').textContent === '开启自动轮转'")
+            page.locator('.auto-rotation-disclosure > summary').click()
             assert "上限 6 次" in page.locator("#auto-rotation-status").inner_text()
             assert not errors, errors
             assert not external, external

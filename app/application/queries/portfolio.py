@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.persistence.models.operations import Operation
 
 from app.application.queries.identity import (
     HIDDEN_ACCOUNT_STATES,
@@ -15,7 +17,7 @@ from app.application.queries.identity import (
 from app.application.quota import quota_service
 from app.application.sub2api_usage import sub2api_usage_service
 from app.application import sub2api_status
-from app.application.presenters import build_auth_status
+from app.application.presenters import build_auth_status, account_attention
 from app.core.proxy import mask_proxy_url
 from app.core.time import isoformat
 from app.domain.identity import MEMBERSHIP_STATE_INVITED, MEMBERSHIP_STATE_JOINED, MEMBERSHIP_STATE_REMOVED
@@ -333,15 +335,44 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                         "severity": "warning" if bad else "success", "action": "details", "needs_auth": needs},
                 needs_auth=needs, auth_action="reauthorize" if needs else None)
     account_items = list(unique.values())
+    latest_onboarding = {}
+    for op in await db.scalars(select(Operation).where(Operation.archived_at.is_(None),
+                              Operation.op_type.in_(("onboard", "replenish")), Operation.account_id.in_([item["id"] for item in account_items]))
+                              .order_by(Operation.id.desc())):
+        latest_onboarding.setdefault((op.account_id, op.workspace_id), op)
+    failed_syncs = {group["id"] for group in groups if (group.get("last_sync_operation") or {}).get("state") in {"failed", "partial", "manual_required"}}
+    for item in account_items:
+        reasons = account_attention(item)
+        interrupted = next((latest_onboarding.get((item["id"], context.get("workspace_id"))) for context in item.get("contexts") or [item]
+                            if latest_onboarding.get((item["id"], context.get("workspace_id"))) is not None
+                            and latest_onboarding[(item["id"], context.get("workspace_id"))].state in {"failed", "partial", "manual_required"}), None)
+        if interrupted is not None:
+            reasons.append({"code": "onboarding", "label": "入组中断"})
+            item["interrupted_operation_id"] = interrupted.public_id
+        if any(context.get("workspace_id") in failed_syncs for context in item.get("contexts") or [item]):
+            reasons.append({"code": "sync", "label": "团队同步未完成"})
+        item["attention_reasons"] = reasons
+        item["needs_attention"] = bool(reasons)
     def has_state(item, codes):
         return any(c.get("health", {}).get("code") in codes for c in item.get("contexts") or [item])
     summary = {"teams": len(groups), "accounts": len(account_items),
                "needs_auth": sum(bool(item.get("needs_auth")) for item in account_items),
                "retry": sum(has_state(item, {"rate_limited", "temporary_failure", "parse_error"}) for item in account_items),
-               "attention": sum(item["health"]["code"] not in {"healthy", "disabled"} for item in account_items)}
+               "attention": sum(item["needs_attention"] for item in account_items)}
+    attention_breakdown = {code: sum(any(reason["code"] == code for reason in item["attention_reasons"]) for item in account_items)
+                           for code in ("auth", "onboarding", "quota", "check", "remote", "identity", "sync")}
+    by_id = {item["id"]: item for item in account_items}
+    for group in groups:
+        for member in group["members"]:
+            source = by_id.get(member.get("id"))
+            if source:
+                for key in ("needs_attention", "attention_reasons", "interrupted_operation_id"):
+                    if key in source:
+                        member[key] = source[key]
     return {
         "accounts": account_items,
         "summary": summary,
+        "attention_breakdown": attention_breakdown,
         "probe_runtime": await quota_service.runtime_summary(db),
         "groups": groups,
         "unassigned": unassigned,

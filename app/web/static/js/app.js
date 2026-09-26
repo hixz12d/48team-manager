@@ -21,6 +21,7 @@
     ["phone-import", document.getElementById("phone-import-sheet")],
     ["proxy-edit", document.getElementById("proxy-edit-sheet")],
     ["confirm", document.getElementById("confirm-sheet")],
+    ["tasks", document.getElementById("task-center")],
   ]);
   const sheet = overlayRegistry.get("entity");
   const menu = document.getElementById("action-menu");
@@ -38,6 +39,8 @@
   let searchTimer = null;
 
   const destinations = [
+    { label: "任务", href: "/operations" },
+    { label: "进行中的任务", href: "/operations?status=running" },
     { label: "去总览", href: "/" },
     { label: "去团队", href: "/workspaces" },
     { label: "去账号", href: "/accounts" },
@@ -153,7 +156,10 @@
     already_linked: "该成员已接入本地，无需重复接入。",
     membership_not_found: "未找到该成员的本地关系，请刷新后重试。",
     operation_in_progress: "相同操作正在进行，请等待当前操作完成。",
-    operation_conflict: "相同操作正在进行，请等待当前操作完成。",
+    operation_conflict: "该团队已有任务正在进行，请到任务页查看进度，完成后再重试。",
+    remote_catalog_unavailable: "无法读取 Sub2API 分组或代理目录，请到设置页检测连接后重试。",
+    proxy_unresolvable: "所选代理无法解析，请刷新代理目录并重新选择。",
+    vacancy_not_safe_to_refill: "尚未确认官方席位已空出，暂不补位。请同步团队成员后重试。"
   };
   const ACTIVE_OPERATION_STATES = new Set(["pending", "queued", "running", "waiting"]);
   const TERMINAL_OPERATION_STATES = new Set(["success", "failed", "manual_required", "cancelled", "partial"]);
@@ -273,14 +279,39 @@
     return text;
   }
 
+  function requestActionLabel(key) {
+    const actions = [
+      ["settings-probe", "检测服务连接"], ["settings-save", "保存设置"], ["settings", "读取设置"],
+      ["password-save", "修改后台密码"], ["overview", "读取总览"],
+      ["sub2api-push-options", "读取 Sub2API 分组和代理"], ["sub2api", "核对 Sub2API"],
+      ["operation-cancel", "取消任务"], ["operation-retry", "重试任务"],
+      ["operation-archive", "归档任务"], ["operation-restore", "恢复任务记录"],
+      ["operations-bulk-archive", "批量归档任务"], ["operation", "读取任务"],
+      ["workspace-replenish", "补充团队成员"], ["workspace-invite", "邀请团队成员"],
+      ["workspace-sync", "同步团队成员"], ["workspace-delete", "移除本地团队记录"],
+      ["workspace-expiry", "修改团队到期日期"], ["workspace-role", "修改成员角色"],
+      ["workspace-list", "读取团队列表"], ["workspace", "更新团队成员"], ["rotate", "执行受控轮转"],
+      ["account-reauth", "重新授权账号"], ["account-refresh", "刷新账号凭据"],
+      ["account-quota", "检测官方额度"], ["account-auth", "检测账号授权"],
+      ["account-sub2api", "同步 Sub2API"], ["account-delete-local", "删除本地账号档案"],
+      ["account-proxy", "设置账号代理"], ["account", "处理账号"],
+      ["phone-import", "导入手机号"], ["phone-status", "更新手机号状态"],
+      ["phone-reset", "重置手机号冷却"], ["phone", "读取手机号池"],
+      ["hme", "核对 HME 邮箱"], ["proxy", "读取或检测代理"],
+      ["register-oauth", "登记团队授权"], ["register-account", "登记账号"],
+    ];
+    return actions.find(([prefix]) => String(key || "").startsWith(prefix))?.[1] || "提交请求";
+  }
+
   async function parseJsonResponse(response, key) {
     const payload = await response.json().catch(() => ({}));
     if (response.ok) return payload;
     const detail = payload.detail;
     const errorCode = typeof detail === "object" && detail ? detail.error_code : payload.error_code;
+    const fallback = `操作没有完成（${requestActionLabel(key)}），请重试。HTTP ${response.status}`;
     const message = typeof detail === "object" && detail
-      ? (detail.message || payload.message || payload.error || `请求失败: ${key}`)
-      : (typeof detail === "string" ? detail : (payload.message || payload.error || `请求失败: ${key}`));
+      ? (detail.message || payload.message || payload.error || fallback)
+      : (typeof detail === "string" && detail ? detail : (payload.message || payload.error || fallback));
     throw new RequestError(message, { status: response.status, payload, errorCode });
   }
 
@@ -532,7 +563,7 @@
       const started = startCurrentOperation(stableKey, result, context);
       if (started) return result;
       const failed = !(result?.ok || result?.success) || result?.partial || ["partial", "failed", "manual_required"].includes(result?.status);
-      const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (successMessage || "已完成"));
+      const rawMessage = window.Team48TaskProgress?.summarizeOperationResult(result?.task_kind || result?.operation, result) || result?.message || (failed ? (result?.error || "操作失败") : (successMessage || "已完成"));
       const message = failed ? friendlyError(rawMessage) : rawMessage;
       const retryable = failed && Boolean(context?.retry);
       const action = retryable
@@ -770,6 +801,11 @@
       options.headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(body);
     }
+    const match = url.match(/^\/api\/workspaces\/([^/]+)\/(onboard|replenish|rotate|kick)$/);
+    if (match && window.Team48Runtime) {
+      const kind = match[2] === "kick" ? "kick_member" : match[2];
+      return window.Team48Runtime.track(match[1], kind, async () => ({...await fetchEntity(key, url, options), task_kind: kind}));
+    }
     return fetchEntity(key, url, options);
   }
 
@@ -913,7 +949,7 @@
     const state = String(result?.state || result?.status || "").toLowerCase();
     result = { ...(result?.result || {}), ...result, success: state === "success", operation_id: entry.operationId };
     const failed = !result.success || result.partial || ["partial", "failed", "manual_required"].includes(state);
-    const rawMessage = result?.message || (failed ? (result?.error || "操作失败") : (entry?.successMessage || "已完成"));
+    const rawMessage = window.Team48TaskProgress?.summarizeOperationResult(result?.operation || result?.kind, result) || result?.message || (failed ? (result?.error || "操作失败") : (entry?.successMessage || "已完成"));
     const message = failed ? friendlyError(rawMessage) : rawMessage;
     if (!entry.restored) toast(
       message,
@@ -989,11 +1025,12 @@
     persistCurrentOperations();
   }
 
-  async function openOperationById(operationId) {
+  async function openOperationById(operationId, trigger) {
     if (!operationId) return;
     try {
       const detail = await fetchEntity(`operation-${operationId}`, `/api/operations/${encodeURIComponent(operationId)}`);
-      openSheet("operation", detail);
+      if (overlayState.active && overlayState.active !== "entity") closeOverlay({restoreFocus: false});
+      openSheet("operation", detail, trigger);
     } catch (error) {
       toast(friendlyError(error), "error");
     }
@@ -1196,7 +1233,7 @@
     const primary = workspacePrimaryAction(item);
     const primaryButton = document.createElement("button");
     primaryButton.type = "button";
-    primaryButton.className = primary.id === "owner-auth" ? "button danger compact" : "button compact";
+    primaryButton.className = primary.id === "owner-auth" ? "button primary compact" : "button compact";
     primaryButton.dataset.action = primary.id === "manage" ? "workspace.manage" : `workspace.${primary.id}`;
     primaryButton.textContent = primary.label;
     primaryButton.addEventListener("click", (event) => {
@@ -1562,7 +1599,25 @@ function hmeRow(item) {
     el.textContent = shown === total ? `共 ${total} 个` : `${shown} / ${total}`;
   }
 
+  function attentionReason(item) {
+    const message = String(item.message || "").trim();
+    const email = String(item.email || "").trim();
+    if (!email) return message;
+    // Older overview payloads include the email in the reason as well as the title.
+    return message.split(email).join("").replace(/^[\s·:：;；,，—-]+|[\s·:：;；,，—-]+$/g, "") || "请查看账号详情";
+  }
+
   function renderOverview(payload) {
+    const breakdown = document.getElementById("overview-attention-breakdown");
+    if (breakdown) breakdown.textContent = Object.entries(payload.attention_breakdown || {}).filter(([,n])=>n).map(([key,n])=>`${({auth:"授权",onboarding:"入组中断",quota:"额度",check:"检测",remote:"远端",identity:"身份",sync:"同步"})[key]} ${n}`).join(" · ");
+    const resources = document.getElementById("overview-resource-attention");
+    if (resources) {
+      resources.replaceChildren();
+      for (const item of payload.resource_attention || []) {
+        const link = document.createElement("a"); link.className="list-row"; link.href=item.href || "/operations"; link.textContent = [item.email,attentionReason(item)].filter(Boolean).join(" · "); resources.append(link);
+      }
+      if (!resources.children.length) resources.textContent="暂无资源与任务提醒";
+    }
     const summary = payload.summary || {};
     const set = (key, value, alert) => {
       const node = document.querySelector(`[data-summary="${key}"]`);
@@ -1596,8 +1651,10 @@ function hmeRow(item) {
         const row = document.createElement("div");
         row.className = "list-row";
         const left = document.createElement("div");
-        left.append(twoLine(item.email || item.message, item.message));
-        if (item.workspace) {
+        const title = item.email || item.workspace || "待处理事项";
+        const reason = attentionReason(item);
+        left.append(twoLine(title, reason === title ? null : reason));
+        if (item.workspace && item.workspace !== title) {
           const extra = document.createElement("div");
           extra.className = "cell-sub";
           extra.textContent = item.workspace;
@@ -1716,6 +1773,7 @@ function hmeRow(item) {
         ])
       );
     } else if (kind === "operation") {
+      teamDetailState = null;
       title.textContent = labelOf(statusLabels, item.operation);
       subtitle.textContent = item.target || item.email || item.id;
       const result = item.result || {};
@@ -1743,12 +1801,21 @@ function hmeRow(item) {
           ])
         );
       }
-      if (steps.length) {
-        body.append(kvSection("步骤", steps.map((step) => [step.step_name, `${labelOf(statusLabels, step.state)}${step.error_message ? " · " + step.error_message : ""}`])));
-      }
+      const progress = document.createElement("section");
+      body.append(progress);
+      window.Team48Runtime?.put(item);
+      window.Team48TaskProgress?.mount(progress, {id: item.id, item, density: "standard"});
       if (logs.length) {
-        body.append(kvSection("日志", logs.slice(-8).map((row) => [row.ts || "", row.message || row.stage || ""])));
+        const logDetails = document.createElement("details");
+        const logSummary = document.createElement("summary"); logSummary.textContent = "最近日志";
+        logDetails.append(logSummary, kvSection("日志", logs.slice(-8).map((row) => [row.ts || "", row.message || row.stage || ""])));
+        body.append(logDetails);
       }
+      const technical = document.createElement("details");
+      const technicalTitle = document.createElement("summary"); technicalTitle.textContent = "技术详情";
+      const raw = document.createElement("pre"); raw.className = "task-technical";
+      raw.textContent = JSON.stringify({error_code: item.error_code, result}, (key, value) => /token|password|secret|callback|cookie/i.test(key) ? "[已隐藏]" : value, 2);
+      technical.append(technicalTitle, raw); body.append(technical);
     } else if (kind === "phone") {
       title.textContent = item.number;
       body.append(
@@ -2121,12 +2188,7 @@ function hmeRow(item) {
         id: "operation.cancel",
         label: "请求取消",
         visible: (item) => Boolean(item.can_cancel),
-        run: async (item) => {
-          const result = await postAction(`operation-cancel-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/cancel`);
-          toast(result.ok ? "已请求取消" : (result.error || "取消失败"), result.ok ? "success" : "error");
-          await openOperationById(item.id);
-          await bootPage();
-        },
+        run: (item, trigger) => cancelTrackedOperation(item, trigger),
       },
       {
         id: "operation.retry",
@@ -2239,9 +2301,21 @@ function hmeRow(item) {
         }
       });
       menu.append(option);
+      return option;
     };
     const actions = (entityActions[kind] || []).filter((action) => !action.visible || action.visible(item));
-    actions.forEach((action) => add(action.label, () => action.run(item, button), action.danger ? "menu-danger" : ""));
+    const category = action => action.danger ? 2 : /refresh|quota|probe|sub2api|sync/.test(action.id) ? 1 : 0;
+    let previousGroup = -1;
+    actions.sort((a,b) => category(a)-category(b)).forEach(action => {
+      const group = category(action);
+      if (kind === "account" && group !== previousGroup || previousGroup >= 0 && group === 2 && previousGroup !== 2) {
+        const label = document.createElement("div"); label.className="menu-group-label"; label.setAttribute("role","presentation"); label.textContent=["常用","同步与检查","危险操作"][group]; menu.append(label);
+      }
+      previousGroup = group;
+      const option = add(typeof action.label === "function" ? action.label(item) : action.label, () => action.run(item,button), action.danger ? "menu-danger" : "");
+      option.disabled = Boolean(action.disabled?.(item));
+      if (action.id === "workspace.sync") {option.dataset.workspaceSync=String(item.id); option.setAttribute("aria-busy",String(Boolean(item.sync_operation)));}
+    });
     if (!menu.childElementCount) {
       button.hidden = true;
       return;
@@ -2522,7 +2596,12 @@ function hmeRow(item) {
         item.dataset.memberEmail = email;
         const identity = document.createElement("div");
         identity.className = "team-member-identity";
-        identity.append(twoLine(row.email || row.name || "—", roleLabel(row.role || row.official_role) || null));
+        const account = window.Team48Accounts?.memberAccount(workspace, row);
+        if (account?.managed && account.id) {
+          const emailButton = document.createElement("button"); emailButton.type="button"; emailButton.className="management-email"; emailButton.textContent=row.email;
+          emailButton.addEventListener("click",()=>openSheet("account",account,emailButton)); identity.append(emailButton);
+          const role = document.createElement("small"); role.className="muted"; role.textContent = row.purpose === "mother" ? "母号 · Owner" : roleLabel(row.role || row.official_role); identity.append(role);
+        } else identity.append(twoLine(row.email || row.name || "—", roleLabel(row.role || row.official_role) || null));
         const stateWrap = document.createElement("div");
         stateWrap.className = "team-member-state";
         stateWrap.append(statusNode(presented.code, presented.label));
@@ -2533,16 +2612,40 @@ function hmeRow(item) {
         if (primary && (!primary.visible || primary.visible(context))) {
           const button = document.createElement("button");
           button.type = "button";
-          button.className = presented.primaryId === "team.member.reauth" ? "button danger compact" : "button primary compact";
+          button.className = "button primary compact";
           button.textContent = typeof primary.label === "function" ? primary.label(context) : primary.label;
           button.addEventListener("click", () => primary.run(context, button));
           actions.append(button);
         }
         const secondary = teamMemberMenu(workspace, row);
         if (secondary) actions.append(secondary);
-        item.append(identity, stateWrap, actions);
+        const quota = document.createElement("div"); quota.className="team-member-quota";
+        if (window.Team48Accounts) quota.append(window.Team48Accounts.quota(account || row,true));
+        item.append(identity, stateWrap, quota, actions);
         return item;
       }
+
+  function inviteRoleControl(value = "owner") {
+    const label = document.createElement("label"); label.textContent = "官方角色";
+    const select = document.createElement("select"); select.name = "role"; select.required = true;
+    if (!value) select.append(new Option("请选择要补充的官方角色", ""));
+    select.append(new Option("所有者（Owner）", "owner"), new Option("成员（Member）", "member"));
+    select.value = value; label.append(select); return label;
+  }
+
+  function setTeamFormOpen(form, toggle, open) {
+    const container = form.closest("[data-team-action-forms]");
+    if (open && container) {
+      for (const sibling of container.children) {
+        sibling.hidden = sibling !== form;
+        if (sibling._toggle) sibling._toggle.setAttribute("aria-expanded", String(sibling === form));
+      }
+    }
+    form.hidden = !open; form._toggle = toggle;
+    toggle.setAttribute("aria-expanded", String(open));
+    if (open) form.querySelector("textarea, select, input")?.focus();
+    else toggle.focus();
+  }
 
   function renderTeamInviteControls(workspace) {
     const wrapper = document.createElement("div");
@@ -2562,17 +2665,7 @@ function hmeRow(item) {
     emailLine.rows = 2;
     emailLine.placeholder = "留空则自动领取 HME";
     emailLabel.append(emailLine);
-    const roleLabelEl = document.createElement("label");
-    roleLabelEl.textContent = "官方角色";
-    const role = document.createElement("select");
-    role.name = "role";
-    [["owner", "Owner"], ["member", "Member"]].forEach(([value, label]) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      role.append(option);
-    });
-    roleLabelEl.append(role);
+    const roleLabelEl = inviteRoleControl();
     const seatControl = inviteSeatControl();
     const more = document.createElement("details");
     more.className = "team-detail-disclosure";
@@ -2593,20 +2686,12 @@ function hmeRow(item) {
     proxy.dataset.proxySelect = "";
     proxy.append(new Option("正在读取代理目录…", ""));
     proxyLabel.append(proxy);
-    void loadProxySelect(proxy);
-    const forceLabel = document.createElement("label");
-    forceLabel.className = "check";
-    const force = document.createElement("input");
-    force.type = "checkbox";
-    force.name = "force";
-    forceLabel.append(force, document.createTextNode(" 强制跳过部分门禁"));
-    const skipLabel = document.createElement("label");
-    skipLabel.className = "check";
-    const skip = document.createElement("input");
-    skip.type = "checkbox";
-    skip.name = "skip_invite";
-    skipLabel.append(skip, document.createTextNode(" 跳过官方邀请"));
-    moreBody.append(phoneLabel, proxyLabel);
+    let proxyLoaded = false;
+    more.addEventListener("toggle", () => { if (more.open && !proxyLoaded) { proxyLoaded = true; void loadProxySelect(proxy); } });
+    const phoneHint = document.createElement("p"); phoneHint.className = "hint";
+    phoneHint.textContent = "留空使用已配置的号池；手填用四个连字符分隔号码和接码链接。";
+    phone.placeholder = "+1 号码----接码链接";
+    moreBody.append(phoneLabel, phoneHint, proxyLabel);
     more.append(moreSummary, moreBody);
     const status = document.createElement("p");
     status.className = "muted";
@@ -2623,20 +2708,14 @@ function hmeRow(item) {
     submit.textContent = "发送邀请";
     actions.append(cancel, submit);
     form.append(emailLabel, roleLabelEl, seatControl, more, status, actions);
-    const setOpen = (open) => {
-      form.hidden = !open;
-      toggle.setAttribute("aria-expanded", open ? "true" : "false");
-      toggle.textContent = open ? "收起邀请" : "邀请成员";
-      if (open) emailLine.focus();
-    };
+    form._toggle = toggle;
+    const setOpen = open => setTeamFormOpen(form, toggle, open);
     toggle.addEventListener("click", () => setOpen(form.hidden));
     cancel.addEventListener("click", () => setOpen(false));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const action = (entityActions.team || []).find((candidate) => candidate.id === "team.member.invite");
       const values = Object.fromEntries(new FormData(form).entries());
-      values.force = force.checked;
-      values.skip_invite = skip.checked;
       status.hidden = false;
       status.className = "muted";
       status.setAttribute("role", "status");
@@ -2666,80 +2745,50 @@ function hmeRow(item) {
   }
 
   function renderTeamReplenishControls(workspace) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "team-invite-controls";
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "button primary compact";
-    toggle.textContent = "补充 Team";
-    toggle.setAttribute("aria-expanded", "false");
-    const form = document.createElement("form");
-    form.className = "team-invite-form stack";
-    form.hidden = true;
-    const hint = document.createElement("p");
-    hint.className = "muted";
-    hint.textContent = "官方角色：Owner";
-    const seatControl = inviteSeatControl();
-    const phoneLabel = document.createElement("label");
-    phoneLabel.textContent = "接码号";
-    const phone = document.createElement("input");
-    phone.name = "phone_line";
-    phone.placeholder = "+1xxxxxxxxxx----https://api668.com/sms/by_key?key=...";
-    phone.autocomplete = "off";
-    phoneLabel.append(phone);
-    const status = document.createElement("p");
-    status.className = "muted";
-    status.hidden = true;
-    const actions = document.createElement("div");
-    actions.className = "row-actions";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.className = "button ghost";
-    cancel.textContent = "取消";
-    const submit = document.createElement("button");
-    submit.type = "submit";
-    submit.className = "button primary";
-    submit.textContent = "开始补充";
-    actions.append(cancel, submit);
-    form.append(hint, seatControl, phoneLabel, status, actions);
-    const setOpen = (open) => {
-      form.hidden = !open;
-      toggle.setAttribute("aria-expanded", open ? "true" : "false");
-      toggle.textContent = open ? "收起补充" : "补充 Team";
-      if (open) phone.focus();
-    };
-    toggle.addEventListener("click", () => setOpen(form.hidden));
-    cancel.addEventListener("click", () => setOpen(false));
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const action = (entityActions.team || []).find((candidate) => candidate.id === "team.replenish");
-      const values = Object.fromEntries(new FormData(form).entries());
-      status.hidden = false;
-      status.className = "muted";
-      status.setAttribute("role", "status");
-      status.textContent = "正在补充 Team…";
-      try {
-        const result = await action.run({ workspace, values }, submit);
-        if (!result) return;
-        status.className = result.partial ? "error" : "muted";
-        status.textContent = result.message || (result.partial ? "已入组，授权未完成" : "补充完成");
-      } catch (error) {
-        status.className = "error";
-        status.setAttribute("role", "alert");
-        status.textContent = friendlyError(error);
-      }
-    });
-    wrapper.append(toggle, form);
-    return wrapper;
-  }
+      const wrapper = document.createElement("div"); wrapper.className = "team-invite-controls";
+      const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "button compact";
+      toggle.textContent = "补充 Team"; toggle.setAttribute("aria-expanded", "false");
+      const form = document.createElement("form"); form.className = "team-invite-form stack"; form.hidden = true; form._toggle = toggle;
+      const previous = (workspace.former_members || []).filter(row => ["owner", "member"].includes(row.official_role || row.role));
+      const originalRole = previous.length === 1 ? previous[0].official_role || previous[0].role : "";
+      const roleControl = inviteRoleControl(originalRole);
+      const hint = document.createElement("p"); hint.className = "hint";
+      hint.textContent = originalRole ? "默认沿用已离队成员的官方角色，可按实际席位调整。" : "未能确定原席位角色，请明确选择。官方角色与本地母号/子号用途相互独立。";
+      const seatControl = inviteSeatControl();
+      const more = document.createElement("details"); more.className = "team-detail-disclosure";
+      const summary = document.createElement("summary"); summary.textContent = "更多补充参数";
+      const phoneLabel = document.createElement("label"); phoneLabel.textContent = "接码号（选填）";
+      const phone = document.createElement("input"); phone.name = "phone_line"; phone.placeholder = "+1 号码----接码链接"; phone.autocomplete = "off"; phoneLabel.append(phone);
+      const phoneHint = document.createElement("p"); phoneHint.className = "hint"; phoneHint.textContent = "默认从已配置的号池分配。手填时用四个连字符分隔完整号码和接码链接。";
+      more.append(summary, phoneLabel, phoneHint);
+      const status = document.createElement("p"); status.className = "muted"; status.hidden = true;
+      const actions = document.createElement("div"); actions.className = "row-actions";
+      const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "button ghost"; cancel.textContent = "取消";
+      const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button primary"; submit.textContent = "开始补充";
+      actions.append(cancel, submit); form.append(roleControl, hint, seatControl, more, status, actions);
+      toggle.addEventListener("click", () => setTeamFormOpen(form, toggle, form.hidden));
+      cancel.addEventListener("click", () => setTeamFormOpen(form, toggle, false));
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        const values = Object.fromEntries(new FormData(form).entries());
+        status.hidden = false; status.className = "muted"; status.setAttribute("role", "status"); status.textContent = "正在补充 Team…";
+        try {
+          const result = await entityActions.team.find(action => action.id === "team.replenish").run({workspace, values}, submit);
+          if (result) status.textContent = result.message || "补充已结束，请查看任务结果";
+        } catch (error) { status.className = "error"; status.setAttribute("role", "alert"); status.textContent = friendlyError(error); }
+      });
+      wrapper.append(toggle, form); return wrapper;
+    }
 
   async function replenishTeam(workspace, button, values) {
     const phoneLine = String(values?.phone_line || "").trim();
     setButtonBusy(button, true, "补充中");
-    const stopProgress = watchInviteProgress(workspace.id, button);
+    const stopProgress = collapseTaskForm(workspace.id, button);
     try {
       const result = await postAction(`workspace-replenish-${workspace.id}`, `/api/workspaces/${workspace.id}/replenish`, {
         phone_line: phoneLine,
+        role: values?.role || "owner",
         seat_intent: values?.seat_intent || "workspace_default",
       });
       await handleActionResult(result, {
@@ -2759,59 +2808,64 @@ function hmeRow(item) {
     }
   }
 
+  function rotationCandidates(workspace) {
+    return teamMemberRows(workspace).map(row => ({...row, ...(window.Team48Accounts?.memberAccount(workspace, row) || {})}))
+      .filter(row => row.email?.toLowerCase() !== workspace.owner_email?.toLowerCase() && row.purpose !== "mother" && !row.is_owner
+        && !["invited", "local_only", "remote_only", "unmanaged", "departed", "removed", "history", "conflict", "pending_sync"].includes(teamMemberKind(row)))
+      .sort((a, b) => {
+        const rank = row => row.latest_check?.http_status === 401 && row.latest_check?.current_credential !== false ? 0
+          : (row.last_success_quota || row.quota || {}).seven_day_used_percent >= 100 ? 1 : 2;
+        return rank(a) - rank(b) || String(a.email).localeCompare(String(b.email));
+      });
+  }
+
   function canRotateWorkspace(workspace) {
-      return workspace?.rotation?.eligible === true || workspace?.rotation_eligible === true || workspace?.can_rotate === true;
+      if (workspace?.rotation?.eligible === false || workspace?.rotation_eligible === false || workspace?.can_rotate === false) return false;
+      return Boolean(workspace?.owner_account_id && rotationCandidates(workspace).length);
     }
 
     function renderTeamRotationControls(container, workspace) {
-      const form = document.createElement("form");
-      form.className = "team-rotation-form stack";
-      const emailLabel = document.createElement("label");
-      emailLabel.textContent = "要轮转的成员";
-      const email = document.createElement("input");
-      email.type = "email";
-      email.name = "email";
-      email.required = true;
-      emailLabel.append(email);
-      const replacementLabel = document.createElement("label");
-      replacementLabel.textContent = "补位邮箱 / 原文";
-      const replacement = document.createElement("textarea");
-      replacement.name = "email_line";
-      replacement.rows = 3;
-      replacement.placeholder = "可留空，由现有策略选择待命账号";
-      replacementLabel.append(replacement);
-      const forceLabel = document.createElement("label");
-      forceLabel.className = "check";
-      const force = document.createElement("input");
-      force.type = "checkbox";
-      force.name = "force_refill";
-      forceLabel.append(force, document.createTextNode(" 强制补位"));
-      const submit = document.createElement("button");
-      submit.type = "submit";
-      submit.className = "button danger";
-      submit.textContent = "执行受控轮转";
-      form.append(emailLabel, replacementLabel, forceLabel, submit);
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!await confirmDanger(`确认对 ${email.value} 执行受控轮转？`, { title: "执行受控轮转", items: ["会修改官方 Team 席位", "补位账号继承原角色和席位"], confirmLabel: "执行轮转" }, submit)) return;
-        setButtonBusy(submit, true, "轮转中");
-        try {
-          const result = await postAction(`rotate-${workspace.id}-${email.value}`, `/api/workspaces/${workspace.id}/rotate`, {
-            email: email.value.trim(),
-            email_line: replacement.value || "",
-            force_refill: force.checked,
-            reason: "console_team_detail",
-          });
-          await handleActionResult(result, { successMessage: result.message || "轮转已提交", refresh: false });
-          await reloadTeamDetails();
-        } catch (error) {
-          toast(friendlyError(error), "error");
-        } finally {
-          setButtonBusy(submit, false);
+        const form = document.createElement("form"); form.className = "team-rotation-form stack"; form.hidden = true;
+        const emailLabel = document.createElement("label"); emailLabel.textContent = "要轮转的在席成员";
+        const email = document.createElement("select"); email.name = "email"; email.required = true;
+        const candidates = rotationCandidates(workspace);
+        email.append(new Option(candidates.length ? "请选择成员（401、周额度用尽优先）" : "没有可轮转的在席成员", ""));
+        for (const row of candidates) {
+          const q = row.last_success_quota || row.quota || {};
+          const auth = row.latest_check?.http_status === 401 && row.latest_check?.current_credential !== false ? "401" : row.health?.label || labelOf(statusLabels, row.auth || row.auth_state) || "授权待确认";
+          email.append(new Option(`${row.email} · 5h ${q.five_hour_used_percent ?? "未知"}${q.five_hour_used_percent == null ? "" : "%"} / 7d ${q.seven_day_used_percent ?? "未知"}${q.seven_day_used_percent == null ? "" : "%"} · ${auth}${q.stale ? " · 旧快照" : ""}`, row.email));
         }
-      });
-      container.append(form);
-    }
+        email.disabled = !candidates.length; emailLabel.append(email);
+        const replacementLabel = document.createElement("label"); replacementLabel.textContent = "补位邮箱 / 原文（选填）";
+        const replacement = document.createElement("textarea"); replacement.name = "email_line"; replacement.rows = 2; replacement.placeholder = "留空则从待命池选"; replacementLabel.append(replacement);
+        const more = document.createElement("details"); more.className = "team-detail-disclosure";
+        const summary = document.createElement("summary"); summary.textContent = "更多轮转参数";
+        const forceLabel = document.createElement("label"); forceLabel.className = "check";
+        const force = document.createElement("input"); force.type = "checkbox"; force.name = "force_refill";
+        forceLabel.append(force, document.createTextNode(" 强制补位"));
+        const warning = document.createElement("p"); warning.className = "hint"; warning.textContent = "仅在了解当前团队状态时使用。仍会核对官方席位和补位资源，不保证绕过门禁。";
+        more.append(summary, forceLabel, warning);
+        const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button primary"; submit.textContent = "执行受控轮转"; submit.disabled = !candidates.length;
+        const errorBox = document.createElement("p"); errorBox.className = "text-warning"; errorBox.setAttribute("role", "alert"); errorBox.hidden = true;
+        const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "button ghost"; cancel.textContent = "取消";
+        cancel.addEventListener("click", () => setTeamFormOpen(form, form._toggle, false));
+        const actions = document.createElement("div"); actions.className = "row-actions"; actions.append(cancel, submit);
+        form.append(emailLabel, replacementLabel, more, errorBox, actions);
+        form.addEventListener("submit", async event => {
+          event.preventDefault();
+          if (!email.value || !form.reportValidity()) return;
+          const target = email.value;
+          if (!await confirmDanger(`确认对 ${target} 执行受控轮转？`, {title:"执行受控轮转", items:["会修改官方 Team 席位", "补位账号继承原角色和席位"], confirmLabel:"执行轮转"}, submit)) return;
+          setButtonBusy(submit, true, "轮转中"); form.hidden = true; errorBox.hidden = true;
+          try {
+            const result = await postAction(`rotate-${workspace.id}-${target}`, `/api/workspaces/${workspace.id}/rotate`, {email:target, email_line:replacement.value || "", force_refill:force.checked, reason:"console_team_detail"});
+            await handleActionResult(result, {successMessage:result.message || "轮转已提交", refresh:false});
+            await reloadTeamDetails();
+          } catch (error) { errorBox.textContent = friendlyError(error); errorBox.hidden = false; }
+          finally { setButtonBusy(submit, false); if (form.isConnected && form._toggle?.getAttribute("aria-expanded") === "true") form.hidden = false; }
+        });
+        container.append(form); return form;
+      }
 
   async function deleteLocalTeam(workspace, trigger) {
     const name = workspace.display_name || workspace.name || workspace.owner_email || `#${workspace.id}`;
@@ -2851,6 +2905,9 @@ function hmeRow(item) {
           const result = await patchAction(`workspace-expiry-${workspace.id}`, `/api/workspaces/${workspace.id}/expiry`, { expires_on: expiresOn });
           if (!result?.ok) throw new Error(result?.error || "日期保存失败");
           workspace.expiry = result.expiry;
+          const heading = document.querySelector('.team-expiry-details > summary');
+          const expiryInfo = window.Team48Expiry.summary(result.expiry);
+          if (heading) heading.textContent = expiryInfo.date ? `到期 ${expiryInfo.date} · ${expiryInfo.label} · 修改` : '到期未填 · 填写';
           if (document.body.dataset.page === "accounts") {
             const focusKey = overlayState.returnFocus?.dataset.focusKey;
             window.Team48Accounts.updateExpiry(workspace.id, result.expiry);
@@ -2862,131 +2919,83 @@ function hmeRow(item) {
     }
 
     function openWorkspaceExpiry(trigger, workspace) {
-      if (!sheet || !workspace) return;
-      teamDetailState = null;
-      document.getElementById("sheet-title").textContent = "记录到期日期";
-      document.getElementById("sheet-subtitle").textContent = workspace.display_name || workspace.name || `团队 #${workspace.id}`;
-      document.getElementById("sheet-body").replaceChildren(workspaceExpiryEditor(workspace));
-      openOverlay("entity", { returnFocus: trigger, context: { kind: "workspace-expiry", workspace }, initialFocus: 'input[name="expires_on"]' });
-    }
+        if (!sheet || !workspace) return;
+        renderTeamDetails(workspace);
+        const body = document.getElementById("sheet-body");
+        body.querySelector(".team-information").open = true;
+        body.querySelector(".team-expiry-details").open = true;
+        openOverlay("entity", {returnFocus:trigger, context:{kind:"workspace-expiry",workspace}, initialFocus:'input[name="expires_on"]'});
+        body.querySelector('input[name="expires_on"]').scrollIntoView({block:"center"});
+      }
 
     function renderTeamDetails(workspace) {
-      if (!sheet || !workspace) return;
-      teamDetailState = { ...(teamDetailState || {}), workspaceId: workspace.id, workspace, view: "details" };
-      const title = document.getElementById("sheet-title");
-      const subtitle = document.getElementById("sheet-subtitle");
-      const body = document.getElementById("sheet-body");
-      title.textContent = workspace.display_name || workspace.name || "团队详情";
-      subtitle.textContent = workspace.official_workspace_id || "";
-      body.replaceChildren();
-      const official = workspace.official || {};
-      const seats = official.occupied_seats != null && official.seat_limit != null
-        ? `${official.occupied_seats} / ${official.seat_limit}`
-        : (official.joined_people_total == null ? "尚未同步" : `${official.joined_people_total} 人`);
-      body.append(kvSection("团队概览", [
-        ["团队名称", workspace.display_name || workspace.name],
-        ["Workspace ID", workspace.official_workspace_id],
-        ["官方席位", seats],
-        ["最近同步", workspace.last_sync ? relativeTime(workspace.last_sync) : "尚未同步"],
-        ["健康状态", workspace.owner_auth_reason === "owner_account_missing" ? "母号本地档案缺失" : (workspace.owner_needs_auth ? "母号要授权" : labelOf(statusLabels, workspace.health || workspace.status))],
-      ]));
-
-      body.append(workspaceExpiryEditor(workspace));
-
-      const mother = document.createElement("section");
-      mother.className = "sheet-section team-mother-section";
-      const motherTitle = document.createElement("h3");
-      motherTitle.textContent = "母号";
-      const motherGrid = document.createElement("div");
-      motherGrid.className = "team-mother-grid";
-      motherGrid.append(kvSection("", [
-        ["邮箱", workspace.owner_email],
-        ["授权状态", labelOf(statusLabels, workspace.owner_auth_state || workspace.owner_auth)],
-        ["代理状态", workspace.owner_proxy || (workspace.owner_proxy_set ? "已绑定" : "未绑定")],
-        ["额度更新时间", workspace.owner_quota_updated_at ? relativeTime(workspace.owner_quota_updated_at) : "暂无额度快照"],
-      ]));
-      const motherAside = document.createElement("div");
-      motherAside.className = "team-mother-aside";
-      const ownerQuota = workspace.owner_quota || {};
-      if ([ownerQuota.five_hour_used_percent, ownerQuota.seven_day_used_percent, ownerQuota.queried_at].some((value) => value != null)) {
-        motherAside.append(quotaCell({ quota: ownerQuota }));
+        if (!sheet || !workspace) return;
+        teamDetailState = {...(teamDetailState || {}), workspaceId:workspace.id, workspace, view:"details"};
+        const title = document.getElementById("sheet-title"), subtitle = document.getElementById("sheet-subtitle"), body = document.getElementById("sheet-body");
+        title.textContent = workspace.display_name || workspace.name || "团队详情";
+        const official = workspace.official || {};
+        const seats = official.occupied_seats != null && official.seat_limit != null ? `${official.occupied_seats}/${official.seat_limit} 席` : official.joined_people_total != null ? `已加入 ${official.joined_people_total} 人` : "席位尚未同步";
+        subtitle.textContent = `${seats} · ${workspace.owner_needs_auth ? "母号需授权" : labelOf(statusLabels, workspace.health || workspace.status) || "状态待确认"}`;
+        body.replaceChildren();
+        const progress = document.createElement("section"); progress.dataset.teamTask = String(workspace.id); body.append(progress);
+        window.Team48TaskProgress?.mount(progress, {workspaceId:workspace.id, density:"standard"});
+        const members = document.createElement("section"); members.className = "sheet-section team-members-section";
+        const rows = teamMemberRows(workspace).map(row => ({...row, ...(window.Team48Accounts?.memberAccount(workspace,row) || {})}));
+        const seen = new Set(rows.map(row => row.email.toLowerCase()));
+        for (const row of workspace.former_members || []) if (!seen.has(row.email?.toLowerCase())) rows.push({...row, kind:"departed"});
+        const rank = row => ["departed", "history", "removed"].includes(teamMemberKind(row)) ? 3 : teamMemberKind(row) === "invited" ? 2 : authStatus(row).needsAuth || row.health?.needs_auth || ["conflict", "remote_only", "unmanaged"].includes(teamMemberKind(row)) ? 0 : 1;
+        rows.sort((a,b) => rank(a)-rank(b) || String(a.email).localeCompare(String(b.email)));
+        const heading = document.createElement("h3"); heading.textContent = `成员（${rows.length + (workspace.owner_email ? 1 : 0)}）`;
+        const list = document.createElement("div"); list.className = "team-member-list";
+        if (workspace.owner_email) {
+          const owner = {email:workspace.owner_email, id:workspace.owner_account_id, purpose:"mother", kind:"owner", is_owner:true, official_role:"owner", auth:workspace.owner_auth_state || workspace.owner_auth, quota:workspace.owner_quota};
+          list.append(renderTeamMember(workspace, {...owner, ...(window.Team48Accounts?.memberAccount(workspace,owner) || {}), purpose:"mother", is_owner:true}));
+        }
+        rows.forEach(row => list.append(renderTeamMember(workspace,row)));
+        if (!list.children.length) list.append(emptyState("没有成员记录", "同步团队后查看成员与席位。", true));
+        members.append(heading,list); body.append(members);
+        const actionSection = document.createElement("section"); actionSection.className = "sheet-section team-action-section";
+        const bar = document.createElement("div"); bar.className = "team-primary-actions";
+        const forms = document.createElement("div"); forms.dataset.teamActionForms = "";
+        for (const wrapper of [renderTeamInviteControls(workspace), renderTeamReplenishControls(workspace)]) {
+          const toggle = wrapper.querySelector("button"), form = wrapper.querySelector("form");
+          form._toggle = toggle; bar.append(toggle); forms.append(form);
+        }
+        const rotate = document.createElement("button"); rotate.type = "button"; rotate.className = "button compact"; rotate.textContent = "受控轮转"; rotate.setAttribute("aria-expanded","false");
+        rotate.disabled = !canRotateWorkspace(workspace); bar.append(rotate);
+        const rotationForm = renderTeamRotationControls(forms,workspace); rotationForm._toggle = rotate;
+        rotate.addEventListener("click", () => setTeamFormOpen(rotationForm,rotate,rotationForm.hidden));
+        actionSection.append(bar,forms);
+        if (rotate.disabled) { const hint = document.createElement("p"); hint.className = "hint"; hint.textContent = "当前团队不满足轮转条件，请先同步成员并核对母号授权。"; actionSection.append(hint); }
+        body.append(actionSection);
+        const info = document.createElement("details"); info.className = "team-detail-disclosure team-information";
+        const infoTitle = document.createElement("summary"); infoTitle.textContent = "团队信息"; info.append(infoTitle);
+        info.append(kvSection("", [["Workspace ID",workspace.official_workspace_id], ["最近同步",workspace.last_sync ? relativeTime(workspace.last_sync) : "尚未同步"], ["团队代理",workspace.owner_proxy || (workspace.owner_proxy_set ? "已配置" : "直连")]]));
+        if (workspace.official_workspace_id) {
+          const copy = document.createElement("button"); copy.type = "button"; copy.className = "button compact"; copy.textContent = "复制 Workspace ID";
+          copy.addEventListener("click", async () => {try {await navigator.clipboard.writeText(workspace.official_workspace_id); toast("已复制 Workspace ID","success");} catch (_) {toast("复制失败，请选中 ID 手动复制","error");}}); info.append(copy);
+        }
+        const tools = document.createElement("div"); tools.className = "team-info-actions";
+        const sync = document.createElement("button"); sync.type = "button"; sync.className = "button"; sync.textContent = workspace.sync_operation ? "同步中" : "同步本团队"; sync.disabled = Boolean(workspace.sync_operation);
+        sync.addEventListener("click", () => entityActions.workspace.find(a=>a.id==="workspace.sync").run(workspace,sync)); tools.append(sync);
+        if (workspace.owner_account_id && workspace.owner_purpose === "mother") {
+          const proxy = document.createElement("button"); proxy.type = "button"; proxy.className = "button"; proxy.textContent = "切换代理"; proxy.addEventListener("click",()=>openWorkspaceProxy(proxy,workspace)); tools.append(proxy);
+        }
+        const ownerAction = workspacePrimaryAction(workspace);
+        if (["owner-missing","owner-auth"].includes(ownerAction.id)) {
+          const action = document.createElement("button"); action.type="button"; action.className="button primary"; action.textContent=ownerAction.label; action.addEventListener("click",()=>runWorkspacePrimaryAction(workspace,action)); tools.append(action);
+        }
+        info.append(tools);
+        const expiry = document.createElement("details"); expiry.className = "team-expiry-details";
+        const expiryLabel = document.createElement("summary"), expiryInfo = window.Team48Expiry.summary(workspace.expiry);
+        expiryLabel.textContent = expiryInfo.date ? `到期 ${expiryInfo.date} · ${expiryInfo.label} · 修改` : "到期未填 · 填写";
+        expiry.append(expiryLabel,workspaceExpiryEditor(workspace)); info.append(expiry); body.append(info);
+        const danger = document.createElement("details"); danger.className = "team-detail-disclosure team-danger-zone";
+        const dangerTitle = document.createElement("summary"); dangerTitle.textContent = "危险操作";
+        const warning = document.createElement("p"); warning.className = "hint"; warning.textContent = "只移除本地团队记录，不影响官方 Team；本地账号与共享关系按现有安全规则处理。";
+        const remove = document.createElement("button"); remove.type="button"; remove.className="button danger"; remove.textContent="移除本地记录"; remove.addEventListener("click",()=>deleteLocalTeam(workspace,remove));
+        danger.append(dangerTitle,warning,remove); body.append(danger);
       }
-      const ownerAction = workspacePrimaryAction(workspace);
-      if (workspace.owner_account_id && workspace.owner_purpose === "mother") {
-        const proxyButton = document.createElement("button");
-        proxyButton.type = "button";
-        proxyButton.className = "button";
-        proxyButton.textContent = "切换代理";
-        proxyButton.addEventListener("click", () => openWorkspaceProxy(proxyButton, workspace));
-        motherAside.append(proxyButton);
-      }
-      if (ownerAction.id === "owner-missing" || ownerAction.id === "owner-auth") {
-        const ownerButton = document.createElement("button");
-        ownerButton.type = "button";
-        ownerButton.className = ownerAction.id === "owner-auth" ? "button danger" : "button";
-        ownerButton.textContent = ownerAction.label;
-        ownerButton.addEventListener("click", () => runWorkspacePrimaryAction(workspace, ownerButton));
-        motherAside.append(ownerButton);
-      }
-      if (motherAside.childElementCount) motherGrid.append(motherAside);
-      mother.append(motherTitle, motherGrid);
-      body.append(mother);
-
-      const members = document.createElement("section");
-      members.className = "sheet-section";
-      const membersTitle = document.createElement("h3");
-      const rows = teamMemberRows(workspace);
-      membersTitle.textContent = `成员（${rows.length}）`;
-      const list = document.createElement("div");
-      list.className = "team-member-list";
-      if (!rows.length) list.append(emptyState("没有子成员", "同步官方成员后，这里会显示当前 Team 成员。", true));
-      else rows.forEach((row) => list.append(renderTeamMember(workspace, row)));
-      const memberToolbar = document.createElement("div");
-      memberToolbar.className = "team-invite-controls";
-      memberToolbar.append(renderTeamReplenishControls(workspace), renderTeamInviteControls(workspace));
-      members.append(membersTitle, memberToolbar, list);
-      body.append(members);
-      if (workspace.former_members?.length) {
-        const former = document.createElement("section");
-        former.className = "sheet-section team-former-members";
-        const heading = document.createElement("h3");
-        heading.textContent = `已离队账号（${workspace.former_members.length}）`;
-        former.append(heading);
-        workspace.former_members.forEach(row => former.append(renderTeamMember(workspace, row)));
-        body.append(former);
-      }
-
-      if (canRotateWorkspace(workspace)) {
-        const advanced = document.createElement("details");
-        advanced.className = "team-detail-disclosure";
-        const summary = document.createElement("summary");
-        summary.textContent = "高级操作";
-        const content = document.createElement("div");
-        content.className = "team-detail-disclosure-body";
-        renderTeamRotationControls(content, workspace);
-        advanced.append(summary, content);
-        body.append(advanced);
-      }
-
-      const danger = document.createElement("details");
-      danger.className = "team-detail-disclosure team-danger-zone";
-      const dangerSummary = document.createElement("summary");
-      dangerSummary.textContent = "危险操作";
-      const dangerBody = document.createElement("div");
-      dangerBody.className = "team-detail-disclosure-body";
-      const warning = document.createElement("p");
-      warning.className = "hint";
-      warning.textContent = "删除只清理本地团队数据，不会修改官方 Team。成员和历史关联会按后端安全规则处理。";
-      const deleteButton = document.createElement("button");
-      deleteButton.type = "button";
-      deleteButton.className = "button danger";
-      deleteButton.textContent = "删除本地团队";
-      deleteButton.addEventListener("click", () => deleteLocalTeam(workspace, deleteButton));
-      dangerBody.append(warning, deleteButton);
-      danger.append(dangerSummary, dangerBody);
-      body.append(danger);
-      if (document.body.dataset.page === "accounts") window.Team48Accounts.decorateTeam(workspace, body);
-    }
 
     function openWorkspaceDetails(trigger, workspace) {
       if (!workspace || !sheet) return;
@@ -3071,33 +3080,17 @@ function hmeRow(item) {
     item.append(form); role.focus();
   }
 
-  function watchInviteProgress(workspaceId, button) {
-    const status = button.closest("form")?.querySelector('[role="status"]');
-    const controller = new AbortController();
-    let stopped = false;
-    let timer;
-    async function poll() {
-      try {
-        const response = await fetch("/api/runtime/status", { signal: controller.signal, cache: "no-store" });
-        if (response.ok) {
-          const payload = await response.json();
-          const operation = (payload.active_operations || []).find((item) =>
-            item.workspace_id === workspaceId && ["onboard", "replenish"].includes(item.kind) && item.state === "running");
-          if (!stopped && status && operation) status.textContent = `${operation.stage_label} · ${operation.elapsed_seconds || 0} 秒`;
-        }
-      } catch (_) {
-        // Progress reads must not interrupt the submitted operation.
-      } finally {
-        if (!stopped) timer = setTimeout(poll, 2000);
-      }
-    }
-    void poll();
-    return () => { stopped = true; clearTimeout(timer); controller.abort(); };
+  function collapseTaskForm(workspaceId, button) {
+    // Submission UI only; runtime polling continues independently after this form closes.
+    const form = button.closest("form");
+    if (form) form.hidden = true;
+    document.querySelector(`#sheet-body [data-team-task="${workspaceId}"]`)?.focus();
+    return () => { if (form?.isConnected && form._toggle?.getAttribute("aria-expanded") === "true") form.hidden = false; };
   }
 
   async function inviteTeamMember(workspace, values, button) {
     setButtonBusy(button, true, "处理中");
-    const stopProgress = watchInviteProgress(workspace.id, button);
+    const stopProgress = collapseTaskForm(workspace.id, button);
     try {
       const result = await postAction(`workspace-invite-${workspace.id}`, `/api/workspaces/${workspace.id}/onboard`, {
         email_line: String(values.email_line || "").trim(),
@@ -3691,6 +3684,7 @@ function hmeRow(item) {
     const data = new FormData(form);
     return JSON.stringify({
       sub2api_push: window.Team48Sub2ApiDefaults.value(),
+      sub2api_proxy_mode: data.get("sub2api_proxy_mode"),
       sub2api_base_url: data.get("sub2api_base_url"),
       sub2api_api_key: data.get("sub2api_api_key"),
       sub2api_admin_email: data.get("sub2api_admin_email"),
@@ -3713,18 +3707,38 @@ function hmeRow(item) {
     });
   }
 
-  function updateDirty() {
+  function changedSettings(current, baseline) {
+    const flatten = (snapshot) => {
+      const { sub2api_push: push = {}, sub2api_proxy_mode: mode, ...fields } = JSON.parse(snapshot || "{}");
+      return { ...fields, sub2api_concurrency: push.concurrency, sub2api_group_ids: push.group_ids,
+        sub2api_proxy_mode: [mode, push.proxy_id, push.proxy_group_id] };
+    };
+    const draft = flatten(current), saved = flatten(baseline);
+    return Object.keys(draft).filter(key => JSON.stringify(draft[key]) !== JSON.stringify(saved[key]));
+  }
+
+  function updateDirty(event) {
     const form = document.getElementById("settings-form");
     const bar = document.getElementById("settings-savebar");
     const status = document.getElementById("settings-status");
     const discard = document.getElementById("settings-discard");
     if (!form || !bar) return;
-    settingsDirty = snapshotSettings(form) !== settingsBaseline;
+    const changes = changedSettings(snapshotSettings(form), settingsBaseline);
+    settingsDirty = changes.length > 0;
+    bar.hidden = !settingsDirty;
     bar.classList.toggle("is-dirty", settingsDirty);
+    form.querySelectorAll("label.is-dirty, fieldset.is-dirty").forEach(node => node.classList.remove("is-dirty"));
+    for (const key of changes) {
+      const target = key === "sub2api_group_ids" ? form.querySelector(".sub2api-default-groups")
+        : key === "auto_rotate_workspace_ids" ? document.getElementById("auto-rotation-workspaces")
+          : form.elements.namedItem(key)?.closest("label");
+      target?.classList.add("is-dirty");
+    }
     if (discard) discard.hidden = !settingsDirty;
+    if (status && event && ["input", "change"].includes(event.type)) delete status.dataset.locked;
     if (status && !status.dataset.locked) {
       status.className = "muted";
-      status.textContent = settingsDirty ? "有未保存的修改" : "没有未保存的修改";
+      status.textContent = settingsDirty ? `${changes.length} 项未保存` : "没有未保存的修改";
     }
   }
 
@@ -3880,23 +3894,23 @@ function hmeRow(item) {
     const sub = payload.sub2api || {};
     const hme = payload.hme || {};
     const mail = payload.mail || {};
-    if (sub.ok) {
+    if (payload.sub2api && sub.ok) {
       setServiceState("sub2api", `连接正常 · ${relativeTime(sub.checked_at)}`, `${sub.group_count || 0} 个分组 · ${sub.account_count || 0} 个账号`);
-    } else {
+    } else if (payload.sub2api) {
       setServiceState("sub2api", sub.error || "检测失败", sub.error || "连不上 Sub2API");
     }
-    if (hme.ok) {
+    if (payload.hme && hme.ok) {
       setServiceState(
         "hme",
         `连接正常 · ${relativeTime(hme.checked_at)}`,
         `${hme.account_name || hme.account_id || "当前账号"} · ${hme.alias_count || 0} 个别名 · ${hme.unused_count || 0} 个可用`
       );
-    } else {
+    } else if (payload.hme) {
       setServiceState("hme", hme.error || "检测失败", hme.error || "连不上 HME");
     }
-    if (mail.ok) {
+    if (payload.mail && mail.ok) {
       setServiceState("mail", `连接正常 · ${relativeTime(mail.checked_at)}`, mail.address || "连接成功");
-    } else {
+    } else if (payload.mail) {
       setServiceState("mail", mail.error || "检测失败", mail.error || "连不上临时邮箱");
     }
   }
@@ -4290,7 +4304,7 @@ function hmeRow(item) {
 
   async function bootAccounts() {
       return window.Team48Accounts.boot({
-        fetchEntity, postAction, startCurrentOperation, entityActions, menuButton, deleteLocalTeam, linkTeamMember,
+        fetchEntity, postAction, startCurrentOperation, entityActions, menuButton, deleteLocalTeam, linkTeamMember, openOperationById,
         openWorkspaceExpiry,
         openWorkspaceProxy,
         openSheet, openWorkspaceDetails, openOverlay, openRegister, openConfirm, relativeTime, toast, friendlyError, showPageError,
@@ -4641,6 +4655,41 @@ function hmeRow(item) {
     highlightPalette(0);
   }
 
+  async function cancelTrackedOperation(item, trigger) {
+    if (!item.can_cancel || window.Team48Runtime?.isStale()) return;
+    if (!await confirmDanger("请求取消此任务？", {title: "取消任务", items: ["将在下一个安全检查点停止", "已发出的官方邀请不会自动撤回", "已移出的成员和已修改的远端状态不会自动恢复"], confirmLabel: "请求取消"}, trigger)) return;
+    setButtonBusy(trigger, true, "请求中");
+    try {
+      const result = await postAction(`operation-cancel-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/cancel`);
+      if (!result.ok) throw new Error(result.error || "取消未确认");
+      window.Team48Runtime.put({...item, can_cancel: false, cancel_requested: true});
+      toast("已请求取消，等待安全停止", "muted");
+      await window.Team48Runtime.refresh();
+    } catch (error) { toast(friendlyError(error), "error"); }
+    finally { setButtonBusy(trigger, false); }
+  }
+
+  window.Team48TaskProgress?.configure({
+    friendlyError,
+    open: (id, trigger) => openOperationById(id, overlayState.active === "tasks" ? document.getElementById("task-center-open") : trigger),
+    cancel: cancelTrackedOperation,
+    retry: async (item, trigger) => {
+      setButtonBusy(trigger, true, "提交中");
+      try {
+        const result = await postAction(`operation-retry-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/retry`);
+        await handleActionResult(result, {successMessage: "重试已提交"});
+        await window.Team48Runtime.refresh();
+      } catch (error) { toast(friendlyError(error), "error"); }
+      finally { setButtonBusy(trigger, false); }
+    },
+  });
+  document.getElementById("task-center-open")?.addEventListener("click", event => {
+    openOverlay("tasks", {returnFocus: event.currentTarget, initialFocus: "[data-close-tasks]"});
+    window.Team48TaskProgress.update();
+    void window.Team48Runtime.refresh();
+  });
+  document.querySelector("[data-close-tasks]")?.addEventListener("click", () => closeOverlay());
+  document.getElementById("task-center-refresh")?.addEventListener("click", () => void window.Team48Runtime.refresh());
   document.querySelector("[data-close-sheet]")?.addEventListener("click", closeSheet);
   document.querySelectorAll("[data-open-register]").forEach((button) => {
     button.addEventListener("click", () => openRegister(button));
