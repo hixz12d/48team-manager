@@ -23,14 +23,14 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 .settings-security { margin-top: var(--space-lg); }
 .settings-page .panel-header { padding-block: var(--space-sm); }
 .settings-page .panel-title,
-.settings-security .panel-title { font-size: 16px; }
+.settings-security .panel-title { font-size: var(--text-heading); }
 .settings-page p,
 .settings-security p { margin: 0; }
 
 .service-card .panel-header > div:first-child { min-width: 0; }
 .service-meta {
   padding-top: var(--space-xxs);
-  font-size: 12px;
+  font-size: var(--text-meta);
   overflow-wrap: anywhere;
 }
 .service-summary { overflow-wrap: anywhere; }
@@ -60,7 +60,7 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 .settings-page legend,
 .settings-security legend {
   padding: 0 0 var(--space-xs);
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 600;
 }
 .settings-page .automation-card .panel-body {
@@ -82,7 +82,7 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 }
 .setting-row strong {
   display: block;
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 600;
 }
 .setting-row .hint {
@@ -151,7 +151,7 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
   grid-area: 1 / 2;
   padding-inline: var(--space-sm) 36px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   pointer-events: none;
   white-space: nowrap;
 }

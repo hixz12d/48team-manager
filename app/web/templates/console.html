@@ -25,14 +25,14 @@
         </div>
       </div>
       <nav class="nav">
-        <a href="/" class="nav-link{% if page == 'overview' %} is-active{% endif %}">总览</a>
-        <a href="/accounts" class="nav-link{% if page == 'accounts' %} is-active{% endif %}">账号与团队</a>
-        <a href="/operations" class="nav-link{% if page == 'operations' %} is-active{% endif %}">任务记录</a>
+        <a href="/" class="nav-link{% if page == 'overview' %} is-active{% endif %}"{% if page == 'overview' %} aria-current="page"{% endif %}>总览</a>
+        <a href="/accounts" class="nav-link{% if page == 'accounts' %} is-active{% endif %}"{% if page == 'accounts' %} aria-current="page"{% endif %}>账号与团队</a>
+        <a href="/operations" class="nav-link{% if page == 'operations' %} is-active{% endif %}"{% if page == 'operations' %} aria-current="page"{% endif %}>任务</a>
         <p class="nav-label">资源</p>
-        <a href="/resources/phones" class="nav-link{% if page == 'phones' %} is-active{% endif %}">手机号</a>
-        <a href="/resources/hme" class="nav-link{% if page == 'hme' %} is-active{% endif %}">HME</a>
-        <a href="/resources/proxies" class="nav-link{% if page == 'proxies' %} is-active{% endif %}">代理</a>
-        <a href="/settings" class="nav-link{% if page == 'settings' %} is-active{% endif %}">设置</a>
+        <a href="/resources/phones" class="nav-link{% if page == 'phones' %} is-active{% endif %}"{% if page == 'phones' %} aria-current="page"{% endif %}>手机号</a>
+        <a href="/resources/hme" class="nav-link{% if page == 'hme' %} is-active{% endif %}"{% if page == 'hme' %} aria-current="page"{% endif %}>HME</a>
+        <a href="/resources/proxies" class="nav-link{% if page == 'proxies' %} is-active{% endif %}"{% if page == 'proxies' %} aria-current="page"{% endif %}>代理</a>
+        <a href="/settings" class="nav-link{% if page == 'settings' %} is-active{% endif %}"{% if page == 'settings' %} aria-current="page"{% endif %}>设置</a>
       </nav>
       <div class="sidebar-foot">
         <div class="health-line" id="global-runner-status">正在读取调度状态</div>
@@ -52,8 +52,6 @@
           {% if page == 'accounts' %}
           <button type="button" class="button" id="check-all-accounts"><span aria-hidden="true">↻</span> 立即检查</button>
           <button type="button" class="button primary" data-open-register><span aria-hidden="true">＋</span> 登记团队</button>
-          {% elif page == 'workspaces' %}
-          <button type="button" class="button primary" data-open-register>登记团队</button>
           {% elif page == 'hme' %}
           <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
           {% endif %}
@@ -67,7 +65,7 @@
         </div>
         {% if page == 'overview' %}
         <section class="summary-strip" id="overview-summary" aria-label="运营摘要">
-          <a class="summary-item" href="/workspaces"><span class="summary-label">工作区</span><strong class="tabular" data-summary="workspaces">—</strong></a>
+          <a class="summary-item" href="/accounts?view=teams"><span class="summary-label">团队</span><strong class="tabular" data-summary="workspaces">—</strong></a>
           <a class="summary-item" href="/accounts"><span class="summary-label">账号</span><strong class="tabular" data-summary="accounts">—</strong></a>
           <a class="summary-item" href="/accounts?view=attention"><span class="summary-label">待处理账号</span><strong class="tabular" data-summary="attention">—</strong><small id="overview-attention-breakdown"></small></a>
           <a class="summary-item" href="/accounts?purpose=conflict"><span class="summary-label">身份冲突</span><strong class="tabular" data-summary="conflicts">—</strong></a>
@@ -87,43 +85,10 @@
           </div>
           <div class="runtime-recent"><h3>最近记录</h3><ul id="runtime-recent"></ul><p id="runtime-recent-empty" hidden>暂无任务记录</p></div>
         </section>
-        <div class="overview-layout">
-          <div class="overview-main">
-            <section class="panel" id="overview-health-panel">
-              <div class="panel-header"><span class="panel-title">工作区资产</span></div>
-              <div class="panel-body compact" id="overview-health">正在加载工作区…</div>
-            </section>
-          </div>
-          <aside class="overview-side">
-            <section class="panel" id="overview-attention-panel">
-              <div class="panel-header"><span class="panel-title">待处理</span></div>
-              <div class="panel-body compact" id="overview-attention">正在加载总览…</div>
-              <details class="panel-body"><summary>资源与任务提醒</summary><div id="overview-resource-attention"></div></details>
-            </section>
-          </aside>
-        </div>
-        {% elif page == 'workspaces' %}
-        <section class="panel table-shell">
-          <div class="toolbar">
-            <input class="search" id="workspaces-search" placeholder="搜名称、母号或 Workspace ID" data-entity="workspace" autocomplete="off">
-            <button type="button" class="button" data-action-page="workspace-sync-all">同步全部</button>
-            <span class="toolbar-count muted" id="workspaces-count"></span>
-          </div>
-          <div class="table-scroll">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th scope="col">工作区</th>
-                  <th scope="col">母号</th>
-                  <th scope="col" class="num">官方 / 本地</th>
-                  <th scope="col">健康</th>
-                  <th scope="col">最近同步</th>
-                  <th scope="col">操作</th>
-                </tr>
-              </thead>
-              <tbody id="workspaces-body"><tr><td colspan="6" class="muted">正在加载工作区…</td></tr></tbody>
-            </table>
-          </div>
+        <section class="team-board" id="team-board" aria-labelledby="team-board-title">
+          <header class="team-board-header"><h2 id="team-board-title">团队看板</h2><a href="/accounts?view=attention">查看待处理</a></header>
+          <div id="team-board-root" class="overview-layout"><p class="muted">正在加载团队…</p></div>
+          <details class="team-board-resources" id="overview-attention-panel"><summary>资源与任务提醒</summary><div id="overview-resource-attention"></div><div id="overview-attention" hidden></div><div id="overview-health" hidden></div></details>
         </section>
         {% elif page == 'accounts' %}
         <details class="auto-rotation-disclosure" aria-label="自动轮转">
@@ -132,7 +97,7 @@
             <button type="button" class="button" id="auto-rotation-toggle" aria-pressed="false" disabled>读取状态…</button>
             <p class="hint">检查周额度耗尽、确认的 401 或已停用的子号；使用 HME 和已配置的手机号池自动补位、授权并同步到 Sub2API。</p>
             <p id="auto-rotation-status" class="muted" role="status">正在读取后台状态…</p>
-            <a href="/settings#auto-rotation-scope">选择工作空间、批量启用或设置全局范围</a>
+            <a href="/settings#auto-rotation-scope">选择团队、批量启用或设置全局范围</a>
           </div>
         </details>
         <section class="management-summary" aria-label="账号与团队摘要">
@@ -205,7 +170,7 @@
               <thead>
                 <tr>
                   <th scope="col">账号</th>
-                  <th scope="col">工作区</th>
+                  <th scope="col">团队</th>
                   <th scope="col">本地用途</th>
                   <th scope="col">授权</th>
                   <th scope="col">官方额度</th>
@@ -220,8 +185,8 @@
         {% elif page == 'operations' %}
         <section class="panel table-shell">
           <div class="toolbar" id="operations-toolbar">
-            <input class="search" id="operations-search" placeholder="搜邮箱、任务 ID、类型" autocomplete="off">
-            <select class="filter" id="operations-state">
+            <input class="search" id="operations-search" aria-label="搜索任务" placeholder="搜邮箱、任务 ID、类型" autocomplete="off">
+            <select class="filter" id="operations-state" aria-label="任务状态">
               <option value="">全部状态</option>
               <option value="running,queued,waiting">运行中</option>
               <option value="success">完成</option>
@@ -230,7 +195,7 @@
               <option value="manual_required">需人工</option>
               <option value="cancelled">已取消</option>
             </select>
-            <select class="filter" id="operations-type">
+            <select class="filter" id="operations-type" aria-label="任务类型">
               <option value="">全部类型</option>
               <option value="workspace_sync">同步官方成员</option>
               <option value="quota_probe">额度刷新</option>
@@ -240,16 +205,16 @@
               <option value="proxy_check">代理检测</option>
               <option value="hme_reconcile">HME</option>
               <option value="onboard">拉人</option>
-              <option value="replenish">补充 Team</option>
+              <option value="replenish">补充团队</option>
               <option value="rotate">轮转</option>
             </select>
-            <select class="filter" id="operations-source">
+            <select class="filter" id="operations-source" aria-label="触发来源">
               <option value="">全部来源</option>
               <option value="manual">手动</option>
               <option value="scheduled">定时</option>
               <option value="retry">重试</option>
             </select>
-            <select class="filter" id="operations-range">
+            <select class="filter" id="operations-range" aria-label="时间范围">
               <option value="7d">最近 7 天</option>
               <option value="today">今天</option>
               <option value="30d">最近 30 天</option>
@@ -268,7 +233,7 @@
                   <th scope="col">状态</th>
                   <th scope="col">类型</th>
                   <th scope="col">对象</th>
-                  <th scope="col">工作区</th>
+                  <th scope="col">团队</th>
                   <th scope="col">业务步骤</th>
                   <th scope="col">更新时间</th>
                   <th scope="col" class="actions">操作</th>
@@ -281,10 +246,10 @@
             <button type="button" class="button ghost" id="operations-prev">上一页</button>
             <span class="muted" id="operations-page-label">第 1 页</span>
             <button type="button" class="button ghost" id="operations-next">下一页</button>
-            <select class="filter" id="operations-page-size">
-              <option value="25">25 / 页</option>
-              <option value="50" selected>50 / 页</option>
-              <option value="100">100 / 页</option>
+            <select class="filter" id="operations-page-size" aria-label="每页条数">
+              <option value="20">20 条</option>
+              <option value="50" selected>50 条</option>
+              <option value="100">100 条</option>
             </select>
           </div>
         </section>
@@ -490,19 +455,19 @@
                   </label>
                   <label id="auto-rotation-scope">自动轮转启用范围
                     <select name="auto_rotate_scope">
-                      <option value="selected">仅选中的工作空间（小范围测试）</option>
-                      <option value="all">全部工作空间（包括以后新增的）</option>
+                      <option value="selected">仅选中的团队（小范围测试）</option>
+                      <option value="all">全部团队（包括以后新增的）</option>
                     </select>
                   </label>
                   <fieldset id="auto-rotation-workspaces" class="stack">
-                    <legend>选择一个或多个工作空间</legend>
+                    <legend>选择一个或多个团队</legend>
                     <div class="toolbar">
                       <button type="button" class="button ghost" id="auto-rotation-select-listed">全选列表</button>
                       <button type="button" class="button ghost" id="auto-rotation-clear-listed">清空选择</button>
                     </div>
                     <div id="auto-rotation-workspace-list" class="stack"></div>
                   </fieldset>
-                  <p class="hint" id="auto-rotation-scope-hint">默认关闭且不选择任何工作空间。勾选范围后，还需打开总开关并保存。</p>
+                  <p class="hint" id="auto-rotation-scope-hint">默认关闭且不选择任何团队。勾选范围后，还需打开总开关并保存。</p>
                   <label>每个团队每日最多轮转
                     <input name="auto_rotate_daily_limit" type="number" min="0" max="50" required>
                     <span class="hint">按北京时间统计已移出的次数，补位失败也计入；0 表示不轮转。同步重试不占次数。</span>
@@ -588,7 +553,7 @@
           <strong id="register-title">登记团队</strong>
           <p class="muted">用母号登录 ChatGPT 授权。团队和令牌从回调里取，不会在 OpenAI 开新团队。</p>
         </div>
-        <button type="button" class="button ghost" data-close-register>关掉</button>
+        <button type="button" class="button ghost" data-close-register>关闭</button>
       </header>
       <form id="register-form" class="sheet-body">
         <input type="hidden" name="ticket" value="">
@@ -619,7 +584,7 @@
           <strong id="reauth-title">授权</strong>
           <p class="muted" id="reauth-subtitle">点「打开授权」，用这个邮箱登录 ChatGPT。登录后会跳到 localhost:1455，把整段地址贴回来。</p>
         </div>
-        <button type="button" class="button ghost" data-close-reauth>关掉</button>
+        <button type="button" class="button ghost" data-close-reauth>关闭</button>
       </header>
       <form id="reauth-form" class="sheet-body">
         <input type="hidden" name="account_id" value="">
@@ -647,7 +612,7 @@
           <strong id="phone-import-title">导入手机号</strong>
           <p class="muted">每行一条：号码----接码链接。HME 邮箱别名仍由系统自动领取，这里只管短信号池。</p>
         </div>
-        <button type="button" class="button ghost" data-close-phone-import>关掉</button>
+        <button type="button" class="button ghost" data-close-phone-import>关闭</button>
       </header>
       <form id="phone-import-form" class="sheet-body">
         <div class="sheet-section">
@@ -717,9 +682,9 @@
     </section>
   </div>
   <div class="task-announcement" id="task-stage-announcement" role="status" aria-live="polite"></div>
-  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <div id="toast-region" class="toast-region"></div>
   <dialog class="palette" id="command-palette">
-    <input id="command-input" placeholder="去哪…">
+    <input id="command-input" aria-label="跳转到页面" placeholder="去哪…">
     <ul id="command-list"></ul>
   </dialog>
   <script src="{{ static_url('js/formatters.js') }}"></script>
@@ -732,7 +697,7 @@
   {% if page == 'accounts' %}<script src="{{ static_url('js/auto-rotation.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/sub2api-defaults.js') }}"></script>
   <script src="{{ static_url('js/sub2api-state-view.js') }}"></script>
-  {% if page == 'overview' %}<script src="{{ static_url('js/runtime-status.js') }}"></script>{% endif %}
+  {% if page == 'overview' %}<script src="{{ static_url('js/runtime-status.js') }}"></script><script src="{{ static_url('js/team-board.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/app.js') }}"></script>
 </body>
 </html>

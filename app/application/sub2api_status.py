@@ -113,7 +113,8 @@ def present(row=None, *, binding=None, account=None, source=None, configured=Tru
     state = "unbound" if binding is None else "unknown"
     result = {"state": state, "label": LABELS[state][0], "severity": LABELS[state][1], "exists": None,
               "checked_at": None, "last_attempt_at": None, "stale": True, "schedulable": None,
-              "remote_id": str(binding.remote_account_id) if binding else None}
+              "remote_id": str(binding.remote_account_id) if binding else None,
+              "pushed_at": isoformat(getattr(binding, "last_pushed_at", None)) if binding else None}
     if binding is None:
         return result
     if binding.binding_state not in {"verified", "missing"}:

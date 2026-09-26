@@ -79,6 +79,7 @@ QUOTA_COLUMNS = (
 
 BINDING_COLUMNS = (
     ("workspace_id", "INTEGER"),
+    ("last_pushed_at", "DATETIME"),
 )
 
 ACCOUNT_COLUMNS = (
@@ -138,6 +139,7 @@ async def _rebuild_external_bindings(conn) -> None:
             verified_official_account_id VARCHAR(100),
             verified_workspace_id VARCHAR(100),
             last_observed_at DATETIME,
+            last_pushed_at DATETIME,
             last_error TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -149,17 +151,19 @@ async def _rebuild_external_bindings(conn) -> None:
         """
     ))
     workspace_select = "workspace_id" if has_workspace else "NULL AS workspace_id"
+    # Every column the model has must be carried over, or a rebuild silently drops it.
+    pushed_select = "last_pushed_at" if "last_pushed_at" in existing else "NULL AS last_pushed_at"
     await conn.execute(text(
         f"""
         INSERT INTO external_bindings_v2 (
             id, provider, local_account_id, remote_account_id, workspace_id,
             binding_state, verified_email, verified_official_account_id, verified_workspace_id,
-            last_observed_at, last_error, created_at, updated_at
+            last_observed_at, last_pushed_at, last_error, created_at, updated_at
         )
         SELECT
             id, provider, local_account_id, remote_account_id, {workspace_select},
             binding_state, verified_email, verified_official_account_id, verified_workspace_id,
-            last_observed_at, last_error, created_at, updated_at
+            last_observed_at, {pushed_select}, last_error, created_at, updated_at
         FROM external_bindings
         """
     ))

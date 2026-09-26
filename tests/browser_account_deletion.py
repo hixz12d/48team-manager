@@ -76,10 +76,12 @@ with sync_playwright() as p:
     page.set_viewport_size({'width':1440,'height':1000})
     extra_row.get_by_label(f'选择 {extra["email"]}').check()
     page.locator('#accounts-search').fill('not-visible@example.com')
+    page.wait_for_timeout(300)  # search is debounced
     assert page.locator('#account-selection-bar').is_hidden()
     assert page.locator('#account-selection-delete').is_disabled()
     assert len(writes) == 2
     page.locator('#accounts-search').fill('')
+    page.wait_for_timeout(300)
     assert not extra_row.get_by_label(f'选择 {extra["email"]}').is_checked()
     extra_row.get_by_label(f'选择 {extra["email"]}').check()
     page.locator('[data-management-view="all"][aria-pressed]').click()

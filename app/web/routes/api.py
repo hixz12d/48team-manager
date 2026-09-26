@@ -180,6 +180,7 @@ def build_api_router(get_db) -> APIRouter:
             skip_invite=payload.skip_invite,
             role=payload.role,
             seat_intent=payload.seat_intent,
+            background=True,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
@@ -203,6 +204,7 @@ def build_api_router(get_db) -> APIRouter:
             role=body.role,
             seat_intent=body.seat_intent,
             phone_line=body.phone_line,
+            background=True,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
@@ -225,6 +227,7 @@ def build_api_router(get_db) -> APIRouter:
             force_refill=payload.force_refill,
             reason=payload.reason,
             role=payload.role,
+            background=True,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
@@ -244,6 +247,7 @@ def build_api_router(get_db) -> APIRouter:
             user_id=payload.user_id,
             reason=payload.reason,
             unbind_sub2api=payload.unbind_sub2api,
+            background=True,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")

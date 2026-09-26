@@ -25,7 +25,10 @@
     const del = document.getElementById("account-selection-delete");
     const items = selectedItems();
     if (bar) bar.hidden = items.length === 0;
-    if (count) count.textContent = `已选 ${items.length} 个（含跨页选择）${items.length > 50 ? " · 单次最多 50 个" : ""}`;
+    // A disabled delete must say why; the reason stays visible next to the count.
+    const blocked = items.filter(account => !canDelete(account)).length;
+    const reason = items.length > 50 ? " · 单次最多 50 个" : blocked ? ` · 其中 ${blocked} 个是母号或仍属于团队，只有未分配的账号能删除` : "";
+    if (count) count.textContent = `已选 ${items.length} 个（含跨页选择）${reason}`;
     if (del) del.disabled = items.length === 0 || items.length > 50 || items.some(account => !canDelete(account));
     const exportButton = document.getElementById("account-selection-export");
     if (exportButton) exportButton.disabled = items.length === 0 || items.length > 50;
@@ -246,10 +249,14 @@
       const money = el("td", "management-money tabular");
       const remote = remoteItems(account), first = remote[0] || {};
       const remoteLabels = {healthy:"远端正常",unbound:"未绑定",paused:"已暂停",missing:"远端不存在",unknown:"待核对",auth_error:"授权异常",error:"同步失败",rate_limited:"远端限流"};
-      const badge = el("span", `management-badge tone-${first.severity || "muted"}`, remote.length > 1 ? `${remote.length} 个绑定` : remoteLabels[first.state] || first.label || "待核对");
+      // A failed check must not look like "never checked": say it failed and keep the last known state visible.
+      const checkFailed = remote.length === 1 && Boolean(first.error_code || first.last_known_label);
+      const badgeText = remote.length > 1 ? `${remote.length} 个绑定` : checkFailed ? "核对失败" : remoteLabels[first.state] || first.label || "待核对";
+      const badge = el("span", `management-badge tone-${checkFailed ? "warning" : first.severity || "muted"}`, badgeText);
       badge.dataset.remoteState = first.state || "unknown"; money.append(badge);
       const usage = fmt.usageWindow(account.usage);
-      if (usage) money.append(el("small", "muted", fmt.formatCost(usage.user_cost)));
+      if (checkFailed && first.last_known_label) money.append(el("small", "text-warning", `上次：${first.last_known_label}`));
+      else if (usage) money.append(el("small", "muted", fmt.formatCost(usage.user_cost)));
       money.title = [...remote.map(s => [s.label, s.remote_id ? `远端 #${s.remote_id}` : "", s.stale ? "旧状态，待核对" : "", s.message].filter(Boolean).join(" · ")), usage ? `${usage.label} · 用户计费 ${fmt.formatCost(usage.user_cost)} · 成本 ${fmt.formatCost(usage.account_cost)}${usage.stale ? " · 旧计费快照" : ""}` : "无计费快照"].join("；");
       const time = el("td", "management-check-time");
       time.append(el("span", "", account.latest_check?.checked_at ? api.relativeTime(account.latest_check.checked_at) : "未检查"));
@@ -392,7 +399,7 @@
     return sortAccounts(items, params).map(account => ({account, group: null}));
   }
   function pageWindow(entries, requestedPage, requestedSize) {
-    const size = [10, 20, 50, 100].includes(Number(requestedSize)) ? Number(requestedSize) : 20;
+    const size = [20, 50, 100].includes(Number(requestedSize)) ? Number(requestedSize) : 20;
     const pages = Math.max(1, Math.ceil(entries.length / size));
     const page = Math.max(1, Math.min(pages, Math.floor(Number(requestedPage)) || 1));
     return {items: entries.slice((page - 1) * size, page * size), page, pages, size, total: entries.length};
@@ -422,7 +429,7 @@
     const previous = button("上一页", () => go(page.page - 1)); previous.disabled = page.page <= 1;
     const next = button("下一页", () => go(page.page + 1)); next.disabled = page.page >= page.pages;
     const label = el("label", "", "每页"); const size = el("select"); size.setAttribute("aria-label", "每页条数");
-    [10, 20, 50, 100].forEach(n => size.add(new Option(`${n} 条`, String(n)))); size.value = String(page.size);
+    [20, 50, 100].forEach(n => size.add(new Option(`${n} 条`, String(n)))); size.value = String(page.size);
     size.addEventListener("change", () => {
       try { localStorage.setItem("team48:page-size", size.value); } catch (_) {}
       setQuery("page_size", size.value); go(1);
@@ -555,7 +562,7 @@
       body.append(recovery);
     }
     if (account.contexts?.length > 1) {
-      const section = el("section", "sheet-section"); section.append(el("h3", "", "工作区检测状态"));
+      const section = el("section", "sheet-section"); section.append(el("h3", "", "团队检测状态"));
       account.contexts.forEach(c => section.append(button(`${c.workspace_name || c.workspace_id} · ${c.health.label}`, b => openAccount(c, b), "button management-context")));
       body.append(section);
     }
@@ -639,7 +646,13 @@
       register.setAttribute("aria-label", "登记账号或团队");
       document.querySelector('.topbar-actions [data-open-register]')?.replaceWith(register);
       document.getElementById("accounts-search").value = query().get("q") || "";
-      document.getElementById("accounts-search").addEventListener("input", event => { setQuery("q", event.target.value); render(payload); });
+      // Several hundred rows re-render per keystroke; wait for a short typing pause.
+      let searchTimer = 0;
+      document.getElementById("accounts-search").addEventListener("input", event => {
+        setQuery("q", event.target.value);
+        window.clearTimeout(searchTimer);
+        searchTimer = window.setTimeout(() => render(payload), 200);
+      });
       document.querySelector("[data-filter='purpose']").addEventListener("change", event => { setQuery("purpose", event.target.value); render(payload); });
       document.getElementById("management-health").addEventListener("change", event => { setQuery("health", event.target.value); render(payload); });
       document.getElementById("management-remote")?.addEventListener("change", event => { setQuery("remote", event.target.value); render(payload); });

@@ -138,6 +138,20 @@ async def _expected_workspace(db: AsyncSession, account: Account, workspace_id: 
     return official
 
 
+def remote_pushed_at(remote: dict[str, Any] | None):
+    """Push time as Sub2API recorded it (account updated_at after the write); local time if absent."""
+    from datetime import datetime, timezone
+
+    value = (remote or {}).get("updated_at") or (remote or {}).get("updatedAt")
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return utcnow()
+
+
 def _build_credentials(account: Account) -> dict[str, Any]:
     access = decrypt_secret(account.access_token_encrypted)
     refresh = decrypt_secret(account.refresh_token_encrypted)
@@ -780,6 +794,7 @@ async def account_sub2api_push(
         binding.verified_workspace_id = remote_workspace_id_from(remote) or expected_ws
         binding.last_error = None
         binding.last_observed_at = utcnow()
+        binding.last_pushed_at = remote_pushed_at(remote)
         binding.updated_at = utcnow()
 
     schedulable_error = None
@@ -980,6 +995,7 @@ async def push_refreshed_tokens_to_bound_sub2api(
             raise RuntimeError(binding.last_error)
         binding.last_error = None
         binding.last_observed_at = utcnow()
+        binding.last_pushed_at = remote_pushed_at(after)
         step_result = {
             **sync_step_receipt(sync),
             "remote_id": remote_id,

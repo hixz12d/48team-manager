@@ -82,7 +82,7 @@ def main():
         invite=page.locator('[data-team-action-forms] form').filter(has=page.locator('textarea[name=email_line]')).filter(has=page.locator('select[name=role]'))
         expect(invite).to_be_visible()
         invite.locator('[name=email_line]').fill('draft@example.com')
-        page.get_by_role('button',name='补充 Team',exact=True).click()
+        page.get_by_role('button',name='补充团队',exact=True).click()
         expect(invite).to_be_hidden()
         refill=page.locator('[data-team-action-forms] .team-invite-form').filter(has_not=page.locator('textarea'))
         expect(refill).to_be_visible(); expect(refill.locator('[name=role]')).to_have_value('member')

@@ -102,6 +102,24 @@ test('cancel acknowledgement is monotonic across a late runtime read', () => {
   assert.equal(e.runtime.get('op').cancel_requested,true);
   assert.equal(e.runtime.get('op').can_cancel,false);
 });
+test('accepted command is tracked by its id and waitFor resolves only with the terminal detail', async () => {
+  const e=runtimeEnv();
+  const result=await e.runtime.track(7,'kick_member',async()=>({accepted:true,status:'running',operation_id:'op',account_id:3}));
+  assert.equal(result.accepted,true);
+  assert.equal(e.runtime.all().length,1);
+  assert.equal(e.runtime.get('op').state,'running');
+  assert.equal(e.runtime.get('op').account_id,3);
+  let settled=null;
+  const waiting=e.runtime.waitFor('op').then(item=>{settled=item;});
+  e.config().onData({active_operations:[{id:'op',workspace_id:7,kind:'kick_member',state:'running'}],recent_operations:[]});
+  await new Promise(r=>setTimeout(r,0));
+  assert.equal(settled,null);
+  // Runtime shows it finished; the waiter reads the detail (which carries result) before resolving.
+  e.config().onData({active_operations:[],recent_operations:[{id:'op',workspace_id:7,kind:'kick_member',state:'success',finished_at:'2026-09-01T00:00:02Z'}]});
+  await waiting;
+  assert.equal(settled.state,'success');
+  assert.equal(settled.hydrated,true);
+});
 test('an uncertain local request is reconciled when its server operation appears later', async () => {
   const e=runtimeEnv();
   await assert.rejects(e.runtime.track(7,'onboard',async()=>{throw new Error('offline');}));

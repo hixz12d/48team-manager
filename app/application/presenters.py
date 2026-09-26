@@ -50,7 +50,7 @@ OPERATION_TYPE_LABELS = {
     "auth_probe": "检查授权",
     "reauth": "授权",
     "onboard": "拉人",
-    "replenish": "补充 Team",
+    "replenish": "补充团队",
     "rotate": "轮转",
     "kick_member": "踢出成员",
     "purge_child": "永久删除子号",

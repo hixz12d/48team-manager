@@ -81,11 +81,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = settings
         from app.application.jobs.scheduler import start_scheduler, stop_scheduler
         from app.application.jobs.dispatcher import reauth_dispatcher
+        from app.application.jobs.commands import command_runner
 
         start_scheduler(settings, session_factory)
         reauth_dispatcher.start(session_factory, deployment_allowed=settings.auto_reauth_enabled)
+        command_runner.start(session_factory)
         yield
         stop_scheduler()
+        await command_runner.stop()
         await reauth_dispatcher.stop()
         await engine.dispose()
 

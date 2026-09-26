@@ -99,10 +99,35 @@
   
   /* 焦点 */
   --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
-  
-  /* 字体与排版 */
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", Menlo, Monaco, Consolas, monospace;
+
+  /* 字体与排版
+     Anthropic Sans / Mono 只从本机已安装字体读取（local），不随站点分发；
+     它们不含中文字形，中文按顺序回退到系统中文字体，其他机器整体回退到系统字体。 */
+  --font: "Team48 Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "Team48 Mono", ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", Menlo, Monaco, Consolas, monospace;
+
+  /* 字号角色：数据密集界面，12px 是下限 */
+  --text-meta: 12px;      /* 次要信息、表头、徽章、提示 */
+  --text-body: 14px;      /* 正文、表格、按钮、输入框 */
+  --text-heading: 16px;   /* 面板与抽屉标题（h2 / h3） */
+  --text-title: 20px;     /* 页面标题（h1） */
+  --text-figure: 24px;    /* 汇总数字 */
+}
+
+@font-face {
+  font-family: "Team48 Sans";
+  src: local("Anthropic Sans Variable Text Regular"), local("AnthropicSansVariable-TextRegular"), local("Anthropic Sans Variable Text");
+  font-display: swap;
+  /* 只接管拉丁字符，中文与全角标点交给系统中文字体。 */
+  unicode-range: U+0000-02FF, U+2000-206F, U+20AC, U+2100-218F, U+2190-21FF, U+2212, U+2215;
+}
+
+@font-face {
+  font-family: "Team48 Mono";
+  src: local("Anthropic Mono Web"), local("AnthropicMonoWebWeb-Regular");
+  font-weight: 300 800;
+  font-display: swap;
+  unicode-range: U+0000-02FF, U+2000-206F, U+2190-21FF, U+2212;
 }
 
 :root[data-theme="dark"] {

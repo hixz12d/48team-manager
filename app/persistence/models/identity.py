@@ -216,6 +216,8 @@ class ExternalBinding(Base):
     verified_official_account_id: Mapped[str | None] = mapped_column(String(100))
     verified_workspace_id: Mapped[str | None] = mapped_column(String(100))
     last_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Time of the last confirmed credential push, taken from the remote account's updated_at.
+    last_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

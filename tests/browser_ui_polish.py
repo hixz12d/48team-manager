@@ -75,7 +75,9 @@ def main():
         page.wait_for_selector(".management-table tbody tr")
         assert page.locator("#accounts-clear-filters").is_hidden()
         page.locator("#accounts-search").fill("all")
-        assert "q=all" in page.url
+        # Search is debounced; wait for the rendered chip, then read the live location.
+        page.wait_for_selector("#accounts-active-filters .management-chip")
+        assert "q=all" in page.evaluate("location.search")
         assert page.locator("#accounts-active-filters .management-chip").count() == 1
         page.locator("#accounts-clear-filters").click()
         page.locator("#accounts-search").fill("member")
@@ -113,6 +115,8 @@ def main():
 
         # 4. Team table headers stay visible while scrolling long teams.
         page.evaluate("window.scrollTo(0, 0)")
+        # Preview data has 7 accounts; give the page room so the header can actually reach the top.
+        page.evaluate("document.getElementById('page-root').style.paddingBottom = '1200px'")
         page.wait_for_timeout(150)
         header = page.locator(".management-table thead th").first
         body_row = page.locator(".management-table tbody tr").first

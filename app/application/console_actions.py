@@ -592,6 +592,33 @@ def _ok_result(result: dict[str, Any], *, operation_id: str | None = None) -> di
     return payload
 
 
+async def _run_command(db: AsyncSession, operation, command, *, background: bool) -> dict[str, Any]:
+    """Run a locked workspace command inline, or hand it to the runner and return its id.
+
+    The command gets its own session in background mode, so it must only close
+    over plain values (ids, strings), never ORM rows from the request session.
+    """
+    from app.application.jobs.commands import command_runner
+
+    if background and command_runner.ready:
+        command_runner.spawn(operation.public_id, command)
+        return {
+            "ok": True,
+            "accepted": True,
+            "status": "running",
+            "state": "running",
+            "operation": operation.op_type,
+            "operation_id": operation.public_id,
+            "workspace_id": operation.workspace_id,
+            "account_id": operation.account_id,
+            "email": operation.email or "",
+        }
+    result = await command(db)
+    await operation_store.finish(db, operation, result)
+    await db.commit()
+    return _ok_result(result, operation_id=operation.public_id)
+
+
 async def start_workspace_onboard(
     db: AsyncSession,
     workspace_id: int,
@@ -607,6 +634,7 @@ async def start_workspace_onboard(
     seat_intent: str = "workspace_default",
     oauth_signup: bool = False,
     browser_executable: str = "",
+    background: bool = False,
 ) -> dict[str, Any]:
     seat_intent = parse_invite_seat_intent(seat_intent).value
     workspace = await db.get(Workspace, int(workspace_id))
@@ -657,28 +685,30 @@ async def start_workspace_onboard(
         return {"ok": False, "error_code": "operation_conflict",
                 "error": "工作区已有变更任务", "operation_id": blocker.public_id}
     await db.commit()
-    result = await onboard_service.invite_and_onboard(
-        db,
-        workspace_id=workspace.id,
-        email_line=email_line,
-        phone_line=phone_line,
-        proxy=proxy_value,
-        proxy_source=proxy_source,
-        sub2api_proxy_id=sub2api_proxy_id,
-        proxy_instance_key=proxy_instance_key,
-        password=password,
-        force=force,
-        skip_invite=skip_invite,
-        role=role,
-        seat_intent=seat_intent,
-        job_id=operation.public_id,
-        in_test=False,
-        oauth_signup=oauth_signup,
-        browser_executable=browser_executable,
-    )
-    await operation_store.finish(db, operation, result)
-    await db.commit()
-    return _ok_result(result, operation_id=operation.public_id)
+    target_id, job_id = workspace.id, operation.public_id
+
+    async def command(session: AsyncSession) -> dict[str, Any]:
+        return await onboard_service.invite_and_onboard(
+            session,
+            workspace_id=target_id,
+            email_line=email_line,
+            phone_line=phone_line,
+            proxy=proxy_value,
+            proxy_source=proxy_source,
+            sub2api_proxy_id=sub2api_proxy_id,
+            proxy_instance_key=proxy_instance_key,
+            password=password,
+            force=force,
+            skip_invite=skip_invite,
+            role=role,
+            seat_intent=seat_intent,
+            job_id=job_id,
+            in_test=False,
+            oauth_signup=oauth_signup,
+            browser_executable=browser_executable,
+        )
+
+    return await _run_command(db, operation, command, background=background)
 
 
 async def start_workspace_replenish(
@@ -688,6 +718,7 @@ async def start_workspace_replenish(
     role: str = "owner",
     phone_line: str = "",
     seat_intent: str = "workspace_default",
+    background: bool = False,
 ) -> dict[str, Any]:
     seat_intent = parse_invite_seat_intent(seat_intent).value
     workspace = await db.get(Workspace, int(workspace_id))
@@ -710,18 +741,20 @@ async def start_workspace_replenish(
         return {"ok": False, "error_code": "operation_conflict",
                 "error": "工作区已有变更任务", "operation_id": blocker.public_id}
     await db.commit()
-    result = await replenish_service.run(
-        db,
-        workspace_id=workspace.id,
-        job_id=operation.public_id,
-        role=role,
-        phone_line=phone_line,
-        seat_intent=seat_intent,
-        in_test=False,
-    )
-    await operation_store.finish(db, operation, result)
-    await db.commit()
-    return _ok_result(result, operation_id=operation.public_id)
+    target_id, job_id = workspace.id, operation.public_id
+
+    async def command(session: AsyncSession) -> dict[str, Any]:
+        return await replenish_service.run(
+            session,
+            workspace_id=target_id,
+            job_id=job_id,
+            role=role,
+            phone_line=phone_line,
+            seat_intent=seat_intent,
+            in_test=False,
+        )
+
+    return await _run_command(db, operation, command, background=background)
 
 
 async def start_controlled_rotate(
@@ -735,6 +768,7 @@ async def start_controlled_rotate(
     force_refill: bool = False,
     reason: str = "console",
     role: str = "owner",
+    background: bool = False,
 ) -> dict[str, Any]:
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
@@ -745,6 +779,16 @@ async def start_controlled_rotate(
     child = (
         await db.execute(select(Account).where(Account.email == normalize_email(target)))
     ).scalar_one_or_none()
+    if background:
+        # Inline runs let the saga report conflicts; background runs must refuse
+        # before returning an id, or two queued rotations would race.
+        from app.domain.rotate import WORKSPACE_LOCK_ACTIONS as ROTATE_LOCK_ACTIONS
+
+        blocker = await operation_store.active_for_workspace(db, workspace.id, actions=ROTATE_LOCK_ACTIONS)
+        if blocker is not None:
+            return {"ok": False, "error_code": "operation_conflict",
+                    "error": f"Workspace {workspace.id} 已有 {blocker.op_type} 任务 {blocker.public_id} 在跑",
+                    "operation_id": blocker.public_id}
     operation = await operation_store.create(
         db,
         op_type="rotate",
@@ -764,24 +808,26 @@ async def start_controlled_rotate(
         source="manual",
     )
     await db.commit()
-    result = await rotate_service.run_rotate_saga(
-        db,
-        job_id=operation.public_id,
-        workspace_id=workspace.id,
-        email=target,
-        reason=reason or "console",
-        force_refill=force_refill,
-        email_line=email_line,
-        phone_line=phone_line,
-        proxy=proxy,
-        child_id=child.id if child else None,
-        skip_confirm=True,
-        role=role,
-        in_test=False,
-    )
-    await operation_store.finish(db, operation, result)
-    await db.commit()
-    return _ok_result(result, operation_id=operation.public_id)
+    target_id, job_id, child_id = workspace.id, operation.public_id, child.id if child else None
+
+    async def command(session: AsyncSession) -> dict[str, Any]:
+        return await rotate_service.run_rotate_saga(
+            session,
+            job_id=job_id,
+            workspace_id=target_id,
+            email=target,
+            reason=reason or "console",
+            force_refill=force_refill,
+            email_line=email_line,
+            phone_line=phone_line,
+            proxy=proxy,
+            child_id=child_id,
+            skip_confirm=True,
+            role=role,
+            in_test=False,
+        )
+
+    return await _run_command(db, operation, command, background=background)
 
 
 async def kick_member_to_standby(
@@ -792,6 +838,7 @@ async def kick_member_to_standby(
     user_id: str | None = None,
     reason: str = "console_kick",
     unbind_sub2api: bool = False,
+    background: bool = False,
 ) -> dict[str, Any]:
     workspace = await db.get(Workspace, int(workspace_id))
     if workspace is None:
@@ -825,18 +872,20 @@ async def kick_member_to_standby(
             "operation_id": blocker.public_id,
         }
     await db.commit()
-    result = await rotate_service.kick_to_standby(
-        db,
-        workspace_id=workspace.id,
-        email=target,
-        user_id=user_id,
-        reason=reason,
-        unbind_sub2api=unbind_sub2api,
-        job_id=operation.public_id,
-    )
-    await operation_store.finish(db, operation, result)
-    await db.commit()
-    return _ok_result(result, operation_id=operation.public_id)
+    target_id, job_id = workspace.id, operation.public_id
+
+    async def command(session: AsyncSession) -> dict[str, Any]:
+        return await rotate_service.kick_to_standby(
+            session,
+            workspace_id=target_id,
+            email=target,
+            user_id=user_id,
+            reason=reason,
+            unbind_sub2api=unbind_sub2api,
+            job_id=job_id,
+        )
+
+    return await _run_command(db, operation, command, background=background)
 
 
 async def purge_workspace_child(

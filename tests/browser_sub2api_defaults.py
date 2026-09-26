@@ -143,7 +143,8 @@ def main():
                     expect(page.locator('[name="sub2api_concurrency"]')).to_have_value("8")
                     expect(page.locator("#settings-savebar")).to_be_hidden()
             page.set_viewport_size({"width": 1440, "height": 1000})
-            page.goto("http://testserver/accounts")
+            # 按团队视图整团队分页（见 browser_accounts_layout）；这里用全部账号视图检查跨页选择。
+            page.goto("http://testserver/accounts?view=all")
             rows = page.locator(".management-table tbody tr")
             expect(rows).to_have_count(20)
             expect(page.locator("#accounts-pagination")).to_contain_text("第 1 / 3 页")
@@ -155,7 +156,7 @@ def main():
             page.get_by_role("button", name="下一页", exact=True).click()
             expect(rows).to_have_count(20)
             expect(page.locator("#account-selection-count")).to_contain_text("已选 1 个")
-            expect(page.locator('.management-group [data-account="21"]')).to_have_count(1)
+            expect(page.locator('.management-table [data-account="21"]')).to_have_count(1)
             page.get_by_label("选择 child21@example.com", exact=True).check()
             expect(page.locator("#account-selection-count")).to_contain_text("已选 2 个")
             page.get_by_role("button", name="上一页", exact=True).click()
@@ -178,13 +179,15 @@ def main():
             expect(rows).to_have_count(1)
             expect(page.locator("#accounts-pagination")).to_contain_text("第 1 / 1 页")
             page.locator("#accounts-search").fill("")
-            page.get_by_label("每页条数", exact=True).select_option("10")
-            expect(rows).to_have_count(10)
+            page.get_by_label("每页条数", exact=True).select_option("50")
+            expect(rows).to_have_count(40)
+            expect(page.locator("#accounts-pagination")).to_contain_text("第 1 / 1 页")
+            page.get_by_label("每页条数", exact=True).select_option("20")
             page.get_by_role("button", name="下一页", exact=True).click()
             page.reload()
-            expect(page.locator("#accounts-pagination")).to_contain_text("第 2 / 4 页")
-            expect(rows).to_have_count(10)
-            page.get_by_label("选择 child12@example.com", exact=True).check()
+            expect(page.locator("#accounts-pagination")).to_contain_text("第 2 / 2 页")
+            expect(rows).to_have_count(20)
+            page.get_by_label("选择 child24@example.com", exact=True).check()
             for width in (1440, 390):
                 page.set_viewport_size({"width": width, "height": 950})
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
@@ -192,7 +195,7 @@ def main():
                 screenshot(page, f"accounts-{width}")
             assert not errors, errors
             assert not external, external
-            print(json.dumps({"ok": True, "checks": ["settings save/reload", "proxy group and fixed proxy", "catalog failure preserves draft", "Codex Proxy removed", "pagination with team context", "cross-page selection/delete", "last-page clamp", "search resets page", "page size and URL persist", "bottom actions", "responsive layout"], "page_errors": errors}))
+            print(json.dumps({"ok": True, "checks": ["settings save/reload", "proxy group and fixed proxy", "catalog failure preserves draft", "Codex Proxy removed", "pagination in all-accounts view", "cross-page selection/delete", "last-page clamp", "search resets page", "page size and URL persist", "bottom actions", "responsive layout"], "page_errors": errors}))
             browser.close()
 
 

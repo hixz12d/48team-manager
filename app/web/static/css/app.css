@@ -6,7 +6,7 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 13px;
+  font-size: var(--text-body);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   /* clip 同样禁止横向滚动，但不会把 body 变成滚动容器，否则 sticky 表头失效。*/
@@ -23,15 +23,25 @@ button, input, select, textarea { font: inherit; }
 .hint {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.45;
   max-width: var(--readable-max);
 }
 .tabular { font-variant-numeric: tabular-nums; }
+
+/* 标题层级：页面 h1 20px > 面板 h2 16px > 分组 h3 14px（半粗） */
+h1, h2, h3 { line-height: 1.3; letter-spacing: 0; text-wrap: balance; }
+h2 { font-size: var(--text-heading); font-weight: 600; }
+h3 { font-size: var(--text-body); font-weight: 600; }
+
+/* 额度、席位、金额、用时等数字宽度一致，计时刷新时不会左右跳动。*/
+table, time, progress, meter, .num, .task-elapsed, [data-summary], .management-meter, .management-quota { font-variant-numeric: tabular-nums; }
+
+::selection { background: var(--accent-bg); color: var(--text); }
 .eyebrow {
   margin: 0 0 var(--space-xs);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-meta);
   letter-spacing: 0;
   text-transform: uppercase;
   font-weight: 600;
@@ -57,7 +67,7 @@ button, input, select, textarea { font: inherit; }
 
 .auth-card h1 {
   margin: 0 0 var(--space-xs);
-  font-size: 20px;
+  font-size: var(--text-title);
   font-weight: 700;
 }
 
@@ -103,7 +113,7 @@ button, input, select, textarea { font: inherit; }
 label {
   display: grid;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
   color: var(--text);
   min-width: 0;
@@ -119,7 +129,7 @@ textarea {
   color: var(--text);
   min-width: 0;
   width: 100%;
-  font-size: 13px;
+  font-size: var(--text-body);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -181,7 +191,7 @@ input:disabled, select:disabled, .button:disabled {
   background: var(--surface);
   color: var(--text);
   padding: 0 var(--space-sm);
-  font-size: 13px;
+  font-size: var(--text-body);
   font-weight: 500;
   cursor: pointer;
   transition: all 0.12s ease;
@@ -221,7 +231,7 @@ input:disabled, select:disabled, .button:disabled {
 .button.compact {
   height: var(--control-h-sm);
   padding: 0 8px;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .button.danger {
@@ -237,14 +247,14 @@ input:disabled, select:disabled, .button:disabled {
 
 .error {
   color: var(--danger-text);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
 }
 
 .version {
   margin-top: var(--space-md);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-meta);
   text-align: center;
 }
 
@@ -278,14 +288,14 @@ input:disabled, select:disabled, .button:disabled {
 }
 
 .brand strong {
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 700;
   color: var(--text);
 }
 
 .brand span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-meta);
   margin-top: 1px;
 }
 
@@ -298,7 +308,7 @@ input:disabled, select:disabled, .button:disabled {
 .nav-label {
   margin: var(--space-md) var(--space-xs) 4px;
   color: var(--muted-light);
-  font-size: 10px;
+  font-size: var(--text-meta);
   font-weight: 700;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -312,7 +322,7 @@ input:disabled, select:disabled, .button:disabled {
   border-radius: var(--radius);
   color: var(--text-secondary);
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--text-body);
   transition: all 0.12s ease;
 }
 
@@ -331,7 +341,7 @@ input:disabled, select:disabled, .button:disabled {
   margin-top: auto;
   padding: var(--space-sm) var(--space-xs) var(--space-xs);
   border-top: 1px solid var(--border);
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--muted);
 }
 
@@ -371,7 +381,7 @@ input:disabled, select:disabled, .button:disabled {
 
 .topbar h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-title);
   font-weight: 700;
   line-height: 1.25;
   color: var(--text);
@@ -379,7 +389,7 @@ input:disabled, select:disabled, .button:disabled {
 
 .topbar p {
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--muted);
   max-width: var(--readable-max);
 }
@@ -441,14 +451,14 @@ select.theme-select {
   margin: 0 auto;
 }
 
-/* 焦点样式 */
-:where(a, button, input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+/* 焦点样式：全站唯一一套，组件不再各自叠加 box-shadow 焦点环 */
+:where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-/* 响应式断点适配 */
-@media (max-width: 1279px) {
+/* 响应式断点：只用 1280 / 1024 / 720 三档 */
+@media (max-width: 1280px) {
   .page {
     padding: var(--space-md) var(--space-md) 64px;
   }
@@ -457,7 +467,7 @@ select.theme-select {
   }
 }
 
-@media (max-width: 1039px) {
+@media (max-width: 1024px) {
   .shell {
     grid-template-columns: 1fr;
   }
@@ -491,32 +501,30 @@ select.theme-select {
   }
 }
 
-@media (max-width: 719px) {
+@media (max-width: 720px) {
   .topbar {
-    padding: 0 var(--space-xs);
+    flex-wrap: wrap;
+    padding: var(--space-sm) var(--space-xs);
     gap: var(--space-xs);
   }
-  
+
   .topbar h1 {
-    font-size: 16px;
+    font-size: var(--text-heading);
   }
-  
+
   .topbar p {
     display: none;
   }
-  
+
   .topbar-actions {
+    width: 100%;
+    justify-content: flex-end;
     gap: 4px;
   }
-  
+
   .page {
     padding: var(--space-xs) var(--space-xs) 80px;
   }
-}
-
-@media (max-width: 540px) {
-  .topbar { flex-wrap: wrap; padding-block: var(--space-sm); }
-  .topbar-actions { width: 100%; justify-content: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {

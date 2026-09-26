@@ -13,10 +13,10 @@
       enabled = Boolean(rotation.enabled);
       scopeReady = rotation.scope === "all" || (rotation.workspace_ids || []).length > 0;
       button.disabled = false;
-      button.textContent = enabled ? "关闭自动轮转" : scopeReady ? "开启自动轮转" : "选择工作空间后启用";
+      button.textContent = enabled ? "关闭自动轮转" : scopeReady ? "开启自动轮转" : "选择团队后启用";
       button.setAttribute("aria-pressed", String(enabled));
       button.classList.toggle("primary", enabled);
-      const scope = rotation.scope === "all" ? "全部工作空间（含新增）" : `仅选中的 ${(rotation.workspace_ids || []).length} 个工作空间`;
+      const scope = rotation.scope === "all" ? "全部团队（含新增）" : `仅选中的 ${(rotation.workspace_ids || []).length} 个团队`;
       const pieces = [enabled ? "已开启 · 每分钟检查" : "已关闭", scope, `每团队每日上限 ${rotation.daily_limit ?? 2} 次`];
       const summary = document.getElementById("auto-rotation-summary");
       if (summary) summary.textContent = `${enabled ? "已开启" : "已关闭"} · ${rotation.scope === "all" ? "全部团队" : `范围 ${(rotation.workspace_ids || []).length} 个团队`} · 每日上限 ${rotation.daily_limit ?? 2}${rotation.blocked_workspaces ? ` · ${rotation.blocked_workspaces} 个需核对` : ""}`;

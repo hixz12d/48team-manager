@@ -25,7 +25,7 @@
 }
 
 .panel-title {
-  font-size: 13px;
+  font-size: var(--text-body);
   font-weight: 600;
   color: var(--text);
   letter-spacing: 0;
@@ -90,7 +90,7 @@
 
 .toolbar-count {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -107,7 +107,7 @@
 }
 
 /* 宽屏下表格不需要横向滚动容器，取消滚动容器后表头才能跟随页面滚动吸顶。*/
-@media (min-width: 1120px) {
+@media (min-width: 1280px) {
   .page-workspaces,
   .page-operations,
   .page-phones,
@@ -128,13 +128,13 @@
   width: 100%;
   min-width: 760px;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--text-body);
 }
 
 .data-table th {
   height: var(--table-header-h);
   text-align: left;
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--muted);
   font-weight: 600;
   letter-spacing: 0;
@@ -172,7 +172,7 @@
 
 .data-table th .table-sort::after {
   content: "↕";
-  font-size: 10px;
+  font-size: var(--text-meta);
   opacity: 0.35;
 }
 
@@ -223,7 +223,7 @@
 }
 
 .cell-main strong {
-  font-size: 13px;
+  font-size: var(--text-body);
   font-weight: 600;
   color: var(--text);
   line-height: 1.35;
@@ -231,13 +231,13 @@
 
 .cell-sub {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.35;
 }
 
 .mono {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--muted);
 }
 
@@ -252,7 +252,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
   line-height: 1;
 }
@@ -279,7 +279,7 @@
   padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   color: var(--text-secondary);
   background: var(--surface-subtle);
@@ -329,7 +329,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-family: var(--font-mono);
   font-weight: 500;
   padding: 2px 6px;
@@ -371,7 +371,7 @@
 }
 
 .quota-billing-label {
-  font-size: 9px;
+  font-size: var(--text-meta);
   line-height: 1.2;
   font-weight: 600;
   color: var(--muted);
@@ -380,7 +380,7 @@
 
 .quota-billing-value {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   line-height: 1.2;
   color: var(--text);
@@ -403,7 +403,7 @@
   gap: 6px;
   align-items: center;
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: var(--text-meta);
 }
 
 .quota-meter .meter-window {
@@ -418,7 +418,7 @@
 
 .quota-meter .meter-ttl {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--text-meta);
   min-width: 44px;
   text-align: right;
 }
@@ -455,7 +455,7 @@
   gap: 5px;
   align-items: baseline;
   min-width: 0;
-  font-size: 10px;
+  font-size: var(--text-meta);
 }
 
 .usage-window-values {
@@ -478,7 +478,7 @@
 }
 
 .quota-stale-tag {
-  font-size: 10px;
+  font-size: var(--text-meta);
   color: var(--muted);
   background: var(--surface-muted);
   padding: 1px 4px;
@@ -486,19 +486,6 @@
 }
 
 /* 骨架加载 Skeleton */
-.skeleton-row {
-  height: 12px;
-  background: linear-gradient(90deg, var(--surface-muted) 25%, var(--border) 50%, var(--surface-muted) 75%);
-  background-size: 200% 100%;
-  animation: skeletonPulse 1.5s infinite;
-  border-radius: var(--radius-xs);
-}
-
-@keyframes skeletonPulse {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
 /* 总览概览 KPI Strip */
 .summary-strip {
   display: grid;
@@ -531,14 +518,14 @@
 }
 
 .summary-label {
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   color: var(--muted);
   letter-spacing: 0;
 }
 
 .summary-item strong {
-  font-size: 22px;
+  font-size: var(--text-figure);
   font-weight: 700;
   color: var(--text);
   line-height: 1.2;
@@ -596,7 +583,7 @@
   background: var(--success-bg);
   color: var(--success-text);
   border-radius: var(--radius);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
 }
 
@@ -615,7 +602,7 @@
   align-content: center;
   border-radius: var(--radius);
   background: var(--surface-subtle);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* 账号 Portfolio 矩阵视图 */
@@ -630,7 +617,7 @@
 .view-toggle .button.ghost {
   height: 28px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   border-radius: var(--radius-xs);
 }
 
@@ -739,7 +726,7 @@
 
 .workspace-usage-summary {
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--text-meta);
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
@@ -758,7 +745,7 @@
 
 .portfolio-history-toggle {
   padding: 6px 12px 6px 36px;
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--muted);
   cursor: pointer;
   background: var(--surface-subtle);
@@ -779,7 +766,7 @@
 .inline-edit-input {
   height: 26px;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   border: 1px solid var(--accent);
   border-radius: var(--radius-xs);
   background: var(--surface);
@@ -838,10 +825,10 @@
   align-items: flex-start;
   gap: 12px;
 }
-.confirm-panel header strong { font-size: 16px; }
+.confirm-panel header strong { font-size: var(--text-heading); }
 .confirm-panel header .muted, .confirm-panel #confirm-message { overflow-wrap: anywhere; }
 .confirm-list { margin: 0; padding-left: 18px; max-height: 180px; overflow: auto; }
-.confirm-list li { overflow-wrap: anywhere; font-size: 13px; }
+.confirm-list li { overflow-wrap: anywhere; font-size: var(--text-body); }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
 
 .menu {
@@ -922,7 +909,7 @@
   background: transparent;
   border: 0;
   border-bottom: 2px solid transparent;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
   color: var(--muted);
   cursor: pointer;
@@ -948,18 +935,17 @@
 
 .sheet-section h3 {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--muted);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0;
+  letter-spacing: 0.02em;
 }
 
 .kv {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);
   gap: var(--space-xs) var(--space-sm);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .kv dt {
@@ -981,47 +967,6 @@
   justify-content: flex-end;
 }
 
-.row-action-host {
-  position: relative;
-  padding-right: 42px !important;
-}
-
-.row-actions-contextual {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  z-index: 1;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-50%);
-  transition: opacity 0.12s ease;
-}
-
-.row-actions-contextual > .button {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  font-size: 18px;
-}
-
-.account-auto-reauth-button {
-  min-width: 112px;
-  height: 28px;
-  margin-left: 8px;
-  vertical-align: middle;
-  white-space: nowrap;
-}
-
-.account-auto-reauth-button[aria-busy="true"] {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.is-interactive:hover .row-actions-contextual,
-.is-interactive:focus-within .row-actions-contextual {
-  opacity: 1;
-  pointer-events: auto;
-}
 
 /* 提示通知 Toast */
 .toast-region {
@@ -1049,7 +994,7 @@
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: var(--shadow-md);
-  font-size: 13px;
+  font-size: var(--text-body);
   pointer-events: auto;
   animation: fadeIn 0.15s ease;
 }
@@ -1090,7 +1035,7 @@
   background: transparent;
   color: inherit;
   opacity: 0.6;
-  font-size: 13px;
+  font-size: var(--text-body);
   line-height: 1;
   cursor: pointer;
 }
@@ -1134,7 +1079,7 @@
   border-bottom: 1px solid var(--border);
   border-radius: 0;
   background: var(--surface);
-  font-size: 14px;
+  font-size: var(--text-body);
   color: var(--text);
   outline: none;
   box-shadow: none;
@@ -1166,7 +1111,7 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--text-body);
   text-align: left;
   cursor: pointer;
   display: flex;
@@ -1192,17 +1137,17 @@
 .palette-empty {
   padding: 12px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-body);
 }
 
 /* 响应式断点适配 */
-@media (max-width: 1200px) {
+@media (max-width: 1280px) {
   .overview-layout {
     grid-template-columns: minmax(0, 7fr) minmax(280px, 5fr);
   }
 }
 
-@media (max-width: 960px) {
+@media (max-width: 1024px) {
   .overview-layout {
     grid-template-columns: 1fr;
   }
@@ -1344,7 +1289,7 @@
   min-height: 32px;
   display: flex;
   align-items: center;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   color: var(--text-secondary);
   cursor: pointer;
@@ -1384,7 +1329,7 @@
 
 .team-auth-followups legend {
   padding: 0 4px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
 }
 
@@ -1405,7 +1350,7 @@
 .field-label {
   display: block;
   margin-bottom: 2px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
 }
 

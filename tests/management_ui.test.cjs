@@ -57,11 +57,13 @@ test('pagination splits large teams while retaining each workspace context', () 
   assert.equal(second.items[5].group, null);
 });
 test('filters apply before pagination and deleting the final page clamps to the last page', () => {
-  const accounts = Array.from({length: 21}, (_, i) => ({id:i + 1, purpose:i < 10 ? 'child' : 'standby'}));
+  const accounts = Array.from({length: 31}, (_, i) => ({id:i + 1, purpose:i < 10 ? 'child' : 'standby'}));
   const entries = filteredEntries({accounts}, 'all', new URLSearchParams('purpose=standby'));
-  assert.equal(entries.length, 11);
-  assert.equal(pageWindow(entries, 5, 10).page, 2);
-  assert.equal(pageWindow(entries.slice(0, 10), 2, 10).page, 1);
+  assert.equal(entries.length, 21);
+  assert.equal(pageWindow(entries, 5, 20).page, 2);
+  assert.equal(pageWindow(entries.slice(0, 20), 2, 20).page, 1);
+  // Retired page size falls back to the default.
+  assert.equal(pageWindow(entries, 1, 10).size, 20);
   assert.equal(pageWindow(entries, '-3', 'bad').size, 20);
   assert.equal(pageWindow([], 100, 20).page, 1);
 });

@@ -36,13 +36,12 @@
   let proxySelectRequestId = 0;
   let settingsBaseline = "";
   let settingsDirty = false;
-  let searchTimer = null;
 
   const destinations = [
     { label: "任务", href: "/operations" },
-    { label: "进行中的任务", href: "/operations?status=running" },
+    { label: "进行中的任务", href: "/operations?state=running,queued,waiting" },
     { label: "去总览", href: "/" },
-    { label: "去团队", href: "/workspaces" },
+    { label: "去团队", href: "/accounts?view=teams" },
     { label: "去账号", href: "/accounts" },
     { label: "去手机号", href: "/resources/phones" },
     { label: "去 HME", href: "/resources/hme" },
@@ -98,7 +97,7 @@
     quota_probe: "额度刷新",
     reauth: "重新授权",
     onboard: "拉人",
-    replenish: "补充 Team",
+    replenish: "补充团队",
     rotate: "轮转",
     workspace_sync: "同步官方成员",
     kick_member: "踢出成员",
@@ -406,13 +405,6 @@
     if (hours >= 48) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
     if (hours >= 1) return `${hours}h ${minutes}m`;
     return `${Math.max(1, minutes)}m`;
-  }
-
-  function meterTone(percent) {
-    if (percent == null) return "";
-    if (percent >= 90) return "danger";
-    if (percent >= 75) return "warning";
-    return "";
   }
 
   function timeNode(value) {
@@ -804,7 +796,15 @@
     const match = url.match(/^\/api\/workspaces\/([^/]+)\/(onboard|replenish|rotate|kick)$/);
     if (match && window.Team48Runtime) {
       const kind = match[2] === "kick" ? "kick_member" : match[2];
-      return window.Team48Runtime.track(match[1], kind, async () => ({...await fetchEntity(key, url, options), task_kind: kind}));
+      const result = await window.Team48Runtime.track(match[1], kind, async () => ({...await fetchEntity(key, url, options), task_kind: kind}));
+      if (!result?.accepted || typeof result.operation_id !== "string") return result;
+      // The server returned at once; callers keep their "finished" semantics by awaiting the detail.
+      const detail = await window.Team48Runtime.waitFor(result.operation_id);
+      const state = String(detail.state || detail.status || "").toLowerCase();
+      return {...(detail.result && typeof detail.result === "object" ? detail.result : {}),
+        status: state, ok: state === "success", success: state === "success",
+        operation_id: result.operation_id, task_kind: kind,
+        ...(state === "success" ? {} : {error: detail.result?.error || detail.error || "", error_code: detail.result?.error_code || detail.error_code || ""})};
     }
     return fetchEntity(key, url, options);
   }
@@ -885,32 +885,6 @@
     document.querySelectorAll(`[data-auto-reauth-account="${accountId}"]`).forEach((button) => {
       applyAutoReauthButtonState(button, entry);
     });
-  }
-
-  function createAutoReauthButton(item) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "button ghost compact account-auto-reauth-button";
-    button.dataset.autoReauthAccount = String(item.id);
-    button.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      const active = currentAutoReauth(item.id);
-      if (active) {
-        await openOperationById(active.operationId);
-        return;
-      }
-      applyAutoReauthButtonState(button, { state: "waiting" });
-      button.textContent = "检查条件";
-      try {
-        await queueAutoReauth(item);
-      } catch (error) {
-        toast(friendlyError(error), "error");
-      } finally {
-        syncAutoReauthButtons(item.id);
-      }
-    });
-    applyAutoReauthButtonState(button, currentAutoReauth(item.id));
-    return button;
   }
 
   function startCurrentOperation(stableKey, response, context = {}) {
@@ -1138,36 +1112,6 @@
       });
     }
 
-  function shortId(value) {
-    const text = String(value || "");
-    if (text.length <= 12) return text;
-    return `${text.slice(0, 8)}…`;
-  }
-
-
-  function workspaceOfficialSummary(item) {
-    const official = item.official || {};
-    if ((official.sync_state || item.last_sync == null) === "never" || (item.last_sync == null && official.joined_people_total == null && item.members == null)) {
-      return { main: "尚未同步", sub: "本地 " + String(item.managed?.count ?? item.managed_count ?? 0) };
-    }
-    if (official.sync_state === "failed" || item.health === "sync_failed") {
-      return { main: "同步失败", sub: "数据可能过期" };
-    }
-    const people = official.joined_people_total ?? item.members;
-    const children = official.joined_member_count;
-    let main = people == null ? "—" : `${people} 人`;
-    const owners = official.official_owner_count ?? official.owner_count;
-    if (owners != null) main += ` · Owner ${owners}`;
-    if (children != null) main += ` · Member ${children}`;
-    if (official.occupied_seats != null && official.seat_limit != null) {
-      main += ` · 席位 ${official.occupied_seats}/${official.seat_limit}`;
-    }
-    const managed = item.managed?.count ?? item.managed_count ?? 0;
-    const pending = item.reconciliation?.actionable_count ?? item.reconciliation?.remote_only ?? 0;
-    const sub = pending ? `本地 ${managed} · ${pending} 位待接入` : `本地 ${managed}`;
-    return { main, sub };
-  }
-
   function workspacePrimaryAction(workspace) {
     if (workspace.owner_auth_reason === "owner_account_missing" || workspace.owner_auth_state === "owner_account_missing") {
       return { id: "owner-missing", label: "去账号核对" };
@@ -1204,219 +1148,6 @@
       return (entityActions.workspace || []).find((item) => item.id === "workspace.sync")?.run(workspace, trigger);
     }
     return openWorkspaceDetails(trigger, workspace);
-  }
-
-  function workspaceRow(item) {
-    const row = document.createElement("tr");
-    bindRow(row, "workspace", item);
-    const summary = workspaceOfficialSummary(item);
-    const ownerStatus = authStatus({
-      needs_auth: item.owner_needs_auth,
-      auth_state: item.owner_auth_state,
-      auth_action: item.owner_auth_action,
-      auth_reason: item.owner_auth_reason,
-    });
-    const healthCode = ownerStatus.reason === "owner_account_missing"
-      ? "owner_account_missing"
-      : (ownerStatus.needsAuth ? "needs_auth" : (item.health || item.status));
-    const healthLabel = ownerStatus.reason === "owner_account_missing"
-      ? "母号本地档案缺失"
-      : (ownerStatus.needsAuth ? "母号要授权" : labelOf(statusLabels, item.health || item.status));
-    cell(row, twoLine(item.display_name || item.name, shortId(item.official_workspace_id)));
-    cell(row, item.owner_email);
-    cell(row, twoLine(summary.main, summary.sub), "num");
-    cell(row, statusNode(healthCode, healthLabel));
-    cell(row, timeNode(item.last_sync));
-    const lastSync = cell(row, "", "management-action-cell");
-    const actions = document.createElement("div");
-    actions.className = "management-actions";
-    const primary = workspacePrimaryAction(item);
-    const primaryButton = document.createElement("button");
-    primaryButton.type = "button";
-    primaryButton.className = primary.id === "owner-auth" ? "button primary compact" : "button compact";
-    primaryButton.dataset.action = primary.id === "manage" ? "workspace.manage" : `workspace.${primary.id}`;
-    primaryButton.textContent = primary.label;
-    primaryButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      runWorkspacePrimaryAction(item, primaryButton);
-    });
-    actions.append(primaryButton, menuButton("workspace", item));
-    lastSync.append(actions);
-    return row;
-  }
-
-  function quotaMeter(label, percent, resetAt) {
-    const row = document.createElement("div");
-    const tone = meterTone(percent);
-    row.className = tone ? `quota-meter is-${tone}` : "quota-meter";
-    const tag = document.createElement("span");
-    tag.className = "meter-window";
-    tag.textContent = label;
-    const bar = document.createElement("div");
-    bar.className = "quota-bar";
-    bar.setAttribute("role", "meter");
-    bar.setAttribute("aria-label", `${label} 使用率`);
-    if (percent != null) {
-      bar.setAttribute("aria-valuenow", String(percent));
-      bar.setAttribute("aria-valuemin", "0");
-      bar.setAttribute("aria-valuemax", "100");
-      const fill = document.createElement("span");
-      fill.style.width = `${Math.max(0, Math.min(100, Number(percent) || 0))}%`;
-      bar.append(fill);
-    }
-    const pct = document.createElement("span");
-    pct.className = "meter-pct tabular";
-    pct.textContent = percent == null ? "—" : `${percent}%`;
-    const eta = document.createElement("span");
-    eta.className = "meter-ttl cell-sub tabular";
-    eta.textContent = countdownLabel(resetAt, percent);
-    row.append(tag, bar, pct, eta);
-    return row;
-  }
-
-  function compactMetric(value) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return "—";
-    return new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(number);
-  }
-
-  function formatCost(value) {
-      return window.Team48Format.formatCost(value);
-    }
-
-  function usageWindowLine(label, windowData) {
-    const line = document.createElement("div");
-    line.className = "usage-window tabular";
-    const tag = document.createElement("span");
-    tag.className = "meter-window";
-    tag.textContent = label;
-    const values = document.createElement("span");
-    values.className = "usage-window-values";
-    if (!windowData || windowData.last_success_at == null) {
-      values.textContent = "—";
-    } else {
-      values.textContent = [
-        windowData.requests == null ? null : `${compactMetric(windowData.requests)} req`,
-        windowData.tokens == null ? null : `${compactMetric(windowData.tokens)} tok`,
-      ].filter(Boolean).join(" · ") || "—";
-      line.title = [
-        windowData.user_cost == null ? null : `用户计费 U $${windowData.user_cost}`,
-        windowData.account_cost == null ? null : `账号成本 A $${windowData.account_cost}`,
-        windowData.standard_cost == null ? null : `标准计费 S $${windowData.standard_cost}`,
-        windowData.billing_margin == null ? null : `计费毛差 Δ $${windowData.billing_margin}`,
-        windowData.last_success_at ? `同步 ${relativeTime(windowData.last_success_at)}` : null,
-        windowData.sync_status === "failed" ? (windowData.error || "最近同步失败，当前为旧数据") : null,
-      ].filter(Boolean).join("；");
-    }
-    const state = document.createElement("span");
-    state.className = "usage-window-state";
-    state.textContent = windowData?.sync_status === "failed" ? "失败" : (windowData?.stale ? "旧" : "");
-    line.append(tag, values, state);
-    return line;
-  }
-
-  function workspaceUsageSummary(usage) {
-      const entry = window.Team48Format.usageWindow(usage);
-      if (!entry) return null;
-      const node = document.createElement("span");
-      node.className = "workspace-usage-summary tabular";
-      node.textContent = `${entry.label} · 用户计费 ${formatCost(entry.user_cost)} · 成本 ${formatCost(entry.account_cost)}`;
-      if (entry.coverage) node.textContent += ` · 覆盖 ${entry.coverage.synced}/${entry.coverage.total}`;
-      if (entry.stale) node.textContent += " · 含旧快照";
-      return node;
-    }
-
-  function quotaCell(item) {
-    const wrap = document.createElement("div");
-    wrap.className = "quota-cell";
-    const quota = item.quota || {};
-    const usage = item.usage || {};
-    const windows = usage.windows || {};
-    const totals = usage.totals || {};
-    const primaryWindow = windows.five_hour || windows.today;
-
-    const userCostVal = usage.user_cost ?? totals.user_cost ?? primaryWindow?.user_cost ?? null;
-    const accountCostVal = usage.account_cost ?? totals.account_cost ?? primaryWindow?.account_cost ?? null;
-    const standardCostVal = usage.standard_cost ?? totals.standard_cost ?? primaryWindow?.standard_cost ?? null;
-    const billingMarginVal = usage.billing_margin ?? totals.billing_margin ?? primaryWindow?.billing_margin ?? null;
-
-    const billingSummary = document.createElement("div");
-    billingSummary.className = "quota-billing-summary tabular";
-
-    const userCol = document.createElement("div");
-    userCol.className = "quota-billing-item";
-    const userLabel = document.createElement("span");
-    userLabel.className = "quota-billing-label";
-    userLabel.textContent = "用户计费";
-    const userValue = document.createElement("span");
-    userValue.className = "quota-billing-value";
-    userValue.textContent = formatCost(userCostVal);
-    userCol.append(userLabel, userValue);
-
-    const accountCol = document.createElement("div");
-    accountCol.className = "quota-billing-item";
-    const accountLabel = document.createElement("span");
-    accountLabel.className = "quota-billing-label";
-    accountLabel.textContent = "账号成本";
-    const accountValue = document.createElement("span");
-    accountValue.className = "quota-billing-value";
-    accountValue.textContent = formatCost(accountCostVal);
-    accountCol.append(accountLabel, accountValue);
-
-    billingSummary.append(userCol, accountCol);
-
-    const tooltipDetails = [
-      standardCostVal == null ? null : `标准计费 $${standardCostVal}`,
-      billingMarginVal == null ? null : `计费毛差 $${billingMarginVal}`,
-    ].filter(Boolean);
-    if (tooltipDetails.length > 0) {
-      billingSummary.title = tooltipDetails.join("；");
-    }
-
-    wrap.append(billingSummary);
-
-    if (primaryWindow || windows.seven_day) {
-      const usageBlock = document.createElement("div");
-      usageBlock.className = "usage-window-list";
-      usageBlock.append(
-        usageWindowLine(primaryWindow === windows.today ? "今日" : "5h", primaryWindow),
-        usageWindowLine("7d", windows.seven_day),
-      );
-      wrap.append(usageBlock);
-    }
-    wrap.append(
-      quotaMeter("5h", quota.five_hour_used_percent, quota.five_hour_reset_at),
-      quotaMeter("7d", quota.seven_day_used_percent, quota.seven_day_reset_at),
-    );
-    const footer = document.createElement("div");
-    footer.className = "quota-footer";
-    const source = document.createElement("span");
-    source.className = "cell-sub";
-    const freshness = quota.queried_at ? relativeTime(quota.queried_at) : "无快照";
-    source.textContent = (quota.source === "official" ? "官方" : (quota.source || "官方")) + " · " + freshness;
-    if (quota.queried_at) source.title = quota.queried_at;
-    footer.append(source);
-    wrap.append(footer);
-    return wrap;
-  }
-
-  function accountRow(item) {
-    const row = document.createElement("tr");
-    bindRow(row, "account", item);
-    const plan = [roleLabel(item.official_role), item.official_plan].filter(Boolean).join(" · ");
-    cell(row, twoLine(item.email, plan || null));
-    cell(row, item.workspace);
-    cell(row, labelOf(purposeLabels, item.purpose));
-    cell(row, statusNode(item.auth, labelOf(statusLabels, item.auth)));
-    cell(row, quotaCell(item));
-    cell(row, statusNode(item.sub2api, labelOf(statusLabels, item.sub2api)));
-    const state = cell(row, statusNode(item.state, labelOf(stateLabels, item.state)), "row-action-host");
-    const actions = document.createElement("div");
-    actions.className = "row-actions row-actions-contextual";
-    if (item.purpose === "child") state.append(createAutoReauthButton(item));
-    actions.append(menuButton("account", item));
-    state.append(actions);
-    return row;
   }
 
   function operationRow(item) {
@@ -1476,14 +1207,10 @@
       }
     });
     actions.append(toggle);
-    const menuBtn = document.createElement("button");
-    menuBtn.type = "button";
+    const menuBtn = menuButton("phone", item);
     menuBtn.className = "button ghost";
     menuBtn.textContent = "更多";
-    menuBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      openMenu(menuBtn, "phone", item);
-    });
+    menuBtn.setAttribute("aria-label", "更多操作");
     actions.append(menuBtn);
     cell(row, actions, "actions");
     return row;
@@ -1561,12 +1288,6 @@ function hmeRow(item) {
     return row;
   }
 
-  function matchesQuery(item, query, fields) {
-    if (!query) return true;
-    const hay = fields.map((key) => String(item[key] || "")).join(" ").toLowerCase();
-    return hay.includes(query);
-  }
-
   function currentQuery() {
     return new URLSearchParams(window.location.search);
   }
@@ -1575,22 +1296,6 @@ function hmeRow(item) {
     const url = new URL(window.location.href);
     url.search = next.toString();
     window.history.replaceState({}, "", url);
-  }
-
-  function filterItems(kind, items) {
-    const params = currentQuery();
-    const q = (params.get("q") || "").trim().toLowerCase();
-    if (kind === "workspace") {
-      return items.filter((item) =>
-        matchesQuery(item, q, ["name", "owner_email", "official_workspace_id", "id"])
-      );
-    }
-    if (kind === "account") {
-      return items.filter((item) =>
-        matchesQuery(item, q, ["email", "workspace", "official_user_id", "official_account_id"])
-      );
-    }
-    return items;
   }
 
   function setCount(id, shown, total) {
@@ -1674,7 +1379,7 @@ function hmeRow(item) {
             return;
           }
           if (item.workspace_id) {
-            window.location.href = `/workspaces?workspace=${encodeURIComponent(item.workspace_id)}`;
+            window.location.href = `/accounts?view=teams&workspace=${encodeURIComponent(item.workspace_id)}`;
             return;
           }
           window.location.href = "/accounts?purpose=conflict";
@@ -1689,14 +1394,14 @@ function hmeRow(item) {
     healthRoot.replaceChildren();
     const health = payload.workspace_health || [];
     if (!health.length) {
-      healthRoot.append(emptyState("还没有工作区", "点右上角「登记团队」，用母号 OAuth 授权。", true));
+      healthRoot.append(emptyState("还没有团队", "点右上角「登记团队」，用母号 OAuth 授权。", true));
     } else {
       const list = document.createElement("div");
       list.className = "health-list";
       health.forEach((item) => {
         const row = document.createElement("div");
         row.className = "list-row";
-        const seats = item.joined_people_total != null ? `${item.joined_people_total} 人 · Owner ${item.official_owner_count ?? item.owner_count ?? 0} / Member ${item.official_member_count ?? item.joined_member_count ?? item.members ?? 0}` : (item.sync_state === "never" ? "尚未同步" : (item.members == null ? "尚未同步" : `${item.members} 子成员`));
+        const seats = item.joined_people_total != null ? `${item.joined_people_total} 人 · 所有者 ${item.official_owner_count ?? item.owner_count ?? 0} / 成员 ${item.official_member_count ?? item.joined_member_count ?? item.members ?? 0}` : (item.sync_state === "never" ? "尚未同步" : (item.members == null ? "尚未同步" : `${item.members} 子成员`));
         const sub = [item.owner_email, seats, item.last_sync ? relativeTime(item.last_sync) : null].filter(Boolean).join(" · ");
         row.append(twoLine(item.display_name || item.name, sub), statusNode(item.health, labelOf(statusLabels, item.health)));
         list.append(row);
@@ -1741,14 +1446,14 @@ function hmeRow(item) {
           ["运行状态", labelOf(stateLabels, item.state)],
           ["官方计划", item.official_plan],
           ["官方角色", roleLabel(item.official_role)],
-          ["Membership", item.membership_state],
+          ["成员状态", labelOf(statusLabels, item.membership_state)],
         ]),
         kvSection("官方额度", [
           ["5h", item.quota?.five_hour_used_percent == null ? "—" : `${item.quota.five_hour_used_percent}%`],
           ["7d", item.quota?.seven_day_used_percent == null ? "—" : `${item.quota.seven_day_used_percent}%`],
           ["查询时间", item.quota?.queried_at || "—"],
         ]),
-        kvSection("Binding", [
+        kvSection("Sub2API 绑定", [
           ["状态", labelOf(statusLabels, item.sub2api)],
           ["远端 ID", item.binding?.remote_id],
           ["核对邮箱", item.binding?.verified_email],
@@ -1763,8 +1468,8 @@ function hmeRow(item) {
           ["凭证版本", item.credential_revision],
         ]),
         kvSection("技术信息", [
-          ["Official user ID", item.official_user_id],
-          ["Official account ID", item.official_account_id],
+          ["官方用户 ID", item.official_user_id],
+          ["官方账号 ID", item.official_account_id],
           ["AT", item.has_access_token ? "已保存" : "未设置"],
           ["RT", item.has_refresh_token ? "已保存" : "未设置"],
           ["代理", item.proxy_url || labelOf(statusLabels, item.proxy)],
@@ -1988,12 +1693,12 @@ function hmeRow(item) {
     team: [
       {
         id: "team.replenish",
-        label: "补充 Team",
+        label: "补充团队",
         run: ({ workspace, values }, trigger) => replenishTeam(workspace, trigger, values),
       },
       {
         id: "team.member.invite",
-        label: "邀请加入 Team",
+        label: "邀请加入团队",
         run: ({ workspace, values }, trigger) => inviteTeamMember(workspace, values, trigger),
       },
       {
@@ -2016,7 +1721,7 @@ function hmeRow(item) {
       },
       {
         id: "team.member.role",
-        label: ({ row }) => String(row.role || row.official_role || "").toLowerCase() === "owner" ? "改成 Member" : "改成 Owner",
+        label: ({ row }) => String(row.role || row.official_role || "").toLowerCase() === "owner" ? "改成成员" : "改成所有者",
         visible: ({ row }) => teamMemberIsJoined(row) && Boolean(row.email),
         run: ({ workspace, row }, trigger) => changeTeamMemberRole(workspace, row, trigger, String(row.role || row.official_role || "").toLowerCase() === "owner" ? "member" : "owner"),
       },
@@ -2094,7 +1799,7 @@ function hmeRow(item) {
         run: async (item) => {
           if (item.contexts?.length > 1 && !item.workspace_id) {
             openSheet("account", item, document.activeElement);
-            toast("请选择要检查的工作区", "warning");
+            toast("请选择要检查的团队", "warning");
             return;
           }
           const query = item.workspace_id ? `?workspace_id=${encodeURIComponent(item.workspace_id)}` : "";
@@ -2283,8 +1988,35 @@ function hmeRow(item) {
     proxy: [],
   };
 
+  let menuTrigger = null;
+  function menuItems() {
+    return Array.from(menu?.querySelectorAll('[role="menuitem"]:not([disabled])') || []);
+  }
+  function focusMenuItem(index) {
+    const items = menuItems();
+    if (!items.length) return;
+    items[(index + items.length) % items.length].focus();
+  }
+  // Keyboard users move into the menu with arrows; mouse clicks keep focus on the trigger.
+  function handleMenuKeydown(event) {
+    if (!menu || menu.hidden) return false;
+    const items = menuItems();
+    const current = items.indexOf(document.activeElement);
+    if (event.key === "ArrowDown") focusMenuItem(current + 1);
+    else if (event.key === "ArrowUp") focusMenuItem(current < 0 ? -1 : current - 1);
+    else if (event.key === "Home") focusMenuItem(0);
+    else if (event.key === "End") focusMenuItem(-1);
+    else if (event.key === "Tab") { closeMenu(); return false; }
+    else return false;
+    event.preventDefault();
+    return true;
+  }
+
+  let menuOpenedAt = 0;
   function openMenu(button, kind, item) {
     if (!menu) return;
+    menuTrigger = button;
+    menuOpenedAt = performance.now();
     menu.replaceChildren();
     const add = (label, handler, className) => {
       const option = document.createElement("button");
@@ -2325,18 +2057,23 @@ function hmeRow(item) {
     button.setAttribute("aria-expanded", "true");
     const width = Math.max(menu.offsetWidth || 180, 180);
     const height = menu.offsetHeight || 0;
-    let left = rect.left;
+    // Right-aligned triggers open leftwards so the menu never hugs the viewport edge.
+    let left = rect.left + width > window.innerWidth - 8 ? rect.right - width : rect.left;
     let top = rect.bottom + 4;
-    if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+    left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
     if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 4);
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
   }
 
-  function closeMenu() {
+  function closeMenu({ restoreFocus = false } = {}) {
     if (!menu) return;
+    const hadFocus = menu.contains(document.activeElement);
     menu.hidden = true;
     document.querySelectorAll('[data-menu-trigger][aria-expanded="true"]').forEach((node) => node.setAttribute("aria-expanded", "false"));
+    menuTrigger?.setAttribute("aria-expanded", "false");
+    if ((restoreFocus || hadFocus) && menuTrigger?.isConnected) menuTrigger.focus();
+    menuTrigger = null;
   }
 
   function setRegisterStatus(text, tone) {
@@ -2433,7 +2170,7 @@ function hmeRow(item) {
     const ticket = String(form.ticket.value || "").trim();
     const callbackUrl = String(form.callback_url.value || "").trim();
     if (!accountId || !ticket) {
-      setReauthStatus("还没有授权会话，请关掉后重新点重新授权。", "error");
+      setReauthStatus("还没有授权会话，请关闭后重新点「重新授权」。", "error");
       return;
     }
     if (!callbackUrl) {
@@ -2600,7 +2337,7 @@ function hmeRow(item) {
         if (account?.managed && account.id) {
           const emailButton = document.createElement("button"); emailButton.type="button"; emailButton.className="management-email"; emailButton.textContent=row.email;
           emailButton.addEventListener("click",()=>openSheet("account",account,emailButton)); identity.append(emailButton);
-          const role = document.createElement("small"); role.className="muted"; role.textContent = row.purpose === "mother" ? "母号 · Owner" : roleLabel(row.role || row.official_role); identity.append(role);
+          const role = document.createElement("small"); role.className="muted"; role.textContent = row.purpose === "mother" ? "母号 · 所有者" : roleLabel(row.role || row.official_role); identity.append(role);
         } else identity.append(twoLine(row.email || row.name || "—", roleLabel(row.role || row.official_role) || null));
         const stateWrap = document.createElement("div");
         stateWrap.className = "team-member-state";
@@ -2738,7 +2475,7 @@ function hmeRow(item) {
     label.textContent = "邀请席位";
     const select = document.createElement("select");
     select.name = "seat_intent";
-    select.append(new Option("工作区默认", "workspace_default"), new Option("Standard", "standard"), new Option("Premium", "premium"));
+    select.append(new Option("团队默认", "workspace_default"), new Option("Standard", "standard"), new Option("Premium", "premium"));
     select.value = "workspace_default";
     label.append(select);
     return label;
@@ -2747,7 +2484,7 @@ function hmeRow(item) {
   function renderTeamReplenishControls(workspace) {
       const wrapper = document.createElement("div"); wrapper.className = "team-invite-controls";
       const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "button compact";
-      toggle.textContent = "补充 Team"; toggle.setAttribute("aria-expanded", "false");
+      toggle.textContent = "补充团队"; toggle.setAttribute("aria-expanded", "false");
       const form = document.createElement("form"); form.className = "team-invite-form stack"; form.hidden = true; form._toggle = toggle;
       const previous = (workspace.former_members || []).filter(row => ["owner", "member"].includes(row.official_role || row.role));
       const originalRole = previous.length === 1 ? previous[0].official_role || previous[0].role : "";
@@ -2772,10 +2509,10 @@ function hmeRow(item) {
         event.preventDefault();
         if (!form.reportValidity()) return;
         const values = Object.fromEntries(new FormData(form).entries());
-        status.hidden = false; status.className = "muted"; status.setAttribute("role", "status"); status.textContent = "正在补充 Team…";
+        status.hidden = false; status.className = "muted"; status.setAttribute("role", "status"); status.textContent = "正在补充团队…";
         try {
           const result = await entityActions.team.find(action => action.id === "team.replenish").run({workspace, values}, submit);
-          if (result) status.textContent = result.message || "补充已结束，请查看任务结果";
+          if (result) status.textContent = result.message || "补充已结束，结果见上方任务进度";
         } catch (error) { status.className = "error"; status.setAttribute("role", "alert"); status.textContent = friendlyError(error); }
       });
       wrapper.append(toggle, form); return wrapper;
@@ -2792,7 +2529,7 @@ function hmeRow(item) {
         seat_intent: values?.seat_intent || "workspace_default",
       });
       await handleActionResult(result, {
-        successMessage: result.message || "补充 Team 已完成",
+        successMessage: result.message || "补充团队已完成",
         refresh: false,
         context: {
           retry: result.partial && result.account_id
@@ -2855,7 +2592,7 @@ function hmeRow(item) {
           event.preventDefault();
           if (!email.value || !form.reportValidity()) return;
           const target = email.value;
-          if (!await confirmDanger(`确认对 ${target} 执行受控轮转？`, {title:"执行受控轮转", items:["会修改官方 Team 席位", "补位账号继承原角色和席位"], confirmLabel:"执行轮转"}, submit)) return;
+          if (!await confirmDanger(`确认对 ${target} 执行受控轮转？`, {title:"执行受控轮转", items:["会修改官方团队席位", "补位账号继承原角色和席位"], confirmLabel:"执行轮转"}, submit)) return;
           setButtonBusy(submit, true, "轮转中"); form.hidden = true; errorBox.hidden = true;
           try {
             const result = await postAction(`rotate-${workspace.id}-${target}`, `/api/workspaces/${workspace.id}/rotate`, {email:target, email_line:replacement.value || "", force_refill:force.checked, reason:"console_team_detail"});
@@ -2992,7 +2729,7 @@ function hmeRow(item) {
         expiry.append(expiryLabel,workspaceExpiryEditor(workspace)); info.append(expiry); body.append(info);
         const danger = document.createElement("details"); danger.className = "team-detail-disclosure team-danger-zone";
         const dangerTitle = document.createElement("summary"); dangerTitle.textContent = "危险操作";
-        const warning = document.createElement("p"); warning.className = "hint"; warning.textContent = "只移除本地团队记录，不影响官方 Team；本地账号与共享关系按现有安全规则处理。";
+        const warning = document.createElement("p"); warning.className = "hint"; warning.textContent = "只移除本地团队记录，不影响官方团队；本地账号与共享关系按现有安全规则处理。";
         const remove = document.createElement("button"); remove.type="button"; remove.className="button danger"; remove.textContent="移除本地记录"; remove.addEventListener("click",()=>deleteLocalTeam(workspace,remove));
         danger.append(dangerTitle,warning,remove); body.append(danger);
       }
@@ -3006,16 +2743,6 @@ function hmeRow(item) {
 
     async function fetchTeamDetails(workspaceId) {
         const payload = await fetchEntity("workspace-list", "/api/workspaces");
-        if (document.body.dataset.page === "workspaces") {
-          pageCache.kind = "workspace";
-          pageCache.items = payload.items || [];
-          paintList("workspace");
-          if (overlayState.returnFocus && !overlayState.returnFocus.isConnected) {
-            overlayState.returnFocus = document.querySelector(`[data-entity-id="${workspaceId}"] [data-action="workspace.manage"]`)
-              || document.querySelector(`[data-entity-id="${workspaceId}"]`)
-              || document.getElementById("page-root");
-          }
-        }
         const workspace = (payload.items || []).find((item) => Number(item.id) === Number(workspaceId));
         if (!workspace) throw new Error("团队已不存在或无法读取");
         if (teamDetailState) teamDetailState.workspace = workspace;
@@ -3049,7 +2776,7 @@ function hmeRow(item) {
     label.textContent = "邀请角色";
     const role = document.createElement("select");
     role.name = "role";
-    role.append(new Option("Member", "member"), new Option("Owner", "owner"));
+    role.append(new Option("成员（Member）", "member"), new Option("所有者（Owner）", "owner"));
     role.value = ["owner", "account-owner"].includes(row.role || row.official_role) ? "owner" : "member";
     label.append(role);
     const actions = document.createElement("div");
@@ -3155,7 +2882,7 @@ function hmeRow(item) {
 
     async function changeTeamMemberRole(workspace, row, button, role) {
       const email = String(row.email || "").trim();
-      if (!email || !(await confirmDanger(`确认把 ${email} 的官方角色改为 ${role === "owner" ? "Owner" : "Member"}？`, { title: "修改官方角色", confirmLabel: "修改角色" }, button))) return;
+      if (!email || !(await confirmDanger(`确认把 ${email} 的官方角色改为${role === "owner" ? "所有者" : "成员"}？`, { title: "修改官方角色", confirmLabel: "修改角色" }, button))) return;
       setButtonBusy(button, true, "更新中");
       try {
         const body = { email, role };
@@ -3197,7 +2924,7 @@ function hmeRow(item) {
           : {
             title: "从本地移除成员",
             message: `只从本地移除 ${email} ？`,
-            hint: "官方 Team 不会改变。",
+            hint: "官方团队不会改变。",
             confirmLabel: "本地移除",
           };
       if (!await confirmDanger(confirmCopy.message, confirmCopy, button)) return;
@@ -3762,13 +3489,13 @@ function hmeRow(item) {
       input.dataset.rotationWorkspace = ""; input.checked = selected.has(workspace.id);
       label.append(text, input); list.append(label);
     });
-    if (!list.children.length) list.textContent = "尚无工作空间，请先添加团队。";
+    if (!list.children.length) list.textContent = "还没有团队，请先登记团队。";
     const updateHint = () => {
       const all = form.auto_rotate_scope.value === "all";
       document.getElementById("auto-rotation-workspaces").hidden = all;
       document.getElementById("auto-rotation-scope-hint").textContent = all
-        ? "全局范围包含以后新增的工作空间。打开总开关并保存后生效。"
-        : `已选择 ${rotationWorkspaceIds(form).length} 个工作空间。只会在这些工作空间轮转；总开关关闭时均不执行。`;
+        ? "全局范围包含以后新增的团队。打开总开关并保存后生效。"
+        : `已选择 ${rotationWorkspaceIds(form).length} 个团队。只会在这些团队内轮转；总开关关闭时均不执行。`;
     };
     form.auto_rotate_scope.onchange = updateHint;
     list.onchange = updateHint;
@@ -3812,7 +3539,7 @@ function hmeRow(item) {
     if (autoReauthHint) {
       const state = automation.auto_reauth || {};
       autoReauthHint.textContent = state.effective
-        ? "实际生效 · dispatcher 会执行已就绪账号"
+        ? "实际生效 · 后台会处理已就绪的账号"
         : state.requested && !state.deployment_allowed
           ? "已请求但部署总闸关闭 · 设置 AUTO_REAUTH_ENABLED=true 后生效"
           : "未启用";
@@ -4070,236 +3797,9 @@ function hmeRow(item) {
     }
   }
 
-  function bindSearch(input, kind) {
-    if (!input || input.dataset.bound) return;
-    input.dataset.bound = "1";
-    const params = currentQuery();
-    if (params.get("q")) input.value = params.get("q");
-    input.addEventListener("input", () => {
-      window.clearTimeout(searchTimer);
-      searchTimer = window.setTimeout(() => {
-        const next = currentQuery();
-        const value = input.value.trim();
-        if (value) next.set("q", value);
-        else next.delete("q");
-        writeQuery(next);
-        if (kind === "account" && (currentQuery().get("view") || "portfolio") !== "flat") renderPortfolio(pageCache.portfolio || { groups: [], unassigned: [] });
-        else paintList(kind);
-      }, 200);
-    });
-  }
-
-  function kindBadge(kind) {
-    const span = document.createElement("span");
-    span.className = kind === "mother" ? "badge badge-primary" : (kind === "child" ? "badge badge-info" : (kind === "unmanaged" ? "badge badge-warning" : "badge badge-muted"));
-    span.textContent = { mother: "母号", child: "子号", history: "历史", unmanaged: "未接入", invited: "待接受", unassigned: "未归属" }[kind] || kind;
-    return span;
-  }
-
-  function portfolioAccountRow(account, kind) {
-    const row = document.createElement("div");
-    row.className = kind === "history" ? "portfolio-row is-history" : (kind === "mother" ? "portfolio-row is-mother" : "portfolio-row");
-    const canOpen = Boolean(account.id) && kind !== "unmanaged" && kind !== "invited";
-    if (canOpen) bindRow(row, "account", account);
-
-    const identity = document.createElement("div");
-    identity.className = "portfolio-cell portfolio-identity";
-    identity.append(kindBadge(kind));
-    const label = twoLine(account.email || account.name || "—", roleLabel(account.official_role) || account.note || null);
-    identity.append(label);
-    row.append(identity);
-
-    const authCol = document.createElement("div");
-    authCol.className = "portfolio-cell portfolio-auth";
-    authCol.append(statusNode(account.auth || account.membership_state, labelOf(statusLabels, account.auth || account.membership_state)));
-    if (canOpen && (kind === "child" || account.purpose === "child")) {
-      authCol.append(createAutoReauthButton(account));
-    }
-    row.append(authCol);
-
-    const quotaCol = document.createElement("div");
-    quotaCol.className = "portfolio-cell portfolio-quota";
-    quotaCol.append(canOpen ? quotaCell(account) : document.createTextNode(kind === "unmanaged" ? "未接入，无法读取额度" : (kind === "invited" ? "待接受邀请" : "尚未获取")));
-    row.append(quotaCol);
-
-    const sub2Col = document.createElement("div");
-    sub2Col.className = "portfolio-cell portfolio-sub2 row-action-host";
-    sub2Col.append(statusNode(account.sub2api, labelOf(statusLabels, account.sub2api)));
-    if (canOpen) {
-      const actions = document.createElement("div");
-      actions.className = "row-actions row-actions-contextual";
-      actions.append(menuButton("account", account));
-      sub2Col.append(actions);
-    }
-    row.append(sub2Col);
-    return row;
-  }
-
-  function renderPortfolio(payload) {
-    if (window.Team48Accounts) return window.Team48Accounts.render(payload);
-    const root = document.getElementById("accounts-portfolio");
-    const table = document.querySelector("#accounts-body")?.closest(".table-scroll");
-    if (!root) return;
-    pageCache.portfolio = payload || pageCache.portfolio || { groups: [], unassigned: [] };
-    const data = pageCache.portfolio;
-    root.hidden = false;
-    if (table) table.hidden = true;
-    root.replaceChildren();
-    const q = (currentQuery().get("q") || "").trim().toLowerCase();
-    const purpose = currentQuery().get("purpose") || "all";
-    const groups = data.groups || [];
-    let shown = 0;
-
-    const matchesPurpose = (account) => {
-      if (!purpose || purpose === "all") return true;
-      if (!account) return false;
-      if (purpose === "conflict") return account.state === "conflict";
-      if (purpose === "archived") return account.state === "archived" || account.kind === "history";
-      if (purpose === "needs_auth") return needsAuth(account);
-      if (purpose === "quota_full") return (account.quota || {}).seven_day_used_percent === 100;
-      return account.purpose === purpose;
-    };
-    const haystack = (group) => [
-      group.display_name,
-      group.name,
-      group.owner_email,
-      group.official_workspace_id,
-      (group.mother || {}).email,
-      ...(group.current_children || []).map((row) => row.email),
-      ...(group.unmanaged || []).map((row) => row.email),
-      ...(group.history || []).map((row) => row.email),
-    ].join(" ").toLowerCase();
-
-    groups.forEach((group) => {
-      if (q && !haystack(group).includes(q)) return;
-      const mother = group.mother && matchesPurpose(group.mother) ? group.mother : null;
-      const currentChildren = (group.current_children || []).filter(matchesPurpose);
-      const unmanaged = (group.unmanaged || []).filter((row) => purpose === "all" || purpose === "conflict" ? matchesPurpose(row) : false);
-      const history = (group.history || []).filter(matchesPurpose);
-      if (purpose && purpose !== "all" && !mother && !currentChildren.length && !unmanaged.length && !history.length) return;
-      shown += 1;
-      const box = document.createElement("section");
-      box.className = "portfolio-group";
-      const head = document.createElement("div");
-      head.className = "portfolio-head";
-      head.tabIndex = 0;
-      head.setAttribute("role", "button");
-      head.setAttribute("aria-expanded", "true");
-
-      const toggle = document.createElement("span");
-      toggle.className = "toggle-icon";
-      toggle.textContent = "▾";
-      toggle.setAttribute("aria-hidden", "true");
-
-      const body = document.createElement("div");
-      body.className = "portfolio-body";
-      const collapse = () => {
-        const closed = box.classList.toggle("is-collapsed");
-        head.setAttribute("aria-expanded", closed ? "false" : "true");
-      };
-      head.addEventListener("click", (event) => {
-        if (event.target.closest(".row-actions")) return;
-        collapse();
-      });
-      head.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        collapse();
-      });
-
-      const counts = group.counts || {};
-      const meta = document.createElement("div");
-      meta.className = "portfolio-meta";
-      meta.append(twoLine(group.display_name || group.name, shortId(group.official_workspace_id)));
-
-      const ownerCol = document.createElement("div");
-      ownerCol.className = "portfolio-owner";
-      ownerCol.append(twoLine(group.owner_email || "无母号", `${counts.joined_people ?? ((counts.managed_children ?? counts.current_children ?? 0) + (counts.unmanaged ?? 0) + (group.mother ? 1 : 0))} 人 · ${counts.managed_children ?? counts.current_children ?? 0} 子号 · ${counts.unmanaged ?? 0} 未接入`));
-      const groupUsage = workspaceUsageSummary(group.usage);
-      if (groupUsage) ownerCol.append(groupUsage);
-
-      const healthCol = document.createElement("div");
-      healthCol.className = "portfolio-health";
-      healthCol.append(statusNode(group.health, labelOf(statusLabels, group.health)));
-
-      const syncCol = document.createElement("div");
-      syncCol.className = "portfolio-sync";
-      syncCol.append(timeNode(group.last_sync));
-
-      head.append(toggle, meta, ownerCol, healthCol, syncCol);
-
-      if (mother) body.append(portfolioAccountRow(mother, "mother"));
-      currentChildren.forEach((row) => body.append(portfolioAccountRow(row, "child")));
-      unmanaged.forEach((row) => body.append(portfolioAccountRow(row, "unmanaged")));
-      if (history.length) {
-        const hist = document.createElement("details");
-        hist.className = "portfolio-history";
-        const summary = document.createElement("summary");
-        summary.className = "portfolio-history-toggle";
-        summary.textContent = "历史归档成员 (" + history.length + ")";
-        hist.append(summary);
-        history.forEach((row) => hist.append(portfolioAccountRow(row, "history")));
-        body.append(hist);
-      }
-      box.append(head, body);
-      root.append(box);
-    });
-    (data.unassigned || []).forEach((row) => {
-      if (q && !String(row.email || "").toLowerCase().includes(q)) return;
-      if (!matchesPurpose(row)) return;
-      shown += 1;
-      root.append(portfolioAccountRow(row, "unassigned"));
-    });
-    if (!shown) root.append(emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。", true));
-    setCount("accounts-count", shown, (data.groups || []).length + (data.unassigned || []).length);
-  }
-
-  function paintList(kind) {
-    const items = filterItems(kind, pageCache.items);
-    if (kind === "workspace") {
-      renderRows(
-        "workspaces-body",
-        items,
-        6,
-        workspaceRow,
-        items.length === 0 && pageCache.items.length
-          ? emptyState("没有符合当前筛选的工作区", "清除筛选或换一个关键词。")
-          : emptyState("还没有工作区", "点「登记团队」，填母号邮箱并完成 OAuth 授权。")
-      );
-      setCount("workspaces-count", items.length, pageCache.items.length);
-    } else if (kind === "account") {
-      const view = currentQuery().get("view") || "portfolio";
-      const table = document.querySelector("#accounts-body")?.closest(".table-scroll");
-      const portfolio = document.getElementById("accounts-portfolio");
-      if (view === "flat") {
-        if (table) table.hidden = false;
-        if (portfolio) portfolio.hidden = true;
-        renderRows(
-          "accounts-body",
-          items,
-          7,
-          accountRow,
-          items.length === 0 && pageCache.items.length
-            ? emptyState("没有符合当前筛选的账号", "清除筛选或换一个关键词。")
-            : emptyState("还没有账号", "先登记团队母号。归档的默认不显示。")
-        );
-        setCount("accounts-count", items.length, pageCache.items.length);
-      } else if (pageCache.portfolio) {
-        renderPortfolio(pageCache.portfolio);
-      }
-    }
-  }
-
   async function bootOverview() {
+    window.Team48Board?.mount(document.getElementById("team-board-root"));
     renderOverview(await fetchEntity("overview", "/api/overview"));
-  }
-
-  async function bootWorkspaces() {
-    bindSearch(document.getElementById("workspaces-search"), "workspace");
-    const payload = await fetchEntity("workspace-list", "/api/workspaces");
-    pageCache.kind = "workspace";
-    pageCache.items = payload.items || [];
-    paintList("workspace");
   }
 
   async function bootAccounts() {
@@ -4579,7 +4079,6 @@ function hmeRow(item) {
 
   const pageBootstraps = {
     overview: bootOverview,
-    workspaces: bootWorkspaces,
     accounts: bootAccounts,
     operations: bootOperations,
     phones: bootPhones,
@@ -4772,6 +4271,12 @@ function hmeRow(item) {
     if (menu && !menu.hidden && !event.target.closest("#action-menu, [data-menu-trigger], .row-actions")) closeMenu();
   });
 
+  // A fixed-position menu would drift away from its trigger; close it instead.
+  // Clicking a trigger outside the viewport scrolls it into view first; that scroll must not close the menu it opens.
+  window.addEventListener("scroll", () => {
+    if (menu && !menu.hidden && performance.now() - menuOpenedAt > 150) closeMenu();
+  }, { passive: true, capture: true });
+  window.addEventListener("resize", () => { if (menu && !menu.hidden) closeMenu(); });
   window.addEventListener("keydown", (event) => {
     if (!getActiveOverlay() && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -4780,9 +4285,10 @@ function hmeRow(item) {
       renderPalette("");
       commandInput.focus();
     }
+    if (handleMenuKeydown(event)) return;
     if (event.key === "Escape") {
       if (menu && !menu.hidden) {
-        closeMenu();
+        closeMenu({ restoreFocus: true });
       } else if (getActiveOverlay()) {
         event.preventDefault();
         if (getActiveOverlay() === "confirm") finishConfirm(false);

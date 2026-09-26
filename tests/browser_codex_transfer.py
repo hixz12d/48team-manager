@@ -65,15 +65,9 @@ with sync_playwright() as p:
             assert page.locator("#" + name).evaluate("n => { const r=n.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && n.scrollWidth <= n.clientWidth; }")
         page.screenshot(path=str(out / f"accounts-{width}.png"))
     assert all(kind != "push" for kind, _ in calls)
+    # The Codex Proxy settings card was removed in 5027a6f (browser_sub2api_defaults asserts it stays gone).
     page.goto(BASE + "/settings")
-    page.locator("input[name=codex_base_url]").wait_for()
-    assert page.locator("input[name=codex_admin_key]").input_value() == ""
-    assert page.locator("input[name=codex_base_url]").input_value() == "https://codex.example"
-    for width, height in ((1440, 1000), (390, 844)):
-        page.set_viewport_size({"width": width, "height": height})
-        page.locator("[data-service=codex]").scroll_into_view_if_needed()
-        assert page.locator("input[name=codex_base_url]").evaluate("n => {const r=n.getBoundingClientRect(); return r.left>=0 && r.right<=innerWidth;}")
-        page.screenshot(path=str(out / f"settings-{width}.png"))
+    assert page.locator("[data-service=codex]").count() == 0
     assert not errors, errors
-    print(json.dumps({"checks": "selection, cancel, download, push button absent, secret field, desktop/mobile", "screenshots": str(out), "page_errors": errors}))
+    print(json.dumps({"checks": "selection, cancel, download, push button absent, codex settings removed, desktop/mobile", "screenshots": str(out), "page_errors": errors}))
     browser.close()

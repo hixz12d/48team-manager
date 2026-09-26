@@ -1,11 +1,28 @@
 /* One runtime read per page; all progress surfaces subscribe to this store. */
 (() => {
   if (window.Team48Runtime) return;
-  const listeners = new Set(), records = new Map(), pending = new Map(), reads = new Map();
+  const listeners = new Set(), records = new Map(), pending = new Map(), reads = new Map(), waiters = new Map();
   const activeStates = new Set(['pending', 'queued', 'running', 'waiting']);
   let data = null, stale = false, serial = 0, clock = null;
   const active = item => activeStates.has(item?.state);
-  const emit = () => { for (const listener of listeners) { try { listener(data, stale); } catch (error) { console.error(error); } } };
+  const emit = () => { for (const listener of listeners) { try { listener(data, stale); } catch (error) { console.error(error); } } settle(); };
+  // Accepted commands resolve once their terminal detail (with result) has been read.
+  function settle() {
+    for (const [id, waiter] of waiters) {
+      const item = records.get(id);
+      if (item && active(item)) continue;
+      if (item?.hydrated) { waiters.delete(id); waiter.resolve(item); continue; }
+      if (Date.now() - waiter.tried < 5000) continue;
+      waiter.tried = Date.now(); void hydrate(id).catch(() => {});
+    }
+  }
+  function waitFor(id) {
+    id = String(id);
+    const existing = waiters.get(id);
+    if (existing) return existing.promise;
+    let resolve; const promise = new Promise(done => { resolve = done; });
+    waiters.set(id, {promise, resolve, tried: 0}); settle(); return promise;
+  }
   function normalize(item) {
     return {...item, kind: item.kind || item.operation, stage_code: item.stage_code || item.current_step,
       stage_label: item.stage_label || item.business_step, started_at: item.started_at || item.started,
@@ -31,7 +48,7 @@
     const promise = (async () => {
       const response = await fetch(`/api/operations/${encodeURIComponent(id)}`, {headers: {Accept: 'application/json'}, cache: 'no-store'});
       if (!response.ok) throw new Error('暂时无法读取任务详情');
-      const item = await response.json(); put(item); emit(); return item;
+      const item = await response.json(); put({...item, hydrated: !active(normalize(item))}); emit(); return item;
     })().finally(() => reads.delete(id));
     reads.set(id, promise); return promise;
   }
@@ -77,6 +94,12 @@
       // Conflict IDs refer to another operation; never overwrite that operation's state.
       if (result.error_code === 'operation_conflict') return result;
       const id = typeof result.operation_id === 'string' ? result.operation_id : item.matchedId;
+      // 202: the server committed the operation and runs it in the background.
+      if (id && (result.accepted || activeStates.has(result.status))) {
+        put({...item, id, localPending: false, hidden: false, existing: undefined, state: 'running',
+          account_id: result.account_id ?? null, stage_label: '后台任务已开始'});
+        return result;
+      }
       const state = result.status === 'cancelled' ? 'cancelled' : result.partial || result.status === 'partial' ? 'partial'
         : result.status === 'manual_required' || result.needs_confirm ? 'manual_required' : result.success || result.ok ? 'success' : 'failed';
       const finished = {...item, id: id || key, localPending: !id, hidden: false, existing: undefined,
@@ -102,7 +125,7 @@
   document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' ? stopClock() : startClock());
   window.addEventListener('pagehide', stopClock);
   window.addEventListener('pageshow', startClock);
-  window.Team48Runtime = {subscribe, refresh: poller.refresh, hydrate, track, put: item => {put(item); emit();},
+  window.Team48Runtime = {subscribe, refresh: poller.refresh, hydrate, track, waitFor, put: item => {put(item); emit();},
     all: () => all().filter(item => !item.hidden && !item.archived), get: id => records.get(String(id)), isActive: active,
     snapshot: () => data, isStale: () => stale,
     destroy: () => {poller.destroy(); stopClock(); listeners.clear();}};

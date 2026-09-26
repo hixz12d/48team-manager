@@ -55,7 +55,7 @@ def main():
             page.route("**/*", route)
             page.goto("http://testserver/accounts")
             toggle = page.locator("#auto-rotation-toggle")
-            page.wait_for_function("document.querySelector('#auto-rotation-toggle').textContent === '选择工作空间后启用'")
+            page.wait_for_function("document.querySelector('#auto-rotation-toggle').textContent === '选择团队后启用'")
             assert not writes, writes
             page.locator('.auto-rotation-disclosure > summary').click()
             toggle.click()
@@ -69,7 +69,7 @@ def main():
             page.goto('http://testserver/accounts')
             page.wait_for_function("document.querySelector('#auto-rotation-toggle').getAttribute('aria-pressed') === 'true'")
             page.locator('.auto-rotation-disclosure > summary').click()
-            assert '仅选中的 1 个工作空间' in page.locator('#auto-rotation-status').inner_text()
+            assert '仅选中的 1 个团队' in page.locator('#auto-rotation-status').inner_text()
             assert client.get("/api/settings").json()["automation"]["auto_rotate"]["auto_rotate_enabled"]
             page.reload()
             page.wait_for_function("document.querySelector('#auto-rotation-toggle').textContent === '关闭自动轮转'")

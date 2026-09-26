@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.persistence.models.operations import Operation
+from app.persistence.models.oauth import OAuthSession
 
 from app.application.queries.identity import (
     HIDDEN_ACCOUNT_STATES,
@@ -65,11 +66,25 @@ def _quota_risk(quota: dict[str, Any] | None) -> str | None:
     return "ok"
 
 
-def _account_card(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
+async def _last_authorized(db: AsyncSession) -> dict[int, Any]:
+    """Latest successful OAuth per account (plugin, manual and automatic flows all consume a session)."""
+    from sqlalchemy import func
+
+    rows = await db.execute(
+        select(OAuthSession.account_id, func.max(OAuthSession.consumed_at))
+        .where(OAuthSession.account_id.is_not(None), OAuthSession.status == "consumed",
+               OAuthSession.consumed_at.is_not(None))
+        .group_by(OAuthSession.account_id)
+    )
+    return {int(account_id): consumed for account_id, consumed in rows.all()}
+
+
+def _account_card(item: dict[str, Any], *, kind: str, last_authorized: dict[int, Any] | None = None) -> dict[str, Any]:
     quota = item.get("quota") or {}
     auth_status = build_auth_status(item)
     return {
         **item,
+        "last_authorized_at": isoformat((last_authorized or {}).get(item.get("id"))),
         **auth_status,
         **({"needs_auth": item["health"]["needs_auth"], "auth_action": item.get("auth_action")} if item.get("health") else {}),
         "kind": kind,
@@ -92,6 +107,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
     accounts_by_id = {item["id"]: item for item in accounts_payload.get("items") or []}
     usage_by_context = await sub2api_usage_service.payloads_by_context(db)
     remote_by_context, remote_summary = await sub2api_status.payloads(db)
+    last_authorized = await _last_authorized(db)
 
     def remote_for(account_id, workspace_id):
         exact = remote_by_context.get((account_id, workspace_id))
@@ -183,7 +199,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 membership_state = remote["state"]
             kind = "mother" if is_owner else ("history" if membership_state == MEMBERSHIP_STATE_REMOVED else ("invited" if membership_state == MEMBERSHIP_STATE_INVITED else "child"))
             card = _account_card(
-                {
+                last_authorized=last_authorized, item={
                     **account,
                     "workspace_id": ws_id,
                     "official_role": (remote or {}).get("role") or row.official_role,
@@ -212,7 +228,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 assigned_ids.add(owner_item["id"])
                 health = read_health(accounts_raw[owner_item["id"]], ws_id)
                 mother = _account_card(
-                    {
+                    last_authorized=last_authorized, item={
                         **owner_item,
                         "workspace_id": ws_id,
                         "official_role": owner_item.get("official_role") or "owner",
@@ -308,7 +324,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         item["usage"] = usage_for(item["id"], None)
         item["remote_status"] = remote_for(item["id"], None)
         item.update(read_health(accounts_raw[item["id"]], None))
-        unassigned.append(_account_card(item, kind="unassigned"))
+        unassigned.append(_account_card(item, kind="unassigned", last_authorized=last_authorized))
 
     unique = {}
     for group in groups:
