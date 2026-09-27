@@ -1,4 +1,4 @@
-/* Overview team board: per team, per account — Sub2API presence, last authorization (+ needs-auth flag), today's switches. */
+/* Overview team board: per team, per child account (mother hidden) —Sub2API presence, last authorization (+ needs-auth flag), today's switches. */
 (() => {
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const REMOTE = {
@@ -39,9 +39,9 @@
     const [label, tone] = REMOTE[key] || REMOTE.unknown;
     return { key, label: failed ? `${label}（上次）` : label, tone: failed ? "warning" : tone, r, failed };
   }
+  // 看板只关心子号在不在 Sub2API，母号不上看板（去账号页看）。
   function members(group) {
     const list = [];
-    if (group.mother) list.push({ ...group.mother, board_role: "母号" });
     for (const a of group.current_children || []) list.push({ ...a, board_role: "子号" });
     for (const a of group.invited || []) list.push({ ...a, board_role: "邀请中" });
     return list;
@@ -62,7 +62,8 @@
     const tr = el("tr"); tr.dataset.account = String(account.id || "");
     const who = el("td", "board-email");
     const link = el("a", "", account.email || "—"); link.href = account.id ? `/accounts?account=${encodeURIComponent(account.id)}` : "/accounts";
-    who.append(link, el("span", "board-role", account.board_role));
+    who.append(link);
+    if (account.board_role === "邀请中") who.append(el("span", "board-role", "邀请中"));
     const remote = remoteOf(account);
     const remoteTd = el("td");
     const badge = el("span", `management-badge tone-${remote.tone}`, remote.label);
@@ -94,11 +95,11 @@
     head.append(el("div", "", null), manage); head.firstChild.append(title, meta);
     const table = el("table", "board-table");
     const thead = el("thead"); const hr = el("tr");
-    for (const text of ["账号", "Sub2API", "上次授权"]) { const th = el("th", "", text); th.scope = "col"; hr.append(th); }
+    for (const text of ["子号", "Sub2API", "上次授权"]) { const th = el("th", "", text); th.scope = "col"; hr.append(th); }
     thead.append(hr);
     const tbody = el("tbody");
     shown.forEach(a => tbody.append(row(a)));
-    if (!shown.length) { const tr = el("tr"); const td = el("td", "muted", "这个团队还没有接入的账号"); td.colSpan = 3; tr.append(td); tbody.append(tr); }
+    if (!shown.length) { const tr = el("tr"); const td = el("td", "muted", "这个团队还没有子号"); td.colSpan = 3; tr.append(td); tbody.append(tr); }
     table.append(thead, tbody);
     const scroll = el("div", "board-table-scroll"); scroll.append(table);
     section.append(head, scroll);

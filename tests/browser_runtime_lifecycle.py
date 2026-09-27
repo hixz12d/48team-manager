@@ -156,7 +156,11 @@ def main():
         page.wait_for_function('document.querySelector("[data-summary=accounts]").textContent.trim() !== "—"')
         page.wait_for_selector(".board-team")
         assert page.locator("#runtime-status").count() == 0
-        assert page.locator(".board-table").first.locator("th").all_inner_texts() == ["账号", "Sub2API", "上次授权"]
+        assert page.locator(".board-table").first.locator("th").all_inner_texts() == ["子号", "Sub2API", "上次授权"]
+        assert "母号" not in page.locator("#team-board-root").inner_text()
+        page.set_viewport_size({"width": 1440, "height": 1000})
+        tops = page.locator(".board-team").evaluate_all("ns => ns.slice(0, 2).map(n => Math.round(n.getBoundingClientRect().top))")
+        assert len(tops) < 2 or tops[0] == tops[1], tops
         page.wait_for_function('document.querySelector("#task-center-open").textContent.includes("1 个需处理")')
         for width in (1440, 1024, 768, 390):
             page.set_viewport_size({"width": width, "height": 1000 if width > 500 else 844})
