@@ -65,7 +65,7 @@ def check(base, output):
             expect(theme).to_have_value("dark")
             expect(page.locator("html")).to_have_attribute("data-theme", "dark")
             assert page.locator(".topbar").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(25, 28, 33)", path
-            assert page.locator(".workspace").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(19, 21, 25)", path
+            assert page.locator(".workspace").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(16, 18, 21)", path
             for width in (1440, 768, 390):
                 page.set_viewport_size({"width": width, "height": 1000 if width > 540 else 844})
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (path, width)

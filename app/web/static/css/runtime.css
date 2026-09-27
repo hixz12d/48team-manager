@@ -7,11 +7,16 @@
 .board-filters { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
 .board-filters .button[aria-pressed="true"] { background:var(--accent-bg); border-color:var(--accent-border); color:var(--accent-text); font-weight:600; }
 .board-list { display:grid; gap:16px; margin-top:12px; }
-.board-team { background:var(--surface); border-block:1px solid var(--border); min-width:0; }
-.board-team-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; background:var(--surface-subtle); border-bottom:1px solid var(--border); }
+/* 卡片整块同一底色、四边细框加圆角，和页面底色拉开层次；卡头不再单独铺一层灰。 */
+.board-team { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; min-width:0; }
+.board-team-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); }
 .board-team-head h2 { margin:0; font-size:var(--text-body); font-weight:650; overflow-wrap:anywhere; }
-.board-team-owner { margin-left:10px; font-size:var(--text-meta); font-weight:400; color:var(--muted); }
-.board-team-meta { margin:4px 0 0; color:var(--muted); font-size:var(--text-meta); font-variant-numeric:tabular-nums; }
+.board-team-owner { margin-left:10px; font-size:var(--text-body); font-weight:400; color:var(--text-secondary); }
+.board-team-meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; margin:6px 0 0; color:var(--muted); font-size:var(--text-meta); font-variant-numeric:tabular-nums; }
+.board-switch { display:inline-flex; align-items:baseline; gap:3px; padding:1px 8px; border-radius:var(--radius-pill); border:1px solid var(--border); background:var(--surface-muted); color:var(--text-secondary); white-space:nowrap; }
+.board-switch strong { font-size:var(--text-body); font-weight:650; color:var(--text); }
+.board-switch.is-active { border-color:var(--accent-border); background:var(--accent-bg); color:var(--accent-text); }
+.board-switch.is-active strong { color:var(--accent-text); }
 .board-table-scroll { overflow-x:auto; }
 .board-table { width:100%; min-width:520px; border-collapse:collapse; table-layout:fixed; font-size:var(--text-body); }
 .board-table th { text-align:left; font-weight:500; font-size:var(--text-meta); color:var(--muted); padding:8px 14px; border-bottom:1px solid var(--border-subtle); }

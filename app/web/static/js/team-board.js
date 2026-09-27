@@ -86,14 +86,17 @@
     const ownerEmail = group.mother?.email;
     if (ownerEmail) { const owner = el("span", "board-team-owner", ownerEmail); owner.title = "母号"; title.append(owner); }
     const meta = el("p", "board-team-meta");
-    const seats = group.occupied_seats != null && group.seat_limit ? `${group.occupied_seats}/${group.seat_limit} 席` : "席位未同步";
     const switches = window.Team48SwitchCount?.countForToday?.(group.switch_count) ?? 0;
     const expiry = window.Team48Expiry?.summary?.(group.expiry);
     const c = counts(all);
-    const parts = [seats, `今日切换 ${switches} 次`, `在 Sub2API ${c.inSub}/${all.length}`];
+    // 今日切换单独做成小标签放最前；席位没同步时直接不写，不再显示“席位未同步”。
+    const chip = el("span", `board-switch${switches ? " is-active" : ""}`, "今日切换 ");
+    chip.append(el("strong", "", String(switches)), " 次");
+    const parts = [`在 Sub2API ${c.inSub}/${all.length}`];
+    if (group.occupied_seats != null && group.seat_limit) parts.unshift(`${group.occupied_seats}/${group.seat_limit} 席`);
     if (expiry?.date) parts.push(`到期 ${expiry.label}`);
-    meta.textContent = parts.join(" · ");
-    if (c.out) meta.append(el("span", "text-warning", ` · ${c.out} 个不在 Sub2API`));
+    meta.append(chip, el("span", "", parts.join(" · ")));
+    if (c.out) meta.append(el("span", "text-warning", `· ${c.out} 个不在 Sub2API`));
     const manage = el("a", "button compact", "管理团队"); manage.href = `/accounts?view=teams&workspace=${encodeURIComponent(group.id)}`;
     head.append(el("div", "", null), manage); head.firstChild.append(title, meta);
     const table = el("table", "board-table");

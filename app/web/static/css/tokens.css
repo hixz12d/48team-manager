@@ -134,12 +134,12 @@
   color-scheme: dark;
   /* 低饱和中性冷灰：大面积底色不带明显蓝调，正文不用纯白，
      状态色降饱和，只在小面积徽章和数字上出现，长时间看不刺眼。 */
-  --bg: #131519;
+  --bg: #101215;
   --surface: #191c21;
   --surface-subtle: #1c2025;
   --surface-muted: #23272d;
-  --surface-hover: #252a31;
-  --sidebar: #16181c;
+  --surface-hover: #22262c;
+  --sidebar: #14161a;
   --overlay: rgba(6, 7, 9, 0.65);
   --overlay-strong: rgba(6, 7, 9, 0.78);
 
