@@ -10,6 +10,7 @@
 .board-team { background:var(--surface); border-block:1px solid var(--border); min-width:0; }
 .board-team-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 14px; background:var(--surface-subtle); border-bottom:1px solid var(--border); }
 .board-team-head h2 { margin:0; font-size:var(--text-body); font-weight:650; overflow-wrap:anywhere; }
+.board-team-owner { margin-left:10px; font-size:var(--text-meta); font-weight:400; color:var(--muted); }
 .board-team-meta { margin:4px 0 0; color:var(--muted); font-size:var(--text-meta); font-variant-numeric:tabular-nums; }
 .board-table-scroll { overflow-x:auto; }
 .board-table { width:100%; min-width:520px; border-collapse:collapse; table-layout:fixed; font-size:var(--text-body); }
@@ -20,7 +21,7 @@
 .board-table tr:last-child td { border-bottom:0; }
 .board-table tbody tr:hover { background:var(--surface-hover); }
 .board-email { white-space:nowrap; overflow:hidden; }
-.board-email a { display:inline-block; max-width:100%; vertical-align:middle; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; color:var(--text); }
+.board-email a { display:inline-block; max-width:100%; vertical-align:middle; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; color:var(--text); }
 .board-email a:not(:last-child) { max-width:calc(100% - 4em); }
 .board-email a:hover { color:var(--accent-text); }
 .board-role { margin-left:8px; vertical-align:middle; font-size:var(--text-meta); color:var(--muted); }

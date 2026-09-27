@@ -1,4 +1,4 @@
-/* Overview team board: per team, per child account (mother hidden) —Sub2API presence, last authorization (+ needs-auth flag), today's switches. */
+/* Overview team board: per team, per child account (mother shown as an email next to the team name) —Sub2API presence, last authorization (+ needs-auth flag), today's switches. */
 (() => {
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const REMOTE = {
@@ -82,6 +82,9 @@
     const section = el("section", "board-team"); section.dataset.workspace = String(group.id);
     const head = el("header", "board-team-head");
     const title = el("h2", "", group.display_name || group.name || `团队 ${group.id}`);
+    // 母号只在团队名旁边显示邮箱，不进子号列表。
+    const ownerEmail = group.mother?.email;
+    if (ownerEmail) { const owner = el("span", "board-team-owner", ownerEmail); owner.title = "母号"; title.append(owner); }
     const meta = el("p", "board-team-meta");
     const seats = group.occupied_seats != null && group.seat_limit ? `${group.occupied_seats}/${group.seat_limit} 席` : "席位未同步";
     const switches = window.Team48SwitchCount?.countForToday?.(group.switch_count) ?? 0;

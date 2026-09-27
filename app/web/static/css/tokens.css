@@ -132,49 +132,51 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #11161e;
-  --surface: #1a2230;
-  --surface-subtle: #1e2836;
-  --surface-muted: #263244;
-  --surface-hover: #2b394d;
-  --sidebar: #161e2a;
-  --overlay: rgba(3, 7, 13, 0.65);
-  --overlay-strong: rgba(3, 7, 13, 0.78);
+  /* 低饱和中性冷灰：大面积底色不带明显蓝调，正文不用纯白，
+     状态色降饱和，只在小面积徽章和数字上出现，长时间看不刺眼。 */
+  --bg: #131519;
+  --surface: #191c21;
+  --surface-subtle: #1c2025;
+  --surface-muted: #23272d;
+  --surface-hover: #252a31;
+  --sidebar: #16181c;
+  --overlay: rgba(6, 7, 9, 0.65);
+  --overlay-strong: rgba(6, 7, 9, 0.78);
 
-  --border: #344256;
-  --border-subtle: #2a3647;
-  --border-strong: #52647c;
-  --text: #e0e7f0;
-  --text-secondary: #bdc9d9;
-  --muted: #9aaac0;
-  --muted-light: #8c9bb0;
+  --border: #2c3138;
+  --border-subtle: #24282e;
+  --border-strong: #434a54;
+  --text: #d3d8de;
+  --text-secondary: #adb4bd;
+  --muted: #8b939d;
+  --muted-light: #7e8691;
 
-  --danger: #f87171;
-  --danger-text: #fda4af;
-  --danger-bg: #39232e;
-  --danger-border: #70404e;
-  --danger-hover-bg: #4b2937;
-  --danger-hover-border: #985565;
-  --warning: #fbbf24;
-  --warning-text: #f5ce82;
-  --warning-bg: #352e21;
-  --warning-border: #6e5935;
-  --success: #34d399;
-  --success-text: #7dddb4;
-  --success-bg: #1b342e;
-  --success-border: #356451;
-  --accent: #8baeff;
-  --accent-hover: #a9c2ff;
-  --accent-text: #a9c2ff;
-  --accent-bg: #243450;
-  --accent-border: #465f90;
+  --danger: #d4777d;
+  --danger-text: #e4a3a7;
+  --danger-bg: #2c2124;
+  --danger-border: #4d3236;
+  --danger-hover-bg: #372629;
+  --danger-hover-border: #664045;
+  --warning: #cfa656;
+  --warning-text: #d9bf8c;
+  --warning-bg: #29251d;
+  --warning-border: #4a412f;
+  --success: #5fae8c;
+  --success-text: #93c9b0;
+  --success-bg: #1b2824;
+  --success-border: #2f463d;
+  --accent: #8fa6d4;
+  --accent-hover: #a6b9df;
+  --accent-text: #a6b9df;
+  --accent-bg: #212a38;
+  --accent-border: #38475f;
   --neutral-bg: var(--surface-muted);
   --neutral-border: var(--border);
   --neutral-text: var(--text-secondary);
 
-  --primary-bg: #8baeff;
-  --primary-hover: #a9c2ff;
-  --primary-text: #111c30;
+  --primary-bg: #8fa6d4;
+  --primary-hover: #a6b9df;
+  --primary-text: #131a26;
   --toast-close-hover: rgba(255, 255, 255, 0.1);
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.15);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
