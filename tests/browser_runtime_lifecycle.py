@@ -153,22 +153,21 @@ def main():
         assert writes[-1]["body"] == {"email": email, "role": "member", "seat_intent": "workspace_default"}
         assert not any("onboard" in w["path"] or "reauth" in w["path"] or "sub2api" in w["path"] for w in writes)
         page.goto(BASE + "/")
-        page.wait_for_selector(".runtime-operation")
         page.wait_for_function('document.querySelector("[data-summary=accounts]").textContent.trim() !== "—"')
-        assert page.locator("#runtime-counts").inner_text() == "运行 1 · 排队 1 · 等待 1"
-        assert "等待浏览器槽位" in page.locator("#runtime-active").inner_text()
+        page.wait_for_selector(".board-team")
+        assert page.locator("#runtime-status").count() == 0
+        assert page.locator(".board-table").first.locator("th").all_inner_texts() == ["账号", "Sub2API", "上次授权"]
+        page.wait_for_function('document.querySelector("#task-center-open").textContent.includes("1 个需处理")')
         for width in (1440, 1024, 768, 390):
             page.set_viewport_size({"width": width, "height": 1000 if width > 500 else 844})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
-            assert page.locator("#runtime-status").evaluate("n => n.getBoundingClientRect().right <= innerWidth"), width
-            page.screenshot(path=str(OUT / f"runtime-{width}.png"), full_page=True)
+            page.screenshot(path=str(OUT / f"overview-{width}.png"), full_page=True)
         control["runtime_fail"] = True
         page.evaluate("window.Team48Runtime.refresh()")
-        page.wait_for_function('!document.querySelector("#runtime-error").hidden')
-        assert page.locator(".runtime-operation").count() == 3
+        page.wait_for_function('document.querySelector("#task-center-open").textContent.includes("状态更新中断")')
         control["runtime_fail"] = False
         page.evaluate("window.Team48Runtime.refresh()")
-        page.wait_for_function('document.querySelector("#runtime-error").hidden')
+        page.wait_for_function('!document.querySelector("#task-center-open").textContent.includes("状态更新中断")')
         assert not errors, errors
         print(json.dumps({"screenshots": str(OUT), "page_errors": errors, "intercepted_writes": writes, "checks": "single-team scope, reload recovery, group DOM preserved, explicit batch endpoint, remove/reinvite failure/retry, no onboarding, runtime/error recovery, responsive layouts"}))
         browser.close()

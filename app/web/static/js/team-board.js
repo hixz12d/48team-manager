@@ -1,4 +1,4 @@
-/* Overview team board: per team, per account — Sub2API presence, last authorization, last push, today's switches. */
+/* Overview team board: per team, per account — Sub2API presence, last authorization (+ needs-auth flag), today's switches. */
 (() => {
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const REMOTE = {
@@ -21,11 +21,12 @@
     if (ms < 30 * DAY) return `${Math.floor(ms / DAY)} 天前`;
     return new Date(value).toLocaleDateString("zh-CN");
   }
+  const exact = value => new Date(value).toLocaleString("zh-CN", { hour12: false });
   function timeCell(value, emptyText) {
     const td = el("td", "board-time");
     if (!value) { td.append(el("span", "muted", emptyText)); return td; }
     const t = el("time", "", relative(value)); t.dateTime = value;
-    t.title = new Date(value).toLocaleString("zh-CN", { hour12: false });
+    t.title = exact(value);
     if (Date.now() - Date.parse(value) > 7 * DAY) t.className = "text-warning";
     td.append(t); return td;
   }
@@ -66,12 +67,12 @@
     const remoteTd = el("td");
     const badge = el("span", `management-badge tone-${remote.tone}`, remote.label);
     badge.dataset.remoteState = remote.key;
-    badge.title = [remote.r.remote_id ? `远端 #${remote.r.remote_id}` : "", remote.r.label, remote.r.checked_at ? `核对于 ${new Date(remote.r.checked_at).toLocaleString("zh-CN", { hour12: false })}` : "尚未核对"].filter(Boolean).join(" · ");
+    badge.title = [remote.r.remote_id ? `远端 #${remote.r.remote_id}` : "", remote.r.label, remote.r.pushed_at ? `推送于 ${exact(remote.r.pushed_at)}` : "", remote.r.checked_at ? `核对于 ${exact(remote.r.checked_at)}` : "尚未核对"].filter(Boolean).join(" · ");
     remoteTd.append(badge);
-    const auth = el("td");
-    const needs = account.health?.needs_auth || account.needs_auth;
-    auth.append(el("span", `management-badge tone-${needs ? "warning" : "muted"}`, needs ? "需授权" : "有效"));
-    tr.append(who, remoteTd, auth, timeCell(account.last_authorized_at, "无记录"), timeCell(remote.r.pushed_at, remote.key === "unbound" ? "未推送" : "无记录"));
+    // 授权有效时只显示时间；需要重新授权时在时间后面补一个提示，不再单独占一列。
+    const auth = timeCell(account.last_authorized_at, "无记录");
+    if (account.health?.needs_auth || account.needs_auth) auth.append(el("span", "management-badge tone-warning board-auth-flag", "需授权"));
+    tr.append(who, remoteTd, auth);
     return tr;
   }
   function team(group) {
@@ -93,11 +94,11 @@
     head.append(el("div", "", null), manage); head.firstChild.append(title, meta);
     const table = el("table", "board-table");
     const thead = el("thead"); const hr = el("tr");
-    for (const text of ["账号", "Sub2API", "授权", "上次授权", "上次推送"]) { const th = el("th", "", text); th.scope = "col"; hr.append(th); }
+    for (const text of ["账号", "Sub2API", "上次授权"]) { const th = el("th", "", text); th.scope = "col"; hr.append(th); }
     thead.append(hr);
     const tbody = el("tbody");
     shown.forEach(a => tbody.append(row(a)));
-    if (!shown.length) { const tr = el("tr"); const td = el("td", "muted", "这个团队还没有接入的账号"); td.colSpan = 5; tr.append(td); tbody.append(tr); }
+    if (!shown.length) { const tr = el("tr"); const td = el("td", "muted", "这个团队还没有接入的账号"); td.colSpan = 3; tr.append(td); tbody.append(tr); }
     table.append(thead, tbody);
     const scroll = el("div", "board-table-scroll"); scroll.append(table);
     section.append(head, scroll);
@@ -111,7 +112,7 @@
       b.addEventListener("click", () => { filter = key; render(); root.querySelector(`[aria-pressed="true"]`)?.focus(); });
       bar.append(b);
     }
-    const note = el("p", "hint", data.sub2api_status?.configured === false ? "Sub2API 未配置，远端状态暂不可用。" : "远端状态每 15 秒核对一次；时间悬停可看精确值。");
+    const note = el("p", "hint", data.sub2api_status?.configured === false ? "Sub2API 未配置，远端状态暂不可用。" : "远端状态每 15 秒核对一次；悬停时间看精确值，悬停 Sub2API 状态看推送时间。");
     const list = el("div", "board-list");
     (data.groups || []).map(team).filter(Boolean).forEach(n => list.append(n));
     if (!list.children.length) list.append(el("p", "muted", (data.groups || []).length ? "没有符合筛选的账号" : "还没有团队，点「账号与团队」页右上角登记。"));

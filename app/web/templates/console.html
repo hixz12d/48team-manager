@@ -70,21 +70,6 @@
           <a class="summary-item" href="/accounts?view=attention"><span class="summary-label">待处理账号</span><strong class="tabular" data-summary="attention">—</strong><small id="overview-attention-breakdown"></small></a>
           <a class="summary-item" href="/accounts?purpose=conflict"><span class="summary-label">身份冲突</span><strong class="tabular" data-summary="conflicts">—</strong></a>
         </section>
-        <section class="runtime-status" id="runtime-status" aria-labelledby="runtime-title">
-          <header class="runtime-header">
-            <h2 id="runtime-title">后台运行状态</h2>
-            <span id="runtime-counts" role="status">正在读取状态</span>
-            <a href="/operations">任务详情</a>
-            <button type="button" class="button ghost" id="runtime-refresh" title="刷新运行状态" aria-label="刷新运行状态">↻</button>
-          </header>
-          <div class="runtime-health"><span id="runtime-runner">执行状态未知</span><span id="runtime-browser">浏览器状态未知</span><time id="runtime-updated"></time></div>
-          <p id="runtime-error" role="status" hidden></p>
-          <div class="runtime-content">
-            <div class="runtime-current"><div id="runtime-active"></div><p id="runtime-idle" hidden>当前没有待执行任务</p><a id="runtime-more" href="/operations?state=running,queued,waiting,manual_required" hidden></a></div>
-            <div id="runtime-policies" aria-label="自动化策略"></div>
-          </div>
-          <div class="runtime-recent"><h3>最近记录</h3><ul id="runtime-recent"></ul><p id="runtime-recent-empty" hidden>暂无任务记录</p></div>
-        </section>
         <section class="team-board" id="team-board" aria-labelledby="team-board-title">
           <header class="team-board-header"><h2 id="team-board-title">团队看板</h2><a href="/accounts?view=attention">查看待处理</a></header>
           <div id="team-board-root" class="overview-layout"><p class="muted">正在加载团队…</p></div>
@@ -697,7 +682,7 @@
   {% if page == 'accounts' %}<script src="{{ static_url('js/auto-rotation.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/sub2api-defaults.js') }}"></script>
   <script src="{{ static_url('js/sub2api-state-view.js') }}"></script>
-  {% if page == 'overview' %}<script src="{{ static_url('js/runtime-status.js') }}"></script><script src="{{ static_url('js/team-board.js') }}"></script>{% endif %}
+  {% if page == 'overview' %}<script src="{{ static_url('js/team-board.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/app.js') }}"></script>
 </body>
 </html>
