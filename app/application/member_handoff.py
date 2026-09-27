@@ -178,6 +178,76 @@ def _handoff_error(error_code: str, message: str, **extra: Any) -> dict[str, Any
     return {"ok": False, "state": "failed", "error_code": error_code, "message": message, **extra}
 
 
+RESOLVE_LOOKUP_TIMEOUT = 20
+RESOLVE_TOTAL_TIMEOUT = 60
+
+
+async def resolve_extension_workspace(db: AsyncSession, *, email: str) -> dict[str, Any]:
+    """Find the one team whose official members or invites contain this email.
+
+    Read-only. Local records may be stale (and GPT-admin invites never reach them), so every
+    usable team is checked live; the extension calls this while the signup is still running.
+    """
+    import asyncio
+
+    from app.application.workspaces import workspace_service
+
+    target = normalize_email(email)
+    if not target or "@" not in target:
+        return _handoff_error("email_required", "邮箱格式不正确")
+    items = {item["id"]: item for item in await list_extension_workspaces(db)}
+    workspace_ids: list[int] = []
+    for workspace_id in items:
+        workspace = await db.get(Workspace, workspace_id)
+        owner = await db.get(Account, workspace.owner_account_id) if workspace and workspace.owner_account_id else None
+        if owner is None or not owner.access_token_encrypted or owner.operational_state in UNAVAILABLE_WORKSPACE_STATES:
+            continue
+        if normalize_email(owner.email) == target:
+            return _handoff_error("owner_account", "这是母号，插件不处理母号授权")
+        workspace_ids.append(workspace_id)
+    if not workspace_ids:
+        return {"ok": False, "state": "not_found", "error_code": "no_workspaces", "message": "没有可查询的团队"}
+
+    matches: list[dict[str, Any]] = []
+    failed = 0
+    # The extension request times out at 90 s; stay well inside it.
+    deadline = asyncio.get_running_loop().time() + RESOLVE_TOTAL_TIMEOUT
+    for workspace_id in workspace_ids:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 1:
+            failed += 1
+            continue
+        try:
+            # Reload per team: a rollback after one failed lookup expires every loaded row.
+            workspace = await db.get(Workspace, workspace_id)
+            live, found = await asyncio.wait_for(
+                workspace_service.lookup_live_member(db, workspace, target),
+                timeout=min(RESOLVE_LOOKUP_TIMEOUT, remaining),
+            )
+        except Exception:  # noqa: BLE001 - one unreadable team must not hide the others
+            await db.rollback()
+            failed += 1
+            continue
+        if found is not None and found.get("status") in {"joined", "invited"}:
+            matches.append({"id": workspace_id, "name": items[workspace_id]["name"], "state": found["status"]})
+        elif live.get("lookup_state") != "absent_confirmed":
+            failed += 1
+
+    if len(matches) == 1:
+        match = matches[0]
+        return {"ok": True, "state": "found", "workspace": match, "checked": len(workspace_ids),
+                "message": f"已识别团队：{match['name']}"}
+    if len(matches) > 1:
+        names = "、".join(match["name"] for match in matches)
+        return {"ok": False, "state": "ambiguous", "error_code": "multiple_workspaces", "candidates": matches,
+                "message": f"这个邮箱同时在多个团队中（{names}）"}
+    if failed:
+        return {"ok": False, "state": "failed", "error_code": "lookup_incomplete",
+                "message": f"有 {failed} 个团队的成员列表读取失败，其余团队里没有这个邮箱"}
+    return {"ok": False, "state": "not_found", "error_code": "member_not_found",
+            "message": "各团队的成员和邀请里都没有这个邮箱，请确认已在 ChatGPT 后台发出邀请"}
+
+
 async def extension_handoff(
     db: AsyncSession,
     *,

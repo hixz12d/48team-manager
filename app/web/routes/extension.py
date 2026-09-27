@@ -1,7 +1,7 @@
 """Narrow API for the personal signup extension.
 
 Authenticated only by the EXTENSION_API_TOKEN bearer token; never by the admin session.
-The token can list teams, run the sync -> link -> OAuth handoff for one joined member,
+The token can list teams, find which team an email is in, run the sync -> link -> OAuth handoff for one joined member,
 and complete that OAuth with the standard state/PKCE/email checks. Nothing else.
 """
 
@@ -13,7 +13,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.web.schemas.workspaces import ExtensionHandoffCompleteRequest, ExtensionHandoffRequest
+from app.web.schemas.workspaces import (
+    ExtensionHandoffCompleteRequest,
+    ExtensionHandoffRequest,
+    ExtensionResolveRequest,
+)
 
 MIN_TOKEN_LENGTH = 24
 
@@ -38,6 +42,15 @@ def build_extension_router(get_db, settings: Settings) -> APIRouter:
     async def workspaces(_: None = Depends(require_extension), db: AsyncSession = Depends(get_db)) -> dict:
         from app.application.member_handoff import list_extension_workspaces
         return {"ok": True, "items": await list_extension_workspaces(db)}
+
+    @router.post("/resolve")
+    async def resolve(
+        payload: ExtensionResolveRequest,
+        _: None = Depends(require_extension),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        from app.application.member_handoff import resolve_extension_workspace
+        return await resolve_extension_workspace(db, email=payload.email)
 
     @router.post("/handoff")
     async def handoff(

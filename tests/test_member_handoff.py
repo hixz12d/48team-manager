@@ -209,6 +209,68 @@ class MemberHandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.switch_count(), 0)
 
 
+class ResolveWorkspaceTests(unittest.IsolatedAsyncioTestCase):
+    """POST /api/ext/resolve: which team is this email in? Checked live, read-only."""
+
+    asyncTearDown = MemberHandoffTests.asyncTearDown
+
+    async def asyncSetUp(self):
+        await MemberHandoffTests.asyncSetUp(self)
+        async with self.sessions() as db:
+            owner = Account(email="owner2@example.com", local_purpose="mother", auth_state="healthy",
+                            operational_state="active", access_token_encrypted=encrypt_secret("owner2-at"))
+            db.add(owner)
+            await db.flush()
+            other = Workspace(name="Beta Team", official_workspace_id=OTHER_UUID, owner_account_id=owner.id, status="active")
+            db.add(other)
+            await db.commit()
+            self.other_id = other.id
+
+    def live(self, members):
+        """members: {workspace_id: {email: state}} or an Exception per workspace."""
+        async def lookup(db, workspace, email):
+            entry = members.get(workspace.id, {})
+            if isinstance(entry, Exception):
+                raise entry
+            state = entry.get(email)
+            return ({"lookup_state": "found" if state else "absent_confirmed", "success": True},
+                    {"email": email, "status": state} if state else None)
+        return patch("app.application.workspaces.workspace_service.lookup_live_member", new=AsyncMock(side_effect=lookup))
+
+    def resolve(self, email="kid@icloud.com"):
+        return self.client.post("/api/ext/resolve", headers=self.auth, json={"email": email}).json()
+
+    async def test_invited_email_resolves_to_its_only_team(self):
+        with self.live({self.other_id: {"kid@icloud.com": "invited"}}):
+            found = self.resolve("Kid@iCloud.com")
+        self.assertTrue(found["ok"], found)
+        self.assertEqual(found["workspace"], {"id": self.other_id, "name": "Beta Team", "state": "invited"})
+        self.assertEqual(found["checked"], 2)
+        # Read-only: no local account or membership is created.
+        async with self.sessions() as db:
+            self.assertIsNone(await db.scalar(__import__("sqlalchemy").select(Account).where(Account.email == "kid@icloud.com")))
+
+    async def test_missing_multiple_and_unreadable_are_reported(self):
+        with self.live({}):
+            self.assertEqual(self.resolve()["error_code"], "member_not_found")
+        with self.live({self.workspace_id: {"kid@icloud.com": "joined"}, self.other_id: {"kid@icloud.com": "invited"}}):
+            both = self.resolve()
+        self.assertEqual(both["error_code"], "multiple_workspaces")
+        self.assertEqual({item["id"] for item in both["candidates"]}, {self.workspace_id, self.other_id})
+        with self.live({self.workspace_id: RuntimeError("upstream down")}):
+            partial = self.resolve()
+        self.assertEqual(partial["error_code"], "lookup_incomplete")
+        # A match elsewhere still wins over one unreadable team.
+        with self.live({self.workspace_id: RuntimeError("upstream down"), self.other_id: {"kid@icloud.com": "joined"}}):
+            self.assertEqual(self.resolve()["workspace"]["id"], self.other_id)
+
+    async def test_owner_email_and_token_are_refused(self):
+        with self.live({}):
+            self.assertEqual(self.resolve("owner2@example.com")["error_code"], "owner_account")
+        response = self.client.post("/api/ext/resolve", headers={"Authorization": "Bearer wrong"}, json={"email": "kid@icloud.com"})
+        self.assertEqual(response.status_code, 401)
+
+
 class ExtensionDisabledTests(unittest.TestCase):
     def test_endpoints_are_hidden_without_a_long_token(self):
         for token in ("", "short-token"):

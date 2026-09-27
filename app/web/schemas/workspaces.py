@@ -46,6 +46,10 @@ class ExtensionHandoffRequest(BaseModel):
     sync_operation_id: str | None = Field(default=None, min_length=4, max_length=80)
 
 
+class ExtensionResolveRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
 class ExtensionHandoffCompleteRequest(BaseModel):
     account_id: int = Field(gt=0)
     workspace_id: int = Field(gt=0)

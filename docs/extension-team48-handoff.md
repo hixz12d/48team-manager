@@ -33,6 +33,7 @@
 | 接口 | 作用 |
 | --- | --- |
 | `GET /api/ext/workspaces` | 列出可用团队：有母号令牌、有官方 workspace ID、未停用 |
+| `POST /api/ext/resolve {email}` | 只读：用各母号实时读取每个可用团队的成员和邀请，返回唯一包含该邮箱的团队（`found`）；多个团队返回 `multiple_workspaces`，都没有返回 `member_not_found`，部分团队读取失败且无命中返回 `lookup_incomplete`，母号返回 `owner_account`。单团队 20 秒、总计 60 秒上限 |
 | `POST /api/ext/handoff {email, workspace_id[, sync_operation_id]}` | 第一次排队团队同步（与控制台同步共用去重队列），返回 `syncing`；带同步任务 ID 轮询，同步完成后核对成员快照，必要时接入本地，再生成授权链接 |
 | `POST /api/ext/handoff/complete {account_id, workspace_id, ticket, callback_url}` | 走标准的 state/PKCE/邮箱校验换票，然后推送 Sub2API 并计数 |
 
@@ -40,8 +41,9 @@
 
 ## 插件行为
 
-见 `extensions/chatgpt-signup/README.md` 的 0.5.0 一节。要点：
+见 `extensions/chatgpt-signup/README.md` 的 0.5.0 和 0.5.8 两节。要点：
 
+- 选「自动识别」时，开始注册即调用 `resolve`，结果存入任务；注册完成时若尚未命中再实时查一次，仍无唯一结果则停下让用户手选，不猜测。
 - 授权在注册所用的同一个无痕标签页进行（同一 HubStudio 环境和代理出口）。登录、验证码、团队选择和同意复用原有的 CDP 输入。
 - 回调通过 `webNavigation` 拦截，只接受注册标签页里、`localhost` / `127.0.0.1:1455/auth/callback` 且带 `state` 的地址，每个授权会话只提交一次。
 - 只有无痕上下文的 service worker 驱动接入（`incognito: split` 下普通窗口的 worker 看不到无痕标签页）。
