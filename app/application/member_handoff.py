@@ -218,8 +218,9 @@ async def resolve_extension_workspace(db: AsyncSession, *, email: str) -> dict[s
             failed += 1
             continue
         try:
-            # Reload per team: a rollback after one failed lookup expires every loaded row.
-            workspace = await db.get(Workspace, workspace_id)
+            # Reload per team (a rollback expires loaded rows) with the owner eagerly loaded:
+            # async sessions cannot lazy-load it later.
+            workspace = await workspace_service.load_workspace(db, workspace_id)
             live, found = await asyncio.wait_for(
                 workspace_service.lookup_live_member(db, workspace, target),
                 timeout=min(RESOLVE_LOOKUP_TIMEOUT, remaining),

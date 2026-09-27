@@ -227,15 +227,29 @@ class ResolveWorkspaceTests(unittest.IsolatedAsyncioTestCase):
             self.other_id = other.id
 
     def live(self, members):
-        """members: {workspace_id: {email: state}} or an Exception per workspace."""
-        async def lookup(db, workspace, email):
-            entry = members.get(workspace.id, {})
-            if isinstance(entry, Exception):
-                raise entry
-            state = entry.get(email)
-            return ({"lookup_state": "found" if state else "absent_confirmed", "success": True},
-                    {"email": email, "status": state} if state else None)
-        return patch("app.application.workspaces.workspace_service.lookup_live_member", new=AsyncMock(side_effect=lookup))
+        """members: {workspace_id: {email: state}} or an Exception per workspace.
+
+        Only the ChatGPT HTTP client is faked, so the real lookup (owner loading, token,
+        list parsing) runs against the database like in production.
+        """
+        official = {WORKSPACE_UUID: self.workspace_id, OTHER_UUID: self.other_id}
+
+        def listing(state):
+            async def fetch(token, account_id, db, identifier="default"):
+                entry = members.get(official[account_id], {})
+                if isinstance(entry, Exception):
+                    raise entry
+                rows = [{"email": email, "role": "standard-user", "id": f"user-{email}"}
+                        for email, value in entry.items() if value == state]
+                key = "members" if state == "joined" else "items"
+                return {"success": True, key: rows, "total": len(rows)}
+            return fetch
+
+        client = "app.application.workspaces.workspace_service.client"
+        stack = __import__("contextlib").ExitStack()
+        stack.enter_context(patch(f"{client}.get_members", new=AsyncMock(side_effect=listing("joined"))))
+        stack.enter_context(patch(f"{client}.get_invites", new=AsyncMock(side_effect=listing("invited"))))
+        return stack
 
     def resolve(self, email="kid@icloud.com"):
         return self.client.post("/api/ext/resolve", headers=self.auth, json={"email": email}).json()
