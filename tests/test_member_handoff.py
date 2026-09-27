@@ -274,6 +274,8 @@ class ResolveWorkspaceTests(unittest.IsolatedAsyncioTestCase):
         with self.live({self.workspace_id: RuntimeError("upstream down")}):
             partial = self.resolve()
         self.assertEqual(partial["error_code"], "lookup_incomplete")
+        self.assertEqual(partial["unreadable"], ["Alpha Team"])
+        self.assertIn("Alpha Team", partial["message"])
         # A match elsewhere still wins over one unreadable team.
         with self.live({self.workspace_id: RuntimeError("upstream down"), self.other_id: {"kid@icloud.com": "joined"}}):
             self.assertEqual(self.resolve()["workspace"]["id"], self.other_id)

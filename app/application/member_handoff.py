@@ -209,13 +209,13 @@ async def resolve_extension_workspace(db: AsyncSession, *, email: str) -> dict[s
         return {"ok": False, "state": "not_found", "error_code": "no_workspaces", "message": "没有可查询的团队"}
 
     matches: list[dict[str, Any]] = []
-    failed = 0
+    failed: list[str] = []
     # The extension request times out at 90 s; stay well inside it.
     deadline = asyncio.get_running_loop().time() + RESOLVE_TOTAL_TIMEOUT
     for workspace_id in workspace_ids:
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 1:
-            failed += 1
+            failed.append(items[workspace_id]["name"])
             continue
         try:
             # Reload per team (a rollback expires loaded rows) with the owner eagerly loaded:
@@ -227,12 +227,12 @@ async def resolve_extension_workspace(db: AsyncSession, *, email: str) -> dict[s
             )
         except Exception:  # noqa: BLE001 - one unreadable team must not hide the others
             await db.rollback()
-            failed += 1
+            failed.append(items[workspace_id]["name"])
             continue
         if found is not None and found.get("status") in {"joined", "invited"}:
             matches.append({"id": workspace_id, "name": items[workspace_id]["name"], "state": found["status"]})
         elif live.get("lookup_state") != "absent_confirmed":
-            failed += 1
+            failed.append(items[workspace_id]["name"])
 
     if len(matches) == 1:
         match = matches[0]
@@ -243,8 +243,9 @@ async def resolve_extension_workspace(db: AsyncSession, *, email: str) -> dict[s
         return {"ok": False, "state": "ambiguous", "error_code": "multiple_workspaces", "candidates": matches,
                 "message": f"这个邮箱同时在多个团队中（{names}）"}
     if failed:
-        return {"ok": False, "state": "failed", "error_code": "lookup_incomplete",
-                "message": f"有 {failed} 个团队的成员列表读取失败，其余团队里没有这个邮箱"}
+        shown = "、".join(failed[:5]) + (" 等" if len(failed) > 5 else "")
+        return {"ok": False, "state": "failed", "error_code": "lookup_incomplete", "unreadable": failed[:20],
+                "message": f"其余团队里没有这个邮箱；{len(failed)} 个团队读不到成员列表（{shown}，多为母号授权过期或团队停用）"}
     return {"ok": False, "state": "not_found", "error_code": "member_not_found",
             "message": "各团队的成员和邀请里都没有这个邮箱，请确认已在 ChatGPT 后台发出邀请"}
 
