@@ -100,6 +100,9 @@ async def get_operation_detail(db: AsyncSession, public_id: str) -> dict[str, An
         else ("" if payload["can_cancel"] else f"state={row.state} is not cancellable")
     )
     payload["can_retry"] = row.state in {"failed", "cancelled"} and row.op_type in SAFE_RETRY_TYPES
+    from app.application.manual_rotation import can_continue
+
+    payload["can_continue_rotation"] = can_continue(row)
     if row.op_type in UNSAFE_RETRY_TYPES:
         payload["retry_reason"] = "destructive browser/workspace action cannot be blindly retried"
     elif not payload["can_retry"]:
@@ -762,70 +765,43 @@ async def start_controlled_rotate(
     workspace_id: int,
     *,
     email: str,
-    email_line: str = "",
-    phone_line: str = "",
-    proxy: str = "",
-    force_refill: bool = False,
-    reason: str = "console",
-    role: str = "owner",
+    replacement_email: str = "",
+    confirm_vacancy: bool = False,
     background: bool = False,
 ) -> dict[str, Any]:
-    workspace = await db.get(Workspace, int(workspace_id))
-    if workspace is None:
-        return {"ok": False, "error": "workspace not found", "error_code": "not_found"}
-    target = normalize_email(email)
-    if not target:
-        return {"ok": False, "error": "email required", "error_code": "email_required"}
-    child = (
-        await db.execute(select(Account).where(Account.email == normalize_email(target)))
-    ).scalar_one_or_none()
-    if background:
-        # Inline runs let the saga report conflicts; background runs must refuse
-        # before returning an id, or two queued rotations would race.
-        from app.domain.rotate import WORKSPACE_LOCK_ACTIONS as ROTATE_LOCK_ACTIONS
+    """Manual one-for-one rotation; role and seat are read live from the old member."""
+    from app.application import manual_rotation
 
-        blocker = await operation_store.active_for_workspace(db, workspace.id, actions=ROTATE_LOCK_ACTIONS)
-        if blocker is not None:
-            return {"ok": False, "error_code": "operation_conflict",
-                    "error": f"Workspace {workspace.id} 已有 {blocker.op_type} 任务 {blocker.public_id} 在跑",
-                    "operation_id": blocker.public_id}
-    operation = await operation_store.create(
-        db,
-        op_type="rotate",
-        workspace_id=workspace.id,
-        account_id=child.id if child else None,
-        email=target,
-        phone=str(phone_line or "").strip(),
-        input_payload={
-            "workspace_id": workspace.id,
-            "email": target,
-            "force_refill": bool(force_refill),
-            "reason": reason,
-            "source": "manual",
-            "confirmed": True,
-            "requested_role": parse_invite_role(role),
-        },
-        source="manual",
+    operation, blocked = await manual_rotation.open_rotation(
+        db, workspace_id, email=email, replacement_email=replacement_email,
     )
-    await db.commit()
-    target_id, job_id, child_id = workspace.id, operation.public_id, child.id if child else None
+    if blocked is not None:
+        return blocked
+    job_id = operation.public_id
 
     async def command(session: AsyncSession) -> dict[str, Any]:
-        return await rotate_service.run_rotate_saga(
-            session,
-            job_id=job_id,
-            workspace_id=target_id,
-            email=target,
-            reason=reason or "console",
-            force_refill=force_refill,
-            email_line=email_line,
-            phone_line=phone_line,
-            proxy=proxy,
-            child_id=child_id,
-            skip_confirm=True,
-            role=role,
-            in_test=False,
-        )
+        return await manual_rotation.run_manual_rotation(session, job_id, confirm_vacancy=confirm_vacancy)
+
+    return await _run_command(db, operation, command, background=background)
+
+
+async def continue_manual_rotation(
+    db: AsyncSession,
+    public_id: str,
+    *,
+    confirm_vacancy: bool = False,
+    background: bool = False,
+) -> dict[str, Any]:
+    """Resume only the unconfirmed stages of one manual rotation; never restart it."""
+    from app.application import manual_rotation
+
+    operation, blocked = await manual_rotation.reopen_rotation(db, public_id)
+    if blocked is not None:
+        return blocked
+    job_id = operation.public_id
+
+    async def command(session: AsyncSession) -> dict[str, Any]:
+        return await manual_rotation.run_manual_rotation(session, job_id, confirm_vacancy=confirm_vacancy)
 
     return await _run_command(db, operation, command, background=background)
 

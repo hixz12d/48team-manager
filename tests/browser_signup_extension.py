@@ -78,7 +78,19 @@ window.chrome={runtime:{sendMessage:async message=>{
   testState.entryFallbackUsed=true;return {ok:true,granted:true,url:'https://chatgpt.com/auth/login'};
  }
  if(message.type==='code')return {ok:true,code:'654321'};
- if(message.type==='pause'){testState.active=false;testState.status='paused';testState.message=message.reason;}
+ if(message.type==='pause'){testState.active=false;testState.status='paused';testState.message=message.reason;testState.pauseCode=message.code;
+  testState.pausedStage=message.stage;testState.autoResume=['submit_timeout','click_timeout','profile_timeout','retry_limit','button_unavailable'].includes(message.code);
+  testState.autoRetry=['button_unavailable','redraw','unknown_page'].includes(message.code)&&(window.testAutoRetries||0)<3;}
+ if(message.type==='auto-retry'){
+  if(testState.status!=='paused' || !testState.autoRetry)return {ok:true,resumed:false};
+  window.testAutoRetries=(window.testAutoRetries||0)+1;
+  Object.assign(testState,{active:true,status:'running',resumeCount:(testState.resumeCount||0)+1,autoRetry:false});return {ok:true,resumed:true};
+ }
+ if(message.type==='auto-resume'){
+  const later=['signup','email','password','otp','profile','home'];
+  if(testState.status!=='paused' || !(message.reload || (testState.autoResume && later.indexOf(message.stage)>later.indexOf(testState.pausedStage))))return {ok:true,resumed:false};
+  Object.assign(testState,{active:true,status:'running',resumeCount:(testState.resumeCount||0)+1,autoResumed:message.stage});return {ok:true,resumed:true};
+ }
  if(message.type==='complete'){testState.active=false;testState.status='done';}
  return {ok:true};
 }}};
@@ -257,7 +269,8 @@ class SignupExtensionBrowserTests(unittest.TestCase):
         page = self.fixture('<p>Loading</p><script>testState.entryFallbackUsed=true</script>',
                             url='https://chatgpt.com/auth/login')
         page.wait_for_function("testMessages.filter(m=>m.type==='state').length>=2")
-        page.evaluate('window.realNow=Date.now;Date.now=()=>realNow()+16000')
+        # 0.5.4: the fallback page itself waits FALLBACK_PAGE_WAIT (30 s) for its form.
+        page.evaluate('window.realNow=Date.now;Date.now=()=>realNow()+31000')
         page.wait_for_function("testState.status==='paused'")
         self.assertEqual(page.url, 'https://chatgpt.com/auth/login')
         self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='entry-fallback')"))
@@ -529,6 +542,115 @@ class SignupExtensionBrowserTests(unittest.TestCase):
         page.wait_for_timeout(4500)
         self.assertEqual(page.evaluate('window.submits'), 1)
         self.assertFalse(page.evaluate("mouseEvents.some(e=>e.tag==='BUTTON' && e.type==='click')"))
+
+    def test_site_submit_that_stalls_after_spinner_gets_one_continue_click(self):
+        # 0.5.5: the page submits a complete OTP by itself, shows a spinner, then stops on the same form.
+        # Before, this waited 45 s and paused ("表单提交后超过 45 秒未前进").
+        for stage, fields in [('otp', '<input name="code" autocomplete="one-time-code" '
+                               'oninput="if(this.value.length===6){this.form.setAttribute(\'aria-busy\',\'true\');this.form.requestSubmit();'
+                               'setTimeout(()=>this.form.removeAttribute(\'aria-busy\'),300)}">'),
+                              ('profile', '<input name="name"><input name="age" type="number" '
+                               'onchange="this.form.setAttribute(\'aria-busy\',\'true\');this.form.requestSubmit();'
+                               'setTimeout(()=>this.form.removeAttribute(\'aria-busy\'),300)">')]:
+            with self.subTest(stage=stage):
+                page = self.fixture('<form onsubmit="event.preventDefault();window.submits=(window.submits||0)+1">' + fields +
+                                    '<button onclick="window.clicks=(window.clicks||0)+1">Continue</button></form>')
+                page.wait_for_function('window.submits===1')
+                typed = page.evaluate('inputEvents.length')
+                values = page.locator('input').evaluate_all('nodes=>nodes.map(el=>el.value)')
+                page.wait_for_timeout(3000)
+                self.assertFalse(page.evaluate('!!window.clicks'), 'no click while the spinner result is still fresh')
+                page.wait_for_function('window.clicks===1', timeout=15000)
+                # The same values (and the same OTP) are submitted again; nothing is retyped.
+                self.assertEqual(page.evaluate('inputEvents.length'), typed)
+                self.assertEqual(page.locator('input').evaluate_all('nodes=>nodes.map(el=>el.value)'), values)
+                self.assertEqual(page.evaluate("testMessages.filter(m=>m.event==='submit_stalled').length"), 1)
+                self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='pause')"))
+                page.close()
+
+    def test_site_submit_stall_release_is_bounded_and_skips_loading_or_changed_forms(self):
+        # A site that keeps spinning and stopping after every click: one release for its own submit,
+        # then only the existing bounded Continue retries, and finally a pause.
+        page = self.fixture('<form onsubmit="event.preventDefault();window.submits=(window.submits||0)+1;'
+                            'this.setAttribute(\'aria-busy\',\'true\');setTimeout(()=>this.removeAttribute(\'aria-busy\'),200)">'
+                            '<input name="code" autocomplete="one-time-code" oninput="if(this.value.length===6)this.form.requestSubmit()">'
+                            '<button onclick="window.clicks=(window.clicks||0)+1">Continue</button></form>')
+        page.wait_for_function('window.submits===1')
+        for _ in range(12):
+            if page.evaluate("testState.status==='paused'"):
+                break
+            self.advance_idle_time(page, 7000)
+            page.wait_for_timeout(1700)
+        page.wait_for_function("testState.status==='paused'", timeout=10000)
+        # 1 click after the release + at most 2 retries allowed by this fixture's worker.
+        self.assertLessEqual(page.evaluate('window.clicks||0'), 3)
+        self.assertEqual(page.evaluate("testMessages.filter(m=>m.event==='submit_stalled').length"), 1)
+        page.close()
+        # Still loading, or the user changed the value: never released.
+        for change in ["document.querySelector('form').setAttribute('aria-busy','true')",
+                       "document.querySelector('input').value='000000'"]:
+            with self.subTest(change=change):
+                page = self.fixture('<form onsubmit="event.preventDefault();window.submits=(window.submits||0)+1">'
+                                    '<input name="code" autocomplete="one-time-code" oninput="if(this.value.length===6){'
+                                    'this.form.setAttribute(\'aria-busy\',\'true\');this.form.requestSubmit();'
+                                    'setTimeout(()=>{this.form.removeAttribute(\'aria-busy\');window.idle=true},200)}">'
+                                    '<button onclick="window.clicks=(window.clicks||0)+1">Continue</button></form>')
+                page.wait_for_function('window.idle===true')
+                page.evaluate(change)
+                self.advance_idle_time(page, 8000)
+                count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
+                page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+3", arg=count)
+                self.assertFalse(page.evaluate('!!window.clicks'))
+                self.assertFalse(page.evaluate("testMessages.some(m=>m.event==='submit_stalled')"))
+                page.close()
+
+    def test_timeout_pause_resumes_when_page_reaches_next_step(self):
+        page = self.fixture('<form onsubmit="event.preventDefault();window.submits=(window.submits||0)+1">'
+                            '<input name="code" autocomplete="one-time-code" oninput="if(this.value.length===6){'
+                            'this.form.setAttribute(\'aria-busy\',\'true\');this.form.requestSubmit()}">'
+                            '<button>Continue</button></form>')
+        page.wait_for_function('window.submits===1')
+        self.advance_idle_time(page, 46000)
+        page.wait_for_function("testState.status==='paused'")
+        self.assertEqual(page.evaluate('testState.pauseCode'), 'submit_timeout')
+        self.assertEqual(page.evaluate('testState.pausedStage'), 'otp')
+        # The same step while paused: stay paused.
+        count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
+        page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+2", arg=count)
+        self.assertEqual(page.evaluate('testState.status'), 'paused')
+        # The site finally moves to the profile step on its own: continue without a click on Continue.
+        page.evaluate("document.body.innerHTML='<form onsubmit=\"event.preventDefault();window.profileDone=true\">"
+                      "<input name=name><input name=age type=number><button>Continue</button></form>'")
+        page.wait_for_function('window.profileDone===true', timeout=20000)
+        self.assertEqual(page.evaluate('testState.autoResumed'), 'profile')
+        self.assertEqual(page.locator('input[name=name]').input_value(), 'Test User')
+
+    def test_user_pause_or_challenge_is_not_auto_resumed(self):
+        page = self.fixture('<form><input name="code" autocomplete="one-time-code"></form>'
+                            '<script>Object.assign(testState,{active:false,status:"paused",pauseCode:"user",pausedStage:"otp",autoResume:false})</script>')
+        page.wait_for_function("testMessages.filter(m=>m.type==='state').length>=2")
+        page.evaluate("document.body.innerHTML='<form><input name=name><input name=age type=number><button>Continue</button></form>'")
+        count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
+        page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+3", arg=count)
+        self.assertEqual(page.evaluate('testState.status'), 'paused')
+        self.assertEqual(page.locator('input[name=name]').input_value(), '')
+
+    def test_reloaded_page_resumes_after_refresh_and_continue(self):
+        page = self.fixture('<form onsubmit="event.preventDefault();window.submitted=true">'
+                            '<input name="code" autocomplete="one-time-code"><button>Continue</button></form>'
+                            '<script>Object.assign(testState,{active:false,status:"paused",pausedStage:"otp",autoResume:false,'
+                            'reloadAt:Date.now()-1000})</script>')
+        page.wait_for_function('window.submitted===true', timeout=20000)
+        self.assertTrue(page.evaluate("testMessages.some(m=>m.type==='auto-resume' && m.reload===true)"))
+        page.close()
+        # A reload request from before this page existed does not count as this page's reload.
+        page = self.fixture('<form><input name="code" autocomplete="one-time-code"><button>Continue</button></form>'
+                            '<script>Object.assign(testState,{active:false,status:"paused",pausedStage:"otp",autoResume:false,'
+                            'reloadAt:Date.now()+5000})</script>')
+        count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
+        page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+3", arg=count)
+        self.assertEqual(page.evaluate('testState.status'), 'paused')
+        self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='auto-resume')"))
 
     def test_idle_otp_auto_submit_gets_one_click_after_short_wait(self):
         page = self.fixture('<form onsubmit="event.preventDefault();(window.submitTimes||=[]).push(performance.now())">'
@@ -828,19 +950,82 @@ class SignupExtensionBrowserTests(unittest.TestCase):
     def advance_idle_time(self, page, milliseconds=2500):
         page.evaluate('ms=>{window.realNow||=Date.now;window.timeShift=(window.timeShift||0)+ms;Date.now=()=>realNow()+timeShift}', milliseconds)
 
-    def test_continue_submit_without_spinner_does_not_repeat_request(self):
+    def set_hidden(self, page, hidden):
+        page.evaluate("h=>{Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>h?'hidden':'visible'});"
+                      "document.dispatchEvent(new Event('visibilitychange'))}", hidden)
+
+    def wait_ticks(self, page, ticks=3):
+        count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
+        page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+%d" % ticks, arg=count)
+
+    def test_button_that_never_became_usable_is_retried_after_a_visible_wait(self):
+        # 0.5.9: a covered Continue pauses with button_unavailable; once usable, the step retries by itself.
+        page = self.fixture('<form onsubmit="event.preventDefault();window.submitted=(window.submitted||0)+1">'
+                            '<input name="email" type="email" oninput="if(this.value===\'test@icloud.com\')'
+                            'document.body.insertAdjacentHTML(\'beforeend\',\'<div id=cover style=&quot;position:fixed;inset:0;background:#fff8&quot;></div>\')">'
+                            '<button>Continue</button></form>')
+        page.wait_for_function("!!document.querySelector('#cover')")
+        page.wait_for_timeout(1500)
+        self.advance_idle_time(page, 16000)
+        page.wait_for_function("testState.status==='paused'")
+        self.assertEqual(page.evaluate('testState.pauseCode'), 'button_unavailable')
+        page.evaluate("document.querySelector('#cover').remove()")
+        # Not before the visible wait.
+        self.wait_ticks(page)
+        self.assertEqual(page.evaluate('testState.status'), 'paused')
+        self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='auto-retry')"))
+        # Hidden time does not count toward the wait.
+        self.set_hidden(page, True)
+        self.advance_idle_time(page, 20000)
+        self.wait_ticks(page)
+        self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='auto-retry')"))
+        self.set_hidden(page, False)
+        self.advance_idle_time(page, 9000)
+        page.wait_for_function('window.submitted===1', timeout=20000)
+        self.assertEqual(page.evaluate("testMessages.filter(m=>m.type==='auto-retry').length"), 1)
+        self.assertEqual(page.locator('input').input_value(), 'test@icloud.com')
+
+    def test_hidden_window_time_does_not_count_toward_click_timeout(self):
+        page = self.fixture('<form><input name="email" type="email"><button type="button" '
+                            'onclick="window.clicks=(window.clicks||0)+1">Continue</button></form>')
+        page.wait_for_function('window.clicks===1')
+        self.set_hidden(page, True)
+        self.advance_idle_time(page, 60000)
+        self.wait_ticks(page)
+        self.set_hidden(page, False)
+        self.wait_ticks(page)
+        self.assertEqual(page.evaluate('testState.status'), 'running')
+        self.advance_idle_time(page, 46000)
+        page.wait_for_function("testState.status==='paused'")
+        self.assertEqual(page.evaluate('testState.pauseCode'), 'click_timeout')
+        self.assertEqual(page.evaluate('window.clicks'), 1)
+
+    def test_page_settles_briefly_after_becoming_visible_before_typing(self):
+        page = self.fixture('<script>Object.defineProperty(document,"visibilityState",{configurable:true,get:()=>"hidden"})</script>'
+                            '<form onsubmit="event.preventDefault()"><input name="email" type="email" '
+                            'oninput="window.firstInput||=performance.now()"><button>Continue</button></form>')
+        self.wait_ticks(page)
+        self.assertEqual(page.locator('input').input_value(), '')
+        self.set_hidden(page, False)
+        shown = page.evaluate('performance.now()')
+        page.wait_for_function("window.firstInput>0", timeout=15000)
+        self.assertGreaterEqual(page.evaluate('window.firstInput') - shown, 1200)
+
+    def test_continue_submit_that_stalls_is_clicked_again_without_refilling(self):
+        # 0.5.3: a submit that leaves the unchanged page idle for 6 s gets a bounded extra click.
         for stage, fields in [('otp', '<input name="code" autocomplete="one-time-code">'),
                               ('profile', '<input name="name"><input name="age" type="number">')]:
             with self.subTest(stage=stage):
                 page = self.fixture('<form onsubmit="event.preventDefault();window.requests=(window.requests||0)+1">'+fields+
                                     '<button onclick="window.clicks=(window.clicks||0)+1">Continue</button></form>')
                 page.wait_for_function('window.requests===1')
-                page.wait_for_timeout(7500)
-                count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
-                page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+4", arg=count)
+                typed = page.evaluate('inputEvents.length')
+                page.wait_for_timeout(3000)
                 self.assertEqual(page.evaluate('window.requests'), 1)
-                self.assertEqual(page.evaluate('window.clicks'), 1)
-                self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='retry-continue')"))
+                page.wait_for_function('window.requests===2', timeout=15000)
+                self.assertEqual(page.evaluate('inputEvents.length'), typed)
+                self.assertTrue(page.evaluate("testMessages.some(m=>m.type==='retry-continue' && m.stalled)"))
+                self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='retry-continue' && !m.stalled)"))
                 page.close()
 
     def test_finish_creating_account_handles_idle_validation_submit(self):
@@ -943,8 +1128,8 @@ class SignupExtensionBrowserTests(unittest.TestCase):
                 page.wait_for_function("testMessages.some(m=>m.event==='click_response' && m.outcome==='loading')")
                 count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
                 page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+2", arg=count)
-                self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='retry-continue')"))
-                self.assertEqual(page.evaluate('window.clicks'), 1)
+                # Only the separate stalled-page re-click (after 6 s idle) may follow a loading response.
+                self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='retry-continue' && !m.stalled)"))
                 page.close()
 
     def test_otp_submit_during_pointerdown_stays_guarded_after_idle_interval(self):
@@ -966,9 +1151,8 @@ class SignupExtensionBrowserTests(unittest.TestCase):
         page.wait_for_function('window.submits===1')
         count = page.evaluate("testMessages.filter(m=>m.type==='state').length")
         page.wait_for_function("n=>testMessages.filter(m=>m.type==='state').length>=n+3", arg=count)
-        self.assertEqual(page.evaluate('window.submits'), 1)
         self.assertEqual(page.evaluate('window.clicks'), 1)
-        self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='retry-continue')"))
+        self.assertFalse(page.evaluate("testMessages.some(m=>m.type==='retry-continue' && !m.stalled)"))
 
     def test_continue_retry_rechecks_loading_after_worker_reservation(self):
         page = self.fixture('<form onsubmit="event.preventDefault()"><input name="code" autocomplete="one-time-code">'

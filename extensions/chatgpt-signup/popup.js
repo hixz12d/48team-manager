@@ -4,22 +4,24 @@ let currentJob;
 let busy = false;
 let incognito = false;
 let team48 = false, workspaces = null, workspaceError = '', workspacesRetryAt = 0;
-const HANDOFF_BUSY = new Set(['syncing', 'waiting_join', 'opening', 'authorizing', 'completing']);
-const HANDOFF_TITLES = {syncing: '正在接入 Team48', waiting_join: '等待接受邀请', opening: '正在打开授权页', authorizing: '正在授权',
+const HANDOFF_BUSY = new Set(['resolving', 'syncing', 'waiting_join', 'opening', 'authorizing', 'completing']);
+const HANDOFF_TITLES = {resolving: '正在识别团队', syncing: '正在接入 Team48', waiting_join: '等待接受邀请', opening: '正在打开授权页', authorizing: '正在授权',
   completing: '正在提交 Team48', done: '已接入 Team48', failed: '接入未完成', callback_retry: '回调待重新提交'};
 const LAST_WORKSPACE = 'team48:last-workspace';
-function fillWorkspaceSelect(select, empty) {
-  const keep = select.value || localStorage.getItem(LAST_WORKSPACE) || '';
+const AUTO_TEAM = 'auto';
+function fillWorkspaceSelect(select, empty, withAuto = false) {
+  const keep = select.value || localStorage.getItem(LAST_WORKSPACE) || (withAuto ? AUTO_TEAM : '');
   select.replaceChildren(new Option(workspaceError || empty, ''));
+  if (withAuto && !workspaceError) select.add(new Option('自动识别邀请的团队（推荐）', AUTO_TEAM));
   for (const item of workspaces || []) select.add(new Option(item.name, String(item.id)));
-  select.value = (workspaces || []).some(item => String(item.id) === keep) ? keep : '';
+  select.value = [...select.options].some(option => option.value === keep) ? keep : '';
 }
 async function loadWorkspaces() {
   if (!team48 || workspaces || Date.now() < workspacesRetryAt) return;
   workspaces = [];
   try { workspaces = (await request('workspaces')).items; workspaceError = ''; }
   catch (error) { workspaces = null; workspaceError = error.message; workspacesRetryAt = Date.now() + 15000; }
-  fillWorkspaceSelect($('auto-workspace'), '不自动接入');
+  fillWorkspaceSelect($('auto-workspace'), '不自动接入', true);
   fillWorkspaceSelect($('handoff-workspace'), '选择团队…');
 }
 const chosenWorkspace = select => {
@@ -87,6 +89,10 @@ function render(job) {
   $('progress').dataset.status = job.status;
   $('account').textContent = job.email;
   $('message').textContent = job.message;
+  // While signing up, show what the automatic team lookup found.
+  const resolved = job.autoHandoff?.auto && !job.handoff ? job.autoHandoff.resolve : null;
+  $('auto-team').hidden = !resolved?.message;
+  $('auto-team').textContent = resolved?.message ? `自动接入：${resolved.message}` : '';
   $('run-mode').textContent = modes[job.mode] || modes.auto;
   const manual = ['submit', 'manual'].includes(job.mode);
   $('generated-credentials').hidden = manual;
@@ -98,6 +104,9 @@ function render(job) {
   $('pause').hidden = job.status !== 'running';
   $('resume').hidden = job.status !== 'paused';
   $('stop').hidden = !ACTIVE.has(job.status);
+  // Refreshing only helps a stuck page in the automatic modes; manual modes keep plain Continue.
+  $('reload-resume').hidden = job.status !== 'paused' || !['auto', 'review'].includes(job.mode);
+  $('reload-resume').disabled = busy || job.reloading;
   // Fallback when the logged-in page is not recognized; not offered before any signup form.
   $('mark-complete').hidden = !ACTIVE.has(job.status) || job.phase === 'oauth' || !job.formSeen;
   $('mark-complete').disabled = busy;
@@ -131,8 +140,9 @@ async function act(task) {
 $('register').addEventListener('submit', event => {
   event.preventDefault();
   const mode = $('workflow').value;
-  const handoff = team48 ? chosenWorkspace($('auto-workspace')) : null;
-  if (handoff) localStorage.setItem(LAST_WORKSPACE, String(handoff.workspaceId));
+  const automatic = team48 && $('auto-workspace').value === AUTO_TEAM;
+  const handoff = automatic ? {auto: true} : team48 ? chosenWorkspace($('auto-workspace')) : null;
+  if (team48) localStorage.setItem(LAST_WORKSPACE, automatic ? AUTO_TEAM : String(handoff?.workspaceId || 'none'));
   act(() => request('start', {email: $('email').value, mode, hidePanel: !$('hide-panel').disabled && $('hide-panel').checked,
     profile: ['auto', 'review'].includes(mode) ? {name: $('profile-name').value, birthday: $('profile-birthday').value} : undefined,
     handoff}));
@@ -145,7 +155,7 @@ $('handoff-start').addEventListener('click', () => {
   act(() => request('handoff-start', choice));
 });
 $('handoff-retry').addEventListener('click', () => act(() => request('handoff-retry')));
-for (const type of ['pause', 'stop', 'resume', 'clear']) $(type).addEventListener('click', () => act(() => request(type)));
+for (const type of ['pause', 'stop', 'resume', 'clear', 'reload-resume']) $(type).addEventListener('click', () => act(() => request(type)));
 let confirmArmed = false;
 $('mark-complete').addEventListener('click', () => {
   if (!confirmArmed) { confirmArmed = true; render(currentJob); return; }

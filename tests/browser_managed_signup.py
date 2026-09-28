@@ -214,6 +214,7 @@ class ManagedSignupBrowserTests(unittest.TestCase):
     def test_stop_during_typing_prevents_further_edits_and_reinjection(self):
         context = self.browser.new_context()
         self.addCleanup(context.close)
+        context.add_init_script("window.fixtureInputs=[]; document.addEventListener('input',e=>window.fixtureInputs.push(e.isTrusted),true)")
         context.route('**/*', lambda request: request.fulfill(content_type='text/html', body='<form><input type=email name=email><button>Continue</button></form>'))
         page = context.new_page()
         content, version = signup_assets()
@@ -227,6 +228,7 @@ class ManagedSignupBrowserTests(unittest.TestCase):
                 break
         typed = page.locator('input').input_value()
         self.assertTrue(typed)
+        self.assertTrue(page.evaluate('fixtureInputs.length > 0 && fixtureInputs.every(Boolean)'))
         self.assertLess(len(typed), len(state.email))
         bridge.close()
         stopped_value = page.locator('input').input_value()
@@ -237,6 +239,28 @@ class ManagedSignupBrowserTests(unittest.TestCase):
         page.wait_for_timeout(1700)
         self.assertEqual(page.locator('input').input_value(), '')
         self.assertEqual(page.locator('#team48-signup-progress').count(), 0)
+
+    def test_host_input_protocol_and_native_date_layout(self):
+        from app.integrations.openai.browser.signup_input import SignupInput, PROTOCOL_VERSION
+        context = self.browser.new_context()
+        self.addCleanup(context.close)
+        page = context.new_page()
+        page.set_content('<input type="date"><input id="text">')
+        cdp = context.new_cdp_session(page)
+        self.addCleanup(cdp.detach)
+        state = SignupState(email="test@icloud.com", password="secret", profile={}, version="fixture", read_codes=lambda: [])
+        adapter = SignupInput(page, cdp, state)
+        def send(kind, **fields):
+            return adapter.handle({"type": kind, "jobId": state.id, "version": "fixture", **fields}, current=lambda: True)
+        ready = send("input-ready")
+        self.assertTrue(ready["trusted"])
+        self.assertEqual(ready["protocol"], PROTOCOL_VERSION)
+        self.assertEqual(set(send("input-date-layout", index=0)["parts"]), {"year", "month", "day"})
+        page.locator('#text').focus()
+        send("input-text", text="first")
+        state.fail("cancelled", "Stopped")
+        self.assertFalse(send("input-text", text="second")["sent"])
+        self.assertEqual(page.locator('#text').input_value(), "first")
 
     def test_phone_stage_stops_without_any_sms_or_sensitive_diagnostics(self):
         with tempfile.TemporaryDirectory(prefix="team48-managed-phone-") as profile_dir:

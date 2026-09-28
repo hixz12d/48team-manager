@@ -50,7 +50,11 @@ export function publicJob(job) {
   return {id: job.id, email: job.email, status: job.status, stage: job.stage, message: job.message,
     mode: job.mode || 'auto', codexResult: job.codexResult || 'unknown', password: job.password, tabId: job.tabId, expiresAt: job.expiresAt,
     phase: job.phase === 'oauth' ? 'oauth' : 'signup', handoff: publicHandoff(job.handoff), formSeen: !!job.entryFormSeen,
-    autoHandoff: job.autoHandoff ? {workspaceId: job.autoHandoff.workspaceId, workspaceName: job.autoHandoff.workspaceName || ''} : null};
+    reloading: job.status === 'paused' && !!job.reloadAt && Date.now() - job.reloadAt < 60000,
+    autoHandoff: job.autoHandoff ? {auto: job.autoHandoff.auto === true, workspaceId: job.autoHandoff.workspaceId,
+      workspaceName: job.autoHandoff.workspaceName || '',
+      resolve: job.autoHandoff.resolve ? {status: String(job.autoHandoff.resolve.status || ''),
+        message: String(job.autoHandoff.resolve.message || '').slice(0, 200)} : null} : null};
 }
 
 // Only a real Codex CLI loopback callback is ever forwarded to Team48.
@@ -69,9 +73,44 @@ export const STAGES = new Set(['signup', 'email', 'password', 'otp', 'profile', 
 const EVENTS = new Set(['started', 'page', 'filled', 'submit_attempt', 'form_submit', 'manual_submit',
   'waiting_manual', 'code_received', 'paused', 'resumed', 'stopped', 'expired', 'session_check',
   'session_error', 'email_mismatch', 'email_unverified', 'completed', 'captcha', 'phone', 'rate_limit', 'entry_fallback', 'click_response', 'continue_retry',
-  'oauth_started', 'oauth_callback', 'session_anonymous', 'manual_complete']);
+  'oauth_started', 'oauth_callback', 'session_anonymous', 'manual_complete', 'auto_resumed', 'submit_stalled', 'page_reload', 'control_wait', 'auto_retried']);
 const PAGES = new Set(['chatgpt', 'signup', 'password', 'email_verification', 'profile', 'phone', 'consent', 'auth_other', 'unknown']);
 const CLICK_OUTCOMES = new Set(['submitted', 'loading', 'advanced', 'validation', 'timeout']);
+const CONTROL_OUTCOMES = new Set(['waiting', 'ready', 'timeout']);
+// Geometry only. Never copy text, selectors, attributes or input values into diagnostics.
+function controlGeometry(value) {
+  const result = {};
+  if (['button', 'input', 'select', 'textarea', 'a'].includes(value?.kind)) result.kind = value.kind;
+  for (const [key, length] of [['rect', 4], ['viewport', 2], ['clip', 4]]) {
+    const numbers = value?.[key];
+    if (Array.isArray(numbers) && numbers.length === length && numbers.every(n => Number.isFinite(n) && Math.abs(n) <= 100000)) {
+      result[key] = numbers.map(n => Math.round(n));
+    }
+  }
+  for (const key of ['enabled', 'hit']) if (typeof value?.[key] === 'boolean') result[key] = value[key];
+  return result;
+}
+// Why a run paused. Fixed codes only, never page text, so diagnostics show the cause directly.
+export const PAUSE_REASONS = new Set(['user', 'submit_timeout', 'click_timeout', 'claim_timeout', 'otp_submit_timeout',
+  'otp_wait', 'attempt_limit', 'retry_limit', 'profile_timeout', 'button_unavailable', 'no_submit_button', 'validation',
+  'form_changed', 'fill_incomplete', 'user_edit', 'email_mismatch', 'email_unverified', 'session_error', 'home_unconfirmed',
+  'entry_missing', 'unknown_page', 'manual_step', 'captcha', 'phone', 'rate_limit', 'redraw', 'reload_failed',
+  'debugger_detached', 'error', 'other']);
+// A pause for these reasons only means "the page did not move in time": once the page reaches
+// a later step by itself, the run may continue without the user clicking Continue.
+export const AUTO_RESUME_REASONS = new Set(['submit_timeout', 'click_timeout', 'claim_timeout', 'otp_submit_timeout',
+  'profile_timeout', 'attempt_limit', 'retry_limit', 'button_unavailable']);
+// Pauses where nothing was submitted yet (a button/field that never became usable, a page not
+// recognised in time). With the page visible again, the same step is retried by itself a few times.
+export const AUTO_RETRY_REASONS = new Set(['button_unavailable', 'redraw', 'unknown_page']);
+export const AUTO_RETRY_LIMIT = 3, AUTO_RETRY_DELAY = 8000;
+export const autoRetryAllowed = job => job?.status === 'paused' && AUTO_RETRY_REASONS.has(job.pauseReason) &&
+  !['submit', 'manual'].includes(job.mode) && !(job.pauseReason === 'unknown_page' && job.phase === 'oauth') &&
+  (job.autoRetries?.[job.pausedStage] || 0) < AUTO_RETRY_LIMIT;
+const STAGE_ORDER = ['signup', 'email', 'password', 'otp', 'profile', 'home'];
+export const laterStage = (next, previous) => STAGE_ORDER.indexOf(previous) >= 0 &&
+  STAGE_ORDER.indexOf(next) > STAGE_ORDER.indexOf(previous);
+export const pauseReason = value => PAUSE_REASONS.has(value) ? value : 'other';
 
 export function checkedProfile(value) {
   const name = String(value?.name || '').trim();
@@ -103,13 +142,18 @@ export function pageKind(value) {
 }
 
 // Strict allowlists: never retain arbitrary URLs, page text, field values or error bodies.
-export function recordEvent(job, event, {page, stage, verified, outcome} = {}) {
+export function recordEvent(job, event, {page, stage, verified, outcome, reason, control} = {}) {
   if (!EVENTS.has(event)) return false;
   const entry = {ms: Math.max(0, Date.now() - (job.startedAt || Date.now())), event};
   if (PAGES.has(page)) entry.page = page;
   if (STAGES.has(stage)) entry.stage = stage;
   if (typeof verified === 'boolean') entry.verified = verified;
   if (event === 'click_response' && CLICK_OUTCOMES.has(outcome)) entry.outcome = outcome;
+  if (event === 'control_wait') {
+    if (CONTROL_OUTCOMES.has(outcome)) entry.outcome = outcome;
+    entry.control = controlGeometry(control);
+  }
+  if (event === 'paused' && PAUSE_REASONS.has(reason)) entry.reason = reason;
   job.events ||= [];
   const previous = job.events.at(-1);
   if (previous && event === 'page' && previous.event === event && previous.page === entry.page && previous.stage === entry.stage) return false;
@@ -123,6 +167,7 @@ export function diagnosticReport(job, version) {
   return {
     schema: 1, version, mode: MODES.has(job.mode) ? job.mode : 'auto',
     status: ['running', 'paused', 'stopped', 'done'].includes(job.status) ? job.status : 'unknown',
+    ...(job.status === 'paused' ? {pauseReason: PAUSE_REASONS.has(job.pauseReason) ? job.pauseReason : 'other'} : {}),
     profileSource: job.profileSource === 'custom' ? 'custom' : job.profileSource === 'manual' ? 'manual' : 'generated',
     input: job.inputMode === 'cdp' ? 'cdp' : job.inputMode === 'synthetic' ? 'synthetic' : 'unknown',
     userReportedCodexResult: ['no_phone', 'phone_required', 'failed'].includes(job.codexResult) ? job.codexResult : 'unknown',
@@ -137,6 +182,9 @@ export function diagnosticReport(job, version) {
       ...(STAGES.has(entry.stage) ? {stage: entry.stage} : {}),
       ...(typeof entry.verified === 'boolean' ? {verified: entry.verified} : {}),
       ...(entry.event === 'click_response' && CLICK_OUTCOMES.has(entry.outcome) ? {outcome: entry.outcome} : {}),
+      ...(entry.event === 'control_wait' ? {control: controlGeometry(entry.control),
+        ...(CONTROL_OUTCOMES.has(entry.outcome) ? {outcome: entry.outcome} : {})} : {}),
+      ...(entry.event === 'paused' && PAUSE_REASONS.has(entry.reason) ? {reason: entry.reason} : {}),
     })),
   };
 }

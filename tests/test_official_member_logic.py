@@ -559,14 +559,16 @@ class ConsoleLoopTests(unittest.IsolatedAsyncioTestCase):
         await self.session.close()
         await self.engine.dispose()
 
-    async def test_manual_rotate_goes_through_saga(self):
-        with patch("app.application.console_actions.rotate_service.run_rotate_saga", new=AsyncMock(return_value={"success": True, "status": "success"})) as saga:
-            result = await start_controlled_rotate(self.session, self.workspace.id, email="kid@example.com", reason="console")
+    async def test_manual_rotate_goes_through_manual_rotation_flow(self):
+        with patch("app.application.manual_rotation.run_manual_rotation", new=AsyncMock(return_value={"success": True, "status": "success"})) as flow:
+            result = await start_controlled_rotate(self.session, self.workspace.id, email="kid@example.com",
+                                                   replacement_email="new@icloud.com")
         self.assertTrue(result["ok"])
-        saga.assert_awaited()
-        kwargs = saga.await_args.kwargs
-        self.assertEqual(kwargs["email"], "kid@example.com")
-        self.assertTrue(kwargs["skip_confirm"])
+        flow.assert_awaited()
+        op = await operation_store.get_by_public_id(self.session, result["operation_id"])
+        self.assertEqual(op.source, "manual_rotation")
+        self.assertEqual(op.email, "kid@example.com")
+        self.assertEqual(op.idempotency_key, f"ws-mutation:{self.workspace.id}")
 
     async def test_partial_refresh_is_not_success(self):
         with (

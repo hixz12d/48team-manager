@@ -1,4 +1,4 @@
-import {ACTIVE, MODES, STAGES, defaultProfile, checkedProfile, newPassword, contentAllowed, publicJob, pageKind, recordEvent, diagnosticReport, oauthCallback} from './shared.mjs';
+import {ACTIVE, MODES, STAGES, AUTO_RESUME_REASONS, AUTO_RETRY_LIMIT, AUTO_RETRY_DELAY, autoRetryAllowed, defaultProfile, checkedProfile, newPassword, contentAllowed, publicJob, pageKind, recordEvent, diagnosticReport, oauthCallback, laterStage, pauseReason} from './shared.mjs';
 import {MAILBOX} from './private-config.mjs';
 import * as PRIVATE_CONFIG from './private-config.mjs';
 import {RUN_TTL, startMailbox, pollMailbox} from './cloudflare.mjs';
@@ -202,14 +202,15 @@ async function inputMessage(message, sender) {
   }
   if (message.type === 'input-drift') {
     const width = Number(message.width), height = Number(message.height);
-    if (!(width >= 80 && height >= 80 && width < 20000 && height < 20000)) throw new Error('输入指令无效。');
+    // Idle movement is optional: an odd viewport (loading, tiny or spoofed window) skips it instead of pausing the run.
+    if (!(width >= 80 && height >= 80 && width < 20000 && height < 20000)) return {};
     // A small idle movement from wherever the pointer rests.
     const from = pointers.get(tabId) || {x: width * (0.3 + Math.random() * 0.4), y: height * (0.3 + Math.random() * 0.4)};
     const clamp = (value, max) => Math.min(max - 20, Math.max(20, value));
     await moveMouse(tabId, clamp(from.x + between(-140, 140), width), clamp(from.y + between(-90, 90), height));
     return {};
   }
-  throw new Error('输入指令无效。');
+  throw new Error(`输入指令无效（${String(message.type).slice(0, 30)}）。`);
 }
 const loadJob = async () => (await chrome.storage.session.get('job')).job;
 async function expire(job) {
@@ -224,9 +225,9 @@ async function expire(job) {
 }
 
 // ---- Team48 handoff: sync -> link -> OAuth in this tab -> callback -> push + count ----
-// Handoff statuses: syncing -> (waiting_join ->) opening -> authorizing -> completing -> done,
+// Handoff statuses: (resolving ->) syncing -> (waiting_join ->) opening -> authorizing -> completing -> done,
 // or failed / callback_retry. Everything except the page steps runs here in the worker.
-const HANDOFF_ACTIVE = new Set(['syncing', 'waiting_join', 'opening', 'completing']);
+const HANDOFF_ACTIVE = new Set(['resolving', 'syncing', 'waiting_join', 'opening', 'completing']);
 const JOIN_WAIT = 3 * 60 * 1000, JOIN_RETRY = 10000, SYNC_LIMIT = 4 * 60 * 1000;
 const patchJob = (id, change) => serial(async () => {
   const job = await loadJob();
@@ -246,6 +247,53 @@ function beginHandoff(job, workspaceId, workspaceName) {
   job.handoff = {status: 'syncing', workspaceId, workspaceName: String(workspaceName || '').slice(0, 120),
     startedAt: Date.now(), message: '正在同步团队成员…'};
 }
+// ---- Automatic team: Team48 checks every team's live members and invites for this email. ----
+// The lookup starts with the signup, so its few seconds per team are normally over by the end.
+const resolveTasks = new Map();
+function resolveTeam({id, email}, {fresh = false} = {}) {
+  if (fresh || !resolveTasks.has(id)) {
+    resolveTasks.clear();
+    resolveTasks.set(id, team48('/api/ext/resolve', {email})
+      .catch(error => ({ok: false, state: 'failed', error_code: 'network', message: error.message})));
+  }
+  return resolveTasks.get(id);
+}
+function applyResolved(job, result) {
+  const auto = job.autoHandoff;
+  if (!auto?.auto) return false;
+  const id = Number(result?.workspace?.id);
+  if (result?.ok && Number.isInteger(id) && id > 0) {
+    auto.workspaceId = id;
+    auto.workspaceName = String(result.workspace.name || `团队 ${id}`).slice(0, 120);
+    auto.resolve = {status: 'found', message: `已识别团队：${auto.workspaceName}`};
+    return true;
+  }
+  auto.resolve = {status: result?.state === 'ambiguous' ? 'ambiguous' : 'failed',
+    message: String(result?.message || '未识别到团队').slice(0, 200)};
+  return false;
+}
+function prefetchTeam({id, email}) {
+  resolveTeam({id, email}).then(result => patchJob(id, current => {
+    if (current.autoHandoff?.resolve?.status === 'resolving') applyResolved(current, result);
+  })).catch(() => {});
+}
+async function resolveForHandoff(job) {
+  let result = await resolveTeam(job);
+  // A miss may predate the invitation or a flaky team read; check once more, fresh.
+  if (!result?.ok && result?.state !== 'ambiguous' && result?.error_code !== 'owner_account') {
+    result = await resolveTeam(job, {fresh: true});
+  }
+  await patchJob(job.id, current => {
+    if (current.handoff?.status !== 'resolving') return;
+    if (applyResolved(current, result)) {
+      beginHandoff(current, current.autoHandoff.workspaceId, current.autoHandoff.workspaceName);
+      return;
+    }
+    failHandoff(current, `${current.autoHandoff?.resolve?.message || '未识别到团队'}。请在下方选择团队后点「重新接入」。`,
+      result?.error_code);
+  });
+}
+
 let handoffTask = null;
 function ensureHandoff() {
   // incognito: split shares session storage with the regular profile's worker, which cannot
@@ -292,6 +340,7 @@ async function runHandoff() {
     const job = await serial(loadJob);
     const handoff = job?.handoff;
     if (!handoff || !HANDOFF_ACTIVE.has(handoff.status)) { await chrome.alarms.clear('handoff-watchdog'); return; }
+    if (handoff.status === 'resolving') { await resolveForHandoff(job); continue; }
     if (handoff.status === 'opening') { await openAuthorization(job.id); continue; }
     if (handoff.status === 'completing') { await completeAuthorization(job.id); continue; }
     if (handoff.status === 'waiting_join') {
@@ -418,10 +467,29 @@ function finishSignup(job, verified, event) {
   job.message = event === 'manual_complete' ? '你已确认注册完成；Team48 授权时仍会核对登录邮箱。' :
     '已确认目标邮箱登录 ChatGPT；后续 Codex 验证要求需在授权时确认。';
   delete job.baseline; delete job.pendingCode; delete job.retryClaim;
-  if (job.autoHandoff && TEAM48 && !job.handoff) beginHandoff(job, job.autoHandoff.workspaceId, job.autoHandoff.workspaceName);
+  const auto = job.autoHandoff;
+  if (!auto || !TEAM48 || job.handoff) return;
+  if (!auto.auto || auto.resolve?.status === 'found') beginHandoff(job, auto.workspaceId, auto.workspaceName);
+  else job.handoff = {status: 'resolving', startedAt: Date.now(), message: '正在识别邀请这个邮箱的团队…'};
 }
 
-async function resumeJob(job) {
+// Every pause keeps a fixed reason code and the step it stopped on: diagnostics show the cause,
+// and a timeout pause can end by itself once the page reaches a later step.
+function pauseJob(job, message, reason, {stage, page} = {}) {
+  const at = STAGES.has(stage) ? stage : job.stage;
+  recordEvent(job, 'paused', {page, stage: at, reason: pauseReason(reason)});
+  job.status = 'paused'; job.message = message;
+  job.pauseReason = pauseReason(reason); job.pausedStage = at; job.pausedAt = Date.now();
+  delete job.reloadAt;
+  if (autoRetryAllowed(job)) {
+    const left = AUTO_RETRY_LIMIT - (job.autoRetries?.[at] || 0);
+    job.message = `${message}窗口可见时约 ${AUTO_RETRY_DELAY / 1000} 秒后自动重试本步（还剩 ${left} 次）。`;
+  }
+}
+// "Refresh and continue" resumes only from a document created after the refresh request.
+const RELOAD_WAIT = 60000;
+
+async function resumeJob(job, {auto = false, retry = false} = {}) {
   if (job.status !== 'paused') throw new Error('当前任务无法继续，请重新开始。');
   // Only a timed-out submission may be retried, and the total attempt limit remains in force.
   if (job.retryClaim) {
@@ -435,9 +503,14 @@ async function resumeJob(job) {
     if (job.clickReservations) delete job.clickReservations[job.retryClaim];
     delete job.retryClaim;
   }
-  job.status = 'running'; job.message = '继续本次注册';
-  delete job.codeWaitSince;
-  recordEvent(job, 'resumed');
+  job.status = 'running';
+  job.message = retry ? '网页已恢复显示，自动重试本步' : auto ? '网页已前进，自动继续本次注册' : '继续本次注册';
+  if (retry) {
+    job.autoRetries = {...job.autoRetries, [job.pausedStage]: (job.autoRetries?.[job.pausedStage] || 0) + 1};
+  } else if (!auto) delete job.autoRetries; // the user looked at the page: allow fresh automatic retries
+  const retriedStage = job.pausedStage;
+  delete job.codeWaitSince; delete job.pauseReason; delete job.pausedStage; delete job.pausedAt; delete job.reloadAt;
+  recordEvent(job, retry ? 'auto_retried' : auto ? 'auto_resumed' : 'resumed', {stage: retry ? retriedStage : job.stage});
   job.resumeCount = (job.resumeCount || 0) + 1;
   await saveJob(job);
   return {};
@@ -454,8 +527,10 @@ async function popupMessage(message) {
     if (job && ACTIVE.has(job.status)) throw new Error('已有任务，请先停止当前注册。');
     if (HANDOFF_ACTIVE.has(job?.handoff?.status)) throw new Error('上一个账号仍在接入 Team48，请等待完成。');
     if (job?.handoff?.status === 'callback_retry') throw new Error('上一个账号的授权回调尚未提交，请先重新提交或清除。');
-    const autoHandoff = TEAM48 && Number.isInteger(Number(message.handoff?.workspaceId)) && Number(message.handoff.workspaceId) > 0 ?
-      {workspaceId: Number(message.handoff.workspaceId), workspaceName: String(message.handoff.workspaceName || '').slice(0, 120)} : null;
+    const autoHandoff = !TEAM48 ? null : message.handoff?.auto === true ?
+      {auto: true, workspaceId: null, workspaceName: '', resolve: {status: 'resolving', message: '正在识别团队…'}} :
+      Number.isInteger(Number(message.handoff?.workspaceId)) && Number(message.handoff.workspaceId) > 0 ?
+        {workspaceId: Number(message.handoff.workspaceId), workspaceName: String(message.handoff.workspaceName || '').slice(0, 120)} : null;
     const email = String(message.email || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) throw new Error('邮箱格式不正确。');
     const mode = message.mode || 'auto';
@@ -479,6 +554,7 @@ async function popupMessage(message) {
     await chrome.alarms.create('signup-expiry', {when: current.expiresAt});
     try { await chrome.tabs.update(tab.id, {url: 'https://chatgpt.com/'}); }
     catch { current.status = 'stopped'; current.message = '注册标签页已关闭，请重新开始。'; delete current.baseline; await saveJob(current); }
+    if (autoHandoff?.auto && current.status === 'running') prefetchTeam(current);
     return {job: publicJob(current)};
   }
   if (message.type === 'clear') {
@@ -515,9 +591,25 @@ async function popupMessage(message) {
   }
   if (message.type === 'pause') {
     if (job.status !== 'running') return {};
-    recordEvent(job, 'paused', {stage: job.stage});
-    job.status = 'paused'; job.message = '已手动暂停，点击继续即可恢复。';
+    pauseJob(job, '已手动暂停，点击继续即可恢复。', 'user');
     await saveJob(job);
+    return {};
+  }
+  if (message.type === 'reload-resume') {
+    if (job.status !== 'paused') throw new Error('只有暂停中的任务可以刷新后继续。');
+    if (!['auto', 'review'].includes(job.mode || 'auto')) throw new Error('手工模式请自行刷新网页后点继续。');
+    // Stay paused until the fresh page reports in: the old page must not act while it unloads.
+    job.reloadAt = Date.now();
+    job.message = '正在刷新网页，加载完成后自动继续；长时间没有反应请检查网页后点继续。';
+    recordEvent(job, 'page_reload', {stage: job.stage});
+    await saveJob(job);
+    try { await chrome.tabs.reload(job.tabId); }
+    catch {
+      delete job.reloadAt; job.pauseReason = 'reload_failed';
+      job.message = '注册标签页无法刷新，请手动刷新网页后点继续。';
+      await saveJob(job);
+      throw new Error(job.message);
+    }
     return {};
   }
   if (message.type === 'stop') {
@@ -537,7 +629,7 @@ async function popupMessage(message) {
     if (!ACTIVE.has(job.status) || job.phase === 'oauth' || !job.entryFormSeen) throw new Error('当前注册任务无需手动确认。');
     finishSignup(job, undefined, 'manual_complete');
     await saveJob(job);
-    if (job.handoff?.status === 'syncing') ensureHandoff();
+    if (HANDOFF_ACTIVE.has(job.handoff?.status)) ensureHandoff();
     return {};
   }
   throw new Error('未知操作。');
@@ -556,11 +648,30 @@ async function contentMessage(message, sender) {
       status: job.status, message: job.message, stage: job.stage, mode: job.mode || 'auto', resumeCount: job.resumeCount || 0,
       hidePanel: job.hidePanel === true, entryFallbackUsed: !!job.entryFallbackUsed, entryFormSeen: !!job.entryFormSeen,
       phase: job.phase === 'oauth' ? 'oauth' : 'signup', passwordSet: !!job.passwordSet,
-      workspaceNames: job.phase === 'oauth' ? job.handoff?.workspaceNames || [] : []};
+      workspaceNames: job.phase === 'oauth' ? job.handoff?.workspaceNames || [] : [],
+      ...(job.status === 'paused' ? {pausedStage: job.pausedStage || job.stage, reloadAt: job.reloadAt || 0,
+        autoResume: AUTO_RESUME_REASONS.has(job.pauseReason), autoRetry: autoRetryAllowed(job)} : {})};
     return state.active ? {...state, password: job.password, profile: job.profile, reviewSteps: job.reviewSteps || {}} : state;
   }
   if (message.type === 'resume' && job.status === 'paused') {
     return resumeJob(job);
+  }
+  if (message.type === 'auto-resume') {
+    if (job.status !== 'paused') return {resumed: false};
+    // Either the page reloaded after "refresh and continue", or it reached a later step by itself
+    // after a pause that only meant "the page did not move in time". A user pause never qualifies.
+    const reloaded = message.reload === true && job.reloadAt && Date.now() - job.reloadAt < RELOAD_WAIT;
+    const advanced = AUTO_RESUME_REASONS.has(job.pauseReason) && laterStage(message.stage, job.pausedStage);
+    if (!reloaded && !advanced) return {resumed: false};
+    if (reloaded) job.stage = STAGES.has(message.stage) ? message.stage : job.stage;
+    await resumeJob(job, {auto: true});
+    return {resumed: true};
+  }
+  if (message.type === 'auto-retry') {
+    // The content script counts only time the page was visible; this is a wall-clock floor.
+    if (!autoRetryAllowed(job) || Date.now() - (job.pausedAt || 0) < AUTO_RETRY_DELAY) return {resumed: false};
+    await resumeJob(job, {retry: true});
+    return {resumed: true};
   }
   if (message.type === 'finish-click') {
     const url = new URL(sender.url), key = `${message.stage}:${url.pathname}`;
@@ -584,7 +695,7 @@ async function contentMessage(message, sender) {
       if (['otp', 'profile'].includes(message.stage)) {
         job.continueClicks ||= {};
         job.continueClicks[key] = {token: reserved.token, origin: reserved.origin, at: Date.now(),
-          blocked: job.continueClicks[key]?.blocked || false};
+          blocked: job.continueClicks[key]?.blocked || false, left: job.continueClicks[key]?.left || false};
         if (reserved.retry) recordEvent(job, 'continue_retry', {page: pageKind(sender.url), stage: message.stage});
       }
     }
@@ -606,10 +717,15 @@ async function contentMessage(message, sender) {
   if (message.type === 'retry-continue') {
     const url = new URL(sender.url), key = `${message.stage}:${url.pathname}`;
     const previous = job.continueClicks?.[key];
-    if (job.mode === 'manual' || !['otp', 'profile'].includes(message.stage) || !previous || previous.blocked ||
+    // A stalled retry follows a spinner/submit that went idle on the same form; only a page change
+    // (not the earlier loading response) rules it out.
+    const stalled = message.stalled === true;
+    if (job.mode === 'manual' || !['otp', 'profile'].includes(message.stage) || !previous ||
+        (stalled ? previous.left : previous.blocked) ||
         previous.origin !== url.origin || previous.token !== message.token ||
-        job.clickReservations?.[key] || (job.continueRetries?.[message.stage] || 0) >= 2 ||
-        (job.attempts[message.stage] || 0) >= 3) return {granted: false};
+        job.clickReservations?.[key]) return {granted: false};
+    if ((job.continueRetries?.[message.stage] || 0) >= CONTINUE_RETRIES ||
+        (job.attempts[message.stage] || 0) >= CONTINUE_RETRIES + 1) return {granted: false, limit: true};
     if (Date.now() - previous.at < 2000) return {granted: false, wait: true};
     // This is another click on the unchanged form, never a request for another OTP.
     const token = crypto.randomUUID();
@@ -646,8 +762,8 @@ async function contentMessage(message, sender) {
     return {};
   }
   if (message.type === 'event') {
-    if (['page', 'filled', 'form_submit', 'manual_submit', 'waiting_manual', 'session_check', 'session_error', 'session_anonymous', 'captcha', 'phone', 'rate_limit', 'click_response'].includes(message.event) &&
-        recordEvent(job, message.event, {page: pageKind(sender.url), stage: message.stage, verified: message.verified, outcome: message.outcome})) {
+    if (['page', 'filled', 'form_submit', 'manual_submit', 'waiting_manual', 'session_check', 'session_error', 'session_anonymous', 'captcha', 'phone', 'rate_limit', 'click_response', 'submit_stalled', 'control_wait'].includes(message.event) &&
+        recordEvent(job, message.event, {page: pageKind(sender.url), stage: message.stage, verified: message.verified, outcome: message.outcome, control: message.control})) {
       if (message.event === 'page' && ['email', 'password', 'otp', 'profile'].includes(message.stage)) job.entryFormSeen = true;
       if (message.event === 'phone' && job.phase === 'oauth') job.codexResult = 'phone_required';
       const key = `${message.stage}:${new URL(sender.url).pathname}`;
@@ -656,7 +772,7 @@ async function contentMessage(message, sender) {
       }
       if (message.event === 'page') {
         for (const [receiptKey, receipt] of Object.entries(job.continueClicks || {})) {
-          if (receiptKey !== key || receipt.origin !== new URL(sender.url).origin) receipt.blocked = true;
+          if (receiptKey !== key || receipt.origin !== new URL(sender.url).origin) { receipt.blocked = true; receipt.left = true; }
         }
       }
       await saveJob(job);
@@ -664,8 +780,8 @@ async function contentMessage(message, sender) {
     return {};
   }
   if (message.type === 'pause') {
-    recordEvent(job, 'paused', {page: pageKind(sender.url), stage: STAGES.has(message.stage) ? message.stage : job.stage});
-    job.status = 'paused'; job.message = String(message.reason || '请手动处理页面后点击继续。').slice(0, 200);
+    pauseJob(job, String(message.reason || '请手动处理页面后点击继续。').slice(0, 200), message.code,
+      {stage: message.stage, page: pageKind(sender.url)});
     await saveJob(job);
     return {active: false};
   }
@@ -673,13 +789,13 @@ async function contentMessage(message, sender) {
     if (new URL(sender.url).hostname !== 'chatgpt.com' || job.phase === 'oauth') return {active: false};
     if (String(message.email || '').toLowerCase() !== job.email) {
       recordEvent(job, 'email_mismatch');
-      job.status = 'paused'; job.message = '当前登录邮箱不匹配，请关闭全部无痕窗口后重新开始。';
+      pauseJob(job, '当前登录邮箱不匹配，请关闭全部无痕窗口后重新开始。', 'email_mismatch', {stage: 'home'});
     } else if (message.verified === false) {
       job.emailVerified = false; recordEvent(job, 'email_unverified');
-      job.status = 'paused'; job.message = '已登录，但会话报告邮箱尚未验证，请在网页完成验证后继续。';
+      pauseJob(job, '已登录，但会话报告邮箱尚未验证，请在网页完成验证后继续。', 'email_unverified', {stage: 'home'});
     } else finishSignup(job, message.verified, 'completed');
     await saveJob(job);
-    if (job.handoff?.status === 'syncing') ensureHandoff();
+    if (HANDOFF_ACTIVE.has(job.handoff?.status)) ensureHandoff();
     return {};
   }
   if (message.type === 'claim') {
@@ -689,14 +805,14 @@ async function contentMessage(message, sender) {
     const key = `${message.stage}:${new URL(sender.url).pathname}`;
     if (job.claims[key]) {
       if (Date.now() - job.claims[key] > 45000) {
-        job.status = 'paused'; job.message = '提交后页面没有前进，请检查网页提示后点击继续重试。';
+        pauseJob(job, '提交后页面没有前进，请检查网页提示后点击继续重试。', 'claim_timeout', {stage: message.stage, page: pageKind(sender.url)});
         job.retryClaim = key;
         await saveJob(job);
       }
       return {granted: false};
     }
     if ((job.attempts[message.stage] || 0) >= limits[message.stage]) {
-      job.status = 'paused'; job.message = '已达到自动提交次数，请检查页面并手动继续。';
+      pauseJob(job, '已达到自动提交次数，请检查页面并手动继续。', 'attempt_limit', {stage: message.stage, page: pageKind(sender.url)});
       await saveJob(job); return {granted: false};
     }
     if (message.prepare) return {granted: true};
@@ -725,7 +841,7 @@ async function contentMessage(message, sender) {
     const submitted = job.claims[`otp:${new URL(sender.url).pathname}`];
     if (submitted) {
       if (Date.now() - submitted > 45000) {
-        job.status = 'paused'; job.message = '验证码提交后页面没有前进，请检查页面，必要时重发验证码后继续。';
+        pauseJob(job, '验证码提交后页面没有前进，请检查页面，必要时重发验证码后继续。', 'otp_submit_timeout', {stage: 'otp', page: pageKind(sender.url)});
         job.retryClaim = `otp:${new URL(sender.url).pathname}`;
         await saveJob(job);
       }
@@ -736,9 +852,8 @@ async function contentMessage(message, sender) {
     job.codeWaitSince ||= Date.now();
     if (Date.now() - job.codeWaitSince > OTP_WAIT) {
       delete job.codeWaitSince;
-      recordEvent(job, 'paused', {page: pageKind(sender.url), stage: 'otp'});
-      job.status = 'paused';
-      job.message = `${OTP_WAIT / 1000} 秒内没有收到新的邮箱验证码。请在网页点「重新发送邮件」，再点击继续。`;
+      pauseJob(job, `${OTP_WAIT / 1000} 秒内没有收到新的邮箱验证码。请在网页点「重新发送邮件」，再点击继续。`, 'otp_wait',
+        {stage: 'otp', page: pageKind(sender.url)});
       await saveJob(job);
       return {code: null};
     }
@@ -755,6 +870,8 @@ async function contentMessage(message, sender) {
 // Reading the mailbox used to hold the job queue, so page state, popup and pause
 // requests all froze until Cloudflare answered. Only the result is stored under the queue.
 const OTP_WAIT = 120000;
+// Extra Continue clicks per OTP/profile step when the unchanged page does not advance.
+const CONTINUE_RETRIES = 3;
 let mailPolling = false;
 async function finishCodePoll({id, email, baseline, ignored}) {
   let code;
@@ -809,8 +926,7 @@ chrome.debugger?.onDetach.addListener(({tabId}, reason) => {
   serial(async () => {
     const job = await loadJob();
     if (job?.tabId === tabId && job.status === 'running') {
-      recordEvent(job, 'paused', {stage: job.stage});
-      job.status = 'paused'; job.message = '调试连接被取消，已暂停；点击继续会重新连接。';
+      pauseJob(job, '调试连接被取消，已暂停；点击继续会重新连接。', 'debugger_detached');
       await saveJob(job);
     }
   });

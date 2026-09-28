@@ -13,7 +13,8 @@ from urllib.parse import urlsplit
 HOSTS = frozenset({"chatgpt.com", "auth.openai.com", "auth0.openai.com"})
 STAGES = frozenset({"signup", "email", "password", "otp", "profile", "home", "unknown"})
 LIMITS = {"signup": 3, "email": 2, "password": 2, "otp": 2, "profile": 2}
-OUTCOMES = frozenset({"submitted", "loading", "advanced", "validation", "timeout"})
+OUTCOMES = frozenset({"submitted", "loading", "advanced", "validation", "timeout", "waiting", "ready"})
+CONTINUE_RETRIES = 3
 MESSAGES = {
     "signup": ("signup", "打开邮箱注册"), "email": ("fill_email", "填写邮箱"),
     "password": ("password", "填写注册密码"), "otp": ("email_otp", "填写邮箱验证码"),
@@ -132,6 +133,7 @@ class SignupState:
                 for receipt_key, receipt in self.receipts.items():
                     if receipt_key != key:
                         receipt["blocked"] = True
+                        receipt["left"] = True
                 self.report(*MESSAGES[stage])
             if event == "click_response" and message.get("outcome") in {"submitted", "loading", "advanced", "validation"}:
                 if key in self.receipts:
@@ -141,12 +143,14 @@ class SignupState:
                         "rate_limit": ("openai_rate_limited", "注册页面提示限流，请稍后继续同一邮箱")}
             if event in failures:
                 self.fail(*failures[event])
-            if event in {"page", "filled", "form_submit", "click_response", "session_check", "session_error", *failures}:
+            if event in {"page", "filled", "form_submit", "click_response", "control_wait", "submit_stalled", "session_check", "session_error", *failures}:
                 self.event(event, stage, message.get("outcome"))
             return {}
         if kind == "pause":
             # Page errors may contain account details; persist only bounded host messages.
-            return self.fail("registration_manual_required", "新版注册流程已暂停，请检查页面并继续同一邮箱")
+            codes = {"validation", "form_changed", "retry_limit", "click_timeout", "control_timeout", "other"}
+            code = message.get("code") if message.get("code") in codes else "other"
+            return self.fail("registration_" + code, "新版注册流程已暂停，请核对后继续同一邮箱")
         if kind == "managed-page" and parsed.netloc == "chatgpt.com" and stage in {"home", "unknown"}:
             self.boundary_url = url
             return {}
@@ -191,8 +195,11 @@ class SignupState:
         retry = kind == "retry-continue"
         if retry:
             receipt = self.receipts.get(key)
-            if stage not in {"otp", "profile"} or not receipt or receipt["blocked"] or receipt["token"] != message.get("token") or key in self.reservations or self.retries.get(stage, 0) >= 2 or self.attempts.get(stage, 0) >= 3:
+            blocked = receipt and (receipt.get("left", False) if message.get("stalled") is True else receipt["blocked"])
+            if stage not in {"otp", "profile"} or not receipt or blocked or receipt["token"] != message.get("token") or key in self.reservations:
                 return {"granted": False}
+            if self.retries.get(stage, 0) >= CONTINUE_RETRIES or self.attempts.get(stage, 0) >= CONTINUE_RETRIES + 1:
+                return {"granted": False, "limit": True}
             if self.clock() - receipt["at"] < 2:
                 return {"granted": False, "wait": True}
         else:

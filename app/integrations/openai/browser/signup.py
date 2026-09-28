@@ -16,6 +16,7 @@ import uuid
 from urllib.parse import urlsplit
 
 from app.integrations.openai.browser.signup_state import HOSTS, SignupState, trusted_url
+from app.integrations.openai.browser.signup_input import SignupInput, PROTOCOL_VERSION, CAPABILITIES
 from app.integrations.openai.browser.signup_readiness import SignupReadiness, HOME_READY_TIMEOUT
 
 ASSET_DIR = Path(__file__).resolve().parents[4] / "extensions" / "chatgpt-signup"
@@ -91,6 +92,7 @@ class SignupBridge:
         self.closed = False
         self.script_id = None
         self.cdp = page.context.new_cdp_session(page)
+        self.input = SignupInput(page, self.cdp, state)
         self.cdp.on("Runtime.executionContextCreated", self._created)
         self.cdp.on("Runtime.executionContextDestroyed", self._destroyed)
         self.cdp.on("Runtime.executionContextsCleared", lambda _: self.contexts.clear())
@@ -100,7 +102,7 @@ class SignupBridge:
         self.cdp.send("Runtime.enable")
         self.cdp.send("Runtime.addBinding", {"name": self.binding, "executionContextName": self.world})
         bootstrap = Path(__file__).with_name("signup_bridge.js").read_text(encoding="utf-8")
-        config = json.dumps({"binding": self.binding, "hosts": sorted(HOSTS)})
+        config = json.dumps({"binding": self.binding, "hosts": sorted(HOSTS), "inputProtocol": PROTOCOL_VERSION})
         source = "(() => { if(window!==window.top || location.protocol!=='https:' || !" + json.dumps(sorted(HOSTS)) + ".includes(location.host))return;\n"
         source += "(" + bootstrap + ")(" + config + ");\n"
         source += "const start=()=>{if(!globalThis.__team48ManagedSignup)return;\n" + content + "\n};\n"
@@ -133,7 +135,12 @@ class SignupBridge:
                 parsed = urlsplit(url)
                 if type(request_id) is not int or not trusted_url(url) or origin != f"https://{parsed.netloc}" or url != self.page.url:
                     continue
-                response = self.state.handle(request["message"], url)
+                message = request["message"]
+                if isinstance(message, dict) and str(message.get("type", "")).startswith("input-"):
+                    response = {"ok": True, **self.input.handle(message, current=lambda: (
+                        not self.closed and context_id in self.contexts and self.page.url == url))}
+                else:
+                    response = self.state.handle(message, url)
                 # The mailbox operation can overlap navigation; do not answer a stale world.
                 if context_id not in self.contexts or self.page.url != url:
                     continue
@@ -298,7 +305,8 @@ def run_managed_signup(*, browser, page, email, password, profile_dir, start_url
                 break
         result = {"ok": bool(session), "signup_flow": "extension", "signup_version": version,
                   "signup_attempts": dict(state.attempts), "signup_retries": dict(state.retries),
-                  "signup_diagnostics": {"schema": 1, "checkpoints": checkpoints,
+                  "signup_diagnostics": {"schema": 1, "input_protocol": PROTOCOL_VERSION,
+                      "input_capabilities": list(CAPABILITIES), "checkpoints": checkpoints,
                       "readiness": gate.diagnostics(), "workspace_actions": actions}}
         if session:
             payload = session["json"]
@@ -312,7 +320,8 @@ def run_managed_signup(*, browser, page, email, password, profile_dir, start_url
     except Exception:
         return {"ok": False, "signup_flow": "extension", "signup_version": version,
                 "error_code": "registration_browser_failed",
-                "signup_diagnostics": {"schema": 1, "checkpoints": checkpoints,
+                "signup_diagnostics": {"schema": 1, "input_protocol": PROTOCOL_VERSION,
+                      "input_capabilities": list(CAPABILITIES), "checkpoints": checkpoints,
                     "readiness": gate.diagnostics(), "workspace_actions": actions},
                 "error": "新版注册浏览器中断，请继续同一邮箱处理"}
     finally:

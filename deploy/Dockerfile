@@ -41,7 +41,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends xvfb \
 COPY app /app/app
 # Only the public shared runner; never embed the personal extension mailbox config.
 COPY extensions/chatgpt-signup/content.js extensions/chatgpt-signup/manifest.json /app/extensions/chatgpt-signup/
-COPY legacy_import /app/legacy_import
 
 EXPOSE 8008
 

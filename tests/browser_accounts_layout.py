@@ -54,6 +54,7 @@ def main():
             if path=='/api/accounts/portfolio': return r.fulfill(json=data)
             if path=='/api/workspaces': return r.fulfill(json={'items':data['groups']})
             if path=='/api/runtime/status': return r.fulfill(json=runtime)
+            if path.endswith('/rotate/preview'): return r.fulfill(json={'ok':True,'role':'member','seat_intent':'premium'})
             if path=='/api/sub2api/push-options': return r.fulfill(json={'groups':[],'proxy_groups':[],'proxies':[]})
             if path.startswith('/api/resources/proxies'): return r.fulfill(json={'items':[]})
             if path.startswith('/api/') and r.request.method not in ('GET','HEAD'):
@@ -97,12 +98,14 @@ def main():
         expect(select).to_contain_text('5h 20% / 7d 80% · 401')
         assert not writes
         select.select_option(child['email'])
+        rotation.locator('input[name=replacement_email]').fill('fresh@icloud.com')
         rotation.get_by_role('button',name='执行受控轮转').click()
-        expect(page.locator('#confirm-sheet')).to_contain_text('补位账号继承原角色和席位')
+        expect(page.locator('#confirm-sheet')).to_contain_text('补位账号继承原角色和席位：Member / Premium')
         assert not writes
         page.locator('#confirm-submit').click()
         expect(rotation).to_be_hidden()
         assert writes[0][0]=='/api/workspaces/1/rotate' and writes[0][1]['email']==child['email']
+        assert writes[0][1]['replacement_email']=='fresh@icloud.com'
         held.pop().fulfill(json={'success':False,'error':'fixture gate denied'})
         expect(page.locator('#sheet-body .team-primary-actions')).to_be_visible()
         # Keep screenshot fixtures comparable and verify desktop/mobile together.

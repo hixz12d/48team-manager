@@ -166,6 +166,9 @@ def serialize_operation(
         or (f"workspace:{row.workspace_id}" if row.workspace_id else None)
         or row.public_id
     )
+    if row.op_type == "rotate" and row.source == "manual_rotation":
+        context = unpack_input(row.input_json)
+        target_label = f"{context.get('old_email') or row.email} → {context.get('replacement_email') or '待核对'}"
     business_step = business_step_label(row.current_step, state=row.state)
     payload = {
         "id": row.public_id,
@@ -182,7 +185,7 @@ def serialize_operation(
         "workspace_name": workspace_name,
         "current_step": row.current_step or "",
         "business_step": business_step,
-        "stage_plan": operation_stage_plan(row.op_type),
+        "stage_plan": operation_stage_plan(row.op_type, getattr(row, "source", None)),
         "started": isoformat(row.started_at or row.created_at),
         "duration": duration_text(row),
         "email": row.email or account_email or "",
@@ -493,6 +496,22 @@ class OperationStore:
 
         lock_actions = actions or WORKSPACE_LOCK_ACTIONS
         target = int(workspace_id)
+        # Serialize mailbox ownership checks across teams before creating a task.
+        from sqlalchemy import update
+        from app.persistence.models.identity import Workspace
+        await session.execute(update(Workspace).where(Workspace.id == target).values(id=Workspace.id))
+        if op_type in {"onboard", "replenish", "rotate", "kick_member", "revoke_invite"}:
+            from app.application.manual_rotation import unresolved_for_workspace, _replacement_in_use
+            unresolved = await unresolved_for_workspace(session, target)
+            if unresolved is not None:
+                return None, unresolved
+            if op_type == "onboard" and email:
+                from app.integrations.mail.otp import parse_mail_line
+                mailbox = str(parse_mail_line(email).get("email") or email).strip().lower()
+                email = mailbox
+                reserved = await _replacement_in_use(session, mailbox)
+                if reserved is not None:
+                    return None, reserved
         await self.reclaim_expired_workspace_locks(session, target, actions=lock_actions)
         busy = await self.active_for_workspace(session, target, actions=lock_actions)
         if busy is not None:

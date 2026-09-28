@@ -1,5 +1,5 @@
 /* Installed only in a named CDP isolated world, never in the website's world. */
-({binding, hosts}) => {
+({binding, hosts, inputProtocol}) => {
   if (window !== window.top || location.protocol !== 'https:' || !hosts.includes(location.host)) return;
   const callHost = globalThis[binding];
   const waiting = new Map();
@@ -43,7 +43,7 @@
       if (stopped) return Promise.resolve({ok: true, active: false});
       return new Promise((resolve, reject) => {
         const id = ++sequence;
-        waiting.set(id, {resolve, reject});
+        waiting.set(id, {resolve, reject, type: message.type});
         callHost(JSON.stringify({id, url: location.href, message}));
       });
     },
@@ -54,6 +54,10 @@
     const pending = waiting.get(id);
     if (!pending) return;
     waiting.delete(id);
+    if (pending.type === 'input-ready' && (response.trusted !== true || response.protocol !== inputProtocol)) {
+      pending.reject(new Error('服务器注册输入协议不可用，请检查部署版本。'));
+      return;
+    }
     pending.resolve(response);
   };
   globalThis.__team48ManagedSignupStop = async () => {

@@ -84,14 +84,25 @@ class InvitedBrowserSession:
         self._continued = False
         self._closed = False
 
+    async def try_reserve(self) -> bool:
+        """Take the global slot only if it is free now; run() then reuses it."""
+        if self._locked:
+            return True
+        if self._closed or _LOCK.locked():
+            return False
+        await _LOCK.acquire()
+        self._locked = True
+        return True
+
     async def run(self, *, on_stage=None, **kwargs):
         if self._closed:
             return {"ok": False, "error_code": "browser_session_lost",
                     "error": "Browser session has been closed"}
         kwargs.pop("phone_source", None)
         if self.process is None:
-            await _LOCK.acquire()
-            self._locked = True
+            if not self._locked:
+                await _LOCK.acquire()
+                self._locked = True
             context = multiprocessing.get_context("spawn")
             self.events = context.Queue()
             self.commands = context.Queue()

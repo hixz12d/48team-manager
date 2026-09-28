@@ -31,7 +31,6 @@ app/
   web/             routes, schemas, templates, static
   persistence/     models, repositories, migrations
   core/            config, errors, security, time
-legacy_import/     read-only legacy DB importer, not part of runtime
 ```
 
 Stack: Python, FastAPI, SQLAlchemy 2, SQLite, Jinja2, vanilla JavaScript, APScheduler, Playwright, httpx / curl-cffi.
@@ -92,17 +91,7 @@ Implementation, configuration, verification and rollback notes: [docs/unified-ma
 
 SQLite, WAL. New tables are created by `app/persistence/migrations/bootstrap.py`.
 
-Legacy production files are not dropped. Import is read-only and lives in `legacy_import/`.
-
-## Migration
-
-Copy the old database, then dry-run:
-
-```powershell
-python -c "from pathlib import Path; from legacy_import.importer import inspect_legacy_db; print(inspect_legacy_db(Path('copy-of-team_manage.db')).as_dict())"
-```
-
-Conflicts go to manual review. Email suffix, Team in a name, or family prefix is only a hint.
+旧版数据库导入脚本已移除。当前服务使用 `data/team48.db`；不要把旧 `team_manage.db` 直接作为运行数据库。身份冲突需要人工核对，邮箱后缀、团队名称和账号前缀仅作提示。
 
 ## Operations
 
@@ -113,6 +102,8 @@ Long commands return immediately:
 ```
 
 Operations persist across refresh, navigation, browser close, and container restart. Completed steps are not replayed.
+
+手动轮转在团队页选择旧号、填写一个新邮箱；后台读取并继承官方角色和席位，使用插件共享注册脚本和 Chromium 原生输入完成注册及同页 OAuth。旧远端账号先暂停，新号推送和实时核对通过后才删除旧号，并按本轮任务计数一次。遇到手机验证、未知写入结果或旧号清理失败，保留同一邮箱，使用任务详情的“继续轮转”核对后续接；归档不会解除未完成轮转的占用。验收记录见 [轮转方案](轮转.md)。
 
 自动轮转支持账号页开关、每团队每日上限、补位 OAuth 与号码池、Sub2API 推送及有界同步重试。后台每分钟扫描，远端状态每15秒核对；启用与失败处理见 [自动轮转说明](docs/automatic-rotation.md)。
 

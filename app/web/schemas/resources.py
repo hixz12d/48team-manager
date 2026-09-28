@@ -52,13 +52,24 @@ class ReplenishRequest(BaseModel):
 
 
 class RotateRequest(BaseModel):
+    """Old member + one plain replacement mailbox. Role and seat are inherited server-side."""
+
     email: str = Field(min_length=3, max_length=320)
-    email_line: str = Field(default="", max_length=500)
-    phone_line: str = Field(default="", max_length=500)
-    proxy: str = Field(default="", max_length=500)
-    force_refill: bool = False
-    reason: str = Field(default="console", max_length=120)
-    role: Literal["owner", "member"] = "owner"
+    replacement_email: str = Field(min_length=3, max_length=320)
+    confirm_vacancy: bool = False
+
+    @model_validator(mode="after")
+    def validate_emails(self):
+        from app.domain.rotate import manual_rotation_email_error
+
+        message = manual_rotation_email_error(self.email, self.replacement_email)
+        if message:
+            raise ValueError(message)
+        return self
+
+
+class RotationContinueRequest(BaseModel):
+    confirm_vacancy: bool = False
 
 
 class KickRequest(BaseModel):

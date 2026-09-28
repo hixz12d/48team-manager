@@ -316,6 +316,7 @@ async def account_sub2api_push(
     confirm_mixed_channel_risk: bool = False,
     workspace_id: int | None = None,
     dry_run: bool = False,
+    rotation_operation_id: str | None = None,
 ) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
@@ -485,6 +486,17 @@ async def account_sub2api_push(
             "schedulable": schedulable,
         },
     )
+
+    if rotation_operation_id:
+        root = await operation_store.get_by_public_id(db, rotation_operation_id)
+        if root is None or root.source != "manual_rotation" or root.workspace_id != scoped_workspace_id:
+            raise ValueError("invalid rotation publication context")
+        await operation_store.mark_step(db, root, "published", state="running", result={
+            "intent": "publish", "sub2api_operation_id": operation.public_id,
+            "credential_revision": int(account.credential_revision or 1),
+        })
+        # Save the concrete write identity before sending anything externally.
+        await db.commit()
 
     create_body: dict[str, Any] = {
         "name": account_name,

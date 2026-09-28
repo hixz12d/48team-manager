@@ -581,7 +581,9 @@ class RotateService:
         invitation_only: bool = False,
         job_id: str | None = None,
         in_test: bool = False,
+        keep_remote: bool = False,
     ) -> dict[str, Any]:
+        """keep_remote: never delete the Sub2API account here, whatever the reason says."""
         busy = await operation_store.active_for_workspace(
             db,
             workspace_id,
@@ -693,7 +695,7 @@ class RotateService:
         await db.commit()
         await self._mark_step(db, job_id, "official_removed", state="success", result={"workspace_id": workspace.id})
         other_context = bool(child and await has_other_active_context(db, child, workspace.id))
-        unbind = bool(unbind_sub2api or should_unbind_sub2api(reason) or purge_local)
+        unbind = False if keep_remote else bool(unbind_sub2api or should_unbind_sub2api(reason) or purge_local)
         deleted_sub = None
         remote_unbind_confirmed = False
         binding_error = None
@@ -1102,7 +1104,8 @@ class RotateService:
         # An unfinished automatic replacement blocks this workspace, not all other teams.
         occupied = {row.workspace_id for row in await operation_store.iter_running(db, WORKSPACE_LOCK_ACTIONS)}
         occupied.update(await db.scalars(select(Operation.workspace_id).where(
-            Operation.op_type == "rotate", Operation.source == "auto", Operation.archived_at.is_(None),
+            Operation.op_type == "rotate", Operation.source.in_(("auto", "manual_rotation")),
+            (Operation.source == "manual_rotation") | Operation.archived_at.is_(None),
             Operation.state.in_(("partial", "manual_required")),
         )))
         candidates = []

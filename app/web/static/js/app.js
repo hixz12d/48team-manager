@@ -1896,6 +1896,19 @@ function hmeRow(item) {
         run: (item, trigger) => cancelTrackedOperation(item, trigger),
       },
       {
+        id: "operation.continue_rotation",
+        label: "继续轮转",
+        visible: (item) => Boolean(item.can_continue_rotation),
+        run: async (item, trigger) => {
+          const vacancy = item.error_code === "vacancy_not_safe_to_refill";
+          if (!await confirmDanger(`继续轮转任务 ${item.id}？`, {title:"继续轮转", items: vacancy
+            ? ["会按同一新邮箱继续补位", "已核对账单，确认空出的席位可以补位"]
+            : ["只执行尚未确认完成的步骤", "不会重复踢人、换邮箱或重复计数"], confirmLabel:"继续"}, trigger)) return;
+          const result = await postAction(`operation-continue-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/continue-rotation`, {confirm_vacancy: vacancy});
+          await handleActionResult(result, { successMessage: "已继续轮转" });
+        },
+      },
+      {
         id: "operation.retry",
         label: "安全重试",
         visible: (item) => Boolean(item.can_retry),
@@ -2573,29 +2586,32 @@ function hmeRow(item) {
           email.append(new Option(`${row.email} · 5h ${q.five_hour_used_percent ?? "未知"}${q.five_hour_used_percent == null ? "" : "%"} / 7d ${q.seven_day_used_percent ?? "未知"}${q.seven_day_used_percent == null ? "" : "%"} · ${auth}${q.stale ? " · 旧快照" : ""}`, row.email));
         }
         email.disabled = !candidates.length; emailLabel.append(email);
-        const replacementLabel = document.createElement("label"); replacementLabel.textContent = "补位邮箱 / 原文（选填）";
-        const replacement = document.createElement("textarea"); replacement.name = "email_line"; replacement.rows = 2; replacement.placeholder = "留空则从待命池选"; replacementLabel.append(replacement);
-        const more = document.createElement("details"); more.className = "team-detail-disclosure";
-        const summary = document.createElement("summary"); summary.textContent = "更多轮转参数";
-        const forceLabel = document.createElement("label"); forceLabel.className = "check";
-        const force = document.createElement("input"); force.type = "checkbox"; force.name = "force_refill";
-        forceLabel.append(force, document.createTextNode(" 强制补位"));
-        const warning = document.createElement("p"); warning.className = "hint"; warning.textContent = "仅在了解当前团队状态时使用。仍会核对官方席位和补位资源，不保证绕过门禁。";
-        more.append(summary, forceLabel, warning);
+        const replacementLabel = document.createElement("label"); replacementLabel.textContent = "新邮箱（必填）";
+        const replacement = document.createElement("input"); replacement.type = "email"; replacement.name = "replacement_email"; replacement.required = true; replacement.autocomplete = "off"; replacement.placeholder = "name@icloud.com，验证码从 Cloudflare 邮箱读取"; replacementLabel.append(replacement);
         const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button primary"; submit.textContent = "执行受控轮转"; submit.disabled = !candidates.length;
         const errorBox = document.createElement("p"); errorBox.className = "text-warning"; errorBox.setAttribute("role", "alert"); errorBox.hidden = true;
         const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "button ghost"; cancel.textContent = "取消";
         cancel.addEventListener("click", () => setTeamFormOpen(form, form._toggle, false));
         const actions = document.createElement("div"); actions.className = "row-actions"; actions.append(cancel, submit);
-        form.append(emailLabel, replacementLabel, more, errorBox, actions);
+        form.append(emailLabel, replacementLabel, errorBox, actions);
         form.addEventListener("submit", async event => {
           event.preventDefault();
           if (!email.value || !form.reportValidity()) return;
-          const target = email.value;
-          if (!await confirmDanger(`确认对 ${target} 执行受控轮转？`, {title:"执行受控轮转", items:["会修改官方团队席位", "补位账号继承原角色和席位"], confirmLabel:"执行轮转"}, submit)) return;
+          const target = email.value, next = replacement.value.trim().toLowerCase();
+          if (next === target.toLowerCase()) { errorBox.textContent = "新邮箱不能与旧号相同"; errorBox.hidden = false; return; }
+          setButtonBusy(submit, true, "检查中"); errorBox.hidden = true;
+          let preview;
+          try {
+            preview = await postAction(`rotate-preview-${workspace.id}-${target}`, `/api/workspaces/${workspace.id}/rotate/preview`, {email:target, replacement_email:next});
+            if (!preview.ok) throw new Error(preview.error || "轮转预检未通过，请检查配置后重试");
+          } catch (error) { errorBox.textContent = friendlyError(error); errorBox.hidden = false; return; }
+          finally { setButtonBusy(submit, false); }
+          const role = preview.role === "owner" ? "Owner" : "Member";
+          const seat = preview.seat_intent === "premium" ? "Premium" : "Standard";
+          if (!await confirmDanger(`确认将 ${target} 轮转为 ${next}？`, {title:"执行受控轮转", items:["会修改官方团队席位", `补位账号继承原角色和席位：${role} / ${seat}`, "新号确认可用后才删除旧号的 Sub2API 记录"], confirmLabel:"执行轮转"}, submit)) return;
           setButtonBusy(submit, true, "轮转中"); form.hidden = true; errorBox.hidden = true;
           try {
-            const result = await postAction(`rotate-${workspace.id}-${target}`, `/api/workspaces/${workspace.id}/rotate`, {email:target, email_line:replacement.value || "", force_refill:force.checked, reason:"console_team_detail"});
+            const result = await postAction(`rotate-${workspace.id}-${target}`, `/api/workspaces/${workspace.id}/rotate`, {email:target, replacement_email:next});
             await handleActionResult(result, {successMessage:result.message || "轮转已提交", refresh:false});
             await reloadTeamDetails();
           } catch (error) { errorBox.textContent = friendlyError(error); errorBox.hidden = false; }

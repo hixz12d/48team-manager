@@ -18,14 +18,16 @@
     <div id="team48-auto" class="team48-box" hidden>
       <label for="auto-workspace">注册完成后自动接入团队</label>
       <select id="auto-workspace"><option value="">不自动接入</option></select>
-      <p class="hint">完成后自动：同步团队 → 接入本地 → 在本页授权 → 推送 Sub2API → 今日切换 +1。邀请需已发出。</p>
+      <p class="hint">选「自动识别」时，开始注册就在后台查询哪个团队邀请了这个邮箱，注册完成后自动：同步团队 → 接入本地 → 在本页授权 → 推送 Sub2API → 今日切换 +1。邀请需已发出。</p>
     </div>
     <button id="start" type="submit" disabled>开始注册 <span aria-hidden="true">↗</span></button>
   </form>
   <section id="progress" hidden aria-label="注册进度">
     <div class="status-line"><strong id="state"></strong><span id="account"></span></div>
     <p id="run-mode" class="hint"></p><p id="message" role="status" aria-live="polite"></p>
+    <p id="auto-team" class="hint" hidden></p>
     <div class="actions"><button id="focus" type="button" class="secondary">查看网页</button><button id="pause" type="button" class="secondary">暂停</button><button id="resume" type="button">继续</button><button id="stop" type="button" class="text-button">停止</button></div>
+    <button id="reload-resume" type="button" class="secondary" hidden>刷新网页并继续</button>
     <button id="mark-complete" type="button" class="secondary" hidden>网页已登录本邮箱，确认已注册完成</button>
     <div id="handoff" class="team48-box" hidden>
       <div class="status-line"><strong id="handoff-title">接入 Team48</strong><span id="handoff-team"></span></div>

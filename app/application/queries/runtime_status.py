@@ -28,7 +28,7 @@ SAFE_ERRORS = {
     "cancelled": "已取消",
     "http_429": "请求受限，等待重试",
 }
-SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动", "auto": "自动轮转", "auto_sync": "同步重试", "extension": "插件"}
+SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动", "auto": "自动轮转", "auto_sync": "同步重试", "extension": "插件", "manual_rotation": "手动轮转"}
 
 
 def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None):
@@ -51,7 +51,7 @@ def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None)
         logs = json.loads(row.log_json or "[]")
     except (TypeError, ValueError):
         logs = []
-    plan = operation_stage_plan(row.op_type)
+    plan = operation_stage_plan(row.op_type, row.source)
     known = set(BUSINESS_STEP_LABELS) | {code for stage in plan for code in stage["stages"]}
     observed = list(dict.fromkeys(item.get("stage") for item in logs
                                  if isinstance(item, dict) and isinstance(item.get("stage"), str)

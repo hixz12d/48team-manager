@@ -66,7 +66,7 @@ class SignupStateTests(unittest.TestCase):
         token = self.reserve()["token"]
         self.send("finish-click", stage="otp", token=token, sent=True)
         self.assertEqual(self.state.used_codes, {"123456", "005239"})
-        for _ in range(2):
+        for _ in range(3):
             self.now += 1
             self.assertTrue(self.send("retry-continue", stage="otp", token=token)["wait"])
             self.now += 1
@@ -80,8 +80,8 @@ class SignupStateTests(unittest.TestCase):
         self.send("event", event="page", stage="otp")  # A page reload does not reset budgets.
         self.assertFalse(self.reserve()["granted"])
         self.assertIsNone(self.send("code")["code"])
-        self.assertEqual(self.state.attempts["otp"], 3)
-        self.assertEqual(self.state.retries["otp"], 2)
+        self.assertEqual(self.state.attempts["otp"], 4)
+        self.assertEqual(self.state.retries["otp"], 3)
         self.codes.assert_called_once()
 
     def test_retry_cancel_restores_the_original_submission_guard(self):

@@ -22,7 +22,7 @@ from app.application.settings import save_console_settings
 from app.application.workspace_sync import workspace_sync_service
 from app.application.sub2api_usage import sub2api_usage_service
 from app.integrations.sub2api.client import sub2api_client
-from app.persistence.models.identity import Account
+from app.persistence.models.identity import Account, Workspace
 from app.web.deps import require_admin
 from app.web.schemas.accounts import AccountPhonePatch, DeleteAccountRequest, DeleteAccountsRequest, RegisterAccountRequest
 from app.web.schemas.resources import (
@@ -37,6 +37,7 @@ from app.web.schemas.resources import (
     PhoneStatusPatch,
     RevokeInviteRequest,
     RotateRequest,
+    RotationContinueRequest,
     Sub2ApiPushRequest,
     Sub2ApiUsageSyncRequest,
     WorkspaceAddChildRequest,
@@ -210,6 +211,26 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
+    @router.post("/workspaces/{workspace_id}/rotate/preview")
+    async def preview_rotation(
+        workspace_id: int, payload: RotateRequest,
+        _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        from app.application import manual_rotation
+        workspace = await db.get(Workspace, workspace_id)
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="workspace not found")
+        old, new = payload.email.strip().lower(), payload.replacement_email.strip().lower()
+        blocked = await manual_rotation._local_blocker(db, workspace, old, new)
+        if blocked:
+            return blocked
+        try:
+            context = await manual_rotation.preflight(db, manual_rotation._default_rotate(), workspace_id, old, new)
+        except manual_rotation.RotationBlocked as exc:
+            return {"ok": False, "error_code": exc.code, "error": str(exc)}
+        return {"ok": True, "old_email": old, "replacement_email": new,
+                "role": context["role"], "seat_intent": context["seat_intent"]}
+
     @router.post("/workspaces/{workspace_id}/rotate", status_code=status.HTTP_202_ACCEPTED)
     async def rotate_workspace_member(
         workspace_id: int,
@@ -221,13 +242,23 @@ def build_api_router(get_db) -> APIRouter:
             db,
             workspace_id,
             email=payload.email,
-            email_line=payload.email_line,
-            phone_line=payload.phone_line,
-            proxy=payload.proxy,
-            force_refill=payload.force_refill,
-            reason=payload.reason,
-            role=payload.role,
+            replacement_email=payload.replacement_email,
+            confirm_vacancy=payload.confirm_vacancy,
             background=True,
+        )
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        return _accepted(result)
+
+    @router.post("/operations/{public_id}/continue-rotation", status_code=status.HTTP_202_ACCEPTED)
+    async def continue_rotation(
+        public_id: str,
+        payload: RotationContinueRequest | None = None,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.continue_manual_rotation(
+            db, public_id, confirm_vacancy=bool(payload and payload.confirm_vacancy), background=True,
         )
         if result.get("error_code") == "not_found":
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")

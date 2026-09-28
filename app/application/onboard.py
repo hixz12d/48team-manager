@@ -212,7 +212,11 @@ class OnboardService:
         oauth_signup: bool = False,
         browser_executable: str = "",
         use_phone_pool: bool = False,
+        signup_flow: str | None = None,
+        browser_session=None,
+        keep_operation_identity: bool = False,
     ) -> dict[str, Any]:
+        """signup_flow pins the engine for this run; browser_session is caller-owned (not closed here)."""
         seat_intent = parse_invite_seat_intent(seat_intent).value
         from app.core.config import load_settings
         from app.integrations.openai.browser.environment import BrowserEnvironmentError, validate_configuration
@@ -220,14 +224,16 @@ class OnboardService:
         try:
             browser_settings = load_settings()
             validate_configuration(browser_settings, browser_executable)
-            if browser_settings.browser_signup_flow == "extension":
+            if (signup_flow or browser_settings.browser_signup_flow) == "extension":
                 from app.integrations.openai.browser.signup import validate_signup_assets
 
                 validate_signup_assets()
         except BrowserEnvironmentError as exc:
             return {"success": False, "error_code": exc.error_code, "error": str(exc)}
         claimed = None
-        browser_session = browser_slot.InvitedBrowserSession() if oauth_signup and not in_test else None
+        owns_session = browser_session is None
+        if owns_session:
+            browser_session = browser_slot.InvitedBrowserSession() if oauth_signup and not in_test else None
         if oauth_signup and not browser_executable:
             from app.core.config import load_settings
             browser_executable = load_settings().browser_executable
@@ -277,6 +283,8 @@ class OnboardService:
                 oauth_signup=oauth_signup,
                 browser_executable=browser_executable,
                 browser_session=browser_session,
+                signup_flow=signup_flow,
+                keep_operation_identity=keep_operation_identity,
             )
             label = ""
             if claimed and result.get("success"):
@@ -301,7 +309,7 @@ class OnboardService:
             await hme_service.finalize_claim(db, claimed, {"success": False})
             raise
         finally:
-            if browser_session is not None:
+            if browser_session is not None and owns_session:
                 await browser_session.close()
 
     async def _invite_and_onboard_impl(
@@ -327,6 +335,8 @@ class OnboardService:
         oauth_signup: bool = False,
         browser_executable: str = "",
         browser_session=None,
+        signup_flow: str | None = None,
+        keep_operation_identity: bool = False,
     ) -> dict[str, Any]:
         requested_seat = parse_invite_seat_intent(seat_intent)
         busy = await operation_store.active_for_workspace(
@@ -433,7 +443,7 @@ class OnboardService:
             proxy_profile_id=_profile_id,
         )
         password = password or decrypt_secret(child.password_encrypted)
-        if oauth_signup and job_id:
+        if oauth_signup and job_id and not keep_operation_identity:
             op = await operation_store.get_by_public_id(db, job_id)
             if op:
                 op.email, op.account_id = email, child.id
@@ -549,7 +559,7 @@ class OnboardService:
 
         from app.core.config import load_settings
 
-        homepage_signup = oauth_signup and load_settings().browser_signup_flow == "extension"
+        homepage_signup = oauth_signup and (signup_flow or load_settings().browser_signup_flow) == "extension"
         invite_url = "https://chatgpt.com/" if homepage_signup else ""
         if oauth_signup and not homepage_signup:
             from app.integrations.mail.otp import wait_for_mailbox_item, extract_invite_url
@@ -570,6 +580,8 @@ class OnboardService:
                         "error": "未收到有效邀请链接，请继续此邮箱，不会改走普通注册页",
                         "child": serialize_child(child)}
         browser_options = {"allow_sms": False, "executable_path": browser_executable, "invite_entry": not homepage_signup} if oauth_signup else {}
+        if signup_flow:
+            browser_options["signup_flow"] = signup_flow
 
         if claimed is not None:
             await hme_service.mark_signup_started(db, claimed, stage="browser")

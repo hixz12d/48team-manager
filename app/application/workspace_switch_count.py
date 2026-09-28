@@ -19,7 +19,8 @@ def switch_count_record(workspace: Workspace) -> dict:
     }
 
 
-async def increment_workspace_switch_count(db: AsyncSession, workspace_id: int) -> dict:
+async def increment_workspace_switch_count(db: AsyncSession, workspace_id: int, *, commit: bool = True) -> dict:
+    """commit=False lets a caller commit the increment together with its own dedupe marker."""
     today = utcnow().astimezone(zone(SWITCH_TIMEZONE)).date()
     # One statement handles both rollover and increment, including concurrent clients.
     result = await db.execute(
@@ -38,7 +39,8 @@ async def increment_workspace_switch_count(db: AsyncSession, workspace_id: int) 
     count = result.scalar_one_or_none()
     if count is None:
         return {"ok": False, "error_code": "not_found", "error": "团队不存在"}
-    await db.commit()
+    if commit:
+        await db.commit()
     return {
         "ok": True,
         "workspace_id": workspace_id,

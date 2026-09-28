@@ -50,6 +50,20 @@ def token_workspace_mismatch(account: Account, workspace: Workspace | None) -> b
 
 async def count_switch_once(db: AsyncSession, workspace_id: int, account_id: int) -> dict[str, Any]:
     """Add one to today's switch count the first time this membership is authorized."""
+    from app.persistence.models.operations import Operation
+    from app.application.operations import unpack_input
+    account = await db.get(Account, account_id)
+    roots = await db.scalars(select(Operation).where(
+        Operation.source == "manual_rotation", Operation.op_type == "rotate",
+        Operation.workspace_id == workspace_id, Operation.state != "success",
+    ))
+    for root in roots:
+        from app.application.manual_rotation import _has_side_effects
+        if root.state not in (*ACTIVE_STATES, "partial", "manual_required") and not await _has_side_effects(db, root):
+            continue
+        if account and normalize_email(unpack_input(root.input_json).get("replacement_email")) == account.email:
+            return _step(None, "本账号属于未完成轮转，由原轮转清理旧号后统一计数",
+                         counted=False, rotation_operation_id=root.public_id)
     marked = await db.execute(
         update(WorkspaceMembership)
         .where(
@@ -99,6 +113,20 @@ async def finish_after_authorization(
     member = await _joined_membership(db, workspace.id, account.id) if workspace is not None else None
     mismatch = token_workspace_mismatch(account, workspace)
     followups: dict[str, Any] = {}
+    from app.persistence.models.operations import Operation
+    from app.application.operations import unpack_input
+    roots = await db.scalars(select(Operation).where(
+        Operation.source == "manual_rotation", Operation.op_type == "rotate",
+        Operation.workspace_id == workspace_id, Operation.state != "success",
+    ))
+    for root in roots:
+        from app.application.manual_rotation import _has_side_effects
+        if root.state not in (*ACTIVE_STATES, "partial", "manual_required") and not await _has_side_effects(db, root):
+            continue
+        if normalize_email(unpack_input(root.input_json).get("replacement_email")) == account.email:
+            deferred = _step(None, "授权已保存，请继续原轮转完成推送、旧号清理和计数",
+                             rotation_operation_id=root.public_id, counted=False)
+            return {key: deferred for key, requested in (("sub2api", push_sub2api), ("switch_count", count_switch)) if requested}
 
     def blocked() -> dict[str, Any] | None:
         if owner:

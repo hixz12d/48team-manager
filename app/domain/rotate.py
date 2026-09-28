@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -127,6 +128,24 @@ def rotate_backoff_at(now: datetime, fail_count: int) -> datetime:
 
 def should_unbind_sub2api(reason: str) -> bool:
     return str(reason or "") in UNBIND_SUB2API_REASONS
+
+
+_PLAIN_EMAIL_RE = re.compile(r"^[^\s@|,;<>]+@[^\s@|,;<>]+\.[^\s@|,;<>]+$")
+
+
+def manual_rotation_email_error(old_email: str, replacement_email: str) -> str | None:
+    """Manual rotation takes exactly one plain mailbox; codes are read from Cloudflare."""
+    old = str(old_email or "").strip().lower()
+    new = str(replacement_email or "").strip().lower()
+    if not old:
+        return "缺少要轮转的旧号邮箱"
+    if not new:
+        return "请填写新邮箱"
+    if "----" in new or not _PLAIN_EMAIL_RE.match(new):
+        return "新邮箱只接受单个邮箱，例如 name@icloud.com；验证码统一从 Cloudflare 邮箱读取"
+    if new == old:
+        return "新邮箱不能与旧号相同"
+    return None
 
 
 def rotate_terminal_status(*, success: bool = False, error_code: str = "") -> str:

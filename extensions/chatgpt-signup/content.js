@@ -1,11 +1,13 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.5.2';
+  const VERSION = '0.5.9';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
   let disconnected = false, finished = false;
+  // A runner created after a "refresh and continue" request belongs to the reloaded page.
+  const runnerStarted = Date.now();
   // The project installs this transport in its own CDP isolated world only.
   const managed = globalThis.__team48ManagedSignup;
   const listeners = new AbortController();
@@ -18,10 +20,26 @@
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const between = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
   const rest = (min, max) => sleep(between(min, max));
+  // Time the page spent hidden (minimised or fully covered, when the browser throttles timers and
+  // freezes animations) does not count toward any wait below. Wall-clock time is kept only where it
+  // is compared with the worker's timestamps.
+  let hiddenTotal = 0, hiddenSince = document.visibilityState === 'hidden' ? Date.now() : 0, settleUntil = 0;
+  const clock = () => Date.now() - hiddenTotal - (hiddenSince ? Date.now() - hiddenSince : 0);
+  onDocument('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') { hiddenSince ||= Date.now(); return; }
+    if (!hiddenSince) return;
+    hiddenTotal += Date.now() - hiddenSince; hiddenSince = 0;
+    // Dialogs and layout frozen while hidden catch up before the next check or click.
+    settleUntil = clock() + between(1200, 2000);
+  });
   let job;
-  let unknownSince = Date.now();
+  let unknownSince = clock();
   let entryWaitSince = 0, sessionAnonymous = false;
   const ENTRY_WAIT = 15000;
+  // After requesting the fallback, the old page may keep ticking until navigation commits.
+  const FALLBACK_NAV_WAIT = 30000, FALLBACK_PAGE_WAIT = 30000;
+  const ENTRY_PAUSE = '备用注册入口仍未打开，请检查网络或手动打开注册页面后继续。';
+  let fallbackAt = 0;
   const entryPage = () => location.origin === 'https://chatgpt.com' &&
     (location.pathname === '/' || (job?.entryFallbackUsed && location.pathname === '/auth/login'));
   let lastSessionCheck = 0;
@@ -49,7 +67,7 @@
   const fillWait = record => record.complete && currentStage === 'otp' ? AUTO_ADVANCE_WAIT : FILL_SUBMIT_WAIT;
   const fillPending = form => {
     const record = form && submittedForms.get(form);
-    return !!record?.fill && !record.loadingSeen && Date.now() - record.at < fillWait(record);
+    return !!record?.fill && !record.loadingSeen && clock() - record.at < fillWait(record);
   };
   // Let the page finish its own async validation/auto-advance before judging or clicking.
   const settle = () => sleep(1000);
@@ -67,6 +85,7 @@
     (target?.isConnected && (target.matches(':disabled') || target.getAttribute('aria-disabled') === 'true'));
   const watchLoading = (record, target, strict = false) => {
     record.loadingSeen = !!loadingNow(record.scope, target);
+    if (record.loadingSeen) record.busyAt = clock();
     const observe = records => {
       // Remember even a short spinner/disabled interval between runner ticks.
       // While filling, a button becoming enabled is ordinary validation, not loading.
@@ -78,7 +97,7 @@
           change.attributeName === 'class' && /\banimate-spin\b/.test(change.oldValue || ''));
         return [...change.addedNodes, ...change.removedNodes].some(node => node.nodeType === 1 &&
           (node.matches(loadingSelector) || node.querySelector(loadingSelector)));
-      })) record.loadingSeen = true;
+      })) { record.loadingSeen = true; record.busyAt = clock(); }
     };
     const observer = new MutationObserver(observe);
     observer.observe(record.scope, {subtree: true, childList: true, attributes: true, attributeOldValue: true,
@@ -92,7 +111,7 @@
   const clickFeedback = (element, stage) => {
     const scope = element.closest('form') || element.closest('[role="dialog"],dialog[open],[aria-modal="true"]') || document;
     const record = {stage, path: location.pathname, scope, button: element, resolve: controlRef(element),
-      shape: formShape(scope), values: formValues(scope), errors: validationSnapshot(scope), at: Date.now(), response: ''};
+      shape: formShape(scope), values: formValues(scope), errors: validationSnapshot(scope), at: clock(), response: ''};
     watchLoading(record, element);
     return record;
   };
@@ -106,13 +125,40 @@
       validationSnapshot(pending.scope).size === 0 && target && enabled(target) &&
       submitLabels.test((target.innerText || target.getAttribute('aria-label') || '').trim());
   };
+  // The page reacted (spinner or submit) but then went idle on the same, unchanged, error-free
+  // form. OTP/profile pages often stall like this; after a quiet interval, click Continue again.
+  const STALL_WAIT = 6000;
+  const stalledClick = pending => {
+    pending.flush();
+    const submission = submittedForms.get(pending.scope);
+    submission?.flush?.();
+    const target = pending.resolve();
+    const quietSince = Math.max(pending.at, pending.busyAt || 0, submission?.at || 0, submission?.busyAt || 0);
+    return pending === pendingClick && continueStage(pending.stage) && job.mode !== 'manual' &&
+      currentStage === pending.stage && location.pathname === pending.path && pending.scope.isConnected &&
+      formShape(pending.scope) === pending.shape && formValues(pending.scope) === pending.values &&
+      validationSnapshot(pending.scope).size === 0 && target && enabled(target) && !loadingNow(pending.scope, target) &&
+      submitLabels.test((target.innerText || target.getAttribute('aria-label') || '').trim()) &&
+      clock() - quietSince >= STALL_WAIT;
+  };
+  // The same rule for a submit the site sent by itself (e.g. a complete OTP): after it showed a
+  // spinner and then went idle, the unchanged form may be released for one normal Continue click.
+  // Bounded per page step, because a site that re-submits on its own would otherwise loop.
+  const STALL_RELEASES = 2;
+  let stallReleases = new Map();
+  const retryAllowed = pending => pending.stalled ?
+    stalledClick(pending) && submittedForms.get(pending.scope) === pending.submission : retryableClick(pending);
   const autoFill = () => !['submit', 'manual'].includes(job?.mode);
   const requireForeground = () => {
     // With CDP input the page runs with emulated focus; it only has to stay visible.
     if (document.visibilityState === 'hidden' || (!trustedInput && !document.hasFocus())) {
-      unknownSince = Date.now(); entryWaitSince = 0;
+      unknownSince = clock(); entryWaitSince = 0;
       renderProgress({...job, message: trustedInput ? '注册窗口被最小化或完全遮挡，恢复显示后会自动继续填写。' :
         '注册页面已离开前台，切回此窗口后会自动继续填写。'});
+      throw new StopStep();
+    }
+    if (clock() < settleUntil) {
+      renderProgress({...job, message: '窗口刚恢复显示，等页面稳定后继续。'});
       throw new StopStep();
     }
   };
@@ -148,10 +194,11 @@
     if (!response?.ok) throw new Error(response?.error || '插件连接已断开，请刷新页面。');
     return response;
   };
-  const pause = async reason => {
+  // `code` is a fixed reason for diagnostics; the text is shown to the user only.
+  const pause = async (reason, code = 'other') => {
     const state = await send('state');
     // Preserve the first diagnostic and a user's explicit pause/stop.
-    if (state.active) await send('pause', {reason, stage: currentStage});
+    if (state.active) await send('pause', {reason, code, stage: currentStage});
     renderProgress(await send('state'));
   };
   let panel;
@@ -180,7 +227,7 @@
         const action = panel.querySelector('#action'); action.disabled = true;
         try {
           const state = await send('state');
-          if (state.status === 'running') await pause('已手动暂停，点击继续即可恢复。');
+          if (state.status === 'running') await pause('已手动暂停，点击继续即可恢复。', 'user');
           else if (state.status === 'paused') { await send('resume'); renderProgress(await send('state')); }
           else host.remove();
         } catch (error) { panel.querySelector('#text').textContent = error.message; }
@@ -239,15 +286,21 @@
   };
   const hitPoint = element => {
     const rect = element.getBoundingClientRect();
-    const left = Math.max(0, rect.left), right = Math.min(innerWidth, rect.right);
-    const top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
-    if (right <= left || bottom <= top) return null;
-    // Rounded controls, overlays and clipped scroll containers can leave the centre covered.
-    for (const [horizontal, vertical] of [[.5,.5],[.2,.5],[.8,.5],[.5,.2],[.5,.8],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
-      const point = {x: left + (right - left) * horizontal, y: top + (bottom - top) * vertical, rect};
-      if (hitsControl(element, point)) return point;
-    }
-    return null;
+    const sample = area => {
+      const left = Math.max(0, rect.left, area.left), right = Math.min(innerWidth, rect.right, area.right);
+      const top = Math.max(0, rect.top, area.top), bottom = Math.min(innerHeight, rect.bottom, area.bottom);
+      if (right <= left || bottom <= top) return null;
+      // Rounded controls and overlays can leave the centre covered.
+      for (const [horizontal, vertical] of [[.5,.5],[.2,.5],[.8,.5],[.5,.2],[.5,.8],[.2,.2],[.8,.2],[.2,.8],[.8,.8]]) {
+        const point = {x: left + (right - left) * horizontal, y: top + (bottom - top) * vertical, rect};
+        if (hitsControl(element, point)) return point;
+      }
+      return null;
+    };
+    // Browser hit testing is authoritative: absolute/top-layer controls can escape
+    // ancestors that our clipping estimate includes. Only use that estimate to find
+    // extra points when a narrow visible strip misses the full-box samples.
+    return sample(rect) || sample(viewArea(element));
   };
   const moveProgressAside = element => {
     const host = panel?.host;
@@ -278,10 +331,10 @@
   };
   const waitForProfile = async () => {
     if (!profileLoading()) { profileLoadingSince = 0; return false; }
-    profileLoadingSince ||= Date.now();
+    profileLoadingSince ||= clock();
     renderProgress({...job, message: '资料正在提交，等待页面跳转'});
-    if (Date.now() - profileLoadingSince > 45000) {
-      await pause('资料提交超过 45 秒仍未完成，请检查网页提示后继续。');
+    if (clock() - profileLoadingSince > 45000) {
+      await pause('资料提交超过 45 秒仍未完成，请检查网页提示后继续。', 'profile_timeout');
     }
     return true;
   };
@@ -291,12 +344,12 @@
     const scope = original.closest('[role="dialog"],dialog[open],[aria-modal="true"]') || original.closest('form') || document;
     const shape = formShape(scope), origin = location.origin, path = location.pathname;
     const identity = node => JSON.stringify([node.localName, node.getAttribute('type'), node.id, node.getAttribute('name'),
-      node.getAttribute('href'), (node.innerText || node.getAttribute('aria-label') || '').trim()]);
+      node.getAttribute('href'), (node.innerText || node.getAttribute('aria-label') || node.textContent || '').trim()]);
     const signature = identity(original);
     let current = original;
     return () => {
       if (location.origin !== origin || location.pathname !== path || !scope.isConnected || formShape(scope) !== shape) return null;
-      if (current?.isConnected && visible(current) && identity(current) === signature) return current;
+      if (current?.isConnected && identity(current) === signature) return current;
       const matches = [...scope.querySelectorAll('button,a,[role="button"]')].filter(node => visible(node) && identity(node) === signature);
       current = matches.length === 1 ? matches[0] : null;
       return current;
@@ -333,15 +386,17 @@
   const partlyShown = (rect, area) =>
     Math.min(rect.bottom, area.bottom) - Math.max(rect.top, area.top) >= Math.min(rect.height, 16) &&
     Math.min(rect.right, area.right) - Math.max(rect.left, area.left) >= Math.min(rect.width, 16);
-  async function scrollToControl(element) {
-    if (!trustedInput) { element.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'instant'}); return; }
+  async function scrollToControl(element, deadline = clock() + 5000) {
+    if (!trustedInput) { element.scrollIntoView({block: 'nearest', inline: 'nearest', behavior: 'instant'}); return true; }
     let previous, stuck = 0;
-    for (let attempt = 0; attempt < 32; attempt++) {
+    for (let attempt = 0; attempt < 32 && clock() < deadline; attempt++) {
       if (!(await send('state')).active || userEditing) throw new StopStep();
       requireForeground();
       if (!element.isConnected) throw new RetryStep('滚动时控件已更新');
       const rect = element.getBoundingClientRect(), area = viewArea(element);
-      if (fullyShown(rect, area)) return;
+      // If the browser can hit it, scrolling cannot make it more actionable. The
+      // click path still checks enabled state, stability and obstruction before input.
+      if (hitPoint(element) || fullyShown(rect, area)) return true;
       // Wheels that no longer move the control (clip-only wrappers, scroll-locked pages) cannot help.
       if (previous && ['top', 'left'].every(key => Math.abs(rect[key] - previous[key]) < 1) && ++stuck >= 2) break;
       if (previous && ['top', 'left'].some(key => Math.abs(rect[key] - previous[key]) >= 1)) stuck = 0;
@@ -361,13 +416,24 @@
       await rest(160, 250);
     }
     if (!element.isConnected) throw new RetryStep('滚动时控件已更新');
-    if (partlyShown(element.getBoundingClientRect(), viewArea(element))) return;
+    if (hitPoint(element) || partlyShown(element.getBoundingClientRect(), viewArea(element))) return true;
+    if (!(await send('state')).active || userEditing) throw new StopStep();
+    requireForeground();
+    if (clock() >= deadline) return false;
     // Last resort for containers the wheel cannot reach; the page itself is not modified.
     element.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
     await rest(120, 200);
-    if (element.isConnected && partlyShown(element.getBoundingClientRect(), viewArea(element))) return;
-    throw new Error('滚动后控件仍不可见，请手动滚动到表单后继续。');
+    if (!element.isConnected) throw new RetryStep('滚动时控件已更新');
+    // A temporarily clipped control is not a fatal page error. The caller owns
+    // the wait deadline and will re-resolve/recheck it before any input.
+    return !!hitPoint(element) || partlyShown(element.getBoundingClientRect(), viewArea(element));
   }
+  const controlSnapshot = element => {
+    const rect = element.getBoundingClientRect(), area = viewArea(element);
+    return {kind: element.localName, rect: [rect.left, rect.top, rect.width, rect.height],
+      viewport: [innerWidth, innerHeight], clip: [area.left, area.top, area.right, area.bottom],
+      enabled: !!enabled(element), hit: !!hitPoint(element)};
+  };
   async function tabToControl(element) {
     const current = document.activeElement;
     if (!trustedInput || !current?.form || current.form !== element.form || Math.random() >= 0.4) return false;
@@ -384,29 +450,45 @@
     requireForeground();
     if (stage === 'profile' && await waitForProfile()) return false;
     const resolve = controlRef(element);
-    await scrollToControl(element);
     let restoreProgress = moveProgressAside(element), reservation, dispatched = false;
     try {
       // Submit buttons often stay disabled while the site validates; give them longer
       // before asking the user. Field focus and the signup entry keep the short wait.
       const patience = stage && stage !== 'signup' ? SUBMIT_BUTTON_WAIT : 5000;
-      const waitStarted = Date.now(), deadline = waitStarted + patience;
-      let point, previous, told = false;
-      while (Date.now() < deadline) {
+      const waitStarted = clock(), deadline = waitStarted + patience;
+      let point, previous, told = false, observed = false, nextScroll = 0;
+      while (clock() < deadline) {
         if (!(await send('state')).active || userEditing) return false;
         requireForeground();
         const current = resolve();
         if (!current) throw new RetryStep('点击目标已更新');
         if (current !== element) {
-          restoreProgress(); element = current; previous = null;
-          await scrollToControl(element);
+          restoreProgress(); element = current; previous = null; nextScroll = 0;
           restoreProgress = moveProgressAside(element);
         }
         if (stage === 'profile' && await waitForProfile()) return false;
         point = enabled(element) ? hitPoint(element) : null;
+        if (!point && !observed) {
+          observed = true;
+          await trace('control_wait', {stage: stage || currentStage, outcome: 'waiting', control: controlSnapshot(element)});
+        }
+        if (!point && clock() >= nextScroll && !fullyShown(element.getBoundingClientRect(), viewArea(element))) {
+          try { await scrollToControl(element, deadline); }
+          catch (error) {
+            if (!(error instanceof RetryStep) || !resolve()) throw error;
+            previous = null; nextScroll = 0;
+            continue;
+          }
+          nextScroll = clock() + 500;
+          // Scrolling and layout can replace the node or overlap a user pause.
+          if (!(await send('state')).active || userEditing) return false;
+          requireForeground();
+          if (resolve() !== element) { previous = null; continue; }
+          point = enabled(element) ? hitPoint(element) : null;
+        }
         if (point && previous && ['left', 'top', 'width', 'height'].every(key => Math.abs(point.rect[key] - previous.rect[key]) < 1)) break;
         previous = point; point = null;
-        if (stage && !told && Date.now() - waitStarted > 2000) {
+        if (stage && !told && clock() - waitStarted > 2000) {
           told = true;
           renderProgress({...job, message: '等待网页按钮可用，就绪后自动点击。'});
         }
@@ -418,16 +500,20 @@
           return false;
         }
         const control = stage === 'profile' ? '资料页的继续按钮' : element.matches('input') ? '当前输入框' : '当前按钮';
-        const reason = !enabled(element) ? '仍被网页禁用或隐藏' : !hitPoint(element) ? '被页面其他元素遮挡' : '位置仍在变化';
-        await pause(`${control}等待 ${Math.round(patience / 1000)} 秒后${reason}，已暂停点击；请处理后继续。`);
+        const reason = !enabled(element) ? '仍被网页禁用或隐藏' :
+          !partlyShown(element.getBoundingClientRect(), viewArea(element)) ? '仍未进入可操作区域' :
+          !hitPoint(element) ? '被页面其他元素遮挡' : '位置仍在变化';
+        await trace('control_wait', {stage: stage || currentStage, outcome: 'timeout', control: controlSnapshot(element)});
+        await pause(`${control}等待 ${Math.round(patience / 1000)} 秒后${reason}，已暂停点击；请处理后继续。`, 'button_unavailable');
         return false;
       }
+      if (observed) await trace('control_wait', {stage: stage || currentStage, outcome: 'ready', control: controlSnapshot(element)});
       const ready = () => {
         requireForeground();
         if (userEditing) throw new StopStep();
         if (enterFrom && (document.activeElement !== enterFrom || enterFrom.form !== element.form || !enabled(enterFrom))) throw new StopStep();
         if (retry && submittedForms.get(element.closest('form')) !== retry.submission) retry.retryBlocked = true;
-        if (retry && !retryableClick(retry)) throw new StopStep();
+        if (retry && !retryAllowed(retry)) throw new StopStep();
         const form = element.closest('form');
         if (stage && stage !== 'signup' && form && !form.checkValidity()) {
           throw new Error('点击前表单内容已变化或不符合要求，请按网页提示检查后继续。');
@@ -478,19 +564,24 @@
       }
       const blockedSubmission = async () => {
         if (retry && submittedForms.get(element.closest('form')) !== retry.submission) retry.retryBlocked = true;
-        if (retry && retryableClick(retry) && submittedForms.get(element.closest('form')) === retry.submission) return false;
+        if (retry && retryAllowed(retry) && submittedForms.get(element.closest('form')) === retry.submission) return false;
         return waitForSubmission(element.closest('form'));
       };
       if (stage && await blockedSubmission()) return false;
       if (stage === 'profile' && await waitForProfile()) return false;
       ready();
       if (stage) {
-        reservation = retry ? await send('retry-continue', {stage, token: retry.token}) : await send('claim', {stage, reserve: true});
+        reservation = retry ? await send('retry-continue', {stage, token: retry.token, stalled: !!retry.stalled}) : await send('claim', {stage, reserve: true});
         if (!reservation.granted) {
           if (retry && reservation.wait) return false;
+          if (retry?.stalled && !reservation.limit) {
+            // The worker refused a stalled-page retry: keep waiting; the 45 s timeout still applies.
+            retry.stalled = false; retry.stallDenied = true;
+            return false;
+          }
           if (retry) {
             setPendingClick(null);
-            await pause('Continue 已达到补点次数或当前步骤已变化，请在网页手动继续。');
+            await pause('Continue 已达到补点次数或当前步骤已变化，请在网页手动继续。', 'retry_limit');
           }
           return false;
         }
@@ -502,6 +593,8 @@
       const feedback = stage && stage !== 'signup' ? clickFeedback(element, stage) : null;
       if (feedback) {
         feedback.token = reservation.token;
+        // After a stalled-page re-click, further clicks on this form only follow the stalled rule.
+        feedback.stallMode = !!(retry?.stalled || retry?.stallMode);
         setPendingClick(feedback);
       }
       if (stage) fillPhase = false;
@@ -547,28 +640,39 @@
     if (response === 'advanced') { setPendingClick(null); return false; }
     if (response === 'validation') {
       setPendingClick(null);
-      await pause('点击后网页提示输入有误，请按网页提示修正并手动提交，再点击插件继续。');
+      await pause('点击后网页提示输入有误，请按网页提示修正并手动提交，再点击插件继续。', 'validation');
       return true;
     }
     if (continueStage(pending.stage) && formValues(pending.scope) !== pending.values) {
       setPendingClick(null);
-      await pause('Continue 等待期间表单内容发生变化，请核对后手动提交，再点击插件继续。');
+      await pause('Continue 等待期间表单内容发生变化，请核对后手动提交，再点击插件继续。', 'form_changed');
       return true;
     }
-    if (Date.now() - pending.at >= CONTINUE_WAIT && pending.token && retryableClick(pending)) {
+    if (clock() - pending.at >= CONTINUE_WAIT && pending.token && !pending.stallMode && retryableClick(pending)) {
       requireForeground();
       pending.submission = submittedForms.get(pending.scope);
       renderProgress({...job, message: 'Continue 后页面仍无变化，正在重新确认按钮并有限补点。'});
       await clickControl(pending.resolve(), pending.stage, pending);
       return true;
     }
+    if (pending.token && !pending.stallDenied &&
+        (pending.stallMode || pending.loadingSeen || response === 'submitted' || pending.retryBlocked) && stalledClick(pending)) {
+      // The page showed a spinner or submitted, then went idle without advancing. A person would click again.
+      requireForeground();
+      pending.stalled = true;
+      pending.submission = submittedForms.get(pending.scope);
+      renderProgress({...job, message: '页面处理后停住了，正在重新点击继续（有次数上限）。'});
+      await clickControl(pending.resolve(), pending.stage, pending);
+      if (pendingClick === pending) pending.stalled = false;
+      return true;
+    }
     renderProgress({...job, message: pending.loadingSeen ? '网页正在处理，等待下一步；不会重复点击。' :
       response === 'submitted' ? '表单已触发提交，等待网页确认结果；不会重复点击。' :
       continueStage(pending.stage) ? '等待按钮响应；未触发提交且持续无变化时会有限补点。' : '已点击，正在等待网页响应；不会重复点击。'});
-    if (Date.now() - pending.at > 45000) {
+    if (clock() - pending.at > 45000) {
       await trace('click_response', {stage: pending.stage, outcome: 'timeout'});
       await claim(pending.stage, true);
-      await pause('点击后超过 45 秒未进入下一步，请检查网络和网页提示后继续。');
+      await pause('点击后超过 45 秒未进入下一步，请检查网络和网页提示后继续。', 'click_timeout');
       setPendingClick(null);
     }
     return true;
@@ -614,9 +718,9 @@
       if (await waitForSubmission(element.form, {filling: true})) throw new StopStep();
       return enabled(element) && !element.readOnly;
     };
-    const deadline = Date.now() + 5000;
+    const deadline = clock() + 5000;
     while (!(await active())) {
-      if (Date.now() >= deadline) return false;
+      if (clock() >= deadline) return false;
       await sleep(120);
     }
     if (element.value === text) return true;
@@ -628,7 +732,7 @@
     let focused = trustedInput && document.activeElement === element;
     if (trustedInput && !focused) focused = await tabToControl(element);
     if (trustedInput && (nativeDate || nativeSelect) && !focused) {
-      await scrollToControl(element);
+      if (!(await scrollToControl(element))) throw new RetryStep('原生控件暂时不可见');
       element.focus({preventScroll: true}); focused = document.activeElement === element;
     }
     if (!focused && !(await clickControl(element))) {
@@ -794,7 +898,7 @@
       reason = invalid();
       if (reason) {
         await trace('waiting_manual', {stage});
-        return pause(reason);
+        return pause(reason, 'validation');
       }
     }
     if (job.mode === 'review') {
@@ -815,18 +919,18 @@
         focused?.form === form && enabled(focused) && (focused === target || focused.matches('input[type="text"],input[type="email"],input[type="password"],input[type="number"],input[type="tel"],input:not([type])'));
       return clickControl(target, stage, null, enter ? focused : null);
     }
-    else await pause('找不到可用的提交按钮，请在网页上手动继续。');
+    else await pause('找不到可用的提交按钮，请在网页上手动继续。', 'no_submit_button');
   }
   async function fillProfile() {
     if (await waitForProfile()) return;
     const name = first('input[name="name"],input[name="fullName"],input[autocomplete="name"],input[placeholder*="Full name" i]');
-    if (!name) return pause('个人资料表单发生变化，请手动填写姓名和生日后继续。');
+    if (!name) return pause('个人资料表单发生变化，请手动填写姓名和生日后继续。', 'form_changed');
     // A submitted/loading profile must never be filled again on each tick.
     const resolveName = fieldRef(name);
     if (!(await claim('profile', true)) || !resolveName()) return;
     if (!(await typeValue(name, job.profile.name))) {
       if (await waitForProfile()) return;
-      return pause('姓名输入未完成，请检查网页后继续。');
+      return pause('姓名输入未完成，请检查网页后继续。', 'fill_incomplete');
     }
     if (!resolveName()) return;
     let validateProfile = () => '';
@@ -840,11 +944,11 @@
       const birth = new Date(Number(year), Number(month) - 1, Number(day));
       if (!Number.isInteger(years) || years < 0 || years > 120 || birth.getFullYear() !== Number(year) ||
           birth.getMonth() + 1 !== Number(month) || birth.getDate() !== Number(day)) {
-        return pause('本次生日与年龄不一致，请重新开始注册。');
+        return pause('本次生日与年龄不一致，请重新开始注册。', 'fill_incomplete');
       }
       if (!(await typeValue(age, String(years)))) {
         if (await waitForProfile()) return;
-        return pause('年龄输入未完成，请检查网页后继续。');
+        return pause('年龄输入未完成，请检查网页后继续。', 'fill_incomplete');
       }
       const resolveAge = fieldRef(age);
       // Recheck the same age field after submit()'s shared settle delay.
@@ -854,7 +958,7 @@
           '页面年龄与本次生日不一致，已暂停提交，请检查年龄。';
       };
     } else if (date) {
-      if (!(await typeValue(date, job.profile.birthday))) return pause('生日输入未完成，请检查网页后继续。');
+      if (!(await typeValue(date, job.profile.birthday))) return pause('生日输入未完成，请检查网页后继续。', 'fill_incomplete');
     } else {
       let parts = 0;
       for (const [part, value] of [['year', year], ['month', month], ['day', day]]) {
@@ -865,7 +969,7 @@
           if (option && await typeValue(element, option.value)) parts++;
         } else if (await typeValue(element, String(Number(value)))) parts++;
       }
-      if (parts !== 3) return pause('已填写姓名；请手动填写网页的生日控件并提交，再点击插件中的继续。');
+      if (parts !== 3) return pause('已填写姓名；请手动填写网页的生日控件并提交，再点击插件中的继续。', 'fill_incomplete');
     }
     await trace('filled', {stage: 'profile'});
     if (!(await waitForProfile())) await submit(name, 'profile', validateProfile);
@@ -900,7 +1004,7 @@
     const control = clickForm === form;
     // Only a submit fired while the auto runner is typing (not after its click) is a fill-time submit.
     const fill = event && fillPhase && !control && (job?.mode || 'auto') === 'auto';
-    const record = {at: Date.now(), scope: form, shape: formShape(form), values: formValues(form), control,
+    const record = {at: clock(), scope: form, shape: formShape(form), values: formValues(form), control,
       fill, complete: fill && !formIncomplete(form)};
     watchLoading(record, fill ? null : continueButton(form), fill);
     record.loadingSeen ||= old?.loadingSeen && old.shape === record.shape;
@@ -920,7 +1024,7 @@
     if (!event.isTrusted || ownInput || !job?.active || !autoFill() || !event.target.matches?.('input,select,textarea')) return;
     if (job.mode === 'review' && job.reviewSteps?.[`${currentStage}:${location.pathname}`]) return;
     userEditing = true;
-    void pause('检测到你在手工修改表单，已暂停自动填写；确认后可继续或停止插件。').catch(() => {});
+    void pause('检测到你在手工修改表单，已暂停自动填写；确认后可继续或停止插件。', 'user_edit').catch(() => {});
   }, true);
 
   async function waitForSubmission(form, {filling = false} = {}) {
@@ -938,7 +1042,7 @@
     if (submitted.fill && !submitted.loadingSeen) {
       // Keep typing; the page's own validation submit is judged once the step is filled.
       if (filling) return false;
-      if (Date.now() - submitted.at >= fillWait(submitted) && !incomplete && !pendingClick &&
+      if (clock() - submitted.at >= fillWait(submitted) && !incomplete && !pendingClick &&
           validationSnapshot(form).size === 0 && enabled(continueButton(form))) {
         requireForeground();
         forgetSubmission(form);
@@ -949,17 +1053,33 @@
     // Let the normal mode continue once the complete form has stayed idle; review
     // will show its manual-submit prompt, never silently authorize a first click.
     if (continueStage(currentStage) && job.mode !== 'manual' && !submitted.loadingSeen && !submitted.control && !pendingClick &&
-        Date.now() - submitted.at >= SUBMISSION_WAIT && submitted.values === formValues(form) &&
+        clock() - submitted.at >= SUBMISSION_WAIT && submitted.values === formValues(form) &&
         validationSnapshot(form).size === 0 && enabled(continueButton(form))) {
       requireForeground();
       forgetSubmission(form);
       return false;
     }
+    // The site's own submit showed a spinner, then the unchanged, complete, error-free form went
+    // quiet: release it like a stalled click, so the normal step flow clicks Continue once
+    // (reusing the same values and OTP). Auto mode only; never while typing, loading or after our own click.
+    const stallKey = `${currentStage}:${location.pathname}`;
+    const submitButton = continueButton(form);
+    if (!filling && continueStage(currentStage) && (job.mode || 'auto') === 'auto' && submitted.loadingSeen && !submitted.control && !pendingClick &&
+        (stallReleases.get(stallKey) || 0) < STALL_RELEASES && !loading && !loadingNow(form, submitButton) &&
+        clock() - Math.max(submitted.at, submitted.busyAt || 0) >= STALL_WAIT &&
+        submitted.values === formValues(form) && !incomplete && validationSnapshot(form).size === 0 && enabled(submitButton)) {
+      requireForeground();
+      stallReleases.set(stallKey, (stallReleases.get(stallKey) || 0) + 1);
+      forgetSubmission(form);
+      await trace('submit_stalled');
+      renderProgress({...job, message: '网页提交后停住了，正在重新点击继续（有次数上限）。'});
+      return false;
+    }
     renderProgress({...job, message: submitted.loadingSeen ? '表单正在处理，等待网页完成。' :
       submitted.fill ? '已填写，稍等页面校验后提交。' : '表单触发了提交事件，正在确认网页是否前进。'});
-    if (Date.now() - submitted.at > 45000) {
+    if (clock() - submitted.at > 45000) {
       if (['email', 'password', 'otp', 'profile'].includes(currentStage)) await claim(currentStage, true);
-      await pause('表单提交后超过 45 秒未前进，请检查网页提示后继续。');
+      await pause('表单提交后超过 45 秒未前进，请检查网页提示后继续。', 'submit_timeout');
     }
     return true;
   }
@@ -981,7 +1101,7 @@
     if (!(await claim(stage, true))) return true;
     const email = emailField(anchor.closest('form') || document);
     if (email?.value && email.value.trim().toLowerCase() !== job.email) {
-      await pause('网页填写的邮箱与本次任务不一致，请检查后继续。'); return true;
+      await pause('网页填写的邮箱与本次任务不一致，请检查后继续。', 'email_mismatch'); return true;
     }
     if (stage === 'signup') await clickControl(anchor, stage);
     else await submit(anchor, stage);
@@ -991,8 +1111,8 @@
   async function checkSession() {
     // Right after the signup forms the session usually appears within seconds; check it sooner.
     const interval = sessionCandidate ? 2000 : job.entryFormSeen ? 3000 : 10000;
-    if (Date.now() - lastSessionCheck < interval) return;
-    lastSessionCheck = Date.now();
+    if (clock() - lastSessionCheck < interval) return;
+    lastSessionCheck = clock();
     try {
       const response = await fetch('/api/auth/session', {credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(10000)});
       if (!response.ok) throw new Error('session unavailable');
@@ -1028,7 +1148,7 @@
       if (error instanceof StopStep) throw error;
       sessionCandidate = ''; sessionAnonymous = false;
       await trace('session_error');
-      if (++sessionErrors >= 3) await pause('暂时无法确认 ChatGPT 登录状态，请检查网络和网页后继续。');
+      if (++sessionErrors >= 3) await pause('暂时无法确认 ChatGPT 登录状态，请检查网络和网页后继续。', 'session_error');
     }
   }
 
@@ -1042,13 +1162,19 @@
       return false;
     }
     requireForeground();
-    entryWaitSince ||= Date.now();
-    if (Date.now() - entryWaitSince < ENTRY_WAIT) return false;
+    entryWaitSince ||= clock();
+    // The fallback page itself may load slowly; give it longer than the homepage.
+    if (clock() - entryWaitSince < (location.pathname === '/auth/login' ? FALLBACK_PAGE_WAIT : ENTRY_WAIT)) return false;
     // Recheck after the worker round-trip so a late modal isn't replaced by navigation.
     const state = await send('state');
     if (!state.active || state.entryFormSeen || entryHasFields()) return false;
     if (state.entryFallbackUsed) {
-      await pause('备用注册入口仍未打开，请检查网络或手动打开注册页面后继续。');
+      // This page requested the fallback and is still unloading: a slow navigation is not a failure.
+      if (fallbackAt && clock() - fallbackAt < FALLBACK_NAV_WAIT) {
+        renderProgress({...job, message: '正在打开备用注册入口，请稍候。'});
+        return true;
+      }
+      await pause(ENTRY_PAUSE, 'entry_missing');
       return true;
     }
     const {granted, url} = await send('entry-fallback');
@@ -1059,6 +1185,7 @@
     if (entryHasFields()) return false;
     if (url !== 'https://chatgpt.com/auth/login') throw new Error('备用入口地址无效。');
     renderProgress({...job, message: '主页注册入口未响应，正在打开备用入口。'});
+    fallbackAt = clock();
     location.assign(url);
     return true;
   }
@@ -1070,11 +1197,11 @@
       // Accounts registered without a password log in with an emailed code.
       const code = oneTimeCode();
       if (code && enabled(code)) { await clickControl(code); return; }
-      return pause('该账号注册时没有设置密码，请在网页选择邮箱验证码登录；之后插件会继续。');
+      return pause('该账号注册时没有设置密码，请在网页选择邮箱验证码登录；之后插件会继续。', 'manual_step');
     }
     if (await manualStage(password, 'password')) return;
     if (!(await claim('password', true)) || !resolveAnchor()) return;
-    if (!(await typeValue(password, job.password))) return pause('登录密码输入未完成，请检查网页后继续。');
+    if (!(await typeValue(password, job.password))) return pause('登录密码输入未完成，请检查网页后继续。', 'fill_incomplete');
     await trace('filled'); await submit(password, 'password');
   }
   const choiceText = node => (node.innerText || node.getAttribute('aria-label') || '').trim().toLowerCase();
@@ -1086,13 +1213,13 @@
     if (!approve || !approval) {
       const login = button(/^(log in|continue with password|使用密码继续|登录)$/i);
       if (autoFill() && job.mode === 'auto' && login && enabled(login) && location.hostname !== 'chatgpt.com') {
-        unknownSince = Date.now();
+        unknownSince = clock();
         if (await claim('signup', true)) await clickControl(login, 'signup');
         return true;
       }
       return false;
     }
-    unknownSince = Date.now();
+    unknownSince = clock();
     currentStage = 'consent';
     if (!autoFill()) {
       renderProgress({...job, message: '请在网页选择团队并确认授权；拿到回调后插件会自动提交 Team48。'});
@@ -1107,7 +1234,7 @@
         .filter(node => !node.closest('#team48-signup-progress') && names.includes(choiceText(node)));
       const target = matches.find(node => !matches.some(other => other !== node && node.contains(other)));
       if (!target) {
-        await pause(`授权页没有找到团队「${job.workspaceNames[0]}」，请手动选择该团队后点击插件中的继续。`);
+        await pause(`授权页没有找到团队「${job.workspaceNames[0]}」，请手动选择该团队后点击插件中的继续。`, 'manual_step');
         return true;
       }
       if (await clickControl(target)) pickedOn = location.pathname;
@@ -1127,33 +1254,7 @@
   }
 
   let readUntil = 0, nextDrift = 0;
-  async function tick() {
-    const wasActive = job?.active;
-    fillPhase = false;
-    job = await send('state');
-    if (job.active && (!wasActive || resumeCount !== (job.resumeCount || 0))) {
-      for (const record of loadingWatches) record.stop();
-      submittedForms = new WeakMap(); userEditing = false; pendingClick = null;
-      resumeCount = job.resumeCount || 0;
-      entryWaitSince = 0; homeSince = 0; sessionErrors = 0;
-    }
-    renderProgress(job);
-    if (job.active && job.mode !== 'manual' && trustedInput === null) {
-      // Once per page load; hosts without CDP input (managed runner, fixtures) keep synthetic events.
-      trustedInput = (await send('input-ready')).trusted === true;
-    }
-    if (!job.active) {
-      for (const record of loadingWatches) record.stop();
-      unknownSince = Date.now(); profileLoadingSince = 0;
-      entryWaitSince = 0;
-      manualStep = null; approvedStep = null; sessionCandidate = '';
-      if (['done', 'stopped'].includes(job.status)) {
-        finished = true;
-        listeners.abort();
-      }
-      return;
-    }
-    const text = (document.body?.innerText || '').toLowerCase();
+  function detectStage() {
     const path = location.pathname.toLowerCase();
     const email = emailField();
     const otp = first('input[autocomplete="one-time-code"],input[name="code"],input[name="otp"],input[name="pin"]');
@@ -1169,57 +1270,128 @@
     const stage = otp || boxes.length === 6 ? 'otp' : /about-you/.test(path) || profile ? 'profile' :
       // The logged-out homepage also shows the prompt box; a visible Sign up button means not logged in.
       password ? 'password' : email ? 'email' : signup ? 'signup' : home ? 'home' : 'unknown';
+    return {stage, email, otp, boxes, password, profile, signup};
+  }
+  // While paused, keep watching the page. Continue by itself when (a) this page was reloaded by
+  // "refresh and continue", or (b) a pause that only meant "the page did not move in time" is
+  // followed by the page reaching a later step. The worker makes the final decision.
+  const STAGE_ORDER = ['signup', 'email', 'password', 'otp', 'profile', 'home'];
+  let autoResumeAsked = '';
+  async function autoResume() {
+    if (job.status !== 'paused' || !autoFill()) return false;
+    // A hidden page only waits. Focus is not required: the popup holds it right after
+    // "refresh and continue", and the resumed runner applies its usual foreground rules.
+    if (document.visibilityState === 'hidden') return false;
+    const {stage} = detectStage();
+    const reload = !!job.reloadAt && runnerStarted > job.reloadAt && Date.now() - job.reloadAt < 60000 && stage !== 'unknown';
+    const advanced = !!job.autoResume && !oauthPhase() &&
+      STAGE_ORDER.indexOf(stage) > STAGE_ORDER.indexOf(job.pausedStage) && STAGE_ORDER.indexOf(job.pausedStage) >= 0;
+    if (!reload && !advanced) return false;
+    const ask = `${stage}:${job.pausedStage}:${job.reloadAt || 0}:${job.resumeCount || 0}`;
+    if (ask === autoResumeAsked) return false;
+    autoResumeAsked = ask;
+    return (await send('auto-resume', {stage, reload})).resumed === true;
+  }
+  // A pause that only means "a control never became usable" (often while the window was covered)
+  // retries the same step by itself after a short visible wait; the worker keeps the retry limit.
+  const AUTO_RETRY_DELAY = 8000;
+  let retryWaitKey = '', retryWaitSince = 0;
+  async function autoRetry() {
+    if (job.status !== 'paused' || !job.autoRetry || document.visibilityState === 'hidden') return false;
+    const key = `${job.pausedStage}:${job.resumeCount || 0}`;
+    if (key !== retryWaitKey) { retryWaitKey = key; retryWaitSince = clock(); }
+    if (clock() - retryWaitSince < AUTO_RETRY_DELAY) return false;
+    retryWaitSince = clock();
+    return (await send('auto-retry')).resumed === true;
+  }
+  async function tick() {
+    const wasActive = job?.active;
+    fillPhase = false;
+    job = await send('state');
+    if (job.active && (!wasActive || resumeCount !== (job.resumeCount || 0))) {
+      for (const record of loadingWatches) record.stop();
+      submittedForms = new WeakMap(); userEditing = false; pendingClick = null; stallReleases = new Map();
+      resumeCount = job.resumeCount || 0;
+      entryWaitSince = 0; homeSince = 0; sessionErrors = 0;
+    }
+    renderProgress(job);
+    if (job.active && job.mode !== 'manual' && trustedInput === null) {
+      // Once per page load; hosts without CDP input (managed runner, fixtures) keep synthetic events.
+      trustedInput = (await send('input-ready')).trusted === true;
+    }
+    if (!job.active) {
+      // The entry pause is only about a missing form: once the form shows up, carry on by itself.
+      if (job.status === 'paused' && job.message === ENTRY_PAUSE && autoFill() && entryHasFields()) {
+        await send('resume');
+        return;
+      }
+      if (await autoResume()) return;
+      if (await autoRetry()) return;
+      for (const record of loadingWatches) record.stop();
+      unknownSince = clock(); profileLoadingSince = 0;
+      entryWaitSince = 0;
+      manualStep = null; approvedStep = null; sessionCandidate = '';
+      if (['done', 'stopped'].includes(job.status)) {
+        finished = true;
+        listeners.abort();
+      }
+      return;
+    }
+    const text = (document.body?.innerText || '').toLowerCase();
+    const path = location.pathname.toLowerCase();
+    const {stage, email, otp, boxes, password, profile, signup} = detectStage();
     currentStage = stage;
     if (stage !== 'home') homeSince = 0;
     const observation = `${location.hostname}:${path}:${stage}`;
     if (observation !== lastObservation) {
       lastObservation = observation; manualStep = null; approvedStep = null;
-      readUntil = trustedInput ? Date.now() + between(1000, 3000) : 0;
+      readUntil = trustedInput ? clock() + between(1000, 3000) : 0;
       await trace('page');
     }
-    if (!oauthPhase() && /\/consent(?:\/|$)/.test(path)) return pause('当前是授权确认页面，注册助手已暂停，请手工继续授权。');
+    if (!oauthPhase() && /\/consent(?:\/|$)/.test(path)) return pause('当前是授权确认页面，注册助手已暂停，请手工继续授权。', 'manual_step');
     if (/just a moment|verify you are human|checking your browser|确认您是真人|验证您是真人/.test(document.title.toLowerCase() + '\n' + text) ||
         all('iframe[src*="challenges.cloudflare.com"],iframe[src*="recaptcha"]').length) {
-      await trace('captcha'); return pause('请先在网页完成人机验证，然后点击插件中的继续。');
+      await trace('captcha'); return pause('请先在网页完成人机验证，然后点击插件中的继续。', 'captcha');
     }
     if (/too many requests|too many attempts|try again later|尝试次数过多|请求过于频繁/.test(text)) {
-      await trace('rate_limit'); return pause('网页提示操作频繁或限流，请按页面提示稍后重试。');
+      await trace('rate_limit'); return pause('网页提示操作频繁或限流，请按页面提示稍后重试。', 'rate_limit');
     }
     const phone = all('input[autocomplete="tel"],input[name="phone"],input[type="tel"]')
       .find(element => element !== email && element.maxLength !== 1 && element.autocomplete !== 'one-time-code' && !/^(code|otp|pin)$/i.test(element.name));
     if (/add-phone|phone-verification|verify-phone/.test(path) || phone) {
       await trace('phone');
-      return pause(oauthPhase() ? '授权要求手机验证，请在网页手动完成；完成后插件会自动提交回调。' : '注册需要手机验证，请在网页手动完成后继续。');
+      return pause(oauthPhase() ? '授权要求手机验证，请在网页手动完成；完成后插件会自动提交回调。' : '注册需要手机验证，请在网页手动完成后继续。', 'phone');
     }
-    if (trustedInput && job.mode === 'auto' && Date.now() >= nextDrift && document.visibilityState !== 'hidden') {
-      nextDrift = Date.now() + between(8000, 18000);
-      if (Math.random() < 0.3) await own(() => send('input-drift', {width: innerWidth, height: innerHeight}));
+    if (trustedInput && job.mode === 'auto' && clock() >= nextDrift && document.visibilityState !== 'hidden') {
+      nextDrift = clock() + between(8000, 18000);
+      // Idle movement is cosmetic; its failure must never pause the run.
+      if (Math.random() < 0.3) await own(() => send('input-drift', {width: innerWidth, height: innerHeight})).catch(() => {});
     }
-    if (trustedInput && autoFill() && Date.now() < readUntil && !['home', 'unknown'].includes(stage)) {
+    if (trustedInput && autoFill() && clock() < readUntil && !['home', 'unknown'].includes(stage)) {
       renderProgress({...job, message: '页面已打开，稍候确认当前表单。'});
       return;
     }
     if (await waitForClick(stage)) return;
     if (oauthPhase() && ['home', 'signup', 'unknown'].includes(stage)) {
       if (await oauthPage(text, path)) return;
-      if (stage === 'home') { unknownSince = Date.now(); return; }
+      if (stage === 'home') { unknownSince = clock(); return; }
       // Never start a new signup from an authorization page.
-      if (Date.now() - unknownSince > 25000) await pause('未识别当前授权页面，请手动继续；拿到回调后插件会自动提交。');
+      if (clock() - unknownSince > 25000) await pause('未识别当前授权页面，请手动继续；拿到回调后插件会自动提交。', 'unknown_page');
       return;
     }
     if (managed && location.hostname === 'chatgpt.com' && ['home', 'unknown'].includes(stage)) {
       // Yield all page interaction to the host for invitation/workspace handling.
-      unknownSince = Date.now();
+      unknownSince = clock();
       await send('managed-page', {stage});
       return;
     }
     if (stage === 'home') {
-      unknownSince = Date.now(); homeSince ||= Date.now();
+      unknownSince = clock(); homeSince ||= clock();
       await checkSession();
       if (sessionAnonymous) await recoverEntry();
       // Only after the signup forms: never while the logged-out homepage is still loading.
-      if (job.entryFormSeen && Date.now() - homeSince > HOME_CONFIRM_WAIT) {
-        await pause('已进入 ChatGPT 首页，但 40 秒内未能确认登录邮箱。若网页已登录本次邮箱，请在插件弹窗点「确认已注册完成」；否则请手动登录后点继续。');
+      if (job.entryFormSeen && clock() - homeSince > HOME_CONFIRM_WAIT) {
+        await pause('已进入 ChatGPT 首页，但 40 秒内未能确认登录邮箱。若网页已登录本次邮箱，请在插件弹窗点「确认已注册完成」；否则请手动登录后点继续。', 'home_unconfirmed');
       }
       return;
     }
@@ -1237,60 +1409,60 @@
     if (stage === 'otp') boxes.forEach(fieldRef);
     if (anchor && await waitForSubmission(anchor.closest('form'))) return;
     if (stage === 'otp') {
-      unknownSince = Date.now();
+      unknownSince = clock();
       if (await manualStage(anchor, 'otp')) return;
       if (!(await claim('otp', true))) return;
       const {code} = await send('code');
       if (!code || !(await claim('otp', true)) || !resolveAnchor()) return;
       if (boxes.length === 6) {
         for (let index = 0; index < boxes.length; index++) {
-          if (!(await typeValue(boxes[index], code[index]))) return pause('验证码输入未完成，请检查网页后继续。');
+          if (!(await typeValue(boxes[index], code[index]))) return pause('验证码输入未完成，请检查网页后继续。', 'fill_incomplete');
         }
-      } else if (!(await typeValue(otp, code))) return pause('验证码输入未完成，请检查网页后继续。');
+      } else if (!(await typeValue(otp, code))) return pause('验证码输入未完成，请检查网页后继续。', 'fill_incomplete');
       await trace('filled');
       await submit(anchor, 'otp'); return;
     }
     if (stage === 'profile') {
-      unknownSince = Date.now();
+      unknownSince = clock();
       if (profile && await manualStage(profile, 'profile')) return;
       if (!autoFill()) return;
       await fillProfile(); return;
     }
     if (password) {
-      unknownSince = Date.now();
+      unknownSince = clock();
       if (password.autocomplete === 'current-password' || /log-in\/password|login\/password/.test(path)) {
-        if (!oauthPhase()) return pause('网页要求登录已有账号，请确认邮箱或手工继续。插件不会反复切换注册入口。');
+        if (!oauthPhase()) return pause('网页要求登录已有账号，请确认邮箱或手工继续。插件不会反复切换注册入口。', 'manual_step');
         return loginPassword(password, resolveAnchor);
       }
       if (await manualStage(password, 'password')) return;
       if (await claim('password', true) && resolveAnchor()) {
         const formEmail = emailField(password.form || document);
         if (formEmail && formEmail.value !== job.email) {
-          if (formEmail.readOnly || (formEmail.matches(':disabled') && formEmail.value)) return pause('密码页显示的邮箱与本次注册不一致，请检查网页。');
-          if (!(await typeValue(formEmail, job.email))) return pause('邮箱输入未完成，请检查网页后继续。');
+          if (formEmail.readOnly || (formEmail.matches(':disabled') && formEmail.value)) return pause('密码页显示的邮箱与本次注册不一致，请检查网页。', 'email_mismatch');
+          if (!(await typeValue(formEmail, job.email))) return pause('邮箱输入未完成，请检查网页后继续。', 'fill_incomplete');
         }
-        if (!(await typeValue(password, job.password))) return pause('密码输入未完成，请检查网页后继续。');
+        if (!(await typeValue(password, job.password))) return pause('密码输入未完成，请检查网页后继续。', 'fill_incomplete');
         await trace('filled'); await submit(password, 'password');
       }
       return;
     }
     if (email) {
-      unknownSince = Date.now();
+      unknownSince = clock();
       if (await manualStage(email, 'email')) return;
       if (await claim('email', true) && resolveAnchor()) {
-        if (!(await typeValue(email, job.email))) return pause('邮箱输入未完成，请检查网页后继续。');
+        if (!(await typeValue(email, job.email))) return pause('邮箱输入未完成，请检查网页后继续。', 'fill_incomplete');
         await trace('filled'); await submit(email, 'email');
       }
       return;
     }
     if (signup) {
-      unknownSince = Date.now();
+      unknownSince = clock();
       if (await manualStage(signup, 'signup')) return;
       if (await claim('signup', true)) await clickControl(signup, 'signup');
       return;
     }
     if (job.mode === 'submit') return;
-    if (Date.now() - unknownSince > 25000) await pause('未识别当前页面，请手动继续至注册表单或 ChatGPT 首页，再点击插件中的继续。');
+    if (clock() - unknownSince > 25000) await pause('未识别当前页面，请手动继续至注册表单或 ChatGPT 首页，再点击插件中的继续。', 'unknown_page');
   }
   let retryCount = 0, timer, running;
   managed?.onStop(async () => {
@@ -1307,9 +1479,9 @@
     catch (error) {
       try {
         if (error instanceof RetryStep) {
-          if (++retryCount >= 3) await pause('输入框持续重绘或无法聚焦，请检查页面后继续。');
+          if (++retryCount >= 3) await pause('输入框持续重绘或无法聚焦，请检查页面后继续。', 'redraw');
         } else if (error instanceof StopStep) retryCount = 0;
-        else if (job?.active) await pause(error.message);
+        else if (job?.active) await pause(error.message, 'error');
       } catch { /* extension reloaded */ }
     }
     if (!disconnected && !finished) timer = setTimeout(startLoop, 1500);

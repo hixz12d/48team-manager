@@ -77,6 +77,14 @@ BUSINESS_STEP_LABELS = {
     "official_removed": "已确认旧账号离组",
     "kicked": "旧账号已移出",
     "refill": "完成补位与同步",
+    "continue": "继续未完成的轮转",
+    "kicking": "移出旧成员",
+    "vacancy": "确认空位",
+    "joined": "新号注册并入组",
+    "published": "新号推送并确认可用",
+    "old_remote_deleted": "删除旧号 Sub2API 记录",
+    "counted": "计数并完成",
+    "oauth_same_session": "同一浏览器继续授权",
     "queued": "排队",
     "done": "结束",
     "success": "结束",
@@ -144,11 +152,24 @@ OPERATION_STAGE_PLANS = {
     ),
     "kick_member": (("official_removed", ("official_removed",)), ("paused", ("paused", "drained")), ("kicked", ("kicked",))),
 }
+_ONBOARD_CODES = tuple(code for _, codes in _ONBOARD_PLAN for code in codes)
+# Manual rotation records each stage separately; the new account's publish is not the old one's cleanup.
+MANUAL_ROTATION_PLAN = (
+    ("preflight", ("preflight", "continue")),
+    ("paused", ("paused", "drained")),
+    ("kicked", ("kicking", "official_removed", "kicked", "vacancy")),
+    ("joined", tuple(code for code in _ONBOARD_CODES if code not in {"authorizing", "authorized", "auth_failed", "active"}) + ("joined",)),
+    ("authorized", ("authorizing", "authorized", "auth_failed", "oauth_same_session")),
+    ("published", ("sub2api_push", "published")),
+    ("old_remote_deleted", ("old_remote_deleted",)),
+    ("counted", ("counted",)),
+)
 
 
-def operation_stage_plan(kind: str) -> list[dict[str, Any]]:
+def operation_stage_plan(kind: str, source: str | None = None) -> list[dict[str, Any]]:
+    plan = MANUAL_ROTATION_PLAN if kind == "rotate" and source == "manual_rotation" else OPERATION_STAGE_PLANS.get(kind, ())
     return [{"code": code, "label": BUSINESS_STEP_LABELS.get(code, code), "stages": list(stages)}
-            for code, stages in OPERATION_STAGE_PLANS.get(kind, ())]
+            for code, stages in plan]
 
 
 def account_attention(item: dict[str, Any]) -> list[dict[str, str]]:

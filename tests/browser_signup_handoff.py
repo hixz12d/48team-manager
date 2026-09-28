@@ -156,7 +156,8 @@ class SignupHandoffTests(unittest.TestCase):
                 context.route("https://auth.openai.com/**", route)
 
                 expect(popup.locator("#team48-auto")).to_be_visible()
-                expect(popup.locator("#auto-workspace option")).to_have_count(3)
+                expect(popup.locator("#auto-workspace option")).to_have_count(4)
+                expect(popup.locator("#auto-workspace")).to_have_value("auto")
                 popup.locator("#auto-workspace").select_option("3")
                 popup.locator("#email").fill("test@icloud.com")
                 with context.expect_page() as opened:

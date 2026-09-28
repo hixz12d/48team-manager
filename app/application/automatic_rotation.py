@@ -67,6 +67,7 @@ async def publish_replacement(db, invite, workspace_id):
     pushed = {}
     written = bool(invite.get("publish_written"))
     receipt_ok = bool(invite.get("publish_receipt_ok"))
+    outcome_unknown = False
     try:
         if written:
             if not receipt_ok:
@@ -79,24 +80,29 @@ async def publish_replacement(db, invite, workspace_id):
                         latest = (current.get("snapshot") or {}).get("latest_operation") or {}
                     receipt_ok = bool(current.get("ok") and latest.get("state") == "completed")
         else:
-            pushed = await account_sub2api_push(db, child_id, workspace_id=workspace_id)
+            options = {"rotation_operation_id": invite["rotation_operation_id"]} if invite.get("rotation_operation_id") else {}
+            pushed = await account_sub2api_push(db, child_id, workspace_id=workspace_id, **options)
             receipt_ok = bool(pushed.get("ok"))
             written = receipt_ok or pushed.get("credential_write") == "succeeded"
+            outcome_unknown = pushed.get("credential_write") == "unknown"
         await refresh(db, force=True)
         states, _ = await payloads(db)
         state = states.get((child_id, workspace_id), {})
         ready = bool(receipt_ok and not state.get("stale", True) and state.get("state") == "healthy")
     except Exception:
         await db.rollback()
+        outcome_unknown = not bool(pushed) and not written
         ready = False
     if ready:
         return {**invite, "success": True, "partial": False, "status": "success", "pushed": True,
                 "error_code": None, "error": None, "publish_pending": False,
-                "sub2api_operation_id": pushed.get("operation_id"),
+                "sub2api_operation_id": pushed.get("operation_id") or invite.get("sub2api_operation_id"),
+                "publish_written": written, "publish_receipt_ok": receipt_ok, "publish_revision": revision,
                 "message": "补位已完成授权，Sub2API 身份和可调度状态已确认"}
     return {**invite, "success": False, "partial": True, "status": "partial", "pushed": False,
             "error_code": "auto_publish_pending", "publish_pending": True,
             "publish_revision": revision, "publish_written": written, "publish_receipt_ok": receipt_ok,
+            "publish_outcome_unknown": outcome_unknown,
             "sub2api_operation_id": pushed.get("operation_id") or invite.get("sub2api_operation_id"),
             "error": "补位账号已授权，Sub2API 尚未确认可用；将仅重试同步，不重复注册"}
 

@@ -1166,6 +1166,7 @@ def run_browser_onboard(
     executable_path: str = "",
     invite_entry: bool = False,
     continue_in_browser=None,
+    signup_flow: str | None = None,
 ) -> Dict[str, Any]:
     require_proxy(proxy, "子号浏览器")
     if not allow_sms:
@@ -1204,7 +1205,7 @@ def run_browser_onboard(
         page.set_default_timeout(60000)
         try:
             target = start_url or (REGISTER_START_URL if mode == "register" else LOGIN_START_URL)
-            if settings.browser_signup_flow == "extension" and mode == "register":
+            if (signup_flow or settings.browser_signup_flow) == "extension" and mode == "register":
                 target = start_url or "https://chatgpt.com/"
                 from app.integrations.openai.browser.signup import run_managed_signup
 

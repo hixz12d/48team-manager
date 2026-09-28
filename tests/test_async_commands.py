@@ -51,11 +51,13 @@ class AsyncCommandApiTests(unittest.TestCase):
 
     def test_each_command_returns_running_operation_before_the_flow_ends(self):
         gate = {}
+        from app.application import manual_rotation
+
         cases = (
-            ("onboard", "onboard_service", "invite_and_onboard", {"email_line": "kid@example.com"}),
-            ("replenish", "replenish_service", "run", {}),
-            ("rotate", "rotate_service", "run_rotate_saga", {"email": "kid@example.com"}),
-            ("kick", "rotate_service", "kick_to_standby", {"email": "kid@example.com"}),
+            ("onboard", console_actions.onboard_service, "invite_and_onboard", {"email_line": "kid@example.com"}),
+            ("replenish", console_actions.replenish_service, "run", {}),
+            ("rotate", manual_rotation, "run_manual_rotation", {"email": "kid@example.com", "replacement_email": "new@icloud.com"}),
+            ("kick", console_actions.rotate_service, "kick_to_standby", {"email": "kid@example.com"}),
         )
         for endpoint, service, method, body in cases:
             with self.subTest(endpoint=endpoint):
@@ -66,7 +68,7 @@ class AsyncCommandApiTests(unittest.TestCase):
                     await event.wait()
                     return {"success": True, "status": "success", "child": {"email": "kid@example.com"}}
 
-                with patch.object(getattr(console_actions, service), method, new=slow):
+                with patch.object(service, method, new=slow):
                     started = time.monotonic()
                     response = self.client.post(f"/api/workspaces/{self.workspace_id}/{endpoint}", json=body)
                     self.assertLess(time.monotonic() - started, 2.0)
@@ -100,7 +102,7 @@ class AsyncCommandApiTests(unittest.TestCase):
         with patch.object(console_actions.onboard_service, "invite_and_onboard", new=slow):
             first = self.client.post(f"/api/workspaces/{self.workspace_id}/onboard", json={"email_line": "a@example.com"}).json()
             second = self.client.post(f"/api/workspaces/{self.workspace_id}/kick", json={"email": "b@example.com"}).json()
-            rotate = self.client.post(f"/api/workspaces/{self.workspace_id}/rotate", json={"email": "b@example.com"}).json()
+            rotate = self.client.post(f"/api/workspaces/{self.workspace_id}/rotate", json={"email": "b@example.com", "replacement_email": "c@icloud.com"}).json()
             self.assertEqual(second["error_code"], "operation_conflict")
             self.assertEqual(second["operation_id"], first["operation_id"])
             self.assertEqual(rotate["error_code"], "operation_conflict")

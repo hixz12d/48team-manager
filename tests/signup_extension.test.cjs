@@ -10,7 +10,7 @@ const mail = import(pathToFileURL(path.join(root, 'cloudflare.mjs')).href);
 const MAILBOX = {baseUrl:'https://apimail.xiaozhudf2026.foo',address:'inbox@example.com',adminPassword:'fixture-secret'};
 
 async function worker({incognito = true, session = {}, local = {}, failMail = false, debuggerAPI = false, commandHook, team48, fetch, poll} = {}) {
-  const handlers = {}, apiCalls = [], createdTabs = [], commands = [], navigation = {}, updatedTabs = [];
+  const handlers = {}, apiCalls = [], createdTabs = [], commands = [], navigation = {}, updatedTabs = [], reloadedTabs = [];
   const area = store => ({
     setAccessLevel: async () => {}, get: async key => ({[key]: structuredClone(store[key])}),
     set: async values => Object.assign(store, structuredClone(values)), remove: async key => { delete store[key]; },
@@ -22,6 +22,7 @@ async function worker({incognito = true, session = {}, local = {}, failMail = fa
     windows: {getCurrent: async () => ({id: 1, incognito}), getLastFocused: async () => ({id: 1, incognito})},
     tabs: {create: async tab => { createdTabs.push(tab); return {id: 7}; }, get: async id => ({id}),
       update: async (id, change) => { updatedTabs.push({id, ...change}); return {id, windowId: 1}; },
+      reload: async id => { reloadedTabs.push(id); },
       onRemoved: {addListener: cb => { handlers.removed = cb; }}, onUpdated: {addListener: cb => { handlers.updated = cb; }}},
     webNavigation: Object.fromEntries(['onBeforeNavigate', 'onCommitted', 'onErrorOccurred'].map(name =>
       [name, {addListener: (cb, filter) => { navigation[name] = {cb, filter}; }}])),
@@ -47,7 +48,7 @@ async function worker({incognito = true, session = {}, local = {}, failMail = fa
   const popup = {id: 'test-extension', url: chrome.runtime.getURL('popup.html')};
   const content = {id:'test-extension',url:'https://auth.openai.com/email-verification',frameId:0,tab:{id:7,incognito:true}};
   const send = (message,sender=popup) => new Promise(resolve => handlers.message({version:'0.3.7',...message},sender,resolve));
-  return {send,content,session,local,apiCalls,createdTabs,commands,navigation,updatedTabs,handlers};
+  return {send,content,session,local,apiCalls,createdTabs,commands,navigation,updatedTabs,reloadedTabs,handlers};
 }
 
 test('only email is needed; snapshot precedes opening tab; no configuration or login', async () => {
@@ -422,6 +423,25 @@ test('cancel after pause or stop cannot resume a task; lost click acknowledgemen
   assert.equal(Object.keys(w.session.job.clickReservations).length,0);
 });
 
+test('control wait diagnostics retain bounded geometry and discard private or malformed fields', async () => {
+  const w = await worker();
+  await w.send({type:'start', email:'test@icloud.com'});
+  const control = {kind:'button', rect:[10.4,20.6,300,52], viewport:[900,650], clip:[0,0,900,0],
+    enabled:true, hit:false, text:'private-email@example.com', value:'private-password'};
+  await w.send({type:'event',jobId:w.session.job.id,event:'control_wait',stage:'email',outcome:'waiting',control}, w.content);
+  const report = (await w.send({type:'diagnostics'})).report;
+  const event = report.events.find(e=>e.event==='control_wait');
+  assert.equal(event.outcome,'waiting');
+  assert.deepEqual(event.control, {kind:'button',rect:[10,21,300,52],viewport:[900,650],clip:[0,0,900,0],enabled:true,hit:false});
+  assert.ok(!JSON.stringify(w.session.job.events).includes('private-'));
+  // Re-sanitize at export too, including records from an older worker/storage.
+  w.session.job.events.push({event:'control_wait',outcome:'private-outcome',control:{kind:'private-kind',
+    rect:[0,0,Infinity,NaN],viewport:['900',650],clip:[0,0,1,100001],hit:'private-value',text:'private-text'}});
+  const last = (await w.send({type:'diagnostics'})).report.events.at(-1);
+  assert.deepEqual(last.control, {});
+  assert.equal(last.outcome,undefined);
+});
+
 test('click response diagnostics export only allowed outcomes, never DOM messages', async () => {
   const w=await worker();await w.send({type:'start',email:'test@icloud.com'});
   const jobId=w.session.job.id;
@@ -434,7 +454,7 @@ test('click response diagnostics export only allowed outcomes, never DOM message
   assert.ok(!JSON.stringify(report).includes('private'));
   assert.ok(!JSON.stringify(report).includes('secret'));
 });
-test('Continue retries preserve fields/OTP lifecycle and have a persistent two-retry cap', async () => {
+test('Continue retries preserve fields/OTP lifecycle and have a persistent three-retry cap', async () => {
   for(const mode of ['auto','review','submit']) {
     const w=await worker();await w.send({type:'start',email:'test@icloud.com',mode});
     const jobId=w.session.job.id, stage='otp', key='otp:/email-verification';
@@ -454,7 +474,7 @@ test('Continue retries preserve fields/OTP lifecycle and have a persistent two-r
     const tooSoon=await w.send(request,w.content);
     assert.equal(tooSoon.granted,false);assert.equal(tooSoon.wait,true);
     assert.equal(w.session.job.continueRetries?.otp,undefined);
-    for(let index=0;index<2;index++) {
+    for(let index=0;index<3;index++) {
       w.session.job.continueClicks[key].at-=2500;
       const reservation=await w.send(request,w.content);
       assert.equal(reservation.granted,true,mode);
@@ -464,14 +484,187 @@ test('Continue retries preserve fields/OTP lifecycle and have a persistent two-r
     }
     w.session.job.continueClicks[key].at-=2500;
     const restored=await worker({session:w.session});
-    assert.equal((await restored.send(request,w.content)).granted,false);
-    assert.equal(w.session.job.continueRetries.otp,2);
+    const capped=await restored.send(request,w.content);
+    assert.equal(capped.granted,false);assert.equal(capped.limit,true);
+    assert.equal(w.session.job.continueRetries.otp,3);
     assert.equal(w.apiCalls.length,polled);
-    assert.equal(w.session.job.events.filter(e=>e.event==='continue_retry').length,2);
+    assert.equal(w.session.job.events.filter(e=>e.event==='continue_retry').length,3);
     const observed=await restored.send({type:'continue-observed',jobId,stage},w.content);
     w.session.job.continueClicks[key].at-=2500;
     assert.equal((await restored.send({...request,token:observed.token},w.content)).granted,false);
   }
+});
+
+test('a stalled page (spinner or submit, then idle) may be clicked again; leaving the page may not', async () => {
+  for(const outcome of ['loading','submitted']) {
+    const w=await worker();await w.send({type:'start',email:'test@icloud.com'});
+    const jobId=w.session.job.id, stage='profile', key='profile:/email-verification';
+    const initial=await w.send({type:'claim',stage,jobId,reserve:true},w.content);
+    await w.send({type:'finish-click',stage,jobId,token:initial.token,sent:true},w.content);
+    await w.send({type:'event',jobId,event:'click_response',stage,outcome},w.content);
+    w.session.job.continueClicks[key].at-=7000;
+    const request={type:'retry-continue',stage,jobId,token:initial.token};
+    assert.equal((await w.send(request,w.content)).granted,false,'an ordinary retry stays blocked after a response');
+    const stalled=await w.send({...request,stalled:true},w.content);
+    assert.equal(stalled.granted,true,outcome);
+    await w.send({type:'finish-click',stage,jobId,token:stalled.token,sent:true},w.content);
+    assert.equal(w.session.job.continueRetries.profile,1);
+    // Any page change (another step or path) ends every stalled retry.
+    await w.send({type:'event',jobId,event:'page',stage:'otp'},{...w.content,url:'https://auth.openai.com/about-you'});
+    w.session.job.continueClicks[key].at-=7000;
+    assert.equal((await w.send({...request,token:stalled.token,stalled:true},w.content)).granted,false);
+  }
+});
+
+test('pause reasons are fixed codes in diagnostics; free text and unknown codes never leak', async () => {
+  const w=await worker();await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id, otp={...w.content,url:'https://auth.openai.com/email-verification'};
+  await w.send({type:'pause',jobId,stage:'otp',code:'submit_timeout',reason:'表单提交后超过 45 秒未前进'},otp);
+  assert.equal(w.session.job.pauseReason,'submit_timeout');
+  assert.equal(w.session.job.pausedStage,'otp');
+  let report=(await w.send({type:'diagnostics'})).report;
+  assert.equal(report.pauseReason,'submit_timeout');
+  assert.deepEqual(report.events.filter(e=>e.event==='paused').map(e=>[e.stage,e.reason]),[['otp','submit_timeout']]);
+  await w.send({type:'resume'});
+  assert.equal(w.session.job.pauseReason,undefined);
+  await w.send({type:'pause',jobId,stage:'otp',code:'<script>secret@example.com',reason:'secret@example.com'},otp);
+  report=(await w.send({type:'diagnostics'})).report;
+  assert.equal(report.pauseReason,'other');
+  assert.ok(!JSON.stringify(report).includes('secret'));
+  await w.send({type:'resume'});
+  await w.send({type:'pause'});
+  assert.equal(w.session.job.pauseReason,'user');
+  assert.equal((await w.send({type:'diagnostics'})).report.events.at(-1).reason,'user');
+});
+
+test('a timeout pause resumes by itself only when the page reaches a later step', async () => {
+  const w=await worker();await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id, page={...w.content,url:'https://auth.openai.com/about-you'};
+  const auto=stage=>w.send({type:'auto-resume',jobId,stage},page);
+  await w.send({type:'pause',jobId,stage:'otp',code:'submit_timeout',reason:'timeout'},page);
+  const state=await w.send({type:'state'},page);
+  assert.equal(state.active,false);assert.equal(state.autoResume,true);assert.equal(state.pausedStage,'otp');
+  assert.equal(state.password,undefined);
+  for(const stage of ['otp','email','unknown','consent',undefined]) assert.equal((await auto(stage)).resumed,false,String(stage));
+  assert.equal(w.session.job.status,'paused');
+  const resumeCount=w.session.job.resumeCount||0;
+  assert.equal((await auto('profile')).resumed,true);
+  assert.equal(w.session.job.status,'running');
+  assert.equal(w.session.job.resumeCount,resumeCount+1);
+  assert.equal(w.session.job.events.at(-1).event,'auto_resumed');
+  // A user pause, a validation error or a challenge must wait for an explicit Continue.
+  for(const code of ['user','validation','captcha','phone','user_edit',undefined]) {
+    await w.send({type:'pause',jobId,stage:'otp',code,reason:'check'},page);
+    assert.equal((await w.send({type:'state'},page)).autoResume,false,String(code));
+    assert.equal((await auto('home')).resumed,false,String(code));
+    await w.send({type:'resume'});
+  }
+  await w.send({type:'pause',jobId});
+  assert.equal((await auto('home')).resumed,false);
+  await w.send({type:'stop'});
+  assert.equal((await auto('home')).resumed,false);
+  assert.equal(w.session.job.status,'stopped');
+});
+
+test('a control that never became usable retries the same step by itself, at most three times', async () => {
+  const w=await worker();await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id, page={...w.content,url:'https://auth.openai.com/log-in-or-create-account'};
+  const pause=code=>w.send({type:'pause',jobId,stage:'email',code,reason:'当前按钮等待 15 秒后仍未进入可操作区域，已暂停点击；请处理后继续。'},page);
+  const retry=()=>w.send({type:'auto-retry',jobId},page);
+  await pause('button_unavailable');
+  let state=await w.send({type:'state'},page);
+  assert.equal(state.autoRetry,true);
+  assert.match(w.session.job.message,/自动重试本步（还剩 3 次）/);
+  assert.equal((await retry()).resumed,false,'too early');
+  const resumeCount=w.session.job.resumeCount||0;
+  for(let round=1;round<=3;round++){
+    w.session.job.pausedAt-=8000;
+    assert.equal((await retry()).resumed,true,`round ${round}`);
+    assert.equal(w.session.job.status,'running');
+    assert.equal(w.session.job.autoRetries.email,round);
+    assert.equal(w.session.job.events.at(-1).event,'auto_retried');
+    assert.equal(w.session.job.events.at(-1).stage,'email');
+    await pause('button_unavailable');
+  }
+  assert.equal(w.session.job.resumeCount,resumeCount+3);
+  state=await w.send({type:'state'},page);
+  assert.equal(state.autoRetry,false,'limit reached');
+  assert.doesNotMatch(w.session.job.message,/自动重试/);
+  w.session.job.pausedAt-=8000;
+  assert.equal((await retry()).resumed,false);
+  // A manual Continue gives the step a fresh budget; another step has its own.
+  await w.send({type:'resume'});
+  assert.equal(w.session.job.autoRetries,undefined);
+  await w.send({type:'pause',jobId,stage:'password',code:'redraw',reason:'x'},page);
+  assert.equal((await w.send({type:'state'},page)).autoRetry,true);
+  await w.send({type:'resume'});
+  // Anything that needs the user, or may already have submitted, never retries by itself.
+  for(const code of ['user','captcha','phone','validation','user_edit','submit_timeout','click_timeout','attempt_limit','fill_incomplete']){
+    await pause(code);
+    w.session.job.pausedAt-=60000;
+    assert.equal((await w.send({type:'state'},page)).autoRetry,false,code);
+    assert.equal((await retry()).resumed,false,code);
+    assert.equal(w.session.job.status,'paused',code);
+    await w.send({type:'resume'});
+  }
+  // Manual modes never retry by themselves.
+  await w.send({type:'stop'});
+  await w.send({type:'start',email:'test2@icloud.com',mode:'submit'});
+  await w.send({type:'pause',jobId:w.session.job.id,stage:'email',code:'button_unavailable',reason:'x'},page);
+  w.session.job.pausedAt-=60000;
+  assert.equal((await w.send({type:'auto-retry',jobId:w.session.job.id},page)).resumed,false);
+});
+
+test('a timeout pause in the worker also records its reason and allows auto-resume', async () => {
+  const w=await worker();await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id, sender={...w.content,url:'https://auth.openai.com/create-account/password'};
+  await w.send({type:'claim',stage:'password',jobId},sender);
+  w.session.job.claims['password:/create-account/password']-=46000;
+  await w.send({type:'claim',stage:'password',prepare:true,jobId},sender);
+  assert.equal(w.session.job.pauseReason,'claim_timeout');
+  assert.equal(w.session.job.pausedStage,'password');
+  assert.equal((await w.send({type:'auto-resume',jobId,stage:'otp'},sender)).resumed,true);
+  // The timed-out claim is released exactly like a manual Continue.
+  assert.equal(w.session.job.retryClaim,undefined);
+  assert.equal(w.session.job.claims['password:/create-account/password'],undefined);
+});
+
+test('refresh and continue reloads the tab and only a fresh page may resume the run', async () => {
+  const w=await worker();await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id, page={...w.content,url:'https://auth.openai.com/email-verification'};
+  assert.equal((await w.send({type:'reload-resume'})).ok,false,'a running task is not reloaded');
+  await w.send({type:'pause',jobId,stage:'otp',code:'validation',reason:'check'},page);
+  assert.equal((await w.send({type:'reload-resume'})).ok,true);
+  assert.deepEqual(w.reloadedTabs,[7]);
+  assert.equal(w.session.job.status,'paused','stays paused while the old page unloads');
+  assert.equal((await w.send({type:'view'})).job.reloading,true);
+  const state=await w.send({type:'state'},page);
+  assert.ok(state.reloadAt>0);
+  assert.equal((await w.send({type:'auto-resume',jobId,stage:'otp'},page)).resumed,false,'the reload flag is required');
+  assert.equal((await w.send({type:'auto-resume',jobId,stage:'otp',reload:true},page)).resumed,true);
+  assert.equal(w.session.job.status,'running');
+  assert.equal(w.session.job.reloadAt,undefined);
+  assert.ok(w.session.job.events.some(e=>e.event==='page_reload'));
+  // An old reload request expires; manual modes never offer it.
+  await w.send({type:'pause',jobId,stage:'otp',code:'validation',reason:'check'},page);
+  await w.send({type:'reload-resume'});
+  w.session.job.reloadAt-=61000;
+  assert.equal((await w.send({type:'auto-resume',jobId,stage:'otp',reload:true},page)).resumed,false);
+  assert.equal((await w.send({type:'view'})).job.reloading,false);
+  const manual=await worker();await manual.send({type:'start',email:'test@icloud.com',mode:'submit'});
+  await manual.send({type:'pause'});
+  assert.equal((await manual.send({type:'reload-resume'})).ok,false);
+  assert.deepEqual(manual.reloadedTabs,[]);
+});
+
+test('an invalid idle-drift viewport is ignored instead of pausing the run', async () => {
+  const w=await worker({debuggerAPI:true});
+  await w.send({type:'start',email:'test@icloud.com'});
+  const jobId=w.session.job.id;
+  const result=await w.send({type:'input-drift',jobId,width:0,height:0},w.content);
+  assert.equal(result.ok,true);
+  assert.equal(w.session.job.status,'running');
+  assert.ok(!w.commands.some(c=>c.method==='Input.dispatchMouseEvent'));
 });
 
 test('Continue retry is bound to the receipt and cancelled retries restore the prior claim', async () => {
@@ -579,7 +772,7 @@ const until = async (check, label, timeout=3000) => {
   while(Date.now()<deadline) { if(await check()) return; await new Promise(resolve=>setTimeout(resolve,5)); }
   throw new Error('timed out: '+label);
 };
-function team48Server({joinAfter=0, complete}={}) {
+function team48Server({joinAfter=0, complete, resolve}={}) {
   const calls=[]; let syncs=0;
   const fetch=async (url,options)=>{
     const body=options.body ? JSON.parse(options.body) : null;
@@ -588,6 +781,7 @@ function team48Server({joinAfter=0, complete}={}) {
     assert.equal(options.credentials,'omit');
     const path=new URL(url).pathname;
     const reply=value=>({ok:true,status:200,json:async()=>value});
+    if(path==='/api/ext/resolve') return reply(resolve ? await resolve(body) : {ok:true,state:'found',workspace:{id:3,name:'Alpha',state:'invited'}});
     if(path==='/api/ext/workspaces') return reply({ok:true,items:[{id:3,name:'Alpha'}]});
     if(path==='/api/ext/handoff' && !body.sync_operation_id) return reply({ok:true,state:'syncing',operation_id:`op-${++syncs}`});
     if(path==='/api/ext/handoff') {
@@ -716,4 +910,70 @@ test('manual completion is only offered after signup forms and starts the chosen
   assert.ok(w.session.job.events.some(entry=>entry.event==='session_anonymous'));
   await until(()=>w.session.job.handoff?.status==='authorizing','authorizing after manual completion');
   assert.equal((await w.send({type:'mark-complete'})).ok,false);
+});
+
+test('automatic team: the lookup starts with the signup and its result is used at completion', async () => {
+  let release;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const server=team48Server({resolve:async body=>{
+    assert.deepStrictEqual(body,{email:'test@icloud.com'});
+    await gate;
+    return {ok:true,state:'found',workspace:{id:3,name:'Alpha',state:'invited'}};
+  }});
+  const w=await worker({team48:TEAM48,fetch:server.fetch});
+  await w.send({type:'start',email:'test@icloud.com',handoff:{auto:true}});
+  // Queried right away, while the page is still signing up.
+  await until(()=>server.calls.some(call=>call.url.endsWith('/api/ext/resolve')),'lookup started');
+  assert.equal(w.session.job.autoHandoff.resolve.status,'resolving');
+  release();
+  await until(()=>w.session.job.autoHandoff.resolve.status==='found','found during signup');
+  const view=(await w.send({type:'view'})).job;
+  assert.equal(view.autoHandoff.resolve.message,'已识别团队：Alpha');
+  assert.equal(w.session.job.status,'running');
+  const chatgpt={...w.content,url:'https://chatgpt.com/'};
+  await w.send({type:'complete',jobId:w.session.job.id,email:'test@icloud.com'},chatgpt);
+  await until(()=>w.session.job.handoff?.status==='authorizing','authorizing');
+  assert.equal(w.session.job.handoff.workspaceId,3);
+  assert.equal(server.calls.filter(call=>call.url.endsWith('/api/ext/resolve')).length,1);
+  assert.equal(server.calls.find(call=>call.url.endsWith('/api/ext/handoff')).body.workspace_id,3);
+});
+
+test('automatic team: a miss is rechecked once at completion, then asks for a manual choice', async () => {
+  let lookups=0, found=false;
+  const server=team48Server({resolve:async()=>{
+    lookups++;
+    return found ? {ok:true,state:'found',workspace:{id:3,name:'Alpha',state:'joined'}} :
+      {ok:false,state:'not_found',error_code:'member_not_found',message:'各团队都没有这个邮箱'};
+  }});
+  const w=await worker({team48:TEAM48,fetch:server.fetch});
+  await w.send({type:'start',email:'test@icloud.com',handoff:{auto:true}});
+  await until(()=>w.session.job.autoHandoff.resolve.status==='failed','miss during signup');
+  // The invitation shows up later: the fresh check at completion finds it.
+  found=true;
+  const chatgpt={...w.content,url:'https://chatgpt.com/'};
+  await w.send({type:'complete',jobId:w.session.job.id,email:'test@icloud.com'},chatgpt);
+  await until(()=>w.session.job.handoff?.status==='authorizing','authorizing after recheck');
+  assert.equal(lookups,2);
+  // Still nothing after the recheck: fail with a clear message; manual choice works.
+  found=false; lookups=0;
+  const miss=await worker({team48:TEAM48,fetch:server.fetch});
+  await miss.send({type:'start',email:'test@icloud.com',handoff:{auto:true}});
+  await miss.send({type:'complete',jobId:miss.session.job.id,email:'test@icloud.com'},{...miss.content,url:'https://chatgpt.com/'});
+  await until(()=>miss.session.job.handoff?.status==='failed','failed');
+  assert.match(miss.session.job.handoff.message,/各团队都没有这个邮箱.*选择团队/);
+  assert.equal(server.calls.filter(call=>call.url.endsWith('/api/ext/handoff')).length,2);
+  await miss.send({type:'handoff-start',workspaceId:3,workspaceName:'Alpha'});
+  await until(()=>miss.session.job.handoff?.status==='authorizing','manual after miss');
+});
+
+test('automatic team: several matching teams never pick one by guess', async () => {
+  const server=team48Server({resolve:async()=>({ok:false,state:'ambiguous',error_code:'multiple_workspaces',message:'这个邮箱同时在多个团队中（Alpha、Beta）'})});
+  const w=await worker({team48:TEAM48,fetch:server.fetch});
+  await w.send({type:'start',email:'test@icloud.com',handoff:{auto:true}});
+  await w.send({type:'complete',jobId:w.session.job.id,email:'test@icloud.com'},{...w.content,url:'https://chatgpt.com/'});
+  await until(()=>w.session.job.handoff?.status==='failed','ambiguous');
+  assert.match(w.session.job.handoff.message,/多个团队/);
+  // Ambiguity is not retried and no team sync is started.
+  assert.equal(server.calls.filter(call=>call.url.endsWith('/api/ext/resolve')).length,1);
+  assert.equal(server.calls.filter(call=>call.url.endsWith('/api/ext/handoff')).length,0);
 });
