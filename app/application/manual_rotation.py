@@ -297,7 +297,7 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
         raise RotationBlocked("replacement_already_present", "新邮箱在官方团队里已有成员或邀请记录，请先核对")
 
     old_account = await db.scalar(select(Account).where(Account.email == old))
-    old_binding_id, old_remote_id = None, ""
+    old_binding_id, old_remote_id, stale_remote_id = None, "", ""
     if old_account is not None:
         if await has_other_active_context(db, old_account, workspace.id):
             raise RotationBlocked("old_other_context", "旧号还关联其他团队，本流程不处理，请人工核对")
@@ -305,9 +305,14 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
         if not gate.get("allow"):
             raise RotationBlocked(gate.get("error_code") or "identity_conflict", gate.get("reason") or "旧号身份核对未通过")
         binding = await rotate._remote_binding_for(db, old_account, workspace_id=workspace.id)
+        row = binding.get("binding")
         if binding.get("state") == "matched":
             old_binding_id = binding["binding"].id
             old_remote_id = str(binding.get("remote_id") or "")
+        elif row is not None and row.binding_state == "missing" and row.workspace_id == workspace.id:
+            # Reconcile already found the bound remote deleted; re-prove absence below
+            # against the full catalog (both email and remote id) before treating it as "no remote".
+            stale_remote_id = str(row.remote_account_id or "").strip()
         elif binding.get("state") != "absent":
             raise RotationBlocked("old_binding_unverified", "旧号的 Sub2API 绑定不明确")
     if not old_remote_id:
@@ -316,9 +321,14 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
             remotes = await rotate.sub2api.list_status_accounts(db)
         except Exception:
             raise RotationBlocked("old_remote_unknown", "无法读取 Sub2API 账号目录，不能确认旧号不存在") from None
-        from app.domain.identity.binding import remote_email_from
+        from app.domain.identity.binding import remote_email_from, remote_id_from
+        if stale_remote_id and (not isinstance(remotes, list) or any(
+                not isinstance(item, dict) or not remote_id_from(item).isdigit() for item in remotes)):
+            raise RotationBlocked("old_remote_unknown", "Sub2API 账号目录不完整，不能确认旧号远端已删除")
         if any(normalize_email(remote_email_from(item)) == old for item in remotes):
             raise RotationBlocked("old_binding_unverified", "Sub2API 存在旧邮箱记录但没有已核对绑定，请先同步绑定")
+        if stale_remote_id and any(remote_id_from(item) == stale_remote_id for item in remotes):
+            raise RotationBlocked("old_binding_unverified", f"旧号原绑定的远端账号 #{stale_remote_id} 仍在 Sub2API，请先重新对账")
     return {
         "workspace_id": workspace.id,
         "official_workspace_id": workspace.official_workspace_id,

@@ -141,6 +141,8 @@ class ManualRotationTests(unittest.IsolatedAsyncioTestCase):
                                                                  ExternalBinding.workspace_id == workspace_id))
             if row is None:
                 return {"state": "absent", "remote_id": ""}
+            if row.binding_state != "verified":
+                return {"state": "ambiguous_or_unverified", "remote_id": "", "binding": row, "reason": "binding_not_verified"}
             return {"state": "matched", "remote_id": row.remote_account_id, "binding": row}
 
         async def load_workspace(db, workspace_id):
@@ -457,6 +459,62 @@ class ManualRotationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error_code"], "old_binding_unverified")
         self.assertIn("old@icloud.com", self.members)
         self.assertTrue(self.sub.remotes[88]["schedulable"])
+
+    async def _mark_old_binding_missing(self):
+        self.old_binding.binding_state = "missing"
+        await self.db.commit()
+
+    async def test_binding_marked_missing_proceeds_when_catalog_confirms_absence(self):
+        await self._mark_old_binding_missing()
+        self.sub.remotes.pop(88)
+        op = await self.start()
+        result = await self.drive(op)
+        self.assertTrue(result["success"], result)
+        self.assertEqual([c for c in self.sub.calls if c[0] in {"pause", "delete"}], [])
+
+    async def test_binding_marked_missing_but_remote_id_still_listed_blocks(self):
+        await self._mark_old_binding_missing()
+        self.sub.remotes[88] = remote(88, "someone-else@icloud.com")
+        op = await self.start()
+        result = await self.drive(op)
+        self.assertEqual(result["error_code"], "old_binding_unverified")
+        self.assertIn("old@icloud.com", self.members)
+        self.assertTrue(self.sub.remotes[88]["schedulable"])
+
+    async def test_binding_marked_missing_but_email_still_listed_blocks(self):
+        await self._mark_old_binding_missing()
+        self.sub.remotes.pop(88)
+        self.sub.remotes[77] = remote(77, "old@icloud.com")
+        op = await self.start()
+        result = await self.drive(op)
+        self.assertEqual(result["error_code"], "old_binding_unverified")
+        self.assertIn("old@icloud.com", self.members)
+
+    async def test_binding_marked_missing_with_unreadable_catalog_blocks(self):
+        await self._mark_old_binding_missing()
+        self.sub.remotes.pop(88)
+        self.sub.list_status_accounts = AsyncMock(side_effect=RuntimeError("unauthorized"))
+        op = await self.start()
+        result = await self.drive(op)
+        self.assertEqual(result["error_code"], "old_remote_unknown")
+        self.assertIn("old@icloud.com", self.members)
+
+    async def test_binding_marked_missing_with_malformed_catalog_blocks(self):
+        await self._mark_old_binding_missing()
+        self.sub.remotes.pop(88)
+        self.sub.list_status_accounts = AsyncMock(return_value=[{"platform": "openai"}])
+        op = await self.start()
+        result = await self.drive(op)
+        self.assertEqual(result["error_code"], "old_remote_unknown")
+        self.assertIn("old@icloud.com", self.members)
+
+    async def test_pending_binding_still_blocks(self):
+        self.old_binding.binding_state = "pending"
+        await self.db.commit()
+        self.sub.remotes.pop(88)
+        op = await self.start()
+        result = await self.drive(op)
+        self.assertEqual(result["error_code"], "old_binding_unverified")
 
     async def test_new_official_membership_changed_prevents_old_deletion(self):
         async def publish(db, invite, workspace_id):
