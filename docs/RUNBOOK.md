@@ -32,12 +32,12 @@
 未经明确批准不部署，不在生产做真实踢人、邀请或改席位的测试。
 
 1. 本机推送 `origin/main`。 —— 确认：`git status` 干净，`git log origin/main -1` 是目标提交。
-2. 登录 VPS，确认没有进行中的任务（任务页无 running / queued，尤其是凭据写入、团队同步、轮转）。
+2. 登录 VPS，确认没有进行中的任务（任务页无 running / queued，尤其是凭据写入、团队同步、轮转）。宿主机没有 `sqlite3` 命令，要查库用 `python3` 只读打开 `file:data/team48.db?mode=ro`，任务表是 `operations`（列 `type`、`state`）。
 3. 备份（`<tag>` 用提交短 SHA）：
    ```bash
    cd /opt/team48
    mkdir -p -m 700 deploy/releases/<tag>
-   sqlite3 data/team48.db ".backup deploy/releases/<tag>/team48.db" && sqlite3 deploy/releases/<tag>/team48.db "PRAGMA integrity_check;"
+   python3 -c "import sqlite3; s=sqlite3.connect('data/team48.db'); d=sqlite3.connect('deploy/releases/<tag>/team48.db'); s.backup(d); print(d.execute('pragma integrity_check').fetchone()[0])"
    cp .env deploy/releases/<tag>/.env && chmod 600 deploy/releases/<tag>/*
    docker tag team48-manager:local team48-manager:rollback-<tag>
    ```
