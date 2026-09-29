@@ -1,44 +1,12 @@
 # 48 Team Manager
 
-48 Team Manager is a small self-hosted operations console for managing multiple ChatGPT Team / Workspace accounts and their automation resources.
+自用的 ChatGPT Team 运营控制台：管理多个团队的母号 / 子号、查看官方额度、重新授权、安全轮转，并与 Sub2API、iCloud HME 联动。不是 SaaS、CRM 或质保平台。
 
-这是个人自用的运营控制台，不是 SaaS、CRM、兑换码平台或质保系统。
+技术栈：Python、FastAPI、SQLite、Jinja2 + 原生 JS、APScheduler、Playwright。单容器部署。
 
-## Purpose
-
-日常只做这些事：
-
-1. 管理多个 Workspace / Team 母号
-2. 管理当前在席子号和 standby / unused 子号
-3. 查看官方额度
-4. 发现授权失效并重新授权
-5. 周额度满或封禁后安全轮转
-6. 管理 HME alias、手机号与本地自动化运行代理
-7. 与 Sub2API 同步账号/用量，并只读查看其代理目录
-8. 查看后台 Operation
-
-官方计划、Workspace Role、本地用途三者永远不能互相推断。
-
-## Architecture
-
-One web container, one SQLite database, one persistent operation runner, one browser execution slot.
-
-```text
-app/
-  domain/          accounts, workspaces, identity, automation, resources
-  application/     queries, commands, jobs
-  integrations/    openai, sub2api, hme, sms, proxy
-  web/             routes, schemas, templates, static
-  persistence/     models, repositories, migrations
-  core/            config, errors, security, time
-```
-
-Stack: Python, FastAPI, SQLAlchemy 2, SQLite, Jinja2, vanilla JavaScript, APScheduler, Playwright, httpx / curl-cffi.
-
-## Local development
+## 快速开始
 
 ```powershell
-cd C:\Projects\Github_Other_Projects\48team-manager
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -46,100 +14,14 @@ copy .env.example .env
 python -m uvicorn app.main:app --reload --port 8008
 ```
 
-Open `http://127.0.0.1:8008`. Unauthenticated HTML requests go to `/login`. Default credentials come from `.env`.
+打开 `http://127.0.0.1:8008`，账号密码见 `.env`。
 
-New schema file is `data/team48.db`. Do not point the new app at a production `team_manage.db`.
+## 文档
 
-## Configuration
-
-See `.env.example` and `deploy.env.example`.
-
-Safe defaults:
-
-- official quota probe: off unless explicitly enabled in persisted settings or environment
-- auto reauth: off
-- auto rotate: off
-- force refill: always false unless explicitly enabled
-
-Secrets are stored hashed or encrypted. API responses return `secret_state` (`stored` / `missing`) and never echo raw secrets.
-
-`IDENTITY_GMAIL_POLICY` is a local policy (`owner_only` / `warn` / `unrestricted`). The identity engine itself never maps Gmail to owner.
-
-## Unified Management
-
-`/accounts` is the canonical account/team console. `/workspaces` redirects while preserving detail parameters. Team membership, local account purpose, official quota and Sub2API billing remain separate concepts.
-
-Quota checks return queued Operations. Latest check evidence and the last successful quota snapshot are displayed independently, scoped to account and workspace. A failed check never kicks a member, changes seats, pauses Sub2API, or changes local purpose.
-
-Implementation, configuration, verification and rollback notes: [docs/unified-management.md](docs/unified-management.md).
-
-团队卡片和“管理团队”的母号区域提供“切换代理”：选择 Sub2API 节点并保存，再点击“同步本团队”重试。团队连接官方服务使用母号代理，共用母号的团队一起生效；子号各自的代理不变，已启动的浏览器任务保留冻结的代理。清除代理后使用直连。即使节点地址相同，更换代理用户名或密码也会重建官方请求连接。
-
-代理切换回归：`python -m unittest tests.test_workspace_proxy`、`python -m tests.browser_workspace_proxy`（临时数据库与模拟代理目录，不访问真实官方服务）。
-
-团队卡片的到期日期旁提供“今日切换 N 次 / ＋1”。每个团队单独手动计数，保存到 SQLite，刷新页面或重启服务后保留当天次数。按北京时间每天 00:00 自动归零，页面保持打开也会更新；跨日按 0 读取，下次点击从 1 开始，不依赖定时清库任务。计数只用于手动记录，不会触发团队切换。
-
-计数器回归检查：`python -m unittest tests.test_workspace_switch_count`、`node --test tests/workspace_switch_count_ui.test.cjs`、`python -m tests.browser_workspace_switch_count`（隔离的本地浏览器预览）。
-
-## ChatGPT 注册插件
-
-`extensions/chatgpt-signup` 提供 Chrome / Edge 无痕窗口单账号注册插件：自用包内置 Cloudflare 配置和接码逻辑，只需输入邮箱即可开始，不依赖 Team48 登录或部署。安装和使用见 [插件说明](extensions/chatgpt-signup/README.md)。
-
-项目内也可通过 `BROWSER_SIGNUP_FLOW=extension` 复用这套填写逻辑，在现有 Chromium / Chromix 中注册并衔接原有邀请入组和 OAuth；默认仍为 `legacy`。启用、回退与离线验证见 [项目内新版注册流程](docs/managed-signup.md)。
-
-## Database
-
-SQLite, WAL. New tables are created by `app/persistence/migrations/bootstrap.py`.
-
-旧版数据库导入脚本已移除。当前服务使用 `data/team48.db`；不要把旧 `team_manage.db` 直接作为运行数据库。身份冲突需要人工核对，邮箱后缀、团队名称和账号前缀仅作提示。
-
-## Operations
-
-Long commands return immediately:
-
-```json
-{ "success": true, "operation_id": "..." }
-```
-
-Operations persist across refresh, navigation, browser close, and container restart. Completed steps are not replayed.
-
-手动轮转在团队页选择旧号、填写一个新邮箱；后台读取并继承官方角色和席位，使用插件共享注册脚本和 Chromium 原生输入完成注册及同页 OAuth。旧远端账号先暂停，新号推送和实时核对通过后才删除旧号，并按本轮任务计数一次。遇到手机验证、未知写入结果或旧号清理失败，保留同一邮箱，使用任务详情的“继续轮转”核对后续接；归档不会解除未完成轮转的占用。验收记录见 [轮转方案](轮转.md)。
-
-自动轮转支持账号页开关、每团队每日上限、补位 OAuth 与号码池、Sub2API 推送及有界同步重试。后台每分钟扫描，远端状态每15秒核对；启用与失败处理见 [自动轮转说明](docs/automatic-rotation.md)。
-
-## Deployment
-
-Default machine is documented in [VPS.md](VPS.md). This project only lives in `/opt/team48`.
-
-```bash
-cd /opt/team48
-docker compose -p team48 up -d --build --no-deps team48
-```
-
-- compose project: `team48`
-- container: `team48-manager`
-- bind: `127.0.0.1:8018`
-
-Do not deploy until explicitly approved.
-
-## Safety boundaries
-
-Never touch:
-
-- `/opt/sub2api` and its Compose, `.env`, postgres, redis, data
-- containers `sub2api`, `sub2api-canary`, `sub2api-postgres`, `sub2api-redis`
-- `127.0.0.1:8100` / `127.0.0.1:8101`
-- `docker compose down` or `--remove-orphans`
-
-Sub2API is used only through its HTTP Admin API.
-
-Sub2API owns the proxy catalog and is its only source of truth. Team48 only lists and probes that remote catalog; it does not create, edit, or sync proxy records to Sub2API. Local proxy profiles remain solely as compatibility data for browser automation, account-specific runtime URLs, and frozen historical operation snapshots. Account pushes omit `proxy_id`, preserving an existing remote binding and leaving new remote accounts unbound.
-
-Do not run real kick, invite, or OpenAI billing/seat-changing actions without approval.
-
-## Tests
-
-```powershell
-python -m unittest discover -s tests -v
-node --test tests/management_ui.test.cjs
-```
+- [产品与业务规则](docs/PRODUCT.md)
+- [架构、配置与基本检查](docs/ARCHITECTURE.md)
+- [部署与运维](docs/RUNBOOK.md)
+- [HME 联动规则](docs/hme-linkage.md)
+- [邀请席位接口约定](docs/contracts/openai-invite.md)
+- [注册插件说明](extensions/chatgpt-signup/README.md)
+- [更新日志](CHANGELOG.md)
