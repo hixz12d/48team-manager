@@ -158,7 +158,7 @@
     operation_conflict: "该团队已有任务正在进行，请到任务页查看进度，完成后再重试。",
     remote_catalog_unavailable: "无法读取 Sub2API 分组或代理目录，请到设置页检测连接后重试。",
     proxy_unresolvable: "所选代理无法解析，请刷新代理目录并重新选择。",
-    vacancy_not_safe_to_refill: "尚未确认官方席位已空出，暂不补位。请同步团队成员后重试。"
+    vacancy_not_safe_to_refill: "移出回执显示空出的席位可能收费，暂不补位。请核对账单后继续轮转。"
   };
   const ACTIVE_OPERATION_STATES = new Set(["pending", "queued", "running", "waiting"]);
   const TERMINAL_OPERATION_STATES = new Set(["success", "failed", "manual_required", "cancelled", "partial"]);

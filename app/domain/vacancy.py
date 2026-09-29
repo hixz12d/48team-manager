@@ -176,6 +176,17 @@ def is_safe_to_refill(vacancy: dict[str, Any] | None) -> bool:
     return vacancy.get("is_free") is True
 
 
+def is_billable_vacancy(vacancy: dict[str, Any] | None) -> bool:
+    """The receipt explicitly says the freed seat costs money; silence is not billing."""
+    if not vacancy:
+        return False
+    if vacancy.get("has_billing_notice") or vacancy.get("replacement_required") is True:
+        return True
+    if (vacancy.get("billed_seat_delta") or 0) > 0:
+        return True
+    return vacancy.get("is_free") is False
+
+
 def present_vacancy(vacancy: dict[str, Any] | None) -> dict[str, Any] | None:
     if not vacancy:
         return None

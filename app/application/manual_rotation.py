@@ -42,7 +42,7 @@ from app.domain.identity.ids import normalize_email
 from app.domain.identity.policy import is_workspace_owner
 from app.domain.onboard import KICK_COOLDOWN_SECONDS
 from app.domain.rotate import manual_rotation_email_error
-from app.domain.vacancy import is_safe_to_refill
+from app.domain.vacancy import is_billable_vacancy, is_safe_to_refill
 from app.integrations.mail.otp import parse_mail_line
 from app.integrations.openai.browser.environment import BrowserEnvironmentError, validate_configuration
 from app.integrations.openai.member_adapter import normalize_official_role
@@ -247,6 +247,100 @@ async def reopen_rotation(db, public_id: str) -> tuple[Operation | None, dict[st
 # ---------------------------------------------------------------- preflight
 
 
+BINDING_REASONS = {
+    "binding_not_verified": "本地绑定未验证",
+    "duplicate_workspace_bindings": "本团队下有多条绑定",
+    "unscoped_or_foreign_bindings": "绑定没有记录所属团队",
+    "remote_identity_unknown": "读取远端账号失败",
+    "workspace_missing": "团队不存在",
+}
+
+
+async def _drop_binding(db, row: ExternalBinding) -> None:
+    from sqlalchemy import delete
+    from app.persistence.models.sub2api import Sub2ApiSyncObservation, Sub2ApiUsageSnapshot
+    from app.persistence.models.sub2api_status import Sub2ApiAccountStatus
+
+    # SQLite does not enforce the CASCADE here; clear the per-binding caches explicitly.
+    for model in (Sub2ApiSyncObservation, Sub2ApiUsageSnapshot, Sub2ApiAccountStatus):
+        await db.execute(delete(model).where(model.binding_id == row.id))
+    await db.delete(row)
+
+
+async def _heal_old_binding(db, rotate, account: Account, workspace: Workspace) -> None:
+    """Rebuild the old account's local binding from a complete Sub2API catalog.
+
+    Only local bookkeeping changes. Stale rows whose remote id is gone are dropped;
+    a single remote whose email, platform and team all match is bound as verified.
+    Anything less certain is left as-is so the checks after this still block.
+    """
+    from app.domain.identity.binding import (
+        cross_check_binding, remote_email_from, remote_id_from, remote_official_account_id_from,
+    )
+
+    try:
+        remotes = await rotate.sub2api.list_status_accounts(db)
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(remotes, list) or any(
+            not isinstance(item, dict) or not remote_id_from(item).isdigit() for item in remotes):
+        return
+    remote_ids = {remote_id_from(item) for item in remotes}
+    email = normalize_email(account.email)
+    candidates = [item for item in remotes if remote_email_from(item) == email]
+    if len(candidates) > 1:
+        return
+    rows = list(await db.scalars(select(ExternalBinding).where(
+        ExternalBinding.provider == "sub2api", ExternalBinding.local_account_id == account.id,
+        (ExternalBinding.workspace_id == workspace.id) | ExternalBinding.workspace_id.is_(None),
+    )))
+    target_id = remote_id_from(candidates[0]) if candidates else ""
+    remote = None
+    if target_id:
+        try:
+            remote = await rotate.sub2api.get_account(db, int(target_id))
+        except Exception:  # noqa: BLE001
+            return
+        if validate_sync_identity(remote, target_id, email, workspace.official_workspace_id):
+            return
+        state, _ = cross_check_binding(
+            local_email=email, local_official_account_id=account.official_account_id,
+            expected_workspace=str(workspace.official_workspace_id or "").lower() or None, remote=remote,
+        )
+        if state != "verified":
+            return
+        owner = await db.scalar(select(ExternalBinding).where(
+            ExternalBinding.provider == "sub2api", ExternalBinding.remote_account_id == target_id))
+        if owner is not None and owner.local_account_id != account.id:
+            return
+        if owner is not None and owner not in rows:
+            return  # Bound under another team of the same account; leave it to a person.
+    kept = []
+    for row in rows:
+        if str(row.remote_account_id) != target_id and str(row.remote_account_id) not in remote_ids:
+            await _drop_binding(db, row)
+        else:
+            kept.append(row)
+    if target_id:
+        if any(str(r.remote_account_id) != target_id for r in kept):
+            await db.commit()  # Keep the stale-row cleanup; a live row for another remote needs a person.
+            return
+        await db.flush()
+        row = kept[0] if kept else ExternalBinding(provider="sub2api", local_account_id=account.id,
+                                                   remote_account_id=target_id)
+        if not kept:
+            db.add(row)
+        row.workspace_id = workspace.id
+        row.binding_state = "verified"
+        row.verified_email = email
+        row.verified_official_account_id = remote_official_account_id_from(remote) or None
+        row.verified_workspace_id = str(workspace.official_workspace_id or "").lower() or None
+        row.last_error = None
+        row.last_observed_at = utcnow()
+    if target_id or len(kept) != len(rows):
+        await db.commit()
+
+
 async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[str, Any]:
     """Live checks before anything is paused or kicked. Raises RotationBlocked."""
     workspace = await rotate.workspaces.load_workspace(db, workspace_id)
@@ -301,6 +395,7 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
     if old_account is not None:
         if await has_other_active_context(db, old_account, workspace.id):
             raise RotationBlocked("old_other_context", "旧号还关联其他团队，本流程不处理，请人工核对")
+        await _heal_old_binding(db, rotate, old_account, workspace)
         gate = await automation_gate(db, email=old, workspace_id=workspace.id)
         if not gate.get("allow"):
             raise RotationBlocked(gate.get("error_code") or "identity_conflict", gate.get("reason") or "旧号身份核对未通过")
@@ -314,7 +409,9 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
             # against the full catalog (both email and remote id) before treating it as "no remote".
             stale_remote_id = str(row.remote_account_id or "").strip()
         elif binding.get("state") != "absent":
-            raise RotationBlocked("old_binding_unverified", "旧号的 Sub2API 绑定不明确")
+            reason = binding.get("reason") or "unknown"
+            raise RotationBlocked("old_binding_unverified",
+                                  f"旧号的 Sub2API 绑定不明确（{BINDING_REASONS.get(reason, reason)}）")
     if not old_remote_id:
         # Missing local binding is not proof that the remote account does not exist.
         try:
@@ -326,7 +423,8 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
                 not isinstance(item, dict) or not remote_id_from(item).isdigit() for item in remotes)):
             raise RotationBlocked("old_remote_unknown", "Sub2API 账号目录不完整，不能确认旧号远端已删除")
         if any(normalize_email(remote_email_from(item)) == old for item in remotes):
-            raise RotationBlocked("old_binding_unverified", "Sub2API 存在旧邮箱记录但没有已核对绑定，请先同步绑定")
+            raise RotationBlocked("old_binding_unverified",
+                                  "Sub2API 里有旧邮箱的账号，但无法自动确认是哪一个（可能有多个或团队不一致），请到 Sub2API 核对")
         if stale_remote_id and any(remote_id_from(item) == stale_remote_id for item in remotes):
             raise RotationBlocked("old_binding_unverified", f"旧号原绑定的远端账号 #{stale_remote_id} 仍在 Sub2API，请先重新对账")
     return {
@@ -601,11 +699,14 @@ class _Rotation:
             await self.mark("vacancy", "success", {"confirmed_by": "official_receipt"})
         elif self.confirm_vacancy:
             await self.mark("vacancy", "success", {"confirmed_by": "operator"})
+        elif not is_billable_vacancy(vacancy):
+            # Manual one-for-one swap: only an explicit billing signal stops the refill.
+            await self.mark("vacancy", "success", {"confirmed_by": "no_billing_signal", "vacancy": vacancy})
         else:
             await self.mark("vacancy", "failed", {"vacancy": vacancy}, code="vacancy_not_safe_to_refill",
-                            error="移出回执不能证明空位免费")
+                            error="移出回执显示空出的席位可能收费")
             return await self.touched("vacancy_not_safe_to_refill",
-                                      "旧号已移出，但回执不能证明空出的席位免费；核对账单后继续并确认补位", manual=True)
+                                      "旧号已移出，但回执显示空出的席位可能收费；核对账单后继续并确认补位", manual=True)
         return None
 
     async def stage_onboard(self) -> dict[str, Any] | None:
