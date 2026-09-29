@@ -91,7 +91,7 @@
       }
       return;
     }
-    const signature = JSON.stringify([item.id, item.state, view, summary, item.can_cancel, item.cancel_requested, item.can_retry, item.account_id, item.wait_reason, item.safe_error_message, item.error, item.target_label, stale]);
+    const signature = JSON.stringify([item.id, item.state, view, summary, item.can_cancel, item.cancel_requested, item.can_retry, item.can_continue_rotation, item.account_id, item.wait_reason, item.safe_error_message, item.error, item.target_label, stale]);
     if (host._taskSignature !== signature) {
       host._taskSignature = signature; host.replaceChildren();
       host.className = `task-progress task-progress-${density}`;
@@ -129,6 +129,7 @@
         actions.append(button('查看详情', b => api.open?.(item.id, b)));
         if (density !== 'compact' && item.can_cancel && !stale) actions.append(button('取消任务', b => api.cancel?.(item, b)));
         if (density !== 'compact' && item.can_retry && !stale) actions.append(button('重试任务', b => api.retry?.(item, b)));
+        if (density !== 'compact' && item.can_continue_rotation && !stale) actions.append(button('继续轮转', b => api.continueRotation?.(item, b), 'button compact primary'));
         if (density !== 'compact' && needsHelp(item) && item.account_id) {
           const link = el('a', 'button compact', '查看账号'); link.href = `/accounts?account=${encodeURIComponent(item.account_id)}`; actions.append(link);
         }

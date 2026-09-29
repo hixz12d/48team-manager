@@ -538,11 +538,19 @@ class OnboardService:
             await self._progress(db, job_id=job_id, stage="invited", message="邀请已发送，准备注册")
 
         if oauth_signup:
-            checked, official_invite = await self.workspaces.lookup_live_member(db, workspace, email)
-            seat_error = existing_invite_seat_error(requested_seat, (official_invite or {}).get("seat_type"))
-            if not checked.get("success") or not official_invite or seat_error or not official_roles_equivalent(official_invite.get("role"), requested_role):
+            # A just-created invite can take a few seconds to show up in the official list.
+            for attempt in range(4):
+                if attempt and not in_test:
+                    await asyncio.sleep(3)
+                checked, official_invite = await self.workspaces.lookup_live_member(db, workspace, email)
+                seat_error = existing_invite_seat_error(requested_seat, (official_invite or {}).get("seat_type"))
+                verified = (checked.get("success") and official_invite and not seat_error
+                            and official_roles_equivalent(official_invite.get("role"), requested_role))
+                if verified:
+                    break
+            if not verified:
                 return {"success": False, "error_code": "invite_unverified", "status": "invited",
-                        "error": "官方邀请、角色或席位未确认，请继续此邮箱，不会开始注册",
+                        "error": "官方邀请已发出，但多次读取仍未确认邀请、角色或席位，未开始注册",
                         "child": serialize_child(child)}
 
         has_session = bool(decrypt_secret(child.access_token_encrypted) or decrypt_secret(child.session_token_encrypted))

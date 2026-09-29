@@ -169,6 +169,8 @@ def serialize_operation(
     if row.op_type == "rotate" and row.source == "manual_rotation":
         context = unpack_input(row.input_json)
         target_label = f"{context.get('old_email') or row.email} → {context.get('replacement_email') or '待核对'}"
+    from app.application.manual_rotation import can_continue
+
     business_step = business_step_label(row.current_step, state=row.state)
     payload = {
         "id": row.public_id,
@@ -193,6 +195,7 @@ def serialize_operation(
         "error_code": row.error_code or "",
         "log": log_items,
         "cancel_requested": bool(row.cancel_requested),
+        "can_continue_rotation": can_continue(row),
         "result": result,
         "outcome": outcome,
         "locked_by": row.locked_by or "",

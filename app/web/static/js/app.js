@@ -4197,6 +4197,10 @@ function hmeRow(item) {
       } catch (error) { toast(friendlyError(error), "error"); }
       finally { setButtonBusy(trigger, false); }
     },
+    continueRotation: async (item, trigger) => {
+      await (entityActions.operation || []).find((action) => action.id === "operation.continue_rotation")?.run(item, trigger);
+      await window.Team48Runtime.refresh();
+    },
   });
   document.getElementById("task-center-open")?.addEventListener("click", event => {
     openOverlay("tasks", {returnFocus: event.currentTarget, initialFocus: "[data-close-tasks]"});

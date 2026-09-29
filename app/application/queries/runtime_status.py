@@ -32,6 +32,8 @@ SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "
 
 
 def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None):
+    from app.application.manual_rotation import can_continue
+
     stamp = now or utcnow()
     state = row.state
     if state == "manual_required":
@@ -66,6 +68,7 @@ def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None)
         "stage_plan": plan, "observed_stages": observed,
         "cancel_requested": bool(row.cancel_requested),
         "can_cancel": state in {"queued", "running", "waiting"} and not row.cancel_requested,
+        "can_continue_rotation": can_continue(row),
         "target": {"kind": "workspace" if row.workspace_id else ("account" if row.account_id else "system"),
                    "id": row.workspace_id or row.account_id},
         "target_label": workspace_name or (f"工作区 #{row.workspace_id}" if row.workspace_id else (f"账号 #{row.account_id}" if row.account_id else "系统")),

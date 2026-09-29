@@ -80,7 +80,7 @@
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 轮转任务停在 `partial` / `manual_required` | 手机 / 人机验证、写入结果未知、旧号清理失败 | 人工处理后在任务详情点"继续轮转"；不要重新发起，不要靠归档绕过 |
+| 轮转任务停在 `partial` / `manual_required` | 手机 / 人机验证、写入结果未知、旧号清理失败 | 人工处理后在团队面板或任务列表"…"菜单点"继续轮转"；不要重新发起，不要靠归档绕过 |
 | 邀请 `write_outcome_unknown` | 官方写请求超时或 5xx | 先同步成员 / 邀请核对结果，不要直接重发 |
 | 邀请 422 `not a valid SeatType` | 席位接口值错 | 设置里 `invite_seat_wire_*` 应为 `default` / `prolite` |
 | `sync_oauth_unsupported` | Sub2API revision 不在 3–5 或副本版本不一致 | 等两个副本一致，不绕过能力检查 |
