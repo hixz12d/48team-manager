@@ -1,6 +1,6 @@
 # 48team 与 iCloud HME 联动
 
-以后改领号、打标、占用判定，先看这份。HME 侧部署摘要见 [`icloud-hme/48TEAM.md`](../../icloud-hme/48TEAM.md)，机器隔离见 [VPS.md](../VPS.md)。
+以后改领号、打标、占用判定，先看这份。HME 侧部署摘要见 [`icloud-hme/docs/RUNBOOK.md`](../../icloud-hme/docs/RUNBOOK.md)，机器隔离见 [VPS.md](../VPS.md)。
 
 密码、Cookie、服务 token 不进本文。
 

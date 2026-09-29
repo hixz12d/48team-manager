@@ -56,13 +56,18 @@ nul
 
 # Environment variables
 .env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.tmp/
 VPS.local.md
 extensions/chatgpt-signup/private-config.mjs
 !.env.example
 接口.md
 任务.md
 需求.md
-CLAUDE.md
 openai-api.md
 team_manage.db-shm
 team_manage.db-wal
