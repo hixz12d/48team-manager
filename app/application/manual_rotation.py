@@ -207,6 +207,21 @@ def can_continue(row: Operation) -> bool:
                 and row.state in UNRESOLVED_STATES)
 
 
+async def unresolved_for_replacement(db, email: str) -> Operation | None:
+    """The unfinished rotation waiting on this new mailbox, if any."""
+    target = normalize_email(email)
+    rows = await db.scalars(select(Operation).where(
+        Operation.op_type == "rotate", Operation.source == SOURCE,
+        Operation.state.in_(UNRESOLVED_STATES),
+    ).order_by(Operation.id.desc()))
+    for row in list(rows):
+        if normalize_email(unpack_input(row.input_json).get("replacement_email")) != target:
+            continue
+        if row.state in {"partial", "manual_required"} or await _has_side_effects(db, row):
+            return row
+    return None
+
+
 async def reopen_rotation(db, public_id: str) -> tuple[Operation | None, dict[str, Any] | None]:
     """Put an unfinished manual rotation back under the team lock without replaying it."""
     # Serialize continuation claims before reading state.
@@ -709,8 +724,35 @@ class _Rotation:
                                       "旧号已移出，但回执显示空出的席位可能收费；核对账单后继续并确认补位", manual=True)
         return None
 
+    async def _authorized_outside(self) -> Account | None:
+        """The new account was already authorized elsewhere (e.g. by hand after a phone check)."""
+        account, workspace = await self.replacement(), await self.workspace()
+        if account is None or workspace is None:
+            return None
+        if (account.auth_state != "healthy" or not decrypt_secret(account.refresh_token_encrypted)
+                or not decrypt_secret(account.access_token_encrypted)):
+            return None
+        selected = jwt_parser.extract_chatgpt_account_id(decrypt_secret(account.access_token_encrypted))
+        if not selected or token_workspace_mismatch(account, workspace):
+            return None
+        live, member = await self.rotate.workspaces.lookup_live_member(self.db, workspace, account.email)
+        if (not live.get("success") or not member or member.get("status") != "joined"
+                or normalize_official_role(member.get("role")) != self.ctx["role"]
+                or member.get("seat_type") != self.ctx["official_seat_type"]):
+            return None
+        return account
+
     async def stage_onboard(self) -> dict[str, Any] | None:
         if await self.done("authorized"):
+            return None
+        if (account := await self._authorized_outside()) is not None:
+            if not await self.done("joined"):
+                await self.mark("joined", "success", {"account_id": account.id})
+            await self.mark("authorized", "success", {
+                "account_id": account.id, "credential_revision": int(account.credential_revision or 1),
+                "authorized_outside": True,
+            })
+            await self.note("authorized", "新号已在外部完成授权，跳过浏览器")
             return None
         if not await self.reserve_browser():
             return await self.touched("browser_busy", "旧号已移出，浏览器正被其他任务使用；稍后继续本轮")
@@ -799,6 +841,14 @@ class _Rotation:
             previous["publish_written"] = True
         if int(account.credential_revision or 1) != int((await self.step_result("authorized")).get("credential_revision") or 0):
             return await self.touched("credential_revision_changed", "新号凭据版本已变化，未覆盖远端凭据，请核对", manual=True)
+        if not previous.get("intent"):
+            # Already pushed by hand after a manual authorization: verify, do not write again.
+            code, detail = await self._new_state(account, workspace)
+            if not code:
+                await self.mark("published", "success", {"new_remote_id": detail, "publish_written": True,
+                                                         "already_published": True,
+                                                         "credential_revision": int(account.credential_revision or 1)})
+                return None
         await self.mark("published", "running", previous)
         invite = {
             "authorized": True, "child": {"id": account.id, "email": account.email},

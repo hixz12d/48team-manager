@@ -2200,6 +2200,10 @@ function hmeRow(item) {
       });
       closeReauth();
       await handleActionResult(result, { successMessage: result.message || "授权已更新" });
+      if (result.rotation_continue) {
+        toast(result.rotation_continue.message, result.rotation_continue.ok ? "success" : "error");
+        void window.Team48Runtime?.refresh();
+      }
       void window.Team48Accounts?.refreshRemote(true).catch(() => {});
     } catch (error) {
       setReauthStatus(friendlyError(error), "error");

@@ -124,7 +124,7 @@ async def finish_after_authorization(
         if root.state not in (*ACTIVE_STATES, "partial", "manual_required") and not await _has_side_effects(db, root):
             continue
         if normalize_email(unpack_input(root.input_json).get("replacement_email")) == account.email:
-            deferred = _step(None, "授权已保存，请继续原轮转完成推送、旧号清理和计数",
+            deferred = _step(None, "授权已保存，原轮转会接着完成推送、旧号清理和计数",
                              rotation_operation_id=root.public_id, counted=False)
             return {key: deferred for key, requested in (("sub2api", push_sub2api), ("switch_count", count_switch)) if requested}
 

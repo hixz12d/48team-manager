@@ -462,6 +462,19 @@ async def account_reauth_complete(
             push_sub2api=push_sub2api,
             count_switch=count_switch,
         )
+    if result.get("ok"):
+        from app.application import manual_rotation
+
+        pending = await manual_rotation.unresolved_for_replacement(db, account.email)
+        if pending is not None:
+            # The rotation stopped only for this authorization; finish it without another click.
+            resumed = await continue_manual_rotation(db, pending.public_id, background=True)
+            result["rotation_continue"] = {
+                "ok": bool(resumed.get("ok")), "operation_id": pending.public_id,
+                "error": resumed.get("error"),
+                "message": "已自动继续原轮转（推送、清理旧号、计数）" if resumed.get("ok")
+                else f"原轮转未能自动继续：{resumed.get('error') or '请到任务里点继续轮转'}",
+            }
     return result
 
 
