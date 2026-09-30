@@ -76,7 +76,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 ### 团队收入账本（`application/revenue_ledger.py`）
 
 - `settle_departure`（按团队 + 账号）/ `settle_binding`（按绑定，远端已删时 `allow_remote=False` 只用缓存）；只 flush，调用方 commit，失败不抛异常。
-- 调用点：`rotate.py` 的 `kick_to_standby` 在 `official_removed` 之后、解绑 / 删远端 / 删档之前；`manual_rotation.py` 的 `stage_delete_old` 删旧远端前、`_drop_binding` 丢弃绑定前。
+- 调用点：`rotate.py` 的 `kick_to_standby` 在 `official_removed` 之后、解绑 / 删远端 / 删档之前；`manual_rotation.py` 的 `stage_delete_old` 删旧远端前、`_drop_binding` 丢弃绑定前；`workspace_sync.py` 同步提交后给本次标为离队的成员记账（来源 `sync_departure`）；`main.py` 启动后后台跑 `backfill_departures` 补记漏掉的离队绑定。
 - 金额来源优先级 `lifetime` / `lifetime_capped_90d` > `cache_lifetime` > `cache_seven_day` > `missing`，只有同级或更好才覆盖；`settled_at` 取首次入账时间。
 - 查询：`totals()`（累计、本月、按团队）、`entries()`；接口 `GET /api/workspaces/{id}/revenue`，看板 `portfolio` 每组带 `revenue`，总览 summary 带 `revenue_total` / `revenue_month`。
 

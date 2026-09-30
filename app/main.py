@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from contextlib import asynccontextmanager
@@ -91,7 +92,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         start_scheduler(settings, session_factory)
         reauth_dispatcher.start(session_factory, deployment_allowed=settings.auto_reauth_enabled)
         command_runner.start(session_factory)
+
+        async def backfill_revenue() -> None:
+            # Departures found before sync-time booking existed (or missed by it); reads Sub2API, so off the startup path.
+            from app.application.revenue_ledger import revenue_ledger
+
+            try:
+                async with session_factory() as session:
+                    count = await revenue_ledger.backfill_departures(session)
+                if count:
+                    logger.info("revenue ledger: backfilled %s departed members", count)
+            except Exception:
+                logger.exception("revenue ledger: startup backfill failed")
+
+        backfill_task = asyncio.create_task(backfill_revenue())
         yield
+        backfill_task.cancel()
         stop_scheduler()
         await command_runner.stop()
         await reauth_dispatcher.stop()

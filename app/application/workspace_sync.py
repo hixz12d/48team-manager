@@ -317,6 +317,7 @@ class WorkspaceSyncService:
             for collection in (members, invites)
         )
         removed_memberships = 0
+        departed_account_ids: list[int] = []
         remote_rows = self._merge_remote_rows(members, invites)
 
         await db.execute(delete(WorkspaceOfficialMemberSnapshot).where(WorkspaceOfficialMemberSnapshot.workspace_id == workspace.id))
@@ -352,6 +353,7 @@ class WorkspaceSyncService:
                     membership.membership_state = MEMBERSHIP_STATE_REMOVED
                     membership.removed_at = stamp
                     removed_memberships += 1
+                    departed_account_ids.append(account.id)
                 continue
             membership.official_role = normalize_official_role(remote.get("role")) or membership.official_role
             membership.official_user_id = remote.get("user_id") or membership.official_user_id
@@ -445,6 +447,16 @@ class WorkspaceSyncService:
         await operation_store.mark_step(db, operation, "commit_snapshot", state="success", result=result)
         await operation_store.finish(db, operation, result)
         await db.commit()
+        if departed_account_ids:
+            # Book after the snapshot commit so the Sub2API read never holds the SQLite write lock.
+            from app.application.revenue_ledger import revenue_ledger
+
+            for account_id in departed_account_ids:
+                await revenue_ledger.settle_departure(
+                    db, workspace_id=workspace.id, account_id=account_id, source="sync_departure",
+                    operation_id=operation.public_id,
+                )
+                await db.commit()
         return {"ok": True, "operation_id": operation.public_id, **result}
 
     async def _read_only_collection(self, db, workspace, owner, kind):

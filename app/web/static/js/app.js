@@ -2689,7 +2689,7 @@ function hmeRow(item) {
         body.querySelector('input[name="expires_on"]').scrollIntoView({block:"center"});
       }
 
-    const revenueSourceLabels = { manual_rotation: "手动轮转", auto_rotation: "自动轮转", kick: "踢人", purge: "踢人并删档", binding_cleanup: "绑定整理" };
+    const revenueSourceLabels = { manual_rotation: "手动轮转", auto_rotation: "自动轮转", kick: "踢人", purge: "踢人并删档", binding_cleanup: "绑定整理", sync_departure: "同步发现离队" };
     const revenueAmountNotes = { lifetime_capped_90d: "仅近 90 天", cache_lifetime: "估算", cache_seven_day: "估算", missing: "未取到" };
 
     // 收入记录：抽屉打开时单独拉账本，不依赖列表数据里有没有 revenue。

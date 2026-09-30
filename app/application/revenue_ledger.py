@@ -7,17 +7,17 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.sub2api_usage import _decimal, _money_text, _safe_error, lifetime_window
 from app.core.config import load_settings
 from app.core.time import as_utc, isoformat, utcnow, zone
-from app.domain.identity import BINDING_VERIFIED, PROVIDER_SUB2API
+from app.domain.identity import BINDING_VERIFIED, MEMBERSHIP_STATE_REMOVED, PROVIDER_SUB2API
 from app.domain.workspaces.names import resolve_display_name
 from app.integrations.sub2api.client import sub2api_client
-from app.persistence.models.identity import Account, ExternalBinding, Workspace
+from app.persistence.models.identity import Account, ExternalBinding, Workspace, WorkspaceMembership
 from app.persistence.models.revenue import Sub2ApiRevenueEntry
 from app.persistence.models.sub2api import Sub2ApiUsageSnapshot
 
@@ -206,6 +206,44 @@ class RevenueLedger:
         if binding is None:
             return None
         return await self.settle_binding(db, binding, source=source, operation_id=operation_id)
+
+    async def backfill_departures(self, db: AsyncSession) -> int:
+        """Book verified bindings whose member already left that team but has no ledger entry yet."""
+        booked = (
+            select(Sub2ApiRevenueEntry.id)
+            .where(
+                Sub2ApiRevenueEntry.workspace_id == ExternalBinding.workspace_id,
+                Sub2ApiRevenueEntry.remote_account_id == ExternalBinding.remote_account_id,
+            )
+            .exists()
+        )
+        bindings = list(
+            (
+                await db.execute(
+                    select(ExternalBinding)
+                    .join(
+                        WorkspaceMembership,
+                        (WorkspaceMembership.workspace_id == ExternalBinding.workspace_id)
+                        & (WorkspaceMembership.account_id == ExternalBinding.local_account_id),
+                    )
+                    .join(Workspace, Workspace.id == ExternalBinding.workspace_id)
+                    .where(
+                        ExternalBinding.provider == PROVIDER_SUB2API,
+                        ExternalBinding.binding_state == BINDING_VERIFIED,
+                        WorkspaceMembership.membership_state == MEMBERSHIP_STATE_REMOVED,
+                        or_(Workspace.owner_account_id.is_(None), Workspace.owner_account_id != ExternalBinding.local_account_id),
+                        ~booked,
+                    )
+                )
+            ).scalars()
+        )
+        count = 0
+        for binding in bindings:
+            result = await self.settle_binding(db, binding, source="sync_departure")
+            await db.commit()
+            if result.get("ok"):
+                count += 1
+        return count
 
     async def totals(self, db: AsyncSession) -> dict[str, Any]:
         local_zone = zone(load_settings().timezone)
