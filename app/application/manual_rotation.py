@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from app.application import sub2api_status
 from app.application.automatic_rotation import publish_replacement, refresh_after_rotation
 from app.application.connection_probe import probe_mail
+from app.application.extension_runner import check_runner_proxy, runner_enabled, validate_runner_configuration
 from app.application.identity import automation_gate
 from app.application.member_handoff import token_workspace_mismatch
 from app.application.member_lifecycle import has_other_active_context
@@ -36,6 +37,7 @@ from app.application.tokens import decrypt_secret
 from app.application.workspace_switch_count import increment_workspace_switch_count
 from app.core.config import load_settings
 from app.core.jwt import jwt_parser
+from app.core.proxy import inherit_proxy_url
 from app.core.time import as_utc, isoformat, utcnow
 from app.domain.automation import ACTIVE_STATES, BROWSER_ACTIONS, WORKSPACE_LOCK_ACTIONS
 from app.domain.identity import MEMBERSHIP_STATE_JOINED
@@ -370,9 +372,17 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
         raise RotationBlocked("owner_not_ready", "母号凭据或代理未就绪")
     if normalize_email(owner.email) in {old, new}:
         raise RotationBlocked("primary_mother_protected", "母号不能被轮转，也不能作为新邮箱")
+    signup_runner = "extension" if runner_enabled() else "playwright"
     try:
-        validate_configuration(load_settings())
-        validate_signup_assets()
+        if signup_runner == "extension":
+            # Chromix runner: reject unusable config or an authenticated HTTP proxy before any kick.
+            # The frozen proxy prefers the replacement's own proxy, then the owner's (proxy_profile_service.freeze).
+            validate_runner_configuration()
+            replacement = await db.scalar(select(Account).where(Account.email == new))
+            await check_runner_proxy(inherit_proxy_url(replacement.proxy if replacement else "", owner.proxy))
+        else:
+            validate_configuration(load_settings())
+            validate_signup_assets()
     except BrowserEnvironmentError as exc:
         raise RotationBlocked(exc.error_code, str(exc)) from None
     if not all((await load_cf_config(db)).values()):
@@ -460,6 +470,7 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
         "sub2api_source": sub2api_status.source_signature(sub_config),
         "replacement_email": new,
         "signup_flow": SIGNUP_FLOW,
+        "signup_runner": signup_runner,
         "observed_at": isoformat(utcnow()),
     }
 
@@ -769,6 +780,8 @@ class _Rotation:
             role=self.ctx["role"], seat_intent=self.ctx["seat_intent"],
             oauth_signup=True, use_phone_pool=False, signup_flow=self.ctx.get("signup_flow") or SIGNUP_FLOW,
             browser_session=self.session, keep_operation_identity=True,
+            # Frozen at preflight; tasks from before the runner existed stay on Playwright.
+            signup_runner=self.ctx.get("signup_runner") or "playwright",
         )
         await self.db.commit()  # Same as the standalone onboard command: keep what it recorded.
         await self.fresh()

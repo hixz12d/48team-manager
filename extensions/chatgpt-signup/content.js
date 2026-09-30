@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.5.9';
+  const VERSION = '0.6.0';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -10,6 +10,16 @@
   const runnerStarted = Date.now();
   // The project installs this transport in its own CDP isolated world only.
   const managed = globalThis.__team48ManagedSignup;
+  // Server-mode self-check only: the worker asks for these read-only browser signals on
+  // https://chatgpt.com/. Nothing is collected unless that message arrives.
+  if (!managed && globalThis.chrome?.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((message, sender, respond) => {
+      if (message?.type !== 'selfcheck-signals' || sender.id !== chrome.runtime.id || sender.tab ||
+          location.origin !== 'https://chatgpt.com') return false;
+      selfcheckSignals().then(data => respond({ok: true, data}), () => respond({ok: false}));
+      return true;
+    });
+  }
   const listeners = new AbortController();
   const onDocument = (type, handler, capture) => document.addEventListener(type, handler, {capture, signal: listeners.signal});
   class RetryStep extends Error {}
@@ -1488,4 +1498,56 @@
   }
   const startLoop = () => { running = loop(); };
   startLoop();
+  // Browser signals for the server self-check (see the listener at the top). Values only;
+  // no page text, cookies or storage.
+  async function selfcheckSignals() {
+    const safe = async read => { try { return await read(); } catch { return null; } };
+    const uaData = await safe(async () => {
+      const data = navigator.userAgentData;
+      if (!data) return null;
+      const high = await data.getHighEntropyValues(['platform', 'platformVersion', 'architecture', 'bitness']);
+      return {platform: high.platform ?? data.platform ?? null, platformVersion: high.platformVersion ?? null,
+        architecture: high.architecture ?? null, bitness: high.bitness ?? null, mobile: !!data.mobile,
+        brands: (data.brands || []).map(item => ({brand: String(item.brand), version: String(item.version)}))};
+    });
+    const webgl = await safe(() => {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (!gl) return null;
+      const info = gl.getExtension('WEBGL_debug_renderer_info');
+      return {vendor: gl.getParameter(gl.VENDOR) ?? null, renderer: gl.getParameter(gl.RENDERER) ?? null,
+        unmaskedVendor: info ? gl.getParameter(info.UNMASKED_VENDOR_WEBGL) ?? null : null,
+        unmaskedRenderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) ?? null : null};
+    });
+    const webrtcIps = await safe(() => new Promise(resolve => {
+      const ips = new Set();
+      const connection = new RTCPeerConnection({iceServers: [{urls: 'stun:stun.l.google.com:19302'}]});
+      const add = candidate => {
+        const text = candidate?.candidate || '';
+        const address = candidate?.address || text.split(' ')[4] || '';
+        if (address && !address.endsWith('.local') && /^[0-9a-f.:]+$/i.test(address)) ips.add(address);
+      };
+      connection.onicecandidate = event => { if (event.candidate) add(event.candidate); };
+      connection.createDataChannel('probe');
+      connection.createOffer().then(offer => connection.setLocalDescription(offer)).catch(() => {});
+      setTimeout(() => { try { connection.close(); } catch { /* closed */ } resolve([...ips].slice(0, 20)); }, 5000);
+    }));
+    return {
+      userAgent: navigator.userAgent ?? null,
+      platform: navigator.platform ?? null,
+      uaData,
+      timezone: await safe(() => Intl.DateTimeFormat().resolvedOptions().timeZone ?? null),
+      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      language: navigator.language ?? null,
+      languages: Array.isArray(navigator.languages) ? [...navigator.languages].slice(0, 10) : null,
+      screen: {width: screen.width, height: screen.height, availWidth: screen.availWidth, availHeight: screen.availHeight,
+        colorDepth: screen.colorDepth, devicePixelRatio: window.devicePixelRatio},
+      window: {outerWidth, outerHeight, innerWidth, innerHeight},
+      hardwareConcurrency: navigator.hardwareConcurrency ?? null,
+      deviceMemory: navigator.deviceMemory ?? null,
+      webdriver: typeof navigator.webdriver === 'boolean' ? navigator.webdriver : null,
+      webgl,
+      webrtcIps,
+    };
+  }
 })();

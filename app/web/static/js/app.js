@@ -121,6 +121,7 @@
     verification_failed: "核对失败",
     proxy_check: "代理检测",
     free_register: "空闲号注册",
+    runner_selfcheck: "浏览器环境自检",
     reregister: "重注册",
   };
   const roleLabels = {
@@ -298,6 +299,7 @@
       ["phone-reset", "重置手机号冷却"], ["phone", "读取手机号池"],
       ["hme", "核对 HME 邮箱"], ["proxy", "读取或检测代理"],
       ["register-oauth", "登记团队授权"], ["register-account", "登记账号"],
+      ["runner-selfcheck", "浏览器环境自检"],
     ];
     return actions.find(([prefix]) => String(key || "").startsWith(prefix))?.[1] || "提交请求";
   }
@@ -4138,6 +4140,273 @@ function hmeRow(item) {
     fillSettings(await fetchEntity("settings", "/api/settings"));
     void window.Team48Sub2ApiDefaults.refresh();
     void loadSub2ApiManagement();
+    void loadRunnerCard();
+  }
+
+  /* 浏览器环境卡片：只读展示运行器配置，发起自检并展示指纹信号、问题和截图。 */
+  const RUNNER_SIGNUP_LABELS = { playwright: "Playwright（旧方式）", extension: "Chromix + 插件（新方式）" };
+  const RUNNER_PLATFORM_LABELS = { linux: "Linux", windows: "Windows" };
+  const RUNNER_GPU_LABELS = { native: "原生（不改显卡）", preset: "预设显卡型号" };
+  let runnerWatching = "";
+
+  function runnerNode(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function fillRunnerConfig(config) {
+    const set = (key, value) => {
+      const node = document.querySelector(`[data-runner-config="${key}"]`);
+      if (node) node.textContent = value;
+    };
+    set("signup_runner", RUNNER_SIGNUP_LABELS[config.signup_runner] || config.signup_runner || "—");
+    set("executable", !config.executable_set ? "✕ 未配置 RUNNER_BROWSER_EXECUTABLE"
+      : config.executable_exists ? "✓ 文件存在" : "✕ 已配置，但文件不存在");
+    set("platform", RUNNER_PLATFORM_LABELS[config.platform] || config.platform || "—");
+    set("gpu_mode", RUNNER_GPU_LABELS[config.gpu_mode] || config.gpu_mode || "—");
+    const meta = document.getElementById("runner-config-meta");
+    if (meta) {
+      meta.textContent = config.ready ? "✓ 运行器可用" : `✕ 运行器不可用：${config.error || "配置不完整"}`;
+      meta.className = `service-meta ${config.ready ? "text-ok" : "text-warn"}`;
+    }
+    const start = document.getElementById("runner-selfcheck-start");
+    if (start) start.dataset.configReady = config.ready ? "1" : "";
+  }
+
+  function fillRunnerWorkspaces(items) {
+    const select = document.getElementById("runner-workspace");
+    if (!select) return;
+    const previous = select.value;
+    select.replaceChildren();
+    items.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = String(item.id);
+      option.textContent = item.proxy_set ? `${item.name} · #${item.id}` : `${item.name} · #${item.id}（母号未配置代理）`;
+      option.disabled = !item.proxy_set;
+      select.append(option);
+    });
+    if (!items.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "没有启用的团队";
+      select.append(option);
+    }
+    const usable = items.filter((item) => item.proxy_set).map((item) => String(item.id));
+    select.value = usable.includes(previous) ? previous : (usable[0] || "");
+  }
+
+  function runnerUaPlatform(ua) {
+    const text = String(ua || "");
+    if (/Windows NT/.test(text)) return "Windows";
+    if (/Macintosh|Mac OS/.test(text)) return "macOS";
+    if (/Android/.test(text)) return "Android";
+    if (/Linux|X11/.test(text)) return "Linux";
+    return "未知";
+  }
+
+  function runnerOffsetText(minutes) {
+    if (typeof minutes !== "number") return "";
+    const sign = minutes >= 0 ? "+" : "-";
+    const abs = Math.abs(minutes);
+    return `UTC${sign}${Math.floor(abs / 60)}${abs % 60 ? `:${String(abs % 60).padStart(2, "0")}` : ""}`;
+  }
+
+  function runnerSignalRows(result) {
+    const exit = result.exit || null;
+    const signals = result.signals || null;
+    const rows = [];
+    if (!exit) rows.push(["出口 IP", "✕ 浏览器内未查到"]);
+    else if (exit.error) rows.push(["出口 IP", `✕ 未查到（${exit.error}）`]);
+    else {
+      rows.push(["出口 IP", exit.ip || "未知"]);
+      rows.push(["出口国家 / 地区", [exit.country, exit.region, exit.city].filter(Boolean).join(" · ") || "未知"]);
+      rows.push(["出口 IP 时区", exit.timezone || "未知"]);
+    }
+    if (!signals) {
+      rows.push(["浏览器信号", "✕ 没有收到（插件未能在 chatgpt.com 采集）"]);
+      return rows;
+    }
+    rows.push(["页面时区", [signals.timezone || "未知", runnerOffsetText(signals.utcOffsetMinutes)].filter(Boolean).join(" · ")]);
+    const uaData = signals.uaData || {};
+    rows.push(["UA 平台", `UA：${runnerUaPlatform(signals.userAgent)} · navigator.platform：${signals.platform || "未知"} · UA-CH：${[uaData.platform, uaData.platformVersion].filter(Boolean).join(" ") || "未知"}`]);
+    const webgl = signals.webgl || {};
+    rows.push(["WebGL 渲染器", webgl.unmaskedRenderer || webgl.renderer || "未取到"]);
+    rows.push(["WebGL 厂商", webgl.unmaskedVendor || webgl.vendor || "未取到"]);
+    const ips = Array.isArray(signals.webrtcIps) ? signals.webrtcIps : [];
+    rows.push(["WebRTC 候选", ips.length
+      ? ips.map((ip) => (exit?.ip && ip === exit.ip ? `${ip}（出口 IP）` : ip)).join("、")
+      : "无候选 IP（未暴露）"]);
+    rows.push(["webdriver", signals.webdriver === true ? "✕ true（会被识别为自动化）"
+      : signals.webdriver === false ? "✓ false" : "未知"]);
+    rows.push(["语言", Array.isArray(signals.languages) ? signals.languages.join(", ") : (signals.language || "未知")]);
+    const screen = signals.screen || {}, win = signals.window || {};
+    rows.push(["屏幕 / 窗口", `${screen.width ?? "?"}×${screen.height ?? "?"} · 窗口 ${win.outerWidth ?? "?"}×${win.outerHeight ?? "?"}`]);
+    rows.push(["CPU / 内存", `${signals.hardwareConcurrency ?? "?"} 核 · ${signals.deviceMemory ?? "?"} GB`]);
+    rows.push(["User-Agent", signals.userAgent || "未知"]);
+    return rows;
+  }
+
+  function renderRunnerResult(detail) {
+    const host = document.getElementById("runner-result");
+    if (!host) return;
+    const result = detail?.result && typeof detail.result === "object" ? detail.result : null;
+    host.replaceChildren();
+    host.hidden = !detail;
+    if (!detail) return;
+    const when = detail.finished || detail.finished_at;
+    host.append(runnerNode("h3", "", `最近一次自检${when ? ` · ${relativeTime(when)}` : ""}${result?.workspace_name ? ` · 代理：${result.workspace_name}` : ""}`));
+    if (!result || !result.completed) {
+      const verdict = runnerNode("p", "runner-verdict is-warn");
+      verdict.append(runnerNode("span", "runner-icon", "!"), runnerNode("span", "", `自检未完成：${result?.error || detail.error || "没有结果"}`));
+      verdict.firstChild.setAttribute("aria-hidden", "true");
+      host.append(verdict);
+      if (!result) return;
+    }
+    const findings = Array.isArray(result.findings) ? result.findings : [];
+    const errors = findings.filter((item) => item.level === "error");
+    if (result.completed) {
+      const tone = errors.length ? "is-error" : findings.length ? "is-warn" : "is-ok";
+      const text = errors.length ? `发现 ${errors.length} 个问题${findings.length > errors.length ? `、${findings.length - errors.length} 个提醒` : ""}，建议处理后再用于轮转`
+        : findings.length ? `没有严重问题，有 ${findings.length} 个提醒` : "通过：未发现问题";
+      const verdict = runnerNode("p", `runner-verdict ${tone}`);
+      const icon = runnerNode("span", "runner-icon", errors.length ? "✕" : findings.length ? "!" : "✓");
+      icon.setAttribute("aria-hidden", "true");
+      verdict.append(icon, runnerNode("span", "", text));
+      host.append(verdict);
+    }
+    if (result.summary) host.append(runnerNode("p", "hint", `档案：${result.summary}`));
+    if (findings.length) {
+      const list = runnerNode("ul", "runner-findings");
+      list.setAttribute("aria-label", "发现的问题");
+      findings.forEach((item) => {
+        const error = item.level === "error";
+        const li = runnerNode("li", error ? "is-error" : "is-warn");
+        const icon = runnerNode("span", "runner-icon", error ? "✕" : "!");
+        icon.setAttribute("aria-hidden", "true");
+        li.append(icon, runnerNode("strong", "", error ? "问题" : "提醒"), runnerNode("span", "", item.message || item.code));
+        list.append(li);
+      });
+      host.append(list);
+    }
+    const dl = runnerNode("dl", "kv runner-signals");
+    runnerSignalRows(result).forEach(([label, value]) => {
+      dl.append(runnerNode("dt", "", label), runnerNode("dd", "", value));
+    });
+    host.append(dl);
+    const shots = Array.isArray(result.screenshots) ? result.screenshots : [];
+    if (shots.length) {
+      const grid = runnerNode("div", "runner-shots");
+      shots.forEach((shot) => {
+        const figure = runnerNode("figure");
+        const link = runnerNode("a");
+        link.href = shot.url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.title = `打开 ${shot.label} 大图`;
+        const img = runnerNode("img");
+        img.src = shot.url;
+        img.alt = `${shot.label} 检测页截图`;
+        img.loading = "lazy";
+        link.append(img);
+        figure.append(link, runnerNode("figcaption", "", `${shot.label} · 点开看大图`));
+        grid.append(figure);
+      });
+      host.append(grid);
+    } else if (result.completed) {
+      host.append(runnerNode("p", "hint", "没有截图（插件截图失败，详见问题列表）。"));
+    }
+  }
+
+  async function watchRunnerSelfcheck(operationId) {
+    const progress = document.getElementById("runner-selfcheck-progress");
+    const start = document.getElementById("runner-selfcheck-start");
+    const status = document.getElementById("runner-selfcheck-status");
+    if (!operationId || runnerWatching === operationId) return;
+    runnerWatching = operationId;
+    if (start) start.disabled = true;
+    if (status) status.textContent = "自检进行中，约 2~4 分钟；可离开本页，稍后回来查看结果。";
+    if (progress && window.Team48TaskProgress) {
+      progress.hidden = false;
+      window.Team48TaskProgress.mount(progress, { id: operationId, density: "standard" });
+    }
+    try {
+      const detail = await window.Team48Runtime.waitFor(operationId);
+      if (runnerWatching !== operationId) return;
+      renderRunnerResult(detail);
+      const result = detail?.result || {};
+      if (status) status.textContent = result.message || "自检已结束。";
+      toast(result.message || "自检已结束", result.completed ? (result.passed ? "success" : "warning") : "error",
+        { label: "查看详情", onClick: () => openOperationById(operationId) });
+    } finally {
+      if (runnerWatching === operationId) {
+        runnerWatching = "";
+        if (start) start.disabled = !start.dataset.configReady;
+        if (progress) { progress.hidden = true; progress.replaceChildren(); }
+      }
+    }
+  }
+
+  async function startRunnerSelfcheck(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const status = document.getElementById("runner-selfcheck-status");
+    const start = document.getElementById("runner-selfcheck-start");
+    const workspaceId = Number(form.workspace_id.value) || null;
+    const body = { platform: form.platform.value || null, workspace_id: workspaceId };
+    if (start) start.disabled = true;
+    if (status) status.textContent = "正在启动自检…";
+    try {
+      const result = await fetchEntity("runner-selfcheck", "/api/runner/selfcheck", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (result?.operation_id) {
+        // Seed the shared runtime store so the task center and the card show progress at once.
+        window.Team48Runtime?.put({ id: result.operation_id, kind: "runner_selfcheck", operation: "runner_selfcheck",
+          operation_label: "浏览器环境自检", state: "running", workspace_id: workspaceId,
+          started_at: new Date().toISOString(), stage_label: "后台任务已开始" });
+        void window.Team48Runtime?.refresh();
+        void watchRunnerSelfcheck(result.operation_id);
+      } else if (start) start.disabled = !start.dataset.configReady;
+    } catch (error) {
+      if (start) start.disabled = !start.dataset.configReady;
+      const message = extractErrorMessage(error) || friendlyError(error) || "自检没有启动";
+      if (status) status.textContent = `自检没有启动：${message}`;
+      toast(`自检没有启动：${message}`, "error");
+    }
+  }
+
+  async function loadRunnerCard() {
+    const form = document.getElementById("runner-selfcheck-form");
+    if (!form) return;
+    if (!form.dataset.bound) {
+      form.dataset.bound = "1";
+      form.addEventListener("submit", startRunnerSelfcheck);
+    }
+    let payload;
+    try {
+      payload = await fetchEntity("runner-selfcheck-view", "/api/runner/selfcheck");
+    } catch (error) {
+      if (isAbortError(error)) return;
+      const meta = document.getElementById("runner-config-meta");
+      if (meta) meta.textContent = `读取失败：${friendlyError(error)}`;
+      return;
+    }
+    fillRunnerConfig(payload.config || {});
+    fillRunnerWorkspaces(payload.workspaces || []);
+    const start = document.getElementById("runner-selfcheck-start");
+    const latest = payload.latest;
+    const running = latest && ACTIVE_OPERATION_STATES.has(String(latest.state || "").toLowerCase());
+    if (start && !runnerWatching) start.disabled = !payload.config?.ready;
+    if (running) {
+      window.Team48Runtime?.put(latest);
+      void watchRunnerSelfcheck(latest.id);
+    } else if (!runnerWatching) {
+      renderRunnerResult(latest);
+    }
   }
 
   const pageBootstraps = {

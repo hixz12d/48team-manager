@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from app.application.codex_export import CodexTransferError, export_document
 from app.web.schemas.accounts import CodexTransferRequest, CodexPushRequest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,7 +47,7 @@ from app.web.schemas.resources import (
     WorkspacePurgeChildRequest,
     WorkspaceRemoveChildRequest,
 )
-from app.web.schemas.settings import ConnectionProbeRequest, SettingsPatch
+from app.web.schemas.settings import ConnectionProbeRequest, RunnerSelfcheckRequest, SettingsPatch
 from app.web.schemas.workspaces import CompleteAccountOAuthRequest, CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
 from app.web.schemas.workspaces import WorkspaceExpiryPatch
 from app.application.workspace_expiry import update_workspace_expiry
@@ -1212,5 +1212,32 @@ def build_api_router(get_db) -> APIRouter:
             "hme": hme,
             "mail": mail,
         }
+
+    @router.get("/runner/selfcheck")
+    async def runner_selfcheck_view(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        return JSONResponse(await console_actions.runner_selfcheck_overview(db), headers={"Cache-Control": "no-store"})
+
+    @router.post("/runner/selfcheck", status_code=status.HTTP_202_ACCEPTED)
+    async def runner_selfcheck_start(
+        payload: RunnerSelfcheckRequest,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await console_actions.start_runner_selfcheck(
+            db, platform=payload.platform, workspace_id=payload.workspace_id, background=True,
+        )
+        if not result.get("ok") and not result.get("accepted"):
+            code = status.HTTP_404_NOT_FOUND if result.get("error_code") == "not_found" else status.HTTP_409_CONFLICT
+            raise HTTPException(status_code=code, detail=_error_detail(result, "自检没有启动"))
+        return _accepted(result)
+
+    @router.get("/runner/selfcheck/{public_id}/screenshots/{name}")
+    async def runner_selfcheck_screenshot(public_id: str, name: str, _: dict = Depends(require_admin)):
+        path = console_actions.selfcheck_screenshot_path(public_id, name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(path, media_type="image/png", headers={
+            "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+        })
 
     return router

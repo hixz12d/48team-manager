@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     browser_timezone: str = ""
     openai_ca_bundle: str = ""
 
+    # Rotation signup/OAuth runner: playwright (legacy path) or extension (Chromix
+    # subprocess + the real signup extension). Only manual/automatic rotation use it.
+    rotation_signup_runner: Literal["playwright", "extension"] = "playwright"
+    runner_browser_executable: str = ""
+    # Only affect newly created runner profiles; existing profiles keep their identity.
+    runner_fingerprint_platform: Literal["linux", "windows"] = "linux"
+    runner_gpu_mode: Literal["native", "preset"] = "native"
+    runner_extension_dir: str = "extensions/chatgpt-signup"
+    runner_local_base_url: str = "http://127.0.0.1:8008"
+    runner_timeout_seconds: int = 1500
+
     identity_gmail_policy: str = "owner_only"
     official_quota_probe_enabled: bool = False
     auto_reauth_enabled: bool = False
@@ -66,6 +77,11 @@ class Settings(BaseSettings):
     @property
     def effective_encryption_key(self) -> str:
         return self.encryption_key or self.secret_key
+
+    @property
+    def runner_extension_path(self) -> Path:
+        path = Path(self.runner_extension_dir)
+        return path if path.is_absolute() else BASE_DIR / path
 
 
 def load_settings() -> Settings:

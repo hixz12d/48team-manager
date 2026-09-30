@@ -497,6 +497,39 @@
             </div>
           </div>
         </form>
+        <section class="settings-runner" aria-labelledby="runner-card-title">
+          <article class="panel runner-card" id="runner-card">
+            <div class="panel-header">
+              <div>
+                <span class="panel-title" id="runner-card-title">浏览器环境</span>
+                <p class="service-meta muted" id="runner-config-meta">正在读取配置…</p>
+              </div>
+            </div>
+            <div class="panel-body stack">
+              <dl class="kv runner-config" id="runner-config">
+                <dt>轮转注册方式</dt><dd data-runner-config="signup_runner">—</dd>
+                <dt>Chromix 路径</dt><dd data-runner-config="executable">—</dd>
+                <dt>伪装平台</dt><dd data-runner-config="platform">—</dd>
+                <dt>显卡模式</dt><dd data-runner-config="gpu_mode">—</dd>
+              </dl>
+              <p class="hint">以上是只读展示，修改需改服务器 <code>.env</code> 后重启。自检会启动与轮转相同的 Chromix 浏览器和插件，打开指纹检测页并截图。</p>
+              <form class="runner-selfcheck-form" id="runner-selfcheck-form">
+                <label>出口代理（取该团队母号代理）<select name="workspace_id" id="runner-workspace"><option value="">正在读取团队…</option></select></label>
+                <label>伪装平台<select name="platform">
+                  <option value="">跟随配置</option>
+                  <option value="linux">Linux</option>
+                  <option value="windows">Windows</option>
+                </select></label>
+                <div class="settings-probe-actions">
+                  <button class="button primary" type="submit" id="runner-selfcheck-start">开始自检（不会注册或改动官方团队）</button>
+                </div>
+              </form>
+              <p class="hint" id="runner-selfcheck-status" role="status">约 2~4 分钟；进行中可在任务中心查看进度。</p>
+              <div id="runner-selfcheck-progress" hidden></div>
+              <div class="runner-result" id="runner-result" hidden></div>
+            </div>
+          </article>
+        </section>
         <form id="password-form" class="settings-security">
           <article class="panel">
             <div class="panel-header"><span class="panel-title">后台账号</span></div>

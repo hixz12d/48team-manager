@@ -25,6 +25,7 @@ from app.web.routes.auth import build_auth_router
 from app.web.routes.api import build_api_router
 from app.web.routes.extension import build_extension_router
 from app.web.routes.pages import build_pages_router
+from app.web.routes.runner import build_runner_router
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 STATIC_DIR = WEB_DIR / "static"
@@ -76,6 +77,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from app.application.operations import recover_stale_operations
 
             await recover_stale_operations(session)
+            from app.application.console_actions import recover_runner_selfchecks
+
+            # Self-checks live in this process only; after a restart none of them can still be running.
+            await recover_runner_selfchecks(session)
         app.state.engine = engine
         app.state.session_factory = session_factory
         app.state.settings = settings
@@ -126,6 +131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(build_auth_router(get_db, settings))
     app.include_router(build_api_router(get_db))
     app.include_router(build_extension_router(get_db, settings))
+    # Loopback API for the Chromix extension runner; authenticated by the per-run token only.
+    app.include_router(build_runner_router(get_db))
 
     @app.get("/health")
     async def health():

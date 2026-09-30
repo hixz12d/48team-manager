@@ -75,3 +75,5 @@ DATABASE_MIGRATION.md
 data/debug/
 data/probe_*.py
 data/chrome-profiles/
+.impeccable/hook.cache.json
+.impeccable/live/

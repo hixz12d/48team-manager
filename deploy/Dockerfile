@@ -35,13 +35,17 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
     && python -m playwright install --with-deps chromium
 
-RUN apt-get update && apt-get install -y --no-install-recommends xvfb \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb \
+        fonts-dejavu-core \
+        fonts-noto-color-emoji \
+        fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY app /app/app
-# Only the public shared runner; never embed the personal extension mailbox config.
-COPY extensions/chatgpt-signup/content.js extensions/chatgpt-signup/manifest.json /app/extensions/chatgpt-signup/
+# The whole extension: the runner copies it per run. .dockerignore keeps out the personal private-config.mjs.
+COPY extensions/chatgpt-signup /app/extensions/chatgpt-signup
 
 EXPOSE 8008
 
-CMD ["sh", "-c", "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; mkdir -p /tmp/.X11-unix; Xvfb :99 -screen 0 1280x900x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 & export DISPLAY=${DISPLAY:-:99}; exec uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8008}"]
+CMD ["sh", "-c", "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; mkdir -p /tmp/.X11-unix; Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset >/tmp/xvfb.log 2>&1 & export DISPLAY=${DISPLAY:-:99}; exec uvicorn app.main:app --host 0.0.0.0 --port ${APP_PORT:-8008}"]

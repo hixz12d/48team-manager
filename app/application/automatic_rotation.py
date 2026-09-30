@@ -17,6 +17,7 @@ MAX_PUBLISH_ATTEMPTS = 5
 
 async def preflight(service, db, workspace, child):
     """Check replacement dependencies and preserve the live role/seat before removing."""
+    from app.application.extension_runner import check_runner_proxy, runner_enabled, validate_runner_configuration
     from app.application.reauth import load_cf_config
     from app.application.resources.hme import load_config
     from app.application.sub2api_defaults import load_defaults, validate_defaults
@@ -24,13 +25,20 @@ async def preflight(service, db, workspace, child):
     from app.integrations.openai.browser.environment import validate_configuration
     from app.integrations.openai.member_adapter import normalize_official_role
 
-    validate_configuration(load_settings())
-    if getattr(load_settings(), "browser_signup_flow", "legacy") == "extension":
-        from app.integrations.openai.browser.signup import validate_signup_assets
-        validate_signup_assets()
+    extension_runner = runner_enabled()
+    if extension_runner:
+        validate_runner_configuration()
+    else:
+        validate_configuration(load_settings())
+        if getattr(load_settings(), "browser_signup_flow", "legacy") == "extension":
+            from app.integrations.openai.browser.signup import validate_signup_assets
+            validate_signup_assets()
     owner = await db.get(Account, workspace.owner_account_id)
     if owner is None or not owner.proxy or not owner.access_token_encrypted:
         raise ValueError("母号凭据或代理未就绪")
+    if extension_runner:
+        # An authenticated HTTP proxy cannot drive the Chromix subprocess; stop before removing anyone.
+        await check_runner_proxy(owner.proxy)
     if not all((await load_cf_config(db)).values()):
         raise ValueError("验证码邮箱未配置")
     if not (await load_config(db)).configured:
@@ -108,8 +116,14 @@ async def publish_replacement(db, invite, workspace_id):
 
 
 async def refill_and_publish(service, db, *, seat_intent="workspace_default", **kwargs):
+    from app.application.extension_runner import runner_enabled
+
+    # The runner stops on phone checks for a person; it never uses the number pool.
+    extension_runner = runner_enabled()
     invite = await service.onboard.refill(
-        db, **kwargs, seat_intent=seat_intent, oauth_signup=True, use_phone_pool=True,
+        db, **kwargs, seat_intent=seat_intent, oauth_signup=True,
+        use_phone_pool=not extension_runner,
+        signup_runner="extension" if extension_runner else "playwright",
     )
     if not invite.get("success"):
         return invite

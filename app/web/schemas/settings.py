@@ -68,3 +68,10 @@ class SettingsPatch(BaseModel):
     automation: AutomationSettings | None = None
     resources: ResourceSettings | None = None
     password: PasswordSettings | None = None
+
+
+class RunnerSelfcheckRequest(BaseModel):
+    """Browser environment self-check: ``platform`` null follows RUNNER_FINGERPRINT_PLATFORM."""
+
+    platform: Literal["linux", "windows"] | None = None
+    workspace_id: PositiveInt | None = None

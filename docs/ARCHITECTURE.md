@@ -16,8 +16,8 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `app/application/resources/` | HME 领号（`hme.py`）、手机号池、代理 |
 | `app/integrations/` | 外部客户端：`openai`（官方 API + `browser/` 浏览器自动化）、`sub2api`、`codex`、`mail`、`sms`、`proxy` |
 | `app/persistence/` | 表模型、仓储、`migrations/bootstrap.py`（启动时幂等建表 / 补列 / 补索引） |
-| `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口）、模板、静态资源 |
-| `extensions/chatgpt-signup/` | 自用注册插件；`content.js` 也被服务端托管注册复用 |
+| `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口）、模板、静态资源 |
+| `extensions/chatgpt-signup/` | 自用注册插件；`content.js` 也被服务端托管注册复用；`runner.mjs` 是服务器模式 |
 | `scripts/` | 本机工具：插件打包、单席位补位、浏览器冒烟、HubStudio 观察 |
 | `tests/` | Python / Node / Playwright 回归；`preview_app.py` 本地示例数据预览 |
 | `deploy/` | Dockerfile、compose、Nginx 配置 |
@@ -30,6 +30,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
                    │                 └──> persistence（SQLite）
                    └── 长命令返回 202 + operation_id，jobs/commands 在进程内执行，步骤写 operations / operation_steps
 插件 ──(/api/ext，Bearer 令牌)──> member_handoff ──> 同步 / 接入 / 授权 / 推送 / 计数
+服务器 Chromix 里的插件 ──(/api/ext/runner，本次运行令牌)──> extension_runner ──> 轮转 / 自检
 ```
 
 - 配置优先级：数据库设置（`system_settings`）> 环境变量 > 默认值。
@@ -60,6 +61,17 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 ### 自动轮转（`application/automatic_rotation.py`、`rotate.py`）
 
 设置键 `auto_rotate_enabled`、`auto_rotate_scope`（selected/all）、`auto_rotate_workspace_ids`、`auto_rotate_daily_limit`；推送重试上限 `MAX_PUBLISH_ATTEMPTS=5`。extension 模式下会先 `validate_signup_assets()`。
+
+### 扩展运行器（`application/extension_runner.py`）
+
+`ROTATION_SIGNUP_RUNNER=extension` 时，手动 / 自动轮转的"注册 + OAuth"改由服务器上的 Chromix 子进程加载真插件完成（不接 Playwright / CDP），其余阶段不变。协议全文见 [contracts/extension-runner.md](contracts/extension-runner.md)。
+
+- `extension_runner.py`：运行登记、`signup_and_authorize`（轮转用，成功时在同一会话写凭据、`auth_state`、入组关系并提交）、`run_selfcheck`（自检）、错误码常量。不自己拿浏览器槽，调用方先 `InvitedBrowserSession().try_reserve()`。
+- `integrations/openai/browser/runner_process.py`：生成运行目录 `data/runner-runs/<run_id>/`（复制插件、改写 manifest、生成 `private-config.mjs`，结束即删）、启动 / 按进程组结束 Chromix、Xvfb 1920×1080、带认证 SOCKS5 走本地桥；启动前拒绝 `--remote-debugging*`、`--headless` 等参数。
+- `runner_profile.py`：档案 `data/chrome-profiles/runner/<email>/`，首次建档经母号代理查出口（`integrations/proxy/geo.py`）固定时区，之后不改；`chromix_args` 生成指纹参数。
+- `web/routes/runner.py`：`/api/ext/runner/{run_id}/job|event|callback|probe`，只认本次运行令牌，错误一律 404，不接受管理员会话。
+- 接入点：`onboard.py` 的 `_extension_signup`（`signup_runner` 参数透传）；手动轮转在踢人前做 `validate_runner_configuration()` + `check_runner_proxy`，任务上下文记 `signup_runner`。
+- 自检：任务类型 `runner_selfcheck`（浏览器类，占全局浏览器槽，不占团队锁），`console_actions.start_runner_selfcheck`；接口 `GET/POST /api/runner/selfcheck`、`GET /api/runner/selfcheck/{id}/screenshots/{name}`；截图 `data/selfcheck/`（保留最近 10 次）；启动时 `recover_runner_selfchecks` 把中断的自检标失败。步骤中文在 `presenters.py`。
 
 ### 团队收入账本（`application/revenue_ledger.py`）
 
@@ -122,7 +134,7 @@ python -m uvicorn app.main:app --reload --port 8008
 ```bash
 .venv/Scripts/python.exe -m compileall -q app scripts
 .venv/Scripts/python.exe -c "import app.main"
-for f in app/web/static/js/*.js; do node --check "$f"; done
+for f in app/web/static/js/*.js extensions/chatgpt-signup/*.js extensions/chatgpt-signup/*.mjs; do node --check "$f"; done
 ```
 
 ## 配置项
@@ -141,6 +153,10 @@ for f in app/web/static/js/*.js; do node --check "$f"; done
 | `BROWSER_ENGINE` | `chromium`（默认）/ `chromix`（需同时设 `BROWSER_EXECUTABLE`） |
 | `BROWSER_SIGNUP_FLOW` | `legacy`（默认）/ `extension` |
 | `BROWSER_LOCALE` / `BROWSER_TIMEZONE` | 新建档案的语言 / 时区 |
+| `ROTATION_SIGNUP_RUNNER` | 轮转注册方式：`playwright`（默认）/ `extension`（扩展运行器） |
+| `RUNNER_BROWSER_EXECUTABLE` | Chromix 153 启动脚本 `chromix`（不是 `chrome`），extension 模式必填 |
+| `RUNNER_FINGERPRINT_PLATFORM` / `RUNNER_GPU_MODE` | 新建运行器档案的伪装平台 `linux`/`windows`、显卡 `native`/`preset`；已有档案不变 |
+| `RUNNER_EXTENSION_DIR` / `RUNNER_LOCAL_BASE_URL` / `RUNNER_TIMEOUT_SECONDS` | 插件源目录、插件回连地址（回环）、单次上限（默认 1500 秒） |
 | `OPENAI_CA_BUNDLE` | OpenAI 请求自定义 CA |
 | `IDENTITY_GMAIL_POLICY` | `owner_only`（默认）/ `warn` / `unrestricted` |
 | `OFFICIAL_QUOTA_PROBE_ENABLED` / `AUTO_REAUTH_ENABLED` / `AUTO_ROTATE_ENABLED` / `FORCE_REFILL` | 自动化开关，默认全关，数据库设置优先 |

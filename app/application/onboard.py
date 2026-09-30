@@ -215,19 +215,28 @@ class OnboardService:
         signup_flow: str | None = None,
         browser_session=None,
         keep_operation_identity: bool = False,
+        signup_runner: str = "playwright",
     ) -> dict[str, Any]:
-        """signup_flow pins the engine for this run; browser_session is caller-owned (not closed here)."""
+        """signup_flow pins the engine for this run; browser_session is caller-owned (not closed here).
+
+        signup_runner="extension" hands signup + OAuth to the extension runner (rotation only).
+        """
         seat_intent = parse_invite_seat_intent(seat_intent).value
         from app.core.config import load_settings
         from app.integrations.openai.browser.environment import BrowserEnvironmentError, validate_configuration
 
         try:
-            browser_settings = load_settings()
-            validate_configuration(browser_settings, browser_executable)
-            if (signup_flow or browser_settings.browser_signup_flow) == "extension":
-                from app.integrations.openai.browser.signup import validate_signup_assets
+            if signup_runner == "extension":
+                from app.application.extension_runner import validate_runner_configuration
 
-                validate_signup_assets()
+                validate_runner_configuration()
+            else:
+                browser_settings = load_settings()
+                validate_configuration(browser_settings, browser_executable)
+                if (signup_flow or browser_settings.browser_signup_flow) == "extension":
+                    from app.integrations.openai.browser.signup import validate_signup_assets
+
+                    validate_signup_assets()
         except BrowserEnvironmentError as exc:
             return {"success": False, "error_code": exc.error_code, "error": str(exc)}
         claimed = None
@@ -285,6 +294,7 @@ class OnboardService:
                 browser_session=browser_session,
                 signup_flow=signup_flow,
                 keep_operation_identity=keep_operation_identity,
+                signup_runner=signup_runner,
             )
             label = ""
             if claimed and result.get("success"):
@@ -292,13 +302,18 @@ class OnboardService:
                 cfg = await hme_service.load_config(db)
                 label = hme_service.resolve_workspace_tag(workspace, cfg.team_tag_map)
             await hme_service.finalize_claim(db, claimed, result, label)
-            if oauth_signup and result.get("success"):
+            if oauth_signup and result.get("success") and signup_runner != "extension":
                 from app.application.invitation_flow import authorize_joined
 
                 result = await authorize_joined(
                     self, db, result, workspace_id=workspace_id, phone_line=phone_line,
                     role=role, seat_intent=seat_intent, job_id=job_id, executable_path=browser_executable,
                     browser_session=browser_session, use_phone_pool=use_phone_pool,
+                )
+            elif oauth_signup and result.get("success") and not result.get("authorized"):
+                # Runner mode, account already joined before this run: never authorize with Playwright.
+                result = await self._runner_joined_result(
+                    db, result, workspace_id=workspace_id, role=role, seat_intent=seat_intent,
                 )
             return result
         except hme_service.HmeError as exc:
@@ -337,6 +352,7 @@ class OnboardService:
         browser_session=None,
         signup_flow: str | None = None,
         keep_operation_identity: bool = False,
+        signup_runner: str = "playwright",
     ) -> dict[str, Any]:
         requested_seat = parse_invite_seat_intent(seat_intent)
         busy = await operation_store.active_for_workspace(
@@ -553,6 +569,13 @@ class OnboardService:
                         "error": "官方邀请已发出，但多次读取仍未确认邀请、角色或席位，未开始注册",
                         "child": serialize_child(child)}
 
+        if oauth_signup and signup_runner == "extension":
+            return await self._extension_signup(
+                db, child=child, workspace=workspace, role=requested_role,
+                seat_intent=requested_seat.value, job_id=job_id, claimed=claimed,
+                browser_session=browser_session,
+            )
+
         has_session = bool(decrypt_secret(child.access_token_encrypted) or decrypt_secret(child.session_token_encrypted))
         should_register = not (reuse_existing and has_session and decrypt_secret(child.password_encrypted))
         pickup_url = parsed.get("pickup_url") or ""
@@ -745,6 +768,112 @@ class OnboardService:
             "pushed": False,
         }
 
+    async def _extension_signup(
+        self,
+        db: AsyncSession,
+        *,
+        child: Account,
+        workspace: Workspace,
+        role: str,
+        seat_intent: str,
+        job_id: str | None,
+        claimed=None,
+        browser_session=None,
+    ) -> dict[str, Any]:
+        """Signup + OAuth through the extension runner; the invitation is already confirmed."""
+        from app.application.extension_runner import check_runner_proxy, signup_and_authorize
+        from app.integrations.openai.browser.environment import BrowserEnvironmentError
+
+        # The invitation is already out, so these stops keep the HME alias occupied (like invite_unverified).
+        email = child.email
+        try:
+            proxy_url = self._child_proxy(child, workspace)
+            await check_runner_proxy(proxy_url)
+        except BrowserEnvironmentError as exc:
+            await self._progress(db, job_id=job_id, stage="browser_failed", message=str(exc), error=str(exc), error_code=exc.error_code)
+            return {"success": False, "error_code": exc.error_code, "error": str(exc), "status": "invited",
+                    "child": serialize_child(child)}
+        except ValueError as exc:
+            await self._progress(db, job_id=job_id, stage="browser_failed", message=str(exc), error=str(exc), error_code="proxy_missing")
+            return {"success": False, "error_code": "proxy_missing", "error": str(exc), "status": "invited",
+                    "child": serialize_child(child)}
+        if browser_session is not None and not await browser_session.try_reserve():
+            return {"success": False, "error_code": "browser_busy", "status": "invited",
+                    "error": "浏览器正被其他任务使用，未开始注册，请稍后使用同一邮箱继续",
+                    "child": serialize_child(child)}
+
+        if claimed is not None:
+            await hme_service.mark_signup_started(db, claimed, stage="browser")
+        await self._progress(db, job_id=job_id, stage="browser", message="正在启动扩展运行器注册并授权")
+
+        async def on_stage(stage: str, message: str) -> None:
+            from app.application.invitation_flow import browser_progress
+            await hme_service.mark_signup_started(db, claimed, stage=stage)
+            await browser_progress(db, job_id, stage, message)
+
+        await db.commit()
+        try:
+            outcome = await signup_and_authorize(
+                db, account=child, workspace=workspace, role=role, seat_intent=seat_intent,
+                proxy_url=proxy_url, job_id=job_id or "", on_stage=on_stage,
+            )
+        except BrowserEnvironmentError as exc:
+            # Profile / geo errors surface before the browser starts.
+            await self._progress(db, job_id=job_id, stage="browser_failed", message=str(exc), error=str(exc), error_code=exc.error_code)
+            return {"success": False, "joined": False, "authorized": False, "partial": False,
+                    "error_code": exc.error_code, "error": str(exc), "status": "browser_failed",
+                    "child": serialize_child(child)}
+        # Same session: ``child`` is the account the runner updated.
+        if outcome.ok:
+            child.operational_state = "active"
+            if child.local_purpose != LOCAL_PURPOSE_MOTHER:
+                child.local_purpose = LOCAL_PURPOSE_CHILD
+            await db.flush()
+            return {
+                "success": True,
+                "status": "active",
+                "joined": True,
+                "authorized": True,
+                "pushed": False,
+                "child": serialize_child(child),
+                "message": f"{email} 已入组并完成授权，未推送 Sub2API",
+            }
+        if outcome.joined:
+            child.auth_state = "oauth_required"
+        await db.commit()
+        error = outcome.error or "扩展运行器未完成注册或授权，请使用同一邮箱继续"
+        code = outcome.error_code or ("oauth_failed" if outcome.joined else "runner_exited")
+        await self._progress(db, job_id=job_id, stage="browser_failed", message=error, error=error, error_code=code)
+        return {
+            "success": False,
+            "joined": outcome.joined,
+            "authorized": False,
+            "partial": outcome.joined,
+            "status": "partial" if outcome.joined else "browser_failed",
+            "error_code": code,
+            "error": error,
+            "child": serialize_child(child),
+        }
+
+    async def _runner_joined_result(
+        self, db: AsyncSession, result: dict[str, Any], *, workspace_id: int, role: str, seat_intent: str,
+    ) -> dict[str, Any]:
+        """Runner mode never re-registers or Playwright-authorizes an account that is already joined."""
+        child = await db.get(Account, (result.get("child") or {}).get("id"))
+        base = {**result, "joined": True, "pushed": False}
+        if child is not None and child.auth_state == "healthy" and decrypt_secret(child.refresh_token_encrypted):
+            workspace = await self._load_workspace(db, workspace_id)
+            try:
+                member = await self._confirm_joined(db, workspace, child.email) if workspace else None
+            except Exception:  # noqa: BLE001
+                member = None
+            if (member and not existing_invite_seat_error(parse_invite_seat_intent(seat_intent), member.get("seat_type"))
+                    and official_roles_equivalent(member.get("role"), parse_invite_role(role))):
+                return {**base, "authorized": True}
+        return {**base, "success": False, "partial": True, "status": "partial", "authorized": False,
+                "error_code": "runner_oauth_required",
+                "error": "新号已在团队中但尚未授权；扩展运行器不会对已入组账号重新注册，请人工授权后继续"}
+
     async def pick_replacement(
         self,
         db: AsyncSession,
@@ -801,6 +930,7 @@ class OnboardService:
         seat_intent: str = "workspace_default",
         oauth_signup: bool = False,
         use_phone_pool: bool = False,
+        signup_runner: str = "playwright",
     ) -> dict[str, Any]:
         replacement = await self.pick_replacement(db, skip_email=skip_email, child_id=child_id, email_line=email_line)
         if replacement is None and not str(email_line or "").strip():
@@ -823,6 +953,7 @@ class OnboardService:
             seat_intent=seat_intent,
             oauth_signup=oauth_signup,
             use_phone_pool=use_phone_pool,
+            signup_runner=signup_runner,
         )
 
 

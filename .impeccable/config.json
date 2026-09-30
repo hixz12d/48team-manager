@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          "app/web/templates/console.html"
+        ],
+        "createdAt": "2026-09-30T15:04:53.507Z",
+        "reason": "项目规定：docs/PRODUCT.md 体验约定限定字号只用 12/14/16/20/24 的紧凑后台字阶；新卡片沿用 --text-heading/--text-body/--text-meta 变量，未新增字号"
+      }
+    ]
+  }
+}

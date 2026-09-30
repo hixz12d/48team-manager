@@ -67,6 +67,7 @@ OPERATION_TYPE_LABELS = {
     "proxy_check": "代理检测",
     "free_register": "空闲号注册",
     "reregister": "重注册",
+    "runner_selfcheck": "浏览器环境自检",
 }
 
 BUSINESS_STEP_LABELS = {
@@ -127,23 +128,39 @@ BUSINESS_STEP_LABELS = {
     "auth_failed": "授权失败",
     "blocked": "已拦截",
     "hme_failed": "领取邮箱失败",
+    # Extension runner (Chromix + real extension) stages.
+    "browser_environment": "准备浏览器环境",
+    "runner_started": "浏览器已启动",
+    "runner_signup_done": "插件已完成注册",
+    "runner_joined": "官方已确认入组",
+    "runner_authorizing": "插件授权中",
+    "runner_callback": "已收到授权回调",
+    "runner_authorized": "插件授权完成",
+    "runner_diagnostics": "运行诊断",
 }
 
 
 # Presentation only: these are workflow stages, not a percentage or proof of completion.
-_BROWSER_STAGES = ("browser", "signup_runner", "browser_open", "email_otp", "about_you", "workspace", "add_phone", "sms_otp", "oauth", "browser_failed")
+_BROWSER_STAGES = ("browser", "signup_runner", "browser_environment", "runner_started", "runner_signup_done",
+                   "browser_open", "email_otp", "about_you", "workspace", "add_phone", "sms_otp", "oauth", "browser_failed")
+_RUNNER_AUTH_STAGES = ("runner_authorizing", "runner_callback", "runner_authorized")
 _ONBOARD_PLAN = (
     ("checking", ("checking", "blocked")),
     ("hme", ("hme", "hme_failed")),
     ("inviting", ("inviting", "invited", "invite_mail", "skip_invite", "invite_failed", "invite_role_mismatch")),
     ("browser", _BROWSER_STAGES),
-    ("reconciling", ("reconciling", "not_joined")),
-    ("authorizing", ("authorizing", "authorized", "auth_failed")),
+    ("reconciling", ("reconciling", "not_joined", "runner_joined")),
+    ("authorizing", ("authorizing", "authorized", "auth_failed") + _RUNNER_AUTH_STAGES),
     ("active", ("active",)),
 )
 OPERATION_STAGE_PLANS = {
     "onboard": _ONBOARD_PLAN,
     "replenish": _ONBOARD_PLAN,
+    "runner_selfcheck": (
+        ("browser_environment", ("browser_environment",)),
+        ("runner_started", ("runner_started",)),
+        ("runner_diagnostics", ("runner_diagnostics",)),
+    ),
     "rotate": (
         ("preflight", ("preflight",)), ("confirm_trigger", ("confirm_trigger",)),
         ("paused", ("paused",)), ("drained", ("drained",)),
@@ -158,8 +175,9 @@ MANUAL_ROTATION_PLAN = (
     ("preflight", ("preflight", "continue")),
     ("paused", ("paused", "drained")),
     ("kicked", ("kicking", "official_removed", "kicked", "vacancy")),
-    ("joined", tuple(code for code in _ONBOARD_CODES if code not in {"authorizing", "authorized", "auth_failed", "active"}) + ("joined",)),
-    ("authorized", ("authorizing", "authorized", "auth_failed", "oauth_same_session")),
+    ("joined", tuple(code for code in _ONBOARD_CODES
+                     if code not in {"authorizing", "authorized", "auth_failed", "active", *_RUNNER_AUTH_STAGES}) + ("joined",)),
+    ("authorized", ("authorizing", "authorized", "auth_failed", "oauth_same_session") + _RUNNER_AUTH_STAGES),
     ("published", ("sub2api_push", "published")),
     ("old_remote_deleted", ("old_remote_deleted",)),
     ("counted", ("counted",)),

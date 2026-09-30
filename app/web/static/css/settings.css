@@ -189,6 +189,75 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
   gap: var(--space-md);
 }
 
+/* 浏览器环境自检：状态用图标 + 文字表达，颜色只是辅助。 */
+.settings-runner { margin-top: var(--space-lg); }
+.settings-runner .panel-title { font-size: var(--text-heading); }
+.settings-runner p { margin: 0; }
+.runner-card .kv { grid-template-columns: 150px minmax(0, 1fr); font-size: var(--text-body); }
+.runner-selfcheck-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-sm) var(--space-md);
+}
+.runner-selfcheck-form label { display: grid; gap: var(--space-xs); min-width: 220px; }
+.runner-result {
+  display: grid;
+  gap: var(--space-sm);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-md);
+  min-width: 0;
+}
+.runner-result h3 { margin: 0; }
+.runner-verdict,
+.runner-findings li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  overflow-wrap: anywhere;
+}
+.runner-verdict { font-weight: 600; }
+.runner-icon {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: var(--text-meta);
+  font-weight: 700;
+  line-height: 1;
+}
+.runner-findings {
+  display: grid;
+  gap: var(--space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.runner-findings li strong { flex: none; }
+.runner-result .is-ok { color: var(--success-text); }
+.runner-result .is-warn { color: var(--warning-text); }
+.runner-result .is-error { color: var(--danger-text); }
+.runner-findings li > span:last-child { color: var(--text); }
+.runner-signals dd { font-variant-numeric: tabular-nums; }
+.runner-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-md);
+}
+.runner-shots figure { margin: 0; display: grid; gap: var(--space-xs); }
+.runner-shots a {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-subtle);
+}
+.runner-shots img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; object-position: top; }
+.runner-shots figcaption { color: var(--muted); font-size: var(--text-meta); }
+
 @media (max-width: 1024px) {
   .settings-columns { grid-template-columns: minmax(0, 1fr); }
 }
@@ -197,6 +266,8 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
   .settings-savebar { bottom: 0; }
   .settings-savebar-actions { margin-left: auto; }
   .settings-page .panel-header { flex-wrap: wrap; }
+  .runner-card .kv { grid-template-columns: minmax(0, 1fr); }
+  .runner-selfcheck-form label { min-width: 0; width: 100%; }
 }
 @media (forced-colors: active) {
   .setting-row > input[type="checkbox"] { appearance: auto; }

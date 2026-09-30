@@ -29,10 +29,11 @@ export function newPassword() {
   return `T48!${Array.from(bytes, value => alphabet[value % alphabet.length]).join('')}`;
 }
 
-export function contentAllowed(sender, job) {
+// Server mode (requireIncognito=false) runs in a normal window of a fresh, dedicated profile.
+export function contentAllowed(sender, job, requireIncognito = true) {
   try {
     const url = new URL(sender.url);
-    return sender.frameId === 0 && sender.tab?.incognito === true && sender.tab.id === job?.tabId &&
+    return sender.frameId === 0 && (!requireIncognito || sender.tab?.incognito === true) && sender.tab?.id === job?.tabId &&
       url.protocol === 'https:' && AUTH_HOSTS.has(url.hostname);
   } catch { return false; }
 }

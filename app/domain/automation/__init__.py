@@ -25,6 +25,7 @@ OPERATION_TYPES = (
     "proxy_check",
     "free_register",
     "reregister",
+    "runner_selfcheck",
 )
 SENSITIVE_INPUT_KEYS = (
     "password",
@@ -42,7 +43,7 @@ SENSITIVE_INPUT_KEYS = (
 REDACT_VALUE_MARKERS = ("password", "passwd", "secret", "token", "verifier")
 DEFAULT_LEASE_SECONDS = 180
 MAX_LOG_ITEMS = 40
-BROWSER_ACTIONS = ("reauth", "onboard", "replenish", "rotate", "free_register", "reregister", "free")
+BROWSER_ACTIONS = ("reauth", "onboard", "replenish", "rotate", "free_register", "reregister", "free", "runner_selfcheck")
 WORKSPACE_LOCK_ACTIONS = ("workspace_sync", "rotate", "onboard", "replenish", "reregister", "kick_member", "purge_child", "invite_child", "revoke_invite", "update_member_role")
 DEFAULT_AUTO_REAUTH_ENABLED = False
 DEFAULT_AUTO_REAUTH_INTERVAL_MINUTES = 30

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -796,6 +797,225 @@ async def start_controlled_rotate(
         return await manual_rotation.run_manual_rotation(session, job_id, confirm_vacancy=confirm_vacancy)
 
     return await _run_command(db, operation, command, background=background)
+
+
+SELFCHECK_OP_TYPE = "runner_selfcheck"
+_SELFCHECK_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SELFCHECK_SHOT = re.compile(r"^[a-z0-9_-]{1,40}\.png$")
+_SELFCHECK_LABELS = {"browserscan": "BrowserScan", "creepjs": "CreepJS", "browserleaks_webrtc": "BrowserLeaks WebRTC"}
+
+
+def _runner_config_view() -> dict[str, Any]:
+    """Read-only runner configuration for the settings card; never exposes paths beyond set / exists."""
+    from pathlib import Path
+
+    from app.application.extension_runner import validate_runner_configuration
+    from app.core.config import load_settings
+    from app.integrations.openai.browser.environment import BrowserEnvironmentError
+
+    settings = load_settings()
+    executable = str(settings.runner_browser_executable or "").strip()
+    try:
+        validate_runner_configuration()
+        config_error, config_code = "", ""
+    except BrowserEnvironmentError as exc:
+        config_error, config_code = str(exc), getattr(exc, "error_code", "runner_not_configured")
+    return {
+        "signup_runner": settings.rotation_signup_runner,
+        "executable_set": bool(executable),
+        "executable_exists": bool(executable) and Path(executable).is_file(),
+        "platform": settings.runner_fingerprint_platform,
+        "gpu_mode": settings.runner_gpu_mode,
+        "ready": not config_error,
+        "error": config_error,
+        "error_code": config_code,
+    }
+
+
+async def _selfcheck_workspaces(db: AsyncSession) -> list[dict[str, Any]]:
+    rows = list(await db.scalars(select(Workspace).where(Workspace.status == "active").order_by(Workspace.id)))
+    owner_ids = {row.owner_account_id for row in rows if row.owner_account_id}
+    owners = {item.id: item for item in await db.scalars(select(Account).where(Account.id.in_(owner_ids)))} if owner_ids else {}
+    items = []
+    for row in rows:
+        owner = owners.get(row.owner_account_id)
+        items.append({
+            "id": row.id,
+            "name": row.custom_name or row.official_name or row.name or f"工作区 #{row.id}",
+            "proxy_set": bool(owner and str(owner.proxy or "").strip()),
+        })
+    return items
+
+
+def _selfcheck_shots(public_id: str, paths: list[Any]) -> list[dict[str, str]]:
+    shots = []
+    for raw in paths or []:
+        name = str(raw or "").rsplit("/", 1)[-1]
+        if not _SELFCHECK_SHOT.fullmatch(name):
+            continue
+        stem = name[:-4]
+        shots.append({"name": stem, "label": _SELFCHECK_LABELS.get(stem, stem),
+                      "url": f"/api/runner/selfcheck/{public_id}/screenshots/{name}"})
+    return shots
+
+
+def _selfcheck_diagnostics(diagnostics: Any) -> dict[str, Any]:
+    """Keep the operation row small: summary fields, not the full plugin report."""
+    data = diagnostics if isinstance(diagnostics, dict) else {}
+    plugin = data.get("plugin") if isinstance(data.get("plugin"), dict) else {}
+    return {
+        "duration_seconds": data.get("duration_seconds"),
+        "last": data.get("last"),
+        "event_count": data.get("event_count"),
+        "plugin_version": plugin.get("version"),
+        "browser_log": list(data.get("browser_log") or [])[-20:],
+    }
+
+
+def _selfcheck_result(public_id: str, workspace_name: str, outcome: dict[str, Any]) -> dict[str, Any]:
+    findings = [item for item in outcome.get("findings") or [] if isinstance(item, dict)]
+    errors = sum(1 for item in findings if item.get("level") == "error")
+    warnings = len(findings) - errors
+    completed = bool(outcome.get("completed"))
+    error_code = str(outcome.get("error_code") or "")
+    # The task succeeds when the probe ran to the end; environment problems are reported as findings.
+    success = completed and not error_code
+    if not success:
+        message = f"自检未完成：{outcome.get('error') or error_code or '插件没有报告完成'}"
+    elif errors or warnings:
+        message = f"自检完成：{errors} 个问题、{warnings} 个提醒"
+    else:
+        message = "自检完成：未发现问题"
+    return {
+        "success": success,
+        "ok": success,
+        "status": "success" if success else "failed",
+        "passed": bool(outcome.get("ok")),
+        "completed": completed,
+        "error_code": error_code,
+        "error": str(outcome.get("error") or "") if not success else "",
+        "message": message,
+        "workspace_name": workspace_name,
+        "summary": outcome.get("summary") or "",
+        "platform": outcome.get("platform") or "",
+        "exit": outcome.get("exit"),
+        "signals": outcome.get("signals"),
+        "findings": findings,
+        "screenshots": _selfcheck_shots(public_id, outcome.get("screenshots") or []),
+        "probe_status": outcome.get("probe_status") or {},
+        "diagnostics": _selfcheck_diagnostics(outcome.get("diagnostics")),
+    }
+
+
+async def runner_selfcheck_overview(db: AsyncSession) -> dict[str, Any]:
+    """Settings card: runner configuration, teams whose mother proxy can be used, last self-check."""
+    from app.persistence.models.operations import Operation
+
+    latest = await db.scalar(select(Operation).where(Operation.op_type == SELFCHECK_OP_TYPE)
+                             .order_by(Operation.id.desc()).limit(1))
+    return {
+        "config": _runner_config_view(),
+        "workspaces": await _selfcheck_workspaces(db),
+        "latest": serialize_operation(latest) if latest is not None else None,
+    }
+
+
+async def start_runner_selfcheck(
+    db: AsyncSession,
+    *,
+    platform: str | None,
+    workspace_id: int | None = None,
+    background: bool = False,
+) -> dict[str, Any]:
+    """Launch Chromix + the extension against fingerprint pages. No signup, no official team change."""
+    from app.application.extension_runner import check_runner_proxy, validate_runner_configuration
+    from app.integrations.openai.browser.environment import BrowserEnvironmentError
+
+    chosen = str(platform or "").strip().lower() or None
+    if chosen not in {None, "linux", "windows"}:
+        return {"ok": False, "error_code": "invalid_platform", "error": "伪装平台只能是 linux 或 windows"}
+    try:
+        validate_runner_configuration()
+    except BrowserEnvironmentError as exc:
+        return {"ok": False, "error_code": getattr(exc, "error_code", "runner_not_configured"), "error": str(exc)}
+
+    if workspace_id:
+        workspace = await db.get(Workspace, int(workspace_id))
+        if workspace is None or workspace.status != "active":
+            return {"ok": False, "error_code": "not_found", "error": "团队不存在或未启用"}
+    else:
+        candidates = [item for item in await _selfcheck_workspaces(db) if item["proxy_set"]]
+        workspace = await db.get(Workspace, candidates[0]["id"]) if candidates else None
+        if workspace is None:
+            return {"ok": False, "error_code": "proxy_missing", "error": "没有已配置母号代理的启用团队"}
+    owner = await db.get(Account, workspace.owner_account_id) if workspace.owner_account_id else None
+    proxy_url = str(owner.proxy or "").strip() if owner else ""
+    try:
+        await check_runner_proxy(proxy_url)
+    except BrowserEnvironmentError as exc:
+        return {"ok": False, "error_code": getattr(exc, "error_code", "proxy_missing"), "error": str(exc)}
+    busy = await operation_store.browser_busy(db)
+    if busy is not None:
+        return {"ok": False, "error_code": "browser_busy", "error": "浏览器正在执行其他任务，请等它结束后再自检",
+                "operation_id": busy.public_id}
+
+    workspace_name = workspace.custom_name or workspace.official_name or workspace.name or f"工作区 #{workspace.id}"
+    operation = await operation_store.create(
+        db,
+        op_type=SELFCHECK_OP_TYPE,
+        workspace_id=workspace.id,
+        input_payload={"workspace_id": workspace.id, "platform": chosen},
+        resolved_proxy=proxy_url,
+    )
+    await db.commit()
+    job_id = operation.public_id
+
+    async def command(session: AsyncSession) -> dict[str, Any]:
+        from app.application.extension_runner import run_selfcheck
+        from app.application.jobs.browser import InvitedBrowserSession
+
+        slot = InvitedBrowserSession()
+        try:
+            if not await slot.try_reserve():
+                return {"success": False, "status": "failed", "error_code": "browser_busy",
+                        "error": "浏览器正在执行其他任务，请等它结束后再自检"}
+            outcome = await run_selfcheck(session, proxy_url=proxy_url, platform=chosen, job_id=job_id)
+        finally:
+            await slot.close()
+        return _selfcheck_result(job_id, workspace_name, outcome)
+
+    return await _run_command(db, operation, command, background=background)
+
+
+def selfcheck_screenshot_path(public_id: str, name: str):
+    """Only ``data/selfcheck/<public_id>/<[a-z0-9_-]+>.png``; ``None`` for anything else."""
+    from app.application.extension_runner import SELFCHECK_ROOT
+
+    if not _SELFCHECK_ID.fullmatch(str(public_id or "")) or not _SELFCHECK_SHOT.fullmatch(str(name or "")):
+        return None
+    root = SELFCHECK_ROOT.resolve()
+    path = (root / public_id / name).resolve()
+    if path.parent.parent != root or not path.is_file():
+        return None
+    return path
+
+
+async def recover_runner_selfchecks(db: AsyncSession) -> int:
+    """A self-check only runs inside this process; after a restart it can never finish."""
+    from app.domain.automation import ACTIVE_STATES
+    from app.persistence.models.operations import Operation
+
+    rows = list(await db.scalars(select(Operation).where(
+        Operation.op_type == SELFCHECK_OP_TYPE, Operation.state.in_(ACTIVE_STATES),
+    )))
+    for row in rows:
+        await operation_store.finish(db, row, {
+            "success": False, "status": "failed", "error_code": "runner_interrupted",
+            "error": "服务重启，自检中断；可重新发起，不影响任何团队",
+        })
+    if rows:
+        await db.commit()
+    return len(rows)
 
 
 async def continue_manual_rotation(

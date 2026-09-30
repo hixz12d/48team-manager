@@ -47,7 +47,7 @@
    git pull --ff-only origin main
    docker compose -p team48 -f deploy/docker-compose.yml up -d --build --no-deps team48
    ```
-   新表 / 新列由启动时 bootstrap 自动补，无单独迁移命令。
+   新表 / 新列由启动时 bootstrap 自动补，无单独迁移命令。改了 `deploy/Dockerfile`（镜像带完整插件但不含 `private-config.mjs`、Xvfb、字体）时必须带 `--build`。
 5. 健康检查（见下）。 —— 确认：全部通过。
 
 涉及 Sub2API 合约的功能：两个 Sub2API 副本必须返回同一 `instance_id` 和期望 revision；认证恢复要求其迁移 249，交回刷新权要求迁移 250 且所有消费 RT 的副本已升级。Sub2API 走它自己的发布流程，本项目不动它。
@@ -92,12 +92,17 @@
 | `phone_verification_required` / `registration_home_not_ready` | 注册或 OAuth 需要手机 / 主页未就绪 | 保留同一账号续接，不要重新注册或领新别名 |
 | Codex 导出被拒 | 某账号缺 AT、将过期或待授权 | 先刷新或授权该账号 |
 | 团队卡"在跑"显示 — / 收入记录标"估算""未取到" | 用量同步还没跑出全程窗口 / 离队时读 Sub2API 失败 | 等下一次用量同步（5 分钟）；账本不支持手改，"估算"会在删旧远端前再读一次时更新 |
+| 轮转预检报 `runner_not_configured` / `proxy_auth_unsupported` / `runner_mailbox_invalid` | 运行器未装好 Chromix / 母号是带账号密码的 HTTP 代理 / Cloudflare 邮箱地址不是插件内置的 | 按"常用操作"装好 Chromix 或修正设置；代理改 SOCKS5 或无认证；临时可切回 `ROTATION_SIGNUP_RUNNER=playwright` |
+| 运行器轮转停在 `runner_oauth_required` 等待人工 | 注册或授权时出现手机 / 人机验证 | 人工授权该邮箱后点"继续轮转"，不要重新发起 |
 
 ## 常用操作
 
 - **首次启用自动轮转**：先保存 `关闭 + 仅选中团队 + 空列表`，核对后再选范围开启。
 - **切换注册流程**：`/opt/team48/.env` 改 `BROWSER_SIGNUP_FLOW=extension`（回退改 `legacy`）后重建。手动轮转不受影响，固定用 extension。
 - **启用 Chromix**：下载并按 SHA256 校验归档，解压到 `/app/data/browsers/chromix/`，设 `BROWSER_ENGINE=chromix` 和 `BROWSER_EXECUTABLE` 后重建。首次会新建档案，可能需重新登录；回退改回 `chromium` 即用旧档案。冒烟：`python -m scripts.browser_environment_smoke --engine chromix --browser-executable <path> --headed`。
+- **安装运行器用的 Chromix 153**：从 https://github.com/lwhx/Chromix 发布页 `v153.0.8010.36` 下载 `chromix-linux-x64.zip`，SHA256 必须是 `8a9cdc3692a82e84ca62cbd04025b2e11b3aafd47d86fdfa9d13f48e497454ef`，解压到 `/opt/team48/data/browsers/chromix153/`（得到 `chromix/` 目录）。`.env` 设 `RUNNER_BROWSER_EXECUTABLE=/app/data/browsers/chromix153/chromix/chromix`（启动脚本，会加载包内字体；不要直接指 `chrome`），其余 `RUNNER_*` 见 `deploy.env.example`，重建生效。
+- **浏览器环境自检**：设置页"浏览器环境"卡片，选团队（取母号代理）和平台，点自检；不注册、不碰官方团队，占用全局浏览器槽。先按 linux / windows 各跑一次，按结果定 `RUNNER_FINGERPRINT_PLATFORM` / `RUNNER_GPU_MODE`（只影响新建档案）。服务器没有 GPU 时 Chromix 会强制显示真实软件渲染型号，`preset` 可能不生效（结果里 `gpu_preset_ignored`）。服务重启会把进行中的自检标失败（`runner_interrupted`），重新发起即可。
+- **切换轮转注册方式**：`/opt/team48/.env` 改 `ROTATION_SIGNUP_RUNNER=extension`（回退改 `playwright`）后重建。前提：自检通过；设置里 Cloudflare 邮箱地址必须是插件内置的 `https://apimail.xiaozhudf2026.foo`，否则报 `runner_mailbox_invalid`。运行目录 `data/runner-runs/` 结束即删；容器重启会丢失进行中的运行，任务停在待人工，按"继续轮转"处理。
 - **启用插件接口**：`python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成令牌 → 写 `/opt/team48/.env` 的 `EXTENSION_API_TOKEN` → 重建 → 本机重新打包插件。
 - **打包插件（本机）**：`python scripts/build_signup_extension.py --local-config --unpack`（只用本机 `private-config.mjs`）；首次不带 `--local-config` 会经 SSH 只读 VPS 上的 Cloudflare 配置。`--team48-token <令牌>` / `--no-team48` 写入 / 移除令牌。产物在 `dist/`（gitignore）。安装说明见 `extensions/chatgpt-signup/README.md`。
 - **单席位补位（本机）**：`python -m scripts.signup_one --workspace-id N --role member` 只显示预检，加 `--confirm` 才执行；短信用 `--sms-stdin` 从标准输入传，不写在命令参数里。

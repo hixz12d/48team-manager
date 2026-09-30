@@ -210,7 +210,7 @@ class ManagedSignupConfigurationTests(unittest.TestCase):
         self.assertIn(f"const VERSION = '{version}';", content)
         root = Path(__file__).resolve().parents[1]
         docker = (root / "deploy/Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("COPY extensions/chatgpt-signup/content.js extensions/chatgpt-signup/manifest.json", docker)
+        self.assertIn("COPY extensions/chatgpt-signup /app/extensions/chatgpt-signup", docker)
         self.assertNotIn("COPY extensions /", docker)
         self.assertIn("extensions/chatgpt-signup/private-config.mjs", (root / ".dockerignore").read_text())
 
