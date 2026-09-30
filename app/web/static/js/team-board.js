@@ -97,6 +97,8 @@
     if (expiry?.date) parts.push(`到期 ${expiry.label}`);
     meta.append(chip, el("span", "", parts.join(" · ")));
     if (c.out) meta.append(el("span", "text-warning", `· ${c.out} 个不在 Sub2API`));
+    const revenue = window.Team48Revenue?.line?.(group);
+    if (revenue) { const node = el("span", "board-revenue", revenue.text); node.title = revenue.title; meta.append(node); }
     const manage = el("a", "button compact", "管理团队"); manage.href = `/accounts?view=teams&workspace=${encodeURIComponent(group.id)}`;
     head.append(el("div", "", null), manage); head.firstChild.append(title, meta);
     const table = el("table", "board-table");

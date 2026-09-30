@@ -881,6 +881,10 @@ button.management-email:hover {
 .workspace-manual-metadata .workspace-expiry-trigger {
   margin-top: 0;
 }
+.workspace-revenue {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
 .workspace-switch-counter {
   display: flex;
   align-items: center;

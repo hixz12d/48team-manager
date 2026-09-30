@@ -15,6 +15,22 @@
   let selected = new Set();
   try { collapsed = new Set(JSON.parse(localStorage.getItem("team48:collapsed-teams") || "[]")); } catch (_) {}
   const canDelete = account => Boolean(account?.can_delete_local);
+  // 团队收入一行：已入账（账本）＋ 在跑（在席成员全程 U）；都没有时整段写"收入 —"，不隐藏。
+  function revenueLine(group) {
+    const settled = group?.revenue?.settled, count = group?.revenue?.count || 0;
+    const running = group?.usage?.windows?.lifetime;
+    const zero = value => value == null || Number(value) === 0;
+    const notes = [];
+    if (count) notes.push(`已入账 ${count} 笔离队记录`);
+    if (running) {
+      if (running.coverage && running.coverage.synced < running.coverage.total) notes.push(`在跑：${running.coverage.synced}/${running.coverage.total} 个成员已同步，部分成员未同步`);
+      if (running.stale) notes.push("在跑：旧快照");
+    } else notes.push("在跑：尚无全程用量快照");
+    const text = zero(settled) && (!running || zero(running.user_cost)) ? "收入 —"
+      : `已入账 ${fmt.formatCost(settled ?? "0")} ＋ 在跑 ${running ? fmt.formatCost(running.user_cost) : "—"}`;
+    return { text, title: notes.join("；") };
+  }
+  window.Team48Revenue = { line: revenueLine };
   const canSelect = account => account.managed !== false && Number.isInteger(account.id) && account.id > 0;
   const selectedItems = () => (payload?.accounts || []).filter(account => selected.has(account.id) && canSelect(account));
   function updateSelectionBar() {
@@ -354,6 +370,9 @@
       const seats = official.occupied_seats != null && official.seat_limit != null ? `${official.occupied_seats}/${official.seat_limit} 席` : counts.joined_people != null ? `已加入 ${counts.joined_people} 人` : "席位未同步";
       metadata.append(el("span", "muted", seats));
       if (counts.invited) metadata.append(el("span", "muted", `${counts.invited} 待接受邀请`));
+      const revenue = revenueLine(group);
+      const revenueNode = el("span", "workspace-revenue tabular", revenue.text); revenueNode.title = revenue.title;
+      metadata.append(revenueNode);
       const expiry = window.Team48Expiry.trigger(group, b => api.openWorkspaceExpiry(b, group));
       const expiryInfo = window.Team48Expiry.summary(group.expiry);
       expiry.replaceChildren(document.createTextNode(expiryInfo.date ? `到期 ${expiryInfo.date} · ${expiryInfo.label}` : "到期未填"));

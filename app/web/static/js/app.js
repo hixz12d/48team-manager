@@ -1335,6 +1335,8 @@ function hmeRow(item) {
     set("accounts", summary.accounts ?? payload.accounts);
     set("attention", attention.length, true);
     set("conflicts", summary.identity_conflicts, true);
+    set("revenue_total", window.Team48Format.formatCost(summary.revenue_total));
+    set("revenue_month", window.Team48Format.formatCost(summary.revenue_month));
 
     const attentionRoot = document.getElementById("overview-attention");
     const attentionPanel = document.getElementById("overview-attention-panel");
@@ -2685,6 +2687,46 @@ function hmeRow(item) {
         body.querySelector('input[name="expires_on"]').scrollIntoView({block:"center"});
       }
 
+    const revenueSourceLabels = { manual_rotation: "手动轮转", auto_rotation: "自动轮转", kick: "踢人", purge: "踢人并删档", binding_cleanup: "绑定整理" };
+    const revenueAmountNotes = { lifetime_capped_90d: "仅近 90 天", cache_lifetime: "估算", cache_seven_day: "估算", missing: "未取到" };
+
+    // 收入记录：抽屉打开时单独拉账本，不依赖列表数据里有没有 revenue。
+    function renderTeamRevenue(workspace) {
+        const section = document.createElement("details"); section.className = "team-detail-disclosure team-revenue";
+        const summary = document.createElement("summary"); summary.textContent = "收入记录 · 读取中…";
+        const listNode = document.createElement("div"); listNode.className = "team-revenue-list";
+        section.append(summary, listNode);
+        fetchEntity(`workspace-revenue-${workspace.id}`, `/api/workspaces/${workspace.id}/revenue`).then((payload) => {
+          if (!section.isConnected) return;
+          const items = payload.items || [];
+          summary.textContent = `收入记录 · ${items.length} 笔 · ${window.Team48Format.formatCost(payload.settled ?? "0")}`;
+          listNode.replaceChildren();
+          if (!items.length) { const empty = document.createElement("p"); empty.className = "hint"; empty.textContent = "还没有入账记录，子号离队时自动记录"; listNode.append(empty); return; }
+          for (const item of items) {
+            const row = document.createElement("div"); row.className = "team-revenue-row";
+            const who = document.createElement("span"); who.className = "team-revenue-email"; who.textContent = item.email || `远端 #${item.remote_account_id}`;
+            const when = document.createElement("time"); when.className = "muted tabular"; when.dateTime = item.settled_at || "";
+            when.textContent = item.settled_at ? new Date(item.settled_at).toLocaleString("zh-CN", { hour12: false }) : "—";
+            const amount = document.createElement("strong"); amount.className = "tabular"; amount.textContent = window.Team48Format.formatCost(item.user_cost);
+            const tags = document.createElement("span"); tags.className = "team-revenue-tags";
+            const source = document.createElement("span"); source.className = "management-badge tone-muted"; source.textContent = revenueSourceLabels[item.departure_source] || item.departure_source || "离队";
+            tags.append(source);
+            const note = revenueAmountNotes[item.amount_source];
+            if (note) {
+              const tag = document.createElement("span"); tag.className = `management-badge tone-${item.amount_source === "missing" ? "error" : "warning"}`; tag.textContent = note;
+              if (item.window_days) tag.title = `按 ${item.window_days} 天计算`;
+              tags.append(tag);
+            }
+            row.append(who, when, amount, tags); listNode.append(row);
+          }
+        }).catch((error) => {
+          if (isAbortError(error)) return;
+          summary.textContent = "收入记录 · 暂时无法读取";
+          const failed = document.createElement("p"); failed.className = "hint"; failed.textContent = friendlyError(error); listNode.replaceChildren(failed);
+        });
+        return section;
+      }
+
     function renderTeamDetails(workspace) {
         if (!sheet || !workspace) return;
         teamDetailState = {...(teamDetailState || {}), workspaceId:workspace.id, workspace, view:"details"};
@@ -2711,6 +2753,7 @@ function hmeRow(item) {
         rows.forEach(row => list.append(renderTeamMember(workspace,row)));
         if (!list.children.length) list.append(emptyState("没有成员记录", "同步团队后查看成员与席位。", true));
         members.append(heading,list); body.append(members);
+        body.append(renderTeamRevenue(workspace));
         const actionSection = document.createElement("section"); actionSection.className = "sheet-section team-action-section";
         const bar = document.createElement("div"); bar.className = "team-primary-actions";
         const forms = document.createElement("div"); forms.dataset.teamActionForms = "";

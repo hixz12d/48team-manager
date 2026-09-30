@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.persistence.models.operations import Operation
 from app.persistence.models.oauth import OAuthSession
+from app.persistence.models.revenue import Sub2ApiRevenueEntry
 
 from app.application.queries.identity import (
     HIDDEN_ACCOUNT_STATES,
@@ -16,6 +17,7 @@ from app.application.queries.identity import (
     workspaces_query,
 )
 from app.application.quota import quota_service
+from app.application.revenue_ledger import revenue_ledger
 from app.application.sub2api_usage import sub2api_usage_service
 from app.application import sub2api_status
 from app.application.presenters import build_auth_status, account_attention
@@ -79,6 +81,16 @@ async def _last_authorized(db: AsyncSession) -> dict[int, Any]:
     return {int(account_id): consumed for account_id, consumed in rows.all()}
 
 
+async def _revenue_counts(db: AsyncSession) -> dict[int, int]:
+    from sqlalchemy import func
+
+    rows = await db.execute(
+        select(Sub2ApiRevenueEntry.workspace_id, func.count(Sub2ApiRevenueEntry.id))
+        .group_by(Sub2ApiRevenueEntry.workspace_id)
+    )
+    return {int(workspace_id): int(count) for workspace_id, count in rows.all()}
+
+
 def _account_card(item: dict[str, Any], *, kind: str, last_authorized: dict[int, Any] | None = None) -> dict[str, Any]:
     quota = item.get("quota") or {}
     auth_status = build_auth_status(item)
@@ -108,6 +120,8 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
     usage_by_context = await sub2api_usage_service.payloads_by_context(db)
     remote_by_context, remote_summary = await sub2api_status.payloads(db)
     last_authorized = await _last_authorized(db)
+    revenue_totals = await revenue_ledger.totals(db)
+    revenue_counts = await _revenue_counts(db)
 
     def remote_for(account_id, workspace_id):
         exact = remote_by_context.get((account_id, workspace_id))
@@ -311,6 +325,10 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 },
                 "quota_risk": "danger" if "danger" in risks else ("warning" if "warning" in risks else ("ok" if risks else None)),
                 "usage": workspace_usage,
+                "revenue": {
+                    "settled": revenue_totals["by_workspace"].get(int(ws_id), "0"),
+                    "count": revenue_counts.get(int(ws_id), 0),
+                },
                 "usage_note": "Workspace 计费按已验证 Binding 的本地快照聚合。" if (workspace_usage or {}).get("available") else "尚无可聚合的 Sub2API 用量快照。",
             }
         )
@@ -392,6 +410,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         "probe_runtime": await quota_service.runtime_summary(db),
         "groups": groups,
         "unassigned": unassigned,
+        "revenue_totals": {"total": revenue_totals["total"], "month": revenue_totals["month"]},
         "usage_available": any(item.get("available") for item in usage_by_context.values()),
         "sub2api_status": remote_summary,
         "usage_note": "Sub2API 用量仅来自后台同步的本地快照；缺失和失败不会显示为 0。",

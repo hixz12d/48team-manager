@@ -112,6 +112,11 @@ def build_api_router(get_db) -> APIRouter:
     async def workspaces(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
         return await console_query.workspaces(db)
 
+    @router.get("/workspaces/{workspace_id}/revenue")
+    async def workspace_revenue(workspace_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)) -> dict:
+        from app.application.revenue_ledger import revenue_ledger
+        totals = await revenue_ledger.totals(db)
+        return {"items": await revenue_ledger.entries(db, workspace_id), "settled": totals["by_workspace"].get(workspace_id, "0")}
     @router.post("/workspaces/oauth/start")
     async def start_workspace_oauth_route(
         payload: StartWorkspaceOAuthRequest,

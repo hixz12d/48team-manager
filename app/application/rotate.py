@@ -15,6 +15,7 @@ from app.application.console_maintenance import purge_local_child_record
 from app.application.identity import automation_gate
 from app.application.operations import operation_store
 from app.application.quota import quota_service
+from app.application.revenue_ledger import revenue_ledger
 from app.application.settings import as_bool, get_setting_value
 from app.application.workspaces import workspace_service
 from app.core.config import load_settings
@@ -45,6 +46,16 @@ from app.persistence.models.identity import Account, ExternalBinding, Workspace,
 from app.persistence.models.operations import Operation, OperationStep
 
 logger = logging.getLogger(__name__)
+
+
+def _revenue_departure_source(reason: str, *, purge_local: bool) -> str:
+    if reason == "manual_rotation":
+        return "manual_rotation"
+    if purge_local:
+        return "purge"
+    if should_unbind_sub2api(reason):
+        return "auto_rotation"
+    return "kick"
 
 
 class RotateService:
@@ -694,6 +705,16 @@ class RotateService:
         await record_confirmed_departure(db, workspace, target)
         await db.commit()
         await self._mark_step(db, job_id, "official_removed", state="success", result={"workspace_id": workspace.id})
+        # Book revenue before any unbind / remote delete / purge wipes the binding and usage snapshots.
+        if child is not None and not should_revoke and not invitation_only:
+            await revenue_ledger.settle_departure(
+                db,
+                workspace_id=workspace.id,
+                account_id=child.id,
+                source=_revenue_departure_source(reason, purge_local=purge_local),
+                operation_id=job_id,
+            )
+            await db.commit()
         other_context = bool(child and await has_other_active_context(db, child, workspace.id))
         unbind = False if keep_remote else bool(unbind_sub2api or should_unbind_sub2api(reason) or purge_local)
         deleted_sub = None

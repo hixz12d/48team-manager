@@ -561,13 +561,15 @@ class Sub2ApiClient:
         account_ids: list[int],
         *,
         force_usage: bool = False,
+        lifetime_days: dict[int, int] | None = None,
     ) -> dict[str, Any]:
-        """Fetch 5h, today, and natural 7-day windows using one authenticated client."""
+        """Fetch 5h, today, natural 7-day and optional lifetime windows using one authenticated client."""
         ids = sorted({int(value) for value in account_ids if _as_int(value) and int(value) > 0})
         result: dict[str, Any] = {
             "five_hour": {},
             "today": {},
             "seven_day": {},
+            "lifetime": {},
             "errors": {},
         }
         if not ids:
@@ -621,7 +623,7 @@ class Sub2ApiClient:
 
             semaphore = asyncio.Semaphore(6)
 
-            async def fetch_seven(account_id: int) -> tuple[int, Any]:
+            async def fetch_stats(account_id: int, days: int) -> tuple[int, Any]:
                 async with semaphore:
                     try:
                         payload = await self._request_json(
@@ -629,24 +631,53 @@ class Sub2ApiClient:
                             headers,
                             "GET",
                             f"/api/v1/admin/accounts/{account_id}/stats",
-                            params={"days": "7"},
+                            params={"days": str(days)},
                         )
                         return account_id, payload
                     except Exception as exc:
                         return account_id, exc
 
-            seven_results = await asyncio.gather(*(fetch_seven(account_id) for account_id in ids))
-            for account_id, payload in seven_results:
-                key = str(account_id)
-                if isinstance(payload, Exception):
-                    result["errors"].setdefault(key, {})["seven_day"] = str(payload)
-                    continue
-                summary = payload.get("summary") if isinstance(payload, dict) else None
-                if isinstance(summary, dict):
-                    result["seven_day"][key] = summary
+            lifetime_map = {
+                account_id: max(1, min(90, int(lifetime_days[account_id])))
+                for account_id in ids
+                if lifetime_days and _as_int(lifetime_days.get(account_id))
+            }
+            seven_results, lifetime_results = await asyncio.gather(
+                asyncio.gather(*(fetch_stats(account_id, 7) for account_id in ids)),
+                asyncio.gather(*(fetch_stats(account_id, days) for account_id, days in lifetime_map.items())),
+            )
+            for kind, rows in (("seven_day", seven_results), ("lifetime", lifetime_results)):
+                for account_id, payload in rows:
+                    key = str(account_id)
+                    if isinstance(payload, Exception):
+                        result["errors"].setdefault(key, {})[kind] = str(payload)
+                        continue
+                    summary = payload.get("summary") if isinstance(payload, dict) else None
+                    if isinstance(summary, dict):
+                        result[kind][key] = summary
             return result
         finally:
             await client.aclose()
+
+    async def fetch_account_stats_summary(
+        self, db: AsyncSession, account_id: int, days: int
+    ) -> dict[str, Any]:
+        """Return `summary` of `/accounts/{id}/stats`; Sub2API accepts 1..90 days only."""
+        client, headers, _cfg = await self._with_client(db)
+        try:
+            payload = await self._request_json(
+                client,
+                headers,
+                "GET",
+                f"/api/v1/admin/accounts/{int(account_id)}/stats",
+                params={"days": str(max(1, min(90, int(days))))},
+            )
+        finally:
+            await client.aclose()
+        summary = payload.get("summary") if isinstance(payload, dict) else None
+        if not isinstance(summary, dict):
+            raise ValueError("Sub2API did not return account stats summary")
+        return summary
 
     async def get_proxy(self, db: AsyncSession, proxy_id: int) -> dict[str, Any]:
         client, headers, _cfg = await self._with_client(db)

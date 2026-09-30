@@ -489,7 +489,7 @@
 /* 总览概览 KPI Strip */
 .summary-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -511,6 +511,10 @@
 
 .summary-item:hover {
   background: var(--surface-hover);
+}
+
+div.summary-item:hover {
+  background: none;
 }
 
 .summary-item:last-child {
@@ -1154,10 +1158,10 @@
   .summary-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .summary-item:nth-child(2) {
+  .summary-item:nth-child(even) {
     border-right: 0;
   }
-  .summary-item:nth-child(-n+2) {
+  .summary-item:not(:nth-last-child(-n+2)) {
     border-bottom: 1px solid var(--border);
   }
 }
@@ -1303,6 +1307,41 @@
 
 .team-danger-zone {
   margin-top: var(--space-lg);
+}
+
+.team-revenue-list {
+  display: grid;
+  padding: var(--space-xs) 0 var(--space-md);
+}
+
+.team-revenue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 2px var(--space-sm);
+  padding: var(--space-xs) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-body);
+}
+
+.team-revenue-row:last-child {
+  border-bottom: 0;
+}
+
+.team-revenue-email {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.team-revenue-row time {
+  font-size: var(--text-meta);
+}
+
+.team-revenue-tags {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .team-danger-zone > summary {

@@ -17,6 +17,8 @@
 .board-switch strong { font-size:var(--text-body); font-weight:650; color:var(--text); }
 .board-switch.is-active { border-color:var(--accent-border); background:var(--accent-bg); color:var(--accent-text); }
 .board-switch.is-active strong { color:var(--accent-text); }
+.board-revenue { color:var(--text-secondary); white-space:nowrap; }
+.board-revenue::before { content:"·"; margin-right:8px; color:var(--muted); }
 .board-table-scroll { overflow-x:auto; }
 .board-table { width:100%; min-width:520px; border-collapse:collapse; table-layout:fixed; font-size:var(--text-body); }
 .board-table th { text-align:left; font-weight:500; font-size:var(--text-meta); color:var(--muted); padding:8px 14px; border-bottom:1px solid var(--border-subtle); }

@@ -20,6 +20,7 @@ from app.persistence.models import (  # noqa: F401
     SeatVacancyEvent,
     SystemSetting,
     Sub2ApiProxyBinding,
+    Sub2ApiRevenueEntry,
     Sub2ApiUsageSnapshot,
     Workspace,
     WorkspaceMembership,

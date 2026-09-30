@@ -29,6 +29,7 @@ from app.application.member_handoff import token_workspace_mismatch
 from app.application.member_lifecycle import has_other_active_context
 from app.application.operations import operation_store, unpack_input
 from app.application.reauth import load_cf_config
+from app.application.revenue_ledger import revenue_ledger
 from app.application.sub2api_credential_sync import validate_sync_identity
 from app.application.sub2api_defaults import load_defaults, validate_defaults
 from app.application.tokens import decrypt_secret
@@ -276,6 +277,9 @@ async def _drop_binding(db, row: ExternalBinding) -> None:
     from app.persistence.models.sub2api import Sub2ApiSyncObservation, Sub2ApiUsageSnapshot
     from app.persistence.models.sub2api_status import Sub2ApiAccountStatus
 
+    # The remote is already gone; book what the local usage cache last saw before dropping it.
+    if row.binding_state == "verified" and row.workspace_id is not None:
+        await revenue_ledger.settle_binding(db, row, source="binding_cleanup", allow_remote=False)
     # SQLite does not enforce the CASCADE here; clear the per-binding caches explicitly.
     for model in (Sub2ApiSyncObservation, Sub2ApiUsageSnapshot, Sub2ApiAccountStatus):
         await db.execute(delete(model).where(model.binding_id == row.id))
@@ -923,6 +927,8 @@ class _Rotation:
                 return await self.touched("old_identity_unconfirmed", "新号可用；旧号远端身份核对不一致，未删除", manual=True)
             if (stopped := await self.cancel_point()) is not None:
                 return stopped
+            # Refresh the revenue entry booked at kick time while the remote still exists.
+            await revenue_ledger.settle_binding(self.db, binding, source="manual_rotation", operation_id=self.public_id)
             await self.mark("old_remote_deleted", "running", {"intent": "delete", "remote_id": remote_id})
             receipt = None
             try:

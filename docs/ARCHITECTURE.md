@@ -46,7 +46,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `auth_probe_scan` | 1 分钟 | 授权探测 |
 | `auto_rotate_scan` | 1 分钟 | 自动轮转扫描（开关关闭时不动作） |
 | `sub2api_status_sync` | 15 秒 | 远端状态核对；超过 45 秒算旧，单次 20 秒超时 |
-| `sub2api_usage_sync` | 5 分钟 | 计费用量 |
+| `sub2api_usage_sync` | 5 分钟 | 计费用量：5h / 今日 / 自然 7 天 / 全程（`lifetime`，自绑定起最多 90 天，`/accounts/{id}/stats?days=N`） |
 | `auto_reauth_scan` | 30 分钟 | 自动重授权（默认关闭） |
 
 ### 手动轮转（`application/manual_rotation.py`）
@@ -60,6 +60,13 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 ### 自动轮转（`application/automatic_rotation.py`、`rotate.py`）
 
 设置键 `auto_rotate_enabled`、`auto_rotate_scope`（selected/all）、`auto_rotate_workspace_ids`、`auto_rotate_daily_limit`；推送重试上限 `MAX_PUBLISH_ATTEMPTS=5`。extension 模式下会先 `validate_signup_assets()`。
+
+### 团队收入账本（`application/revenue_ledger.py`）
+
+- `settle_departure`（按团队 + 账号）/ `settle_binding`（按绑定，远端已删时 `allow_remote=False` 只用缓存）；只 flush，调用方 commit，失败不抛异常。
+- 调用点：`rotate.py` 的 `kick_to_standby` 在 `official_removed` 之后、解绑 / 删远端 / 删档之前；`manual_rotation.py` 的 `stage_delete_old` 删旧远端前、`_drop_binding` 丢弃绑定前。
+- 金额来源优先级 `lifetime` / `lifetime_capped_90d` > `cache_lifetime` > `cache_seven_day` > `missing`，只有同级或更好才覆盖；`settled_at` 取首次入账时间。
+- 查询：`totals()`（累计、本月、按团队）、`entries()`；接口 `GET /api/workspaces/{id}/revenue`，看板 `portfolio` 每组带 `revenue`，总览 summary 带 `revenue_total` / `revenue_month`。
 
 ### HME 领号（`application/resources/hme.py`）
 
@@ -91,7 +98,7 @@ SQLite `data/team48.db`（WAL；需 SQLite ≥ 3.25）。表由 `bootstrap.py` �
 | 身份 | `accounts`、`workspaces`、`workspace_memberships`、`workspace_official_member_snapshots`、`external_bindings` |
 | 任务 | `operations`、`operation_steps` |
 | 额度 | `quota_snapshots`、`quota_probe_states`、`quota_dispatch_lease`、`credential_leases` |
-| Sub2API | `sub2api_sync_observations`、`sub2api_refresh_authorities`、`sub2api_refresh_handoffs`、`sub2api_account_status`、`sub2api_usage_snapshots`、`sub2api_proxy_bindings` |
+| Sub2API | `sub2api_sync_observations`、`sub2api_refresh_authorities`、`sub2api_refresh_handoffs`、`sub2api_account_status`、`sub2api_usage_snapshots`、`sub2api_proxy_bindings`、`sub2api_revenue_entries`（收入账本，无外键，存邮箱和团队名快照，唯一键 团队 + 远端账号 ID） |
 | 其他 | `oauth_sessions`、`codex_bindings`、`system_settings`、`hme_alias_leases`、`phone_pool`、`phone_attempts`、`proxy_profiles`、`seat_vacancy_events` |
 
 凭据加密存储；接口只返回 `secret_state`（stored / missing），不回显密钥。浏览器档案也在 `data/` 下。
