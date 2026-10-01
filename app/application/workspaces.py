@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -115,7 +115,8 @@ class WorkspaceService:
         ).scalar_one_or_none()
 
     async def owner_account(self, db: AsyncSession, workspace: Workspace) -> Account | None:
-        if workspace.owner_account is not None:
+        # A plain db.get() leaves the relationship unloaded; a lazy load under asyncio raises MissingGreenlet.
+        if "owner_account" not in sa_inspect(workspace).unloaded and workspace.owner_account is not None:
             return workspace.owner_account
         if workspace.owner_account_id:
             return await db.get(Account, workspace.owner_account_id)
