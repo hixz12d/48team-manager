@@ -262,6 +262,158 @@ async def reopen_rotation(db, public_id: str) -> tuple[Operation | None, dict[st
     return op, None
 
 
+# ---------------------------------------------------------------- manual close
+
+
+async def _official_state(rotate, db, workspace: Workspace | None, email: str) -> str:
+    """joined / invited / absent / unknown, read live from the official team."""
+    if workspace is None:
+        return "unknown"
+    try:
+        live, member = await rotate.workspaces.lookup_live_member(db, workspace, email)
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    if not live.get("success"):
+        return "unknown"
+    if not member:
+        return "absent"
+    return "joined" if member.get("status") == "joined" else "invited"
+
+
+async def _count_target(db, op: Operation, email: str) -> tuple[WorkspaceMembership | None, str]:
+    """The membership a resolve would count, or why it would not."""
+    if (await db.scalar(select(OperationStep.id).where(
+            OperationStep.operation_id == op.id, OperationStep.step_name == "counted",
+            OperationStep.state == "success"))) is not None:
+        return None, "本轮转已计过数"
+    account = await db.scalar(select(Account).where(Account.email == email))
+    membership = await db.scalar(select(WorkspaceMembership).where(
+        WorkspaceMembership.workspace_id == op.workspace_id,
+        WorkspaceMembership.account_id == account.id,
+    )) if account is not None else None
+    if membership is None:
+        return None, "本地没有该成员记录"
+    if membership.switch_counted_at is not None:
+        return None, "该成员已计过切换次数"
+    return membership, ""
+
+
+async def resolution_check(db, public_id: str, *, rotate=None) -> dict[str, Any]:
+    """Read-only facts shown before closing an unfinished manual rotation by hand."""
+    rotate = rotate or _default_rotate()
+    op = await operation_store.get_by_public_id(db, public_id)
+    if op is None:
+        return {"ok": False, "error": "operation not found", "error_code": "not_found"}
+    if not can_continue(op):
+        return {"ok": False, "error_code": "resolve_unsupported", "error": "只有未完成的手动轮转任务可以结束"}
+    payload = unpack_input(op.input_json)
+    old, new = normalize_email(payload.get("old_email")), normalize_email(payload.get("replacement_email"))
+    preflight_row = await db.scalar(select(OperationStep).where(
+        OperationStep.operation_id == op.id, OperationStep.step_name == "preflight"))
+    try:
+        frozen = json.loads(preflight_row.result_snapshot or "{}") if preflight_row else {}
+    except (TypeError, ValueError):
+        frozen = {}
+    old_remote_id = str((frozen if isinstance(frozen, dict) else {}).get("old_remote_id") or "")
+    workspace = await db.get(Workspace, int(op.workspace_id))
+    checks: list[dict[str, Any]] = []
+
+    official = await _official_state(rotate, db, workspace, new)
+    checks.append({"key": "official", "ok": official == "joined", "label": {
+        "joined": f"新邮箱 {new} 已在官方团队",
+        "invited": f"新邮箱 {new} 只有邀请，尚未加入团队",
+        "absent": f"新邮箱 {new} 不在官方团队",
+        "unknown": "官方成员读取失败，无法确认新邮箱是否入组",
+    }[official]})
+
+    from app.domain.identity.binding import remote_email_from, remote_id_from
+    try:
+        remotes = await rotate.sub2api.list_status_accounts(db)
+    except Exception:  # noqa: BLE001
+        remotes = None
+    if not isinstance(remotes, list) or any(
+            not isinstance(item, dict) or not remote_id_from(item).isdigit() for item in remotes):
+        checks.append({"key": "new_remote", "ok": False, "label": "Sub2API 账号目录读取失败，无法确认新号是否可用"})
+        checks.append({"key": "old_remote", "ok": False, "label": "Sub2API 账号目录读取失败，无法确认旧号远端记录"})
+    else:
+        mine = [item for item in remotes if normalize_email(remote_email_from(item)) == new]
+        if len(mine) == 1:
+            state = sub2api_status.classify(mine[0])
+            label = f"新号 Sub2API #{remote_id_from(mine[0])} 可用" if state == "healthy" else \
+                f"新号 Sub2API #{remote_id_from(mine[0])} 当前不可调度（{sub2api_status.LABELS.get(state, (state,))[0]}）"
+            checks.append({"key": "new_remote", "ok": state == "healthy", "label": label})
+        elif mine:
+            checks.append({"key": "new_remote", "ok": False, "label": f"Sub2API 里有 {len(mine)} 个新邮箱账号，请核对"})
+        else:
+            checks.append({"key": "new_remote", "ok": False, "label": "新号还没有推送到 Sub2API"})
+        left = [remote_id_from(item) for item in remotes
+                if normalize_email(remote_email_from(item)) == old or (old_remote_id and remote_id_from(item) == old_remote_id)]
+        checks.append({"key": "old_remote", "ok": not left, "label": (
+            f"旧号 Sub2API 记录仍在（#{', #'.join(left)}），结束后不会自动删除，请到 Sub2API 自行处理"
+            if left else "旧号在 Sub2API 已没有记录")})
+
+    membership, reason = await _count_target(db, op, new)
+    will_count = official == "joined" and membership is not None
+    count_label = "今日切换会 +1" if will_count else (
+        f"今日切换不加（{reason}）" if official == "joined" else "今日切换不加（官方未确认新邮箱已入组）")
+    await db.rollback()  # Read-only: end the read transaction.
+    return {"ok": True, "operation_id": op.public_id, "old_email": old, "replacement_email": new,
+            "checks": checks, "passed": all(item["ok"] for item in checks),
+            "will_count": will_count, "count_label": count_label}
+
+
+async def resolve_rotation(db, public_id: str, *, rotate=None) -> dict[str, Any]:
+    """Close an unfinished manual rotation by hand: local records only, never official or Sub2API writes."""
+    rotate = rotate or _default_rotate()
+    op = await operation_store.get_by_public_id(db, public_id)
+    if op is None:
+        return {"ok": False, "error": "operation not found", "error_code": "not_found"}
+    if not can_continue(op):
+        return {"ok": False, "error_code": "resolve_unsupported", "error": "只有未完成的手动轮转任务可以结束"}
+    new = normalize_email(unpack_input(op.input_json).get("replacement_email"))
+    # Live read first, outside the write lock.
+    official = await _official_state(rotate, db, await db.get(Workspace, int(op.workspace_id)), new)
+    await db.rollback()
+    await db.execute(update(Operation).where(Operation.public_id == public_id).values(id=Operation.id))
+    op = await operation_store.get_by_public_id(db, public_id)
+    await db.refresh(op)
+    if not can_continue(op):
+        await db.rollback()
+        return {"ok": False, "error_code": "resolve_conflict", "error": "任务状态已变化（可能已在继续），请刷新后再看"}
+    stamp = utcnow()
+    switch_count = None
+    membership, reason = await _count_target(db, op, new)
+    if official == "joined" and membership is not None:
+        counted = await increment_workspace_switch_count(db, int(op.workspace_id), commit=False)
+        if counted.get("ok"):
+            membership.switch_counted_at = stamp
+            switch_count = counted["switch_count"]
+            await operation_store.mark_step(db, op, "counted", state="success",
+                                            result={"switch_count": switch_count, "by": "manual_resolve"})
+    count_text = f"今日切换 +1，现为 {switch_count['count']} 次" if switch_count else (
+        f"今日切换未加（{reason}）" if official == "joined" else "今日切换未加（官方未确认新邮箱已入组）")
+    message = f"已人工结束轮转；{count_text}"
+    op.state = "resolved"
+    op.finished_at = stamp
+    op.locked_by = None
+    op.lease_expires_at = None
+    op.error_code = None
+    op.error_message = None
+    op.result_json = json.dumps({"success": False, "status": "resolved", "message": message,
+                                 "official_state": official, "switch_count": switch_count}, ensure_ascii=False)
+    await operation_store.note(db, op, "resolved", message, touch_lease=False)
+    await db.commit()
+    # Let the local member list catch up with what the operator did by hand.
+    sync_queued = False
+    try:
+        from app.application.jobs.workspace_sync import enqueue_workspace_sync
+        sync_queued = bool((await enqueue_workspace_sync(db, op.workspace_id, source="automatic")).get("ok"))
+    except Exception:  # noqa: BLE001 - the close is already durable
+        await db.rollback()
+    return {"ok": True, "operation_id": op.public_id, "state": "resolved", "message": message,
+            "counted": bool(switch_count), "switch_count": switch_count, "sync_queued": sync_queued}
+
+
 # ---------------------------------------------------------------- preflight
 
 

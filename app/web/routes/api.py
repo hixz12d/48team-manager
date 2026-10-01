@@ -269,6 +269,36 @@ def build_api_router(get_db) -> APIRouter:
             raise HTTPException(status_code=404, detail=result.get("error") or "not found")
         return _accepted(result)
 
+    @router.get("/operations/{public_id}/resolve-rotation")
+    async def resolve_rotation_check(
+        public_id: str,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        from app.application import manual_rotation
+
+        result = await manual_rotation.resolution_check(db, public_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "resolve check failed")
+        return result
+
+    @router.post("/operations/{public_id}/resolve-rotation")
+    async def resolve_rotation(
+        public_id: str,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        from app.application import manual_rotation
+
+        result = await manual_rotation.resolve_rotation(db, public_id)
+        if result.get("error_code") == "not_found":
+            raise HTTPException(status_code=404, detail=result.get("error") or "not found")
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "resolve failed")
+        return result
+
     @router.post("/workspaces/{workspace_id}/kick", status_code=status.HTTP_202_ACCEPTED)
     async def kick_workspace_member(
         workspace_id: int,

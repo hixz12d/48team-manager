@@ -122,6 +122,11 @@
               <option value="healthy">检测正常</option><option value="forbidden">访问被拒绝</option>
               <option value="credential_error">本地凭证异常</option><option value="pending">待验证</option>
             </select>
+            <select class="filter" id="management-switches" aria-label="今日切换次数" title="按团队今日切换次数筛选，北京时间 00:00 清零；未分配账号不显示">
+              <option value="all">全部切换次数</option><option value="0">今日切换 0 次</option>
+              <option value="1">今日切换 1 次</option><option value="2">今日切换 2 次</option>
+              <option value="3">今日切换 3 次及以上</option>
+            </select>
             <details class="management-more-filters">
               <summary class="button" id="accounts-more-label">更多筛选</summary>
               <div class="management-filter-options">
@@ -181,6 +186,7 @@
               <option value="failed">失败</option>
               <option value="manual_required">需人工</option>
               <option value="cancelled">已取消</option>
+              <option value="resolved">已人工结束</option>
             </select>
             <select class="filter" id="operations-type" aria-label="任务类型">
               <option value="">全部类型</option>

@@ -55,7 +55,7 @@ async def count_switch_once(db: AsyncSession, workspace_id: int, account_id: int
     account = await db.get(Account, account_id)
     roots = await db.scalars(select(Operation).where(
         Operation.source == "manual_rotation", Operation.op_type == "rotate",
-        Operation.workspace_id == workspace_id, Operation.state != "success",
+        Operation.workspace_id == workspace_id, Operation.state.not_in(("success", "resolved")),
     ))
     for root in roots:
         from app.application.manual_rotation import _has_side_effects
@@ -117,7 +117,7 @@ async def finish_after_authorization(
     from app.application.operations import unpack_input
     roots = await db.scalars(select(Operation).where(
         Operation.source == "manual_rotation", Operation.op_type == "rotate",
-        Operation.workspace_id == workspace_id, Operation.state != "success",
+        Operation.workspace_id == workspace_id, Operation.state.not_in(("success", "resolved")),
     ))
     for root in roots:
         from app.application.manual_rotation import _has_side_effects

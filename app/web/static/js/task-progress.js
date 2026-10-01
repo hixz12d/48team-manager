@@ -1,7 +1,7 @@
 /* Shared stage presentation. Only explicit step evidence is marked complete. */
 (() => {
   const labels = {pending: '提交中', queued: '排队中', running: '进行中', waiting: '等待中', manual_required: '需人工',
-    success: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消'};
+    success: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', resolved: '已人工结束'};
   const kinds = {onboard: '邀请入组', replenish: '补充团队', rotate: '受控轮转', kick_member: '移出成员'};
   const stepStates = {done: '已完成', skipped: '已跳过', visited: '已记录', current: '当前阶段', failed: '未完成', pending: '待确认'};
   const mounts = new Map();
@@ -129,7 +129,8 @@
         actions.append(button('查看详情', b => api.open?.(item.id, b)));
         if (density !== 'compact' && item.can_cancel && !stale) actions.append(button('取消任务', b => api.cancel?.(item, b)));
         if (density !== 'compact' && item.can_retry && !stale) actions.append(button('重试任务', b => api.retry?.(item, b)));
-        if (density !== 'compact' && item.can_continue_rotation && !stale) actions.append(button('继续轮转', b => api.continueRotation?.(item, b), 'button compact primary'));
+        if (item.can_continue_rotation && !stale) actions.append(button('继续轮转', b => api.continueRotation?.(item, b), 'button compact primary'));
+        if (density !== 'compact' && item.can_continue_rotation && !stale) actions.append(button('结束轮转', b => api.resolveRotation?.(item, b)));
         if (density !== 'compact' && needsHelp(item) && item.account_id) {
           const link = el('a', 'button compact', '查看账号'); link.href = `/accounts?account=${encodeURIComponent(item.account_id)}`; actions.append(link);
         }

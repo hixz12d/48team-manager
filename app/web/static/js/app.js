@@ -70,6 +70,7 @@
     cancelled: "已取消",
     manual_required: "需人工",
     partial: "部分完成",
+    resolved: "已人工结束",
     pending: "待确认",
     verified: "已验证",
     missing: "缺失",
@@ -162,7 +163,7 @@
     vacancy_not_safe_to_refill: "移出回执显示空出的席位可能收费，暂不补位。请核对账单后继续轮转。"
   };
   const ACTIVE_OPERATION_STATES = new Set(["pending", "queued", "running", "waiting"]);
-  const TERMINAL_OPERATION_STATES = new Set(["success", "failed", "manual_required", "cancelled", "partial"]);
+  const TERMINAL_OPERATION_STATES = new Set(["success", "failed", "manual_required", "cancelled", "partial", "resolved"]);
 
   function abortEntity(key) {
     const previous = readControllers.get(key);
@@ -1160,7 +1161,7 @@
     check.type = "checkbox";
     check.className = "operation-select";
     check.dataset.publicId = item.id;
-    check.disabled = !["success", "partial", "failed", "cancelled", "manual_required"].includes(item.state || item.status) || Boolean(item.archived);
+    check.disabled = !["success", "partial", "failed", "cancelled", "manual_required", "resolved"].includes(item.state || item.status) || Boolean(item.archived);
     check.addEventListener("click", (event) => event.stopPropagation());
     check.addEventListener("change", updateOperationsBulkButton);
     checkWrap.append(check);
@@ -1913,6 +1914,35 @@ function hmeRow(item) {
         },
       },
       {
+        id: "operation.resolve_rotation",
+        label: "结束轮转",
+        visible: (item) => Boolean(item.can_continue_rotation),
+        run: async (item, trigger) => {
+          setButtonBusy(trigger, true, "核对中");
+          let check;
+          try {
+            check = await fetchEntity(`operation-resolve-check-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/resolve-rotation`);
+          } catch (error) { toast(friendlyError(error), "error"); return; }
+          finally { setButtonBusy(trigger, false); }
+          const failed = (check.checks || []).filter((row) => !row.ok);
+          const items = [
+            ...(check.checks || []).map((row) => `${row.ok ? "通过" : "未通过"}：${row.label}`),
+            check.count_label,
+            "不会改官方团队，不会推送或删除 Sub2API；结束后团队解除轮转锁定",
+          ];
+          if (!await confirmDanger(`结束轮转 ${check.old_email} → ${check.replacement_email}？`, {
+            title: "结束轮转",
+            items,
+            hint: failed.length ? `注意：有 ${failed.length} 项核对未通过。确认已在别处处理好再结束；结束后不会再自动补齐这些步骤。` : "核对全部通过。",
+            confirmLabel: failed.length ? "仍然结束" : "结束轮转",
+            tone: failed.length ? "danger" : "primary",
+          }, trigger)) return;
+          const result = await postAction(`operation-resolve-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/resolve-rotation`);
+          toast(result.message || "已人工结束轮转", "success");
+          await bootPage();
+        },
+      },
+      {
         id: "operation.retry",
         label: "安全重试",
         visible: (item) => Boolean(item.can_retry),
@@ -1924,7 +1954,7 @@ function hmeRow(item) {
       {
         id: "operation.archive",
         label: "清除记录",
-        visible: (item) => !item.archived && ["success", "partial", "failed", "cancelled", "manual_required"].includes(item.state || item.status),
+        visible: (item) => !item.archived && ["success", "partial", "failed", "cancelled", "manual_required", "resolved"].includes(item.state || item.status),
         run: async (item) => {
           if (!await confirmDanger(`确认清除任务 ${item.id}？`, { title: "清除任务记录", hint: "记录会软归档，可在“已清除”里恢复。", confirmLabel: "清除记录", tone: "primary" })) return;
           const result = await patchAction(`operation-archive-${item.id}`, `/api/operations/${encodeURIComponent(item.id)}/archive`, { reason: "manual_clear" });
@@ -4515,6 +4545,12 @@ function hmeRow(item) {
     },
     continueRotation: async (item, trigger) => {
       await (entityActions.operation || []).find((action) => action.id === "operation.continue_rotation")?.run(item, trigger);
+      await window.Team48Runtime.refresh();
+    },
+    resolveRotation: async (item, trigger) => {
+      try {
+        await (entityActions.operation || []).find((action) => action.id === "operation.resolve_rotation")?.run(item, trigger);
+      } catch (error) { toast(friendlyError(error), "error"); }
       await window.Team48Runtime.refresh();
     },
   });

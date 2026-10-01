@@ -58,10 +58,10 @@
   const query = () => new URLSearchParams(location.search);
   const viewName = value => ({ portfolio: "teams", flat: "all" }[value] || (["teams", "all", "unassigned", "attention"].includes(value) ? value : "teams"));
   function setQuery(key, value) {
-    if (["q", "purpose", "health", "team", "view", "remote"].includes(key)) selected.clear();
+    if (["q", "purpose", "health", "team", "view", "remote", "switches"].includes(key)) selected.clear();
     const params = query();
-    if (["q", "purpose", "health", "team", "view", "remote", "sort", "page_size"].includes(key)) params.delete("page");
-    if (!value || value === "all" && ["purpose", "health", "remote"].includes(key)) params.delete(key); else params.set(key, value);
+    if (["q", "purpose", "health", "team", "view", "remote", "switches", "sort", "page_size"].includes(key)) params.delete("page");
+    if (!value || value === "all" && ["purpose", "health", "remote", "switches"].includes(key)) params.delete(key); else params.set(key, value);
     history.replaceState(null, "", `${location.pathname}${params.size ? "?" + params : ""}`);
   }
   function button(text, action, cls = "button", key) {
@@ -73,9 +73,9 @@
     });
     return node;
   }
-  const FILTER_KEYS = ["q", "purpose", "health", "team", "remote"];
-  const filterSelectors = {purpose: "[data-filter='purpose']", health: "#management-health", team: "#management-workspace", remote: "#management-remote"};
-  const filterNames = {purpose: "用途", health: "检测", team: "团队", remote: "Sub2API"};
+  const FILTER_KEYS = ["q", "purpose", "health", "switches", "team", "remote"];
+  const filterSelectors = {purpose: "[data-filter='purpose']", health: "#management-health", switches: "#management-switches", team: "#management-workspace", remote: "#management-remote"};
+  const filterNames = {purpose: "用途", health: "检测", switches: "切换", team: "团队", remote: "Sub2API"};
   const activeFilters = params => FILTER_KEYS.filter(key => {
     const value = params.get(key);
     return Boolean(value) && (key === "q" || value !== "all");
@@ -148,12 +148,22 @@
       return badge;
     }
   const contexts = account => account.contexts?.length ? account.contexts : [account];
+  // Team switch counts reset at Beijing midnight; "3" means three or more. Unassigned accounts never match a count.
+  function switchesMatch(workspaceId, wanted) {
+    if (!wanted || wanted === "all") return true;
+    const group = workspaceId == null ? null : (payload?.groups || []).find(g => String(g.id) === String(workspaceId));
+    if (!group) return false;
+    const count = window.Team48SwitchCount.countForToday(group.switch_count);
+    return wanted === "3" ? count >= 3 : count === Number(wanted);
+  }
   function matches(account, group, params) {
     const text = (params.get("q") || "").trim().toLowerCase();
     const purpose = params.get("purpose") || "all";
     const health = params.get("health") || "all";
     const workspace = params.get("team");
     if (workspace && !contexts(account).some(c => String(c.workspace_id) === workspace)) return false;
+    const switches = params.get("switches");
+    if (switches && !contexts(account).some(c => switchesMatch(c.workspace_id ?? group?.id, switches))) return false;
     if (text && ![account.email, account.name, group?.display_name, group?.name, group?.official_workspace_id,
       account.workspace, ...contexts(account).map(c => c.workspace_name)].join(" ").toLowerCase().includes(text)) return false;
     if (purpose === "archived") {
@@ -406,7 +416,8 @@
         if (params.get("team") && String(group.id) !== params.get("team")) continue;
         const items = sortAccounts((group.members || []).filter(a => matches(a, group, params)), params);
         if (items.length) entries.push(...items.map(account => ({account, group})));
-        else if (!(group.members || []).length && !["q", "health", "purpose", "remote"].some(key => params.get(key) && params.get(key) !== "all")) entries.push({account: null, group});
+        else if (!(group.members || []).length && !["q", "health", "purpose", "remote"].some(key => params.get(key) && params.get(key) !== "all")
+          && switchesMatch(group.id, params.get("switches"))) entries.push({account: null, group});
       }
       entries.push(...sortAccounts((data.unassigned || []).filter(a => matches(a, null, params)), params).map(account => ({account, group: null})));
       return entries;
@@ -482,6 +493,8 @@
     }
     wsSelect.value = params.get("team") || "";
     document.getElementById("management-health").value = params.get("health") || "all";
+    const switchesFilter = document.getElementById("management-switches");
+    if (switchesFilter) switchesFilter.value = params.get("switches") || "all";
     const remoteFilter = document.getElementById("management-remote");
     if (remoteFilter) remoteFilter.value = params.get("remote") || "all";
     const remoteInfo = data.sub2api_status;
@@ -675,6 +688,7 @@
       document.querySelector("[data-filter='purpose']").addEventListener("change", event => { setQuery("purpose", event.target.value); render(payload); });
       document.getElementById("management-health").addEventListener("change", event => { setQuery("health", event.target.value); render(payload); });
       document.getElementById("management-remote")?.addEventListener("change", event => { setQuery("remote", event.target.value); render(payload); });
+      document.getElementById("management-switches")?.addEventListener("change", event => { setQuery("switches", event.target.value); render(payload); });
       document.getElementById("refresh-remote-status")?.addEventListener("click", async event => {
         const b = event.currentTarget; b.disabled = true;
         try {

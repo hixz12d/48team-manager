@@ -1,7 +1,7 @@
 """Persistent operations and automation policies."""
 
 ACTIVE_STATES = ("queued", "running", "waiting")
-TERMINAL_STATES = ("success", "partial", "failed", "cancelled", "manual_required")
+TERMINAL_STATES = ("success", "partial", "failed", "cancelled", "manual_required", "resolved")
 OPERATION_TYPES = (
     "quota_probe",
     "auth_probe",
