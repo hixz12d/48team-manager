@@ -356,8 +356,8 @@ async def resolution_check(db, public_id: str, *, rotate=None) -> dict[str, Any]
     will_count = official == "joined" and membership is not None
     count_label = "今日切换会 +1" if will_count else (
         f"今日切换不加（{reason}）" if official == "joined" else "今日切换不加（官方未确认新邮箱已入组）")
-    await db.rollback()  # Read-only: end the read transaction.
-    return {"ok": True, "operation_id": op.public_id, "old_email": old, "replacement_email": new,
+    await db.rollback()  # Read-only: end the read transaction (expires `op`; use public_id below).
+    return {"ok": True, "operation_id": public_id, "old_email": old, "replacement_email": new,
             "checks": checks, "passed": all(item["ok"] for item in checks),
             "will_count": will_count, "count_label": count_label}
 
@@ -410,7 +410,7 @@ async def resolve_rotation(db, public_id: str, *, rotate=None) -> dict[str, Any]
         sync_queued = bool((await enqueue_workspace_sync(db, op.workspace_id, source="automatic")).get("ok"))
     except Exception:  # noqa: BLE001 - the close is already durable
         await db.rollback()
-    return {"ok": True, "operation_id": op.public_id, "state": "resolved", "message": message,
+    return {"ok": True, "operation_id": public_id, "state": "resolved", "message": message,
             "counted": bool(switch_count), "switch_count": switch_count, "sync_queued": sync_queued}
 
 
