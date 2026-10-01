@@ -94,7 +94,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 
 - `environment.py`：注册、入组、OAuth、重授权共用一个启动配置（`launch_persistent_context`，沿用代理和 SOCKS5 认证桥）。档案目录 `data/chrome-profiles/<email>/`，Chromix 在 `data/chrome-profiles/chromix/<email>/`；`.team48-browser.json` 固定种子、语言、时区、窗口，损坏即停止不重新随机。
 - 注册流程 `BROWSER_SIGNUP_FLOW`：`legacy`（默认，需邀请链接）或 `extension`（先由官方 API 确认邀请，再从首页注册）。extension 失败不回退 legacy。
-- extension 托管桥：`signup.py`、`signup_state.py`、`signup_readiness.py`、`signup_input.py`、`signup_bridge.js`。在隔离环境注入插件 `content.js`，输入走 CDP `Input.dispatch*` / `insertText`（真实事件），验证码在 Python 侧读取。主页可操作并两次确认登录邮箱才算完成，30 秒未就绪返回 `registration_home_not_ready`。
+- extension 托管桥：`signup.py`、`signup_state.py`、`signup_readiness.py`、`signup_input.py`、`signup_bridge.js`。在隔离环境注入插件 `content.js`，输入走 CDP `Input.dispatch*` / `insertText`（真实事件），验证码在 Python 侧读取。主页可操作并两次确认登录邮箱才算完成；主页 30 秒仍未稳定时，若目标邮箱登录态已间隔确认两次，就带登录态交给官方入组 / 角色席位核对后再同页授权（截图存 `data/debug/<时间>/home-not-ready.png`，`signup_diagnostics.home_not_ready` 记各就绪条件），否则返回 `registration_home_not_ready`。
 - 注册、入组确认、OAuth 共用同一进程、页面和代理（`InvitedBrowserSession`），全程占用全局浏览器槽。
 
 ### 插件接口（`web/routes/extension.py`、`application/member_handoff.py`）

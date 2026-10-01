@@ -17,9 +17,22 @@ from urllib.parse import urlsplit
 
 from app.integrations.openai.browser.signup_state import HOSTS, SignupState, trusted_url
 from app.integrations.openai.browser.signup_input import SignupInput, PROTOCOL_VERSION, CAPABILITIES
-from app.integrations.openai.browser.signup_readiness import SignupReadiness, HOME_READY_TIMEOUT
+from app.integrations.openai.browser.signup_readiness import SignupReadiness, HOME_READY_TIMEOUT, SESSION_CONFIRM_SECONDS
 
 ASSET_DIR = Path(__file__).resolve().parents[4] / "extensions" / "chatgpt-signup"
+DEBUG_DIR = Path(__file__).resolve().parents[4] / "data" / "debug"
+HOME_CONDITIONS = ("home", "forms", "busy", "dialog", "pending", "foreground", "loaded")
+
+
+def save_home_screenshot(page):
+    """Screenshot only: page HTML may carry account details."""
+    dest = DEBUG_DIR / time.strftime("%Y%m%d-%H%M%S")
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(dest / "home-not-ready.png"))
+        return dest.name
+    except Exception:
+        return ""
 
 
 def signup_assets():
@@ -231,6 +244,9 @@ def run_managed_signup(*, browser, page, email, password, profile_dir, start_url
         last_boundary, boundary_since = "", time.monotonic()
         authenticated_since = None
         reopened = False
+        # Identity reads survive home-readiness resets; the official membership check decides the rest.
+        identity, identity_reads, identity_at = {}, 0, None
+        last_snapshot, home_fallback = {}, None
         while state.status == "running" and time.monotonic() - state.started < 600:
             page.wait_for_timeout(100)
             bridge.pump()
@@ -239,9 +255,17 @@ def run_managed_signup(*, browser, page, email, password, profile_dir, start_url
             # DOM revisions also retain short loading/modal changes between polls.
             snapshot = bridge.readiness()
             gate.observe(snapshot)
+            last_snapshot = snapshot or last_snapshot
             if urlsplit(page.url).netloc != "chatgpt.com" or snapshot.get("forms"):
                 authenticated_since = None  # Returning to registration retains its original budget.
+                identity, identity_reads, identity_at = {}, 0, None
             if authenticated_since is not None and time.monotonic() - authenticated_since >= HOME_READY_TIMEOUT:
+                home_fallback = {key: bool(last_snapshot.get(key)) for key in HOME_CONDITIONS}
+                home_fallback["screenshot"] = save_home_screenshot(page)
+                if identity_reads >= 2:
+                    checkpoint("signup_home_not_ready", "主页未稳定就绪，但目标邮箱登录态已间隔确认两次，交给官方入组核对")
+                    session = identity
+                    break
                 state.fail("registration_home_not_ready", "已登录，但主页或工作空间页面未稳定完成；保留账号，未启动授权")
                 break
             url, state.boundary_url = state.boundary_url, None
@@ -277,6 +301,10 @@ def run_managed_signup(*, browser, page, email, password, profile_dir, start_url
                 continue
             if authenticated_since is None:
                 authenticated_since = time.monotonic()
+            now = time.monotonic()
+            if identity_at is None or now - identity_at >= SESSION_CONFIRM_SECONDS:
+                identity_reads, identity_at = identity_reads + 1, now
+            identity = peeked
             checkpoint("signup_wait_home", "已识别目标邮箱，等待主页与工作空间页面完成")
             if not after["foreground"] or after["forms"] or after["busy"]:
                 continue
@@ -307,7 +335,8 @@ def run_managed_signup(*, browser, page, email, password, profile_dir, start_url
                   "signup_attempts": dict(state.attempts), "signup_retries": dict(state.retries),
                   "signup_diagnostics": {"schema": 1, "input_protocol": PROTOCOL_VERSION,
                       "input_capabilities": list(CAPABILITIES), "checkpoints": checkpoints,
-                      "readiness": gate.diagnostics(), "workspace_actions": actions}}
+                      "readiness": gate.diagnostics(), "workspace_actions": actions,
+                      "home_not_ready": home_fallback}}
         if session:
             payload = session["json"]
             result.update(access_token=onboard.session_access_token(session),

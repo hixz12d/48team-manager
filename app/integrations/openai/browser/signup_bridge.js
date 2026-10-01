@@ -27,7 +27,7 @@
     const loaded = document.readyState === 'complete';
     const next = JSON.stringify([location.href, home, forms, busy, dialog, pending, foreground, loaded]);
     if (next !== signature) { signature = next; revision++; }
-    return {url: location.href, revision, home, forms, busy, dialog, pending, foreground,
+    return {url: location.href, revision, home, forms, busy, dialog, pending, foreground, loaded,
       ready: location.hostname === 'chatgpt.com' && loaded && foreground && home && !forms && !busy && !dialog && !pending};
   }
   const observer = new MutationObserver(() => readiness());
