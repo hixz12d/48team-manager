@@ -890,7 +890,7 @@ async function contentMessage(message, sender) {
         autoResume: AUTO_RESUME_REASONS.has(job.pauseReason), autoRetry: autoRetryAllowed(job)} : {})};
     return state.active ? {...state, password: job.password, profile: job.profile, reviewSteps: job.reviewSteps || {},
       phoneBack: !!job.phoneBack, phone: job.phone ? {id: job.phone.id, tail: job.phone.tail, bound: job.phone.bound,
-        submitted: !!job.phone.submittedAt, codeSubmitted: !!job.phone.codeSubmittedAt,
+        submitted: !!job.phone.submittedAt, codeSubmitted: !!job.phone.codeSubmittedAt, snapshot: job.phone.snapshot || null,
         sinceSubmit: job.phone.submittedAt ? Date.now() - job.phone.submittedAt : null} : null} : state;
   }
   if (message.type === 'resume' && job.status === 'paused') {
@@ -1036,6 +1036,14 @@ async function contentMessage(message, sender) {
       recordEvent(job, 'phone_submitted', {page: pageKind(sender.url), stage: 'phone'});
       job.message = `已提交尾号 ${phone.tail} 的号码，等待短信验证码`;
     }
+    await saveJob(job);
+    return {};
+  }
+  if (message.type === 'phone-snapshot') {
+    // What the page said when this number / code was submitted; survives a reload of the phone page.
+    const phone = job.phone;
+    if (!phone || phone.id !== Number(message.phoneId) || !['number', 'code'].includes(message.step)) return {};
+    phone.snapshot = {step: message.step, outcome: String(message.outcome || '')};
     await saveJob(job);
     return {};
   }

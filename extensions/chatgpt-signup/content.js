@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.8.1';
+  const VERSION = '0.8.2';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -1065,7 +1065,8 @@
     // Input/change validation can fire submit without any actual Continue click.
     // Let the normal mode continue once the complete form has stayed idle; review
     // will show its manual-submit prompt, never silently authorize a first click.
-    if (continueStage(currentStage) && job.mode !== 'manual' && !submitted.loadingSeen && !submitted.control && !pendingClick &&
+    // The phone page counts too: its SMS/WhatsApp toggle may submit the form without a request.
+    if ((continueStage(currentStage) || currentStage === 'phone') && job.mode !== 'manual' && !submitted.loadingSeen && !submitted.control && !pendingClick &&
         clock() - submitted.at >= SUBMISSION_WAIT && submitted.values === formValues(form) &&
         validationSnapshot(form).size === 0 && enabled(continueButton(form))) {
       requireForeground();
@@ -1077,7 +1078,7 @@
     // (reusing the same values and OTP). Auto mode only; never while typing, loading or after our own click.
     const stallKey = `${currentStage}:${location.pathname}`;
     const submitButton = continueButton(form);
-    if (!filling && continueStage(currentStage) && (job.mode || 'auto') === 'auto' && submitted.loadingSeen && !submitted.control && !pendingClick &&
+    if (!filling && (continueStage(currentStage) || currentStage === 'phone') && (job.mode || 'auto') === 'auto' && submitted.loadingSeen && !submitted.control && !pendingClick &&
         (stallReleases.get(stallKey) || 0) < STALL_RELEASES && !loading && !loadingNow(form, submitButton) &&
         clock() - Math.max(submitted.at, submitted.busyAt || 0) >= STALL_WAIT &&
         submitted.values === formValues(form) && !incomplete && validationSnapshot(form).size === 0 && enabled(submitButton)) {
@@ -1394,12 +1395,21 @@
       ['active', 'checked', 'on'].includes(choice.getAttribute('data-state'));
     if (!checked) {
       const target = choice.matches('input') ? [...(choice.labels || [])].find(visible) || choice : choice;
+      const form = field.closest('form'), before = form && submittedForms.get(form);
       if (await clickControl(target)) await rest(300, 600);
+      // The toggle can fire a DOM submit of its own. Without a spinner it is not the real submission:
+      // drop it so Continue still gets clicked. With one, the page's response decides (error -> next number).
+      const record = form && submittedForms.get(form);
+      if (record && record !== before) { record.flush(); if (!record.loadingSeen) forgetSubmission(form); }
     }
     return null;
   }
   // Local to this page: what the page said when this number / code was submitted.
   let phoneSnapshot = null, phoneTraced = '', backSince = 0, backClickedAt = 0, phoneWaitSince = 0, codeWaitSince = 0;
+  async function rememberPhoneSnapshot(snapshot) {
+    phoneSnapshot = snapshot;
+    await send('phone-snapshot', {phoneId: snapshot.id, step: snapshot.step, outcome: snapshot.outcome});
+  }
   async function phoneRejected(stage) {
     const phone = job.phone;
     if (!phone) return false;
@@ -1408,11 +1418,22 @@
     // WhatsApp instead of SMS shows as the code page itself, also after a reload.
     if (stage === 'phone_otp' && !phone.bound && hasAny(text, PHONE_RISK)) outcome = 'risk';
     else {
-      if (phoneSnapshot?.id !== phone.id) return false;
+      // After a reload the in-page snapshot is gone: use the copy the worker kept for this number.
+      if (phoneSnapshot?.id !== phone.id) phoneSnapshot = phone.snapshot ? {id: phone.id, ...phone.snapshot} : null;
+      if (!phoneSnapshot) return false;
       const now = phoneOutcome(text, stage === 'phone_otp' && phoneSnapshot.step === 'code');
       // An error still shown from before this submission only counts once it went away and came back.
-      if (!now) { phoneSnapshot.outcome = ''; return false; }
-      if (now === phoneSnapshot.outcome || (phone.bound && now !== 'wrong_code')) return false;
+      if (!now) {
+        if (phoneSnapshot.outcome) await rememberPhoneSnapshot({...phoneSnapshot, outcome: ''});
+        return false;
+      }
+      if (phone.bound && now !== 'wrong_code') return false;
+      // The same error as before this number (e.g. the last number's WhatsApp notice) counts once our
+      // Continue was processed and the page stayed: a number the page accepted would have moved on.
+      const answered = pendingClick?.stage === 'phone' && phoneSnapshot.step === 'number' && pendingClick.scope.isConnected &&
+        pendingClick.path === location.pathname && (pendingClick.flush(), !loadingNow(pendingClick.scope, pendingClick.button)) &&
+        clock() - (pendingClick.loadingSeen ? pendingClick.busyAt || pendingClick.at : pendingClick.at) > (pendingClick.loadingSeen ? 2000 : 8000);
+      if (now === phoneSnapshot.outcome && !answered) return false;
       outcome = now;
     }
     phoneSnapshot = null;
@@ -1465,9 +1486,10 @@
     if (!(await typePhone(resolve(), full ? reply.number : reply.national, reply.national))) {
       return pause('手机号输入未完成，请检查网页后继续。', 'fill_incomplete');
     }
+    // Before the SMS toggle: clicking it may already submit, and its error must count as new.
+    await rememberPhoneSnapshot({id: reply.id, step: 'number', outcome: phoneOutcome(phoneMessages(), false)});
     const preferred = await chooseSms(resolve() || field);
     if (!resolve()) return;
-    phoneSnapshot = {id: reply.id, step: 'number', outcome: phoneOutcome(phoneMessages(), false)};
     await trace('filled', {stage: 'phone'});
     const digits = () => String(resolve()?.value || '').replace(/\D/g, '');
     const sent = await submit(resolve(), 'phone', () => !resolve() || digits().endsWith(reply.national) ? '' :
@@ -1516,7 +1538,7 @@
         if (!(await typeValue(boxes[index], reply.code[index]))) return pause('短信验证码输入未完成，请检查网页后继续。', 'fill_incomplete');
       }
     } else if (!(await typeValue(anchor, reply.code))) return pause('短信验证码输入未完成，请检查网页后继续。', 'fill_incomplete');
-    phoneSnapshot = {id: phoneId, step: 'code', outcome: phoneOutcome(phoneMessages(), true)};
+    await rememberPhoneSnapshot({id: phoneId, step: 'code', outcome: phoneOutcome(phoneMessages(), true)});
     await send('phone-submitted', {phoneId, step: 'code'});
     await trace('filled', {stage: 'phone_otp'});
     await submit(anchor, 'phone_otp');
