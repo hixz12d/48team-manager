@@ -10,7 +10,7 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.settings import get_setting_value
-from app.core.time import isoformat, utcnow
+from app.core.time import as_utc, isoformat, utcnow
 from app.domain.resources import (
     DEFAULT_COOLDOWN_SEC,
     DEFAULT_MAX_USES,
@@ -103,6 +103,7 @@ class PhonePoolService:
         remaining = max(0, max_uses - int(row.used_count or 0))
         if row.status != STATUS_ACTIVE:
             remaining = 0
+        cooldown_until = as_utc(row.last_used_at) + timedelta(seconds=cfg.cooldown_sec) if row.last_used_at else None
         return {
             "id": row.id,
             "number": row.number,
@@ -114,9 +115,9 @@ class PhonePoolService:
             "last_error_type": row.last_error_type or "",
             "risk_count": int(row.risk_count or 0),
             "last_used_at": isoformat(row.last_used_at),
-            "available_at": isoformat(row.last_used_at + timedelta(seconds=cfg.cooldown_sec)) if row.last_used_at else None,
-            "remaining_seconds": max(0, int(((row.last_used_at + timedelta(seconds=cfg.cooldown_sec)) - utcnow()).total_seconds())) if row.last_used_at else 0,
-            "cooldown_until": isoformat(row.last_used_at + timedelta(seconds=cfg.cooldown_sec)) if row.last_used_at else None,
+            "available_at": isoformat(cooldown_until),
+            "remaining_seconds": max(0, int((cooldown_until - utcnow()).total_seconds())) if cooldown_until else 0,
+            "cooldown_until": isoformat(cooldown_until),
         }
 
     async def expire_leases(self, session: AsyncSession, cfg: PhonePoolConfig | None = None) -> int:
