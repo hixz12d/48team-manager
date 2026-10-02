@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="{{ static_url('css/management.css') }}">
   {% if page == 'overview' %}<link rel="stylesheet" href="{{ static_url('css/runtime.css') }}">{% endif %}
   {% if page == 'settings' %}<link rel="stylesheet" href="{{ static_url('css/settings.css') }}">{% endif %}
+  {% if page == 'pool' %}<link rel="stylesheet" href="{{ static_url('css/pool.css') }}">{% endif %}
   <link rel="icon" href="{{ static_url('logo.svg') }}" type="image/svg+xml">
 </head>
 <body data-page="{{ page }}">
@@ -29,7 +30,8 @@
         <a href="/accounts" class="nav-link{% if page == 'accounts' %} is-active{% endif %}"{% if page == 'accounts' %} aria-current="page"{% endif %}>账号与团队</a>
         <a href="/operations" class="nav-link{% if page == 'operations' %} is-active{% endif %}"{% if page == 'operations' %} aria-current="page"{% endif %}>任务</a>
         <p class="nav-label">资源</p>
-        <a href="/resources/phones" class="nav-link{% if page == 'phones' %} is-active{% endif %}"{% if page == 'phones' %} aria-current="page"{% endif %}>手机号</a>
+        <a href="/resources/pool" class="nav-link{% if page == 'pool' %} is-active{% endif %}"{% if page == 'pool' %} aria-current="page"{% endif %}>备用号池</a>
+        <a href="/resources/phones"class="nav-link{% if page == 'phones' %} is-active{% endif %}"{% if page == 'phones' %} aria-current="page"{% endif %}>手机号</a>
         <a href="/resources/hme" class="nav-link{% if page == 'hme' %} is-active{% endif %}"{% if page == 'hme' %} aria-current="page"{% endif %}>HME</a>
         <a href="/resources/proxies" class="nav-link{% if page == 'proxies' %} is-active{% endif %}"{% if page == 'proxies' %} aria-current="page"{% endif %}>代理</a>
         <a href="/settings" class="nav-link{% if page == 'settings' %} is-active{% endif %}"{% if page == 'settings' %} aria-current="page"{% endif %}>设置</a>
@@ -54,6 +56,8 @@
           <button type="button" class="button primary" data-open-register><span aria-hidden="true">＋</span> 登记团队</button>
           {% elif page == 'hme' %}
           <button type="button" class="button primary" data-action-page="hme-reconcile">对账 HME</button>
+          {% elif page == 'pool' %}
+          <button type="button" class="button primary" data-open-pool-import>导入邮箱</button>
           {% endif %}
         </div>
       </header>
@@ -248,6 +252,8 @@
             </select>
           </div>
         </section>
+        {% elif page == 'pool' %}
+        {% include 'pool.html' %}
         {% elif page == 'phones' %}
         <section class="panel table-shell">
           <div class="toolbar">
@@ -727,5 +733,6 @@
   <script src="{{ static_url('js/sub2api-state-view.js') }}"></script>
   {% if page == 'overview' %}<script src="{{ static_url('js/team-board.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/app.js') }}"></script>
+  {% if page == 'pool' %}<script src="{{ static_url('js/pool.js') }}"></script>{% endif %}
 </body>
 </html>

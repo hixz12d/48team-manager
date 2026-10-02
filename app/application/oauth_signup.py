@@ -13,10 +13,19 @@ from app.integrations.openai.chatgpt import chatgpt_client
 async def run_invited_oauth_signup(
     db, *, child, workspace, password, pickup_url, use_cloudflare, cf_config,
     job_id=None, executable_path="", phone_line="",
-    browser_session=None, use_phone_pool=False,
+    browser_session=None, use_phone_pool=False, mailbox=None,
 ):
+    """mailbox: {"hme_base_url","hme_service_token","hme_account_id"} reads codes from HME instead of Cloudflare."""
     from app.integrations.sms.client import parse_optional_sms
 
+    hme_kwargs = {}
+    if mailbox:
+        use_cloudflare = False
+        hme_kwargs = {
+            "hme_base_url": str(mailbox.get("hme_base_url") or ""),
+            "hme_service_token": str(mailbox.get("hme_service_token") or ""),
+            "hme_account_id": str(mailbox.get("hme_account_id") or ""),
+        }
     phone, sms_url = parse_optional_sms(phone_line)
     authorize = chatgpt_client.create_oauth_authorize_url(
         client_id=oauth_sessions.CLIENT_ID,
@@ -80,6 +89,7 @@ async def run_invited_oauth_signup(
             team_name=str(workspace.name or ""),
             executable_path=executable_path,
             on_stage=on_stage,
+            **hme_kwargs,
         )
         browser_result = result
         if not result.get("ok"):

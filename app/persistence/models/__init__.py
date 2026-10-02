@@ -10,6 +10,7 @@ from app.persistence.models.identity import (
 )
 from app.persistence.models.operations import Operation, OperationStep
 from app.persistence.models.oauth import OAuthSession
+from app.persistence.models.pool import StandbyPoolEntry
 from app.persistence.models.quota import QuotaSnapshot
 from app.persistence.models.resources import HmeAliasLease, PhoneAttempt, PhonePool, ProxyProfile
 from app.persistence.models.revenue import Sub2ApiRevenueDaily, Sub2ApiRevenueEntry
@@ -32,6 +33,7 @@ __all__ = [
     "ProxyProfile",
     "QuotaSnapshot",
     "SeatVacancyEvent",
+    "StandbyPoolEntry",
     "SystemSetting",
     "Sub2ApiProxyBinding",
     "Sub2ApiUsageSnapshot",

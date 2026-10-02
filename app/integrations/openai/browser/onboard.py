@@ -287,6 +287,21 @@ def looks_like_email_gate(*, title: str = "", body: str = "", url: str = "") -> 
     return False
 
 
+REGISTRATION_TEXT_MARKERS = ("create a password", "create your account")
+NOT_REGISTERED_ERROR = "这个邮箱还没有注册 ChatGPT，号池只接收已注册账号"
+
+
+def looks_like_registration(*, url: str = "", body: str = "") -> bool:
+    """Login-only mode: OpenAI moved this email into account creation."""
+    url_l = str(url or "").lower()
+    if "create-account" in url_l and "log-in-or-create-account" not in url_l:
+        return True
+    if "auth.openai.com" not in url_l or "/log-in" in url_l:
+        return False
+    blob = str(body or "").lower()
+    return any(token in blob for token in REGISTRATION_TEXT_MARKERS)
+
+
 def looks_like_session_ended(*, title: str = "", body: str = "") -> bool:
     blob = f"{title}\n{body}".lower()
     return "session has ended" in blob
@@ -1167,7 +1182,11 @@ def run_browser_onboard(
     invite_entry: bool = False,
     continue_in_browser=None,
     signup_flow: str | None = None,
+    hme_base_url: str = "",
+    hme_service_token: str = "",
+    hme_account_id: str = "",
 ) -> Dict[str, Any]:
+    """mode: register / relogin / login (existing account only; stops on any account-creation page)."""
     require_proxy(proxy, "子号浏览器")
     if not allow_sms:
         phone, sms_url, phone_source = "", "", None
@@ -1217,7 +1236,9 @@ def run_browser_onboard(
                     team_name=team_name, report=report,
                     mail_kwargs=_mail_kwargs(email=email, pickup_url=pickup_url, proxy=proxy,
                         use_cloudflare=use_cloudflare, cf_base_url=cf_base_url,
-                        cf_address=cf_address, cf_admin_password=cf_admin_password),
+                        cf_address=cf_address, cf_admin_password=cf_admin_password,
+                        hme_base_url=hme_base_url, hme_service_token=hme_service_token,
+                        hme_account_id=hme_account_id),
                 )
                 result.update(outcome)
                 if result.get("ok") and continue_in_browser is not None:
@@ -1243,6 +1264,9 @@ def run_browser_onboard(
                 cf_base_url=cf_base_url,
                 cf_address=cf_address,
                 cf_admin_password=cf_admin_password,
+                hme_base_url=hme_base_url,
+                hme_service_token=hme_service_token,
+                hme_account_id=hme_account_id,
             )
             known_codes = _snapshot_mailbox_codes(**mail_kw)
             report("fill_email", f"页面已打开：{page.title() or page.url}")
@@ -1267,7 +1291,7 @@ def run_browser_onboard(
             email_submits = 0
             about_you_tries = 0
             invite_reopened = False
-            has_mail = bool(pickup_url or use_cloudflare)
+            has_mail = bool(pickup_url or use_cloudflare or hme_service_token)
             debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
             for _ in range(36):
@@ -1288,6 +1312,24 @@ def run_browser_onboard(
                     break
 
                 page_text = _page_text(page)
+                if mode == "login" and (
+                    looks_like_registration(url=url, body=page_text)
+                    or "about-you" in url
+                    or ("auth.openai.com" in url and (
+                        looks_like_about_you(title=page.title() or "", body=page_text, url=url)
+                        or _visible(page, 'input[name="age"], input[placeholder*="Age" i], select[name="year"], select[autocomplete="bday-year"]')
+                        or _visible(page, 'input[name="name"], input[name="fullName"], input[name="firstName"]')
+                    ))
+                ):
+                    result["error"] = NOT_REGISTERED_ERROR
+                    result["error_code"] = "account_not_registered"
+                    break
+                if mode == "login" and looks_like_session_ended(title=page.title() or "", body=page_text):
+                    report("session_ended", "OpenAI 会话已结束，改走登录页")
+                    if not _click_exact(page, ["Log in", "Continue"]):
+                        page.goto(LOGIN_START_URL, wait_until="load")
+                    page.wait_for_timeout(2000)
+                    continue
                 if looks_like_session_ended(title=page.title() or "", body=page_text):
                     report("session_ended", "OpenAI 会话已结束，改走登录/注册页")
                     if not _click_exact(page, ["Log in", "Sign up", "Continue"]):
@@ -1340,6 +1382,9 @@ def run_browser_onboard(
                         cf_base_url=cf_base_url,
                         cf_address=cf_address,
                         cf_admin_password=cf_admin_password,
+                        hme_base_url=hme_base_url,
+                        hme_service_token=hme_service_token,
+                        hme_account_id=hme_account_id,
                         ignore=known_codes,
                         resends=otp_resends,
                         report=report,

@@ -40,8 +40,11 @@ async def browser_progress(db, job_id, stage, message=""):
     await db.commit()
 
 
-async def prepare(service, db, *, workspace_id, email_line, phone_line, role, seat_intent, skip_invite):
-    """Validate before claiming HME; resume unfinished children before choosing standby."""
+async def prepare(service, db, *, workspace_id, email_line, phone_line, role, seat_intent, skip_invite, mailbox=None):
+    """Validate before claiming HME; resume unfinished children before choosing standby.
+
+    mailbox (HME reader params) satisfies the mail check for already-registered accounts.
+    """
     try:
         parse_optional_sms(phone_line)
         parse_invite_role(role)
@@ -94,7 +97,7 @@ async def prepare(service, db, *, workspace_id, email_line, phone_line, role, se
             email_line = account.mail_raw
             parsed = parse_mail_line(email_line)
     cf = await load_cf_config(db)
-    if not parsed.get("pickup_url") and not all(cf.values()):
+    if not mailbox and not parsed.get("pickup_url") and not all(cf.values()):
         return email_line, failed("mail_missing", "请先配置邮箱验证码和邀请邮件读取方式")
     live, item = await service.workspaces.lookup_live_member(db, workspace, target)
     if not live.get("success") or live.get("lookup_state") == "unknown_due_to_error":
@@ -106,7 +109,7 @@ async def prepare(service, db, *, workspace_id, email_line, phone_line, role, se
     return email_line, None
 
 
-async def authorize_joined(service, db, result, *, workspace_id, phone_line, role, seat_intent, job_id, executable_path, browser_session=None, use_phone_pool=False):
+async def authorize_joined(service, db, result, *, workspace_id, phone_line, role, seat_intent, job_id, executable_path, browser_session=None, use_phone_pool=False, mailbox=None):
     """Only the live membership gate can unlock OAuth; never register in OAuth."""
     from app.application.oauth_signup import run_invited_oauth_signup
 
@@ -129,7 +132,7 @@ async def authorize_joined(service, db, result, *, workspace_id, phone_line, rol
             db, child=child, workspace=workspace, password=decrypt_secret(child.password_encrypted),
             pickup_url=parsed.get("pickup_url") or "", use_cloudflare=not parsed.get("pickup_url"),
             cf_config=cf, job_id=job_id, executable_path=executable_path, phone_line=phone_line,
-            browser_session=browser_session, use_phone_pool=use_phone_pool,
+            browser_session=browser_session, use_phone_pool=use_phone_pool, mailbox=mailbox,
         )
         if not outcome.get("ok"):
             child.auth_state = "oauth_required"

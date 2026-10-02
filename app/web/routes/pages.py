@@ -24,6 +24,11 @@ PAGES = {
         "path": "/operations",
         "subtitle": "查看持久化任务的当前步骤、结果和人工处理项。",
     },
+    "pool": {
+        "title": "备用号池",
+        "path": "/resources/pool",
+        "subtitle": "导入本地注册好的账号，一键拉入团队。",
+    },
     "phones": {
         "title": "手机号",
         "path": "/resources/phones",
@@ -96,6 +101,10 @@ def build_pages_router(templates: Jinja2Templates, version: str) -> APIRouter:
     @router.get("/operations", response_class=HTMLResponse)
     async def operations(request: Request, user: dict = Depends(require_admin)):
         return render(request, "operations", user)
+
+    @router.get("/resources/pool", response_class=HTMLResponse)
+    async def pool(request: Request, user: dict = Depends(require_admin)):
+        return render(request, "pool", user)
 
     @router.get("/resources/phones", response_class=HTMLResponse)
     async def phones(request: Request, user: dict = Depends(require_admin)):

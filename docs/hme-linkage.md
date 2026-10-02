@@ -9,7 +9,8 @@
 | 空邮箱拉人 / 补位 / 自动轮转补位 | 48team `app/application/resources/hme.py` | 向 HME 要一个未占用别名，写本地租约 `hme_alias_leases` |
 | 开号后打标 | 48team `finalize_claim` | HME `POST /api/aliases/:id/label` |
 | 标签存储 | HME | VPS `/data/icloud-hme/accounts.json` 的 `local_labels` |
-| 读验证码 | 48team 走 Cloudflare 临时邮箱 | 不走 HME IMAP |
+| 读验证码 | 48team 走 Cloudflare 临时邮箱；备用号池拉入的邀请邮件和登录验证码走 HME 收件 | HME `/api/inbox` |
+| 备用号池 | 48team `standby_pool.py` | 导入检测收件成功后，原标签为空 / 序号的别名打本地标签 `GPT号池`（算已占用）；拉入成功改团队标签；移出号池恢复原标签 |
 | 补库存 | HME 自动创建 | 只造序号标签别名 |
 
 禁止：改 iCloud 原生备注、为打标调 iCloud generate/update（只走 `SetLocalLabel`）、本机和 VPS 同时对同一 Apple 账号开自动创建、动 `/opt/sub2api`。

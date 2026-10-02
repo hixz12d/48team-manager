@@ -63,6 +63,7 @@ UNSAFE_RETRY_TYPES = {
     "revoke_invite",
     "invite_child",
     "update_member_role",
+    "pool_join",
 }
 
 

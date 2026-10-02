@@ -43,6 +43,7 @@
     { label: "去总览", href: "/" },
     { label: "去团队", href: "/accounts?view=teams" },
     { label: "去账号", href: "/accounts" },
+    { label: "去备用号池", href: "/resources/pool" },
     { label: "去手机号", href: "/resources/phones" },
     { label: "去 HME", href: "/resources/hme" },
     { label: "去代理", href: "/resources/proxies" },
@@ -4771,6 +4772,12 @@ function hmeRow(item) {
     bootPage,
     presentTeamMember,
     workspacePrimaryAction,
+    openConfirm,
+    toast,
+    friendlyError,
+    statusNode,
+    emptyState,
+    registerOverlay: (name, element) => overlayRegistry.set(name, element),
   };
   bootPage();
 })();

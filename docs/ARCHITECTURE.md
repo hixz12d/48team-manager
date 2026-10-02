@@ -84,6 +84,13 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - 每日收入（`application/revenue_daily.py`）：`record_day` 取较大值 upsert 到 `sub2api_revenue_daily`；写入来源 `sync`（`sub2api_usage` 的 `today` 窗口同步成功后）、`settle`（`settle_binding` 复用全程读取的 `summary.today`，读不到用当天 `today` 快照）、`backfill`（`main.py` 启动补录最近 7 天离队号，读 `/accounts/{id}/stats` 的 `history[]`，并对比 Sub2API `server_timezone` 与 `TIMEZONE`，不一致时打 warning 并写进 `note`）。
 - 总览 `overview_totals(db, groups)` → `portfolio.revenue_overview` → summary 的 `revenue_running` / `revenue_today` / `revenue_seven_day`（`{user_cost, synced, total, stale, note}`）：在跑 = 各组 `lifetime` 快照之和；今日 / 近 7 天 = 在绑定号的快照 ＋ 离队号的每日记录，按远端号去重。
 
+### 备用号池（`application/standby_pool.py`、`pool_join.py`）
+
+- 表 `standby_pool_entries`（模型 `persistence/models/pool.py`）；接口 `web/routes/pool.py`（`/api/pool*`，schema 在 `web/schemas/pool.py`）；页面 `/resources/pool`（`templates/pool.html`、`static/js/pool.js`、`static/css/pool.css`）。
+- `standby_pool.py`：导入、HME 收件检测（`probe_account_mailbox`）、打 / 恢复 `GPT号池` 标签、列表（按任务结果纠偏状态并算 `can_join / can_continue / can_remove`）、推荐团队（只读本地数据）、移出、拉入成功后 `apply_team_label`。HME 调用用 `asyncio.to_thread`。
+- `pool_join.py`：`start_pool_join` / `continue_pool_join` 预检后建 `pool_join` 任务（占全局浏览器槽 + 团队锁，禁止通用重试，重启后标待人工），后台调 `onboard.invite_and_onboard(login_existing=True, mailbox=…)`，成功后步骤 `pool_finish`（复用 `finish_after_authorization` 推送 + 计数）、`pool_label`（改团队标签），回写条目状态。
+- `login_existing=True` 模式：强制 playwright + legacy 流程；不领 HME、不设密码、不走 Cloudflare，邀请邮件和验证码从 HME 收件读；浏览器 `run_browser_onboard(mode="login")` 只登录，识别到创建账号 / about-you 页返回 `account_not_registered`。不传新参数时原有邀请 / 补位 / 轮转路径不变。
+
 ### HME 领号（`application/resources/hme.py`）
 
 `maybe_claim_alias` → `claim_next_alias`：排除租约中邮箱和 `occupied_account_emails`（accounts 表里仍在用的账号）→ `pick_next_unoccupied` → 写 `hme_alias_leases`（25 分钟，冲突最多 8 次）。收尾 `finalize_claim` 调 HME `POST /api/aliases/:id/label` 打本地标签。规则见 [hme-linkage.md](hme-linkage.md)。
@@ -119,7 +126,7 @@ SQLite `data/team48.db`（WAL；需 SQLite ≥ 3.25）。表由 `bootstrap.py` �
 | 任务 | `operations`、`operation_steps` |
 | 额度 | `quota_snapshots`、`quota_probe_states`、`quota_dispatch_lease`、`credential_leases` |
 | Sub2API | `sub2api_sync_observations`、`sub2api_refresh_authorities`、`sub2api_refresh_handoffs`、`sub2api_account_status`、`sub2api_usage_snapshots`、`sub2api_proxy_bindings`、`sub2api_revenue_entries`（收入账本，无外键，存邮箱和团队名快照，唯一键 团队 + 远端账号 ID）、`sub2api_revenue_daily`（每日收入，每个远端号每天一行存当天累计 U，只增不减，无外键，不随团队 / 账号 / 绑定删除） |
-| 其他 | `oauth_sessions`、`codex_bindings`、`system_settings`、`hme_alias_leases`、`phone_pool`、`phone_attempts`、`proxy_profiles`、`seat_vacancy_events` |
+| 其他 | `oauth_sessions`、`codex_bindings`、`system_settings`、`hme_alias_leases`、`phone_pool`、`phone_attempts`、`proxy_profiles`、`seat_vacancy_events`、`standby_pool_entries`（备用号池条目） |
 
 凭据加密存储；接口只返回 `secret_state`（stored / missing），不回显密钥。浏览器档案也在 `data/` 下。
 

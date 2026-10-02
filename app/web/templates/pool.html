@@ -1,0 +1,85 @@
+<div class="pool-page" id="pool-root">
+  <section class="pool-summary" id="pool-summary" aria-label="号池统计">
+    <div class="pool-summary-item"><span class="pool-summary-label">总数</span><strong class="tabular" data-pool-summary="total">—</strong></div>
+    <div class="pool-summary-item"><span class="pool-summary-label">待拉入</span><strong class="tabular" data-pool-summary="pending">—</strong></div>
+    <div class="pool-summary-item"><span class="pool-summary-label">拉入中</span><strong class="tabular" data-pool-summary="joining">—</strong></div>
+    <div class="pool-summary-item"><span class="pool-summary-label">已入组</span><strong class="tabular" data-pool-summary="joined">—</strong></div>
+    <div class="pool-summary-item" data-pool-alert="warning"><span class="pool-summary-label">失败 / 待人工</span><strong class="tabular" data-pool-summary="attention">—</strong></div>
+    <div class="pool-summary-item" data-pool-alert="danger"><span class="pool-summary-label">邮箱不可读</span><strong class="tabular" data-pool-summary="mailbox_failed">—</strong></div>
+  </section>
+  <section class="panel table-shell">
+    <div class="toolbar">
+      <span class="hint">导入的号先停在号池，点「拉入团队」才会动官方 Team；拉入中每 5 秒自动刷新。</span>
+      <span class="toolbar-count muted" id="pool-count"></span>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table pool-table">
+        <thead>
+          <tr>
+            <th scope="col">邮箱</th>
+            <th scope="col">邮箱可读</th>
+            <th scope="col">状态</th>
+            <th scope="col">团队</th>
+            <th scope="col">导入时间</th>
+            <th scope="col" class="actions">操作</th>
+          </tr>
+        </thead>
+        <tbody id="pool-body"><tr><td colspan="6" class="muted">正在加载号池…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+<div class="sheet" id="pool-import-sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="pool-import-title">
+    <header>
+      <div>
+        <strong id="pool-import-title">导入邮箱</strong>
+        <p class="muted">每行一个邮箱。只接收已在本地注册好 ChatGPT 的 iCloud HME 别名；不需要密码，登录用邮箱验证码。</p>
+      </div>
+      <button type="button" class="button ghost" data-close-pool-import>关闭</button>
+    </header>
+    <form id="pool-import-form" class="sheet-body">
+      <div class="sheet-section">
+        <label>邮箱列表<textarea name="text" rows="12" maxlength="20000" placeholder="example-alias@icloud.com" required></textarea></label>
+        <p class="hint">空行和 # 开头行会跳过；本地已有的邮箱会跳过；单次最多 50 个。</p>
+      </div>
+      <p id="pool-import-status" class="muted" hidden></p>
+      <div class="pool-import-result" id="pool-import-result" hidden></div>
+      <div class="settings-probe-actions">
+        <button class="button primary" type="submit" id="pool-import-submit">导入</button>
+      </div>
+    </form>
+  </div>
+</div>
+<div class="sheet" id="pool-join-sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="pool-join-title">
+    <header>
+      <div>
+        <strong id="pool-join-title">拉入团队</strong>
+        <p class="muted pool-email" id="pool-join-email"></p>
+      </div>
+      <button type="button" class="button ghost" data-close-pool-join>关闭</button>
+    </header>
+    <form id="pool-join-form" class="sheet-body">
+      <div class="sheet-section">
+        <label>团队<select name="workspace_id" id="pool-join-workspace" required><option value="">正在读取团队…</option></select></label>
+        <p class="hint" id="pool-join-workspace-hint">已预选推荐团队（有空位、无进行中任务、今日切换最少），可改选。</p>
+        <p class="error" id="pool-join-empty" hidden>暂无可拉入的团队</p>
+        <label>角色<select name="role" id="pool-join-role">
+          <option value="member" selected>成员 Member</option>
+          <option value="owner">所有者 Owner</option>
+        </select></label>
+        <label>席位<select name="seat_intent" id="pool-join-seat">
+          <option value="workspace_default" selected>团队默认</option>
+          <option value="standard">Standard</option>
+          <option value="premium">Premium</option>
+        </select></label>
+      </div>
+      <p class="hint pool-join-impact">会修改官方 Team：向该邮箱发送邀请，服务器登录这个账号接受邀请并授权，成功后推送 Sub2API、今日切换 +1。</p>
+      <p id="pool-join-status" class="muted" hidden></p>
+      <div class="settings-probe-actions">
+        <button class="button primary" type="submit" id="pool-join-submit" disabled>拉入</button>
+      </div>
+    </form>
+  </div>
+</div>

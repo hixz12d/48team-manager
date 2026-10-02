@@ -69,6 +69,7 @@ OPERATION_TYPE_LABELS = {
     "free_register": "空闲号注册",
     "reregister": "重注册",
     "runner_selfcheck": "浏览器环境自检",
+    "pool_join": "号池拉入",
 }
 
 BUSINESS_STEP_LABELS = {
@@ -139,6 +140,8 @@ BUSINESS_STEP_LABELS = {
     "runner_callback": "已收到授权回调",
     "runner_authorized": "插件授权完成",
     "runner_diagnostics": "运行诊断",
+    "pool_finish": "推送 Sub2API 并计数",
+    "pool_label": "更新 HME 标签",
 }
 
 
@@ -158,6 +161,11 @@ _ONBOARD_PLAN = (
 OPERATION_STAGE_PLANS = {
     "onboard": _ONBOARD_PLAN,
     "replenish": _ONBOARD_PLAN,
+    "pool_join": _ONBOARD_PLAN[:-1] + (
+        ("pool_finish", ("pool_finish",)),
+        ("pool_label", ("pool_label",)),
+        _ONBOARD_PLAN[-1],
+    ),
     "runner_selfcheck": (
         ("browser_environment", ("browser_environment",)),
         ("runner_started", ("runner_started",)),

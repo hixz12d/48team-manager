@@ -1,0 +1,186 @@
+/* 备用号池页面样式：只写本页专属规则，面板 / 表格 / 按钮 / 抽屉沿用全站 class。规范见 DESIGN.md。 */
+
+.page-pool {
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
+.pool-page {
+  display: grid;
+  gap: var(--space-md);
+}
+
+/* 顶部统计磁贴：与总览顶部统计同一写法（tile 底、说明色小标签、28px 数字） */
+.pool-summary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--tile-gap);
+}
+
+.pool-summary-item {
+  display: grid;
+  align-content: start;
+  gap: var(--space-xxs);
+  min-width: 0;
+  padding: var(--tile-pad);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.pool-summary-label {
+  font-size: var(--text-meta);
+  font-weight: 400;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pool-summary-item strong {
+  font-size: var(--text-figure);
+  font-weight: 400;
+  line-height: 32px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* 有异常时数字变状态色并加符号，不铺底 */
+.pool-summary-item.is-alert[data-pool-alert="warning"] strong { color: var(--warning-text); }
+.pool-summary-item.is-alert[data-pool-alert="danger"] strong { color: var(--danger-text); }
+
+.pool-summary-item.is-alert strong::before {
+  display: inline-block;
+  margin-right: 6px;
+  font-size: 0.5em;
+  vertical-align: 0.35em;
+}
+
+.pool-summary-item.is-alert[data-pool-alert="warning"] strong::before { content: "▲"; }
+.pool-summary-item.is-alert[data-pool-alert="danger"] strong::before { content: "✕"; }
+
+/* 表格：邮箱用 Mono；状态列两行（状态 + 原因 / 查看任务）；窄屏整表横向滚动，不挤压换行 */
+.pool-table {
+  min-width: 960px;
+}
+
+.pool-table td:not(:nth-child(3)) {
+  white-space: nowrap;
+}
+
+.pool-email {
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  color: var(--text);
+}
+
+#pool-join-email {
+  overflow-wrap: anywhere;
+}
+
+.pool-state {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  max-width: 360px;
+}
+
+.pool-state-error {
+  font-size: var(--text-meta);
+  line-height: 1.4;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.pool-state a {
+  font-size: var(--text-meta);
+  color: var(--accent-text);
+}
+
+.pool-state a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pool-table .row-actions {
+  gap: var(--space-xxs);
+}
+
+.pool-table .actions .button {
+  height: var(--control-h-sm);
+  padding: 0 var(--space-xs);
+  font-size: var(--text-meta);
+}
+
+/* 抽屉里的导入结果：按组列出，组间细线 */
+.pool-import-result {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.pool-import-result[hidden] {
+  display: none;
+}
+
+.pool-result-group {
+  display: grid;
+  gap: var(--space-xxs);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border);
+}
+
+.pool-result-group > strong {
+  font-size: var(--text-body);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pool-result-group[data-tone="success"] > strong { color: var(--success-text); }
+.pool-result-group[data-tone="warning"] > strong { color: var(--warning-text); }
+.pool-result-group[data-tone="danger"] > strong { color: var(--danger-text); }
+
+.pool-result-group[data-tone="success"] > strong::before { content: "● "; }
+.pool-result-group[data-tone="warning"] > strong::before { content: "▲ "; }
+.pool-result-group[data-tone="danger"] > strong::before { content: "✕ "; }
+
+.pool-result-group ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.pool-result-group li {
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* 拉入抽屉：改官方 Team 的说明用警告色 + 符号 */
+.pool-join-impact {
+  color: var(--warning-text);
+}
+
+.pool-join-impact::before {
+  content: "▲ ";
+}
+
+#pool-join-email:empty {
+  display: none;
+}
+
+@media (min-width: 1280px) {
+  /* 宽屏取消页面滚动容器，表头才能吸顶（同其他表格页） */
+  .page-pool { overflow: visible; }
+}
+
+@media (max-width: 1280px) {
+  .pool-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .pool-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pool-summary-item { padding: 12px 14px; }
+  .pool-summary-item strong { font-size: 22px; line-height: 28px; }
+}

@@ -216,11 +216,22 @@ class OnboardService:
         browser_session=None,
         keep_operation_identity: bool = False,
         signup_runner: str = "playwright",
+        login_existing: bool = False,
+        mailbox: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """signup_flow pins the engine for this run; browser_session is caller-owned (not closed here).
 
         signup_runner="extension" hands signup + OAuth to the extension runner (rotation only).
+        login_existing=True logs into an already registered account (HME mailbox, one-time code,
+        legacy browser flow); it never claims HME, never creates a password and never registers.
         """
+        if login_existing:
+            signup_runner = "playwright"
+            signup_flow = "legacy"
+            if not str(email_line or "").strip():
+                return {"success": False, "error_code": "mail_missing", "error": "登录已有账号必须指定邮箱"}
+            if not mailbox or not mailbox.get("hme_service_token"):
+                return {"success": False, "error_code": "mail_missing", "error": "登录已有账号需要可读的 HME 邮箱"}
         seat_intent = parse_invite_seat_intent(seat_intent).value
         from app.core.config import load_settings
         from app.integrations.openai.browser.environment import BrowserEnvironmentError, validate_configuration
@@ -258,17 +269,21 @@ class OnboardService:
             email_line, blocked = await prepare(
                 self, db, workspace_id=workspace_id, email_line=email_line,
                 phone_line=phone_line, role=role, seat_intent=seat_intent, skip_invite=skip_invite,
+                **({"mailbox": mailbox} if login_existing else {}),
             )
             if blocked:
                 return blocked
         try:
-            email_line, claimed = await hme_service.maybe_claim_alias(
-                db,
-                email_line,
-                job_id=job_id or "",
-                purpose="onboard",
-                workspace_id=workspace_id,
-            )
+            if login_existing:
+                claimed = None
+            else:
+                email_line, claimed = await hme_service.maybe_claim_alias(
+                    db,
+                    email_line,
+                    job_id=job_id or "",
+                    purpose="onboard",
+                    workspace_id=workspace_id,
+                )
             if claimed:
                 await self._progress(db, job_id=job_id, stage="hme", message=f"已领取 HME 别名 {claimed.email}")
             result = await self._invite_and_onboard_impl(
@@ -296,6 +311,7 @@ class OnboardService:
                 keep_operation_identity=keep_operation_identity,
                 signup_runner=signup_runner,
                 use_phone_pool=use_phone_pool,
+                **({"login_existing": True, "mailbox": mailbox} if login_existing else {}),
             )
             label = ""
             if claimed and result.get("success"):
@@ -310,6 +326,7 @@ class OnboardService:
                     self, db, result, workspace_id=workspace_id, phone_line=phone_line,
                     role=role, seat_intent=seat_intent, job_id=job_id, executable_path=browser_executable,
                     browser_session=browser_session, use_phone_pool=use_phone_pool,
+                    **({"mailbox": mailbox} if login_existing else {}),
                 )
             elif oauth_signup and result.get("success") and not result.get("authorized"):
                 # Runner mode, account already joined before this run: never authorize with Playwright.
@@ -355,6 +372,8 @@ class OnboardService:
         keep_operation_identity: bool = False,
         signup_runner: str = "playwright",
         use_phone_pool: bool = False,
+        login_existing: bool = False,
+        mailbox: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         requested_seat = parse_invite_seat_intent(seat_intent)
         busy = await operation_store.active_for_workspace(
@@ -446,21 +465,35 @@ class OnboardService:
             mother_proxy=owner.proxy if owner else "",
         )
         child_proxy = frozen or child_proxy
-        password = password or (decrypt_secret(existing.password_encrypted) if existing else "") or parsed.get("password") or ""
-        child = await self._upsert_child(
-            db,
-            email=email,
-            password=password,
-            mail_raw=parsed.get("raw") or email_line,
-            phone=phone or (existing.phone if existing else "") or "",
-            sms_url=sms_url or (existing.sms_url if existing else "") or "",
-            proxy=child_proxy,
-            proxy_source=effective_proxy_source,
-            sub2api_proxy_id=effective_sub2api_proxy_id,
-            proxy_instance_key=effective_proxy_instance_key,
-            proxy_profile_id=_profile_id,
-        )
-        password = password or decrypt_secret(child.password_encrypted)
+        if login_existing:
+            # Existing accounts log in with a one-time email code only; keep pool purpose until joined.
+            password = ""
+            child = await self._upsert_child(
+                db,
+                email=email,
+                proxy=child_proxy,
+                proxy_source=effective_proxy_source,
+                sub2api_proxy_id=effective_sub2api_proxy_id,
+                proxy_instance_key=effective_proxy_instance_key,
+                proxy_profile_id=_profile_id,
+                status="standby",
+            )
+        else:
+            password = password or (decrypt_secret(existing.password_encrypted) if existing else "") or parsed.get("password") or ""
+            child = await self._upsert_child(
+                db,
+                email=email,
+                password=password,
+                mail_raw=parsed.get("raw") or email_line,
+                phone=phone or (existing.phone if existing else "") or "",
+                sms_url=sms_url or (existing.sms_url if existing else "") or "",
+                proxy=child_proxy,
+                proxy_source=effective_proxy_source,
+                sub2api_proxy_id=effective_sub2api_proxy_id,
+                proxy_instance_key=effective_proxy_instance_key,
+                proxy_profile_id=_profile_id,
+            )
+            password = password or decrypt_secret(child.password_encrypted)
         if oauth_signup and job_id and not keep_operation_identity:
             op = await operation_store.get_by_public_id(db, job_id)
             if op:
@@ -499,7 +532,7 @@ class OnboardService:
                 "skipped": True,
             }
 
-        if not password:
+        if not password and not login_existing:
             password = random_password()
             child.password_encrypted = encrypt_secret(password)
 
@@ -585,14 +618,22 @@ class OnboardService:
             pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") or ""
         cf_config = await load_cf_config(db)
         use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
-        if not pickup_url and not use_cloudflare:
+        hme_kwargs: dict[str, str] = {}
+        if login_existing:
+            pickup_url, use_cloudflare = "", False
+            hme_kwargs = {
+                "hme_base_url": str((mailbox or {}).get("hme_base_url") or ""),
+                "hme_service_token": str((mailbox or {}).get("hme_service_token") or ""),
+                "hme_account_id": str((mailbox or {}).get("hme_account_id") or ""),
+            }
+        if not pickup_url and not use_cloudflare and not login_existing:
             error = "请先在系统中心配置 Cloudflare 邮箱，或输入 email----pickup_url"
             await self._progress(db, job_id=job_id, stage="mail_missing", message=error, error=error, error_code="mail_missing")
             return {"success": False, "error": error, "error_code": "mail_missing", "status": "mail_missing"}
 
         from app.core.config import load_settings
 
-        homepage_signup = oauth_signup and (signup_flow or load_settings().browser_signup_flow) == "extension"
+        homepage_signup = oauth_signup and not login_existing and (signup_flow or load_settings().browser_signup_flow) == "extension"
         invite_url = "https://chatgpt.com/" if homepage_signup else ""
         if oauth_signup and not homepage_signup:
             from app.integrations.mail.otp import wait_for_mailbox_item, extract_invite_url
@@ -605,6 +646,7 @@ class OnboardService:
                     proxy=self._child_proxy(child, workspace), kind="invite", timeout_sec=120,
                     cf_base_url=cf_config["base_url"], cf_address=cf_config["address"],
                     cf_admin_password=cf_config["admin_password"],
+                    **hme_kwargs,
                 )
             except Exception:
                 invite_url = None
@@ -615,16 +657,20 @@ class OnboardService:
         browser_options = {"allow_sms": False, "executable_path": browser_executable, "invite_entry": not homepage_signup} if oauth_signup else {}
         if signup_flow:
             browser_options["signup_flow"] = signup_flow
+        if login_existing:
+            browser_options.update(hme_kwargs)
+            browser_options["invite_entry"] = True
 
         if claimed is not None:
             await hme_service.mark_signup_started(db, claimed, stage="browser")
 
-        browser_mode = "register" if should_register else "relogin"
+        browser_mode = "login" if login_existing else ("register" if should_register else "relogin")
         await self._progress(
             db,
             job_id=job_id,
             stage="browser",
-            message="正在打开浏览器走注册" if browser_mode == "register" else "正在打开浏览器复用登录",
+            message="正在打开浏览器登录已有账号" if browser_mode == "login" else (
+                "正在打开浏览器走注册" if browser_mode == "register" else "正在打开浏览器复用登录"),
         )
 
         def on_stage(stage: str, message: str) -> None:
