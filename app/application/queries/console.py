@@ -181,6 +181,10 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
     summary["attention"] = portfolio_data["summary"]["attention"]
     summary["revenue_total"] = portfolio_data["revenue_totals"]["total"]
     summary["revenue_month"] = portfolio_data["revenue_totals"]["month"]
+    overview = portfolio_data.get("revenue_overview") or {}
+    summary["revenue_running"] = overview.get("running")
+    summary["revenue_today"] = overview.get("today")
+    summary["revenue_seven_day"] = overview.get("seven_day")
     payload["summary"] = summary
     payload["healthy"] = not attention
     payload["freshness"] = {

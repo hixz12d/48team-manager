@@ -80,6 +80,8 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - 调用点：`rotate.py` 的 `kick_to_standby` 在 `official_removed` 之后、解绑 / 删远端 / 删档之前；`manual_rotation.py` 的 `stage_delete_old` 删旧远端前、`_drop_binding` 丢弃绑定前；`workspace_sync.py` 同步提交后给本次标为离队的成员记账（来源 `sync_departure`）；`main.py` 启动后后台跑 `backfill_departures` 补记漏掉的离队绑定。
 - 金额来源优先级 `lifetime` / `lifetime_capped_90d` > `cache_lifetime` > `cache_seven_day` > `missing`，只有同级或更好才覆盖；`settled_at` 取首次入账时间。
 - 查询：`totals()`（累计、本月、按团队）、`entries()`；接口 `GET /api/workspaces/{id}/revenue`，看板 `portfolio` 每组带 `revenue`，总览 summary 带 `revenue_total` / `revenue_month`。
+- 每日收入（`application/revenue_daily.py`）：`record_day` 取较大值 upsert 到 `sub2api_revenue_daily`；写入来源 `sync`（`sub2api_usage` 的 `today` 窗口同步成功后）、`settle`（`settle_binding` 复用全程读取的 `summary.today`，读不到用当天 `today` 快照）、`backfill`（`main.py` 启动补录最近 7 天离队号，读 `/accounts/{id}/stats` 的 `history[]`，并对比 Sub2API `server_timezone` 与 `TIMEZONE`，不一致时打 warning 并写进 `note`）。
+- 总览 `overview_totals(db, groups)` → `portfolio.revenue_overview` → summary 的 `revenue_running` / `revenue_today` / `revenue_seven_day`（`{user_cost, synced, total, stale, note}`）：在跑 = 各组 `lifetime` 快照之和；今日 / 近 7 天 = 在绑定号的快照 ＋ 离队号的每日记录，按远端号去重。
 
 ### HME 领号（`application/resources/hme.py`）
 
@@ -115,7 +117,7 @@ SQLite `data/team48.db`（WAL；需 SQLite ≥ 3.25）。表由 `bootstrap.py` �
 | 身份 | `accounts`、`workspaces`、`workspace_memberships`、`workspace_official_member_snapshots`、`external_bindings` |
 | 任务 | `operations`、`operation_steps` |
 | 额度 | `quota_snapshots`、`quota_probe_states`、`quota_dispatch_lease`、`credential_leases` |
-| Sub2API | `sub2api_sync_observations`、`sub2api_refresh_authorities`、`sub2api_refresh_handoffs`、`sub2api_account_status`、`sub2api_usage_snapshots`、`sub2api_proxy_bindings`、`sub2api_revenue_entries`（收入账本，无外键，存邮箱和团队名快照，唯一键 团队 + 远端账号 ID） |
+| Sub2API | `sub2api_sync_observations`、`sub2api_refresh_authorities`、`sub2api_refresh_handoffs`、`sub2api_account_status`、`sub2api_usage_snapshots`、`sub2api_proxy_bindings`、`sub2api_revenue_entries`（收入账本，无外键，存邮箱和团队名快照，唯一键 团队 + 远端账号 ID）、`sub2api_revenue_daily`（每日收入，每个远端号每天一行存当天累计 U，只增不减，无外键，不随团队 / 账号 / 绑定删除） |
 | 其他 | `oauth_sessions`、`codex_bindings`、`system_settings`、`hme_alias_leases`、`phone_pool`、`phone_attempts`、`proxy_profiles`、`seat_vacancy_events` |
 
 凭据加密存储；接口只返回 `secret_state`（stored / missing），不回显密钥。浏览器档案也在 `data/` 下。

@@ -1315,6 +1315,50 @@ function hmeRow(item) {
     return message.split(email).join("").replace(/^[\s·:：;；,，—-]+|[\s·:：;；,，—-]+$/g, "") || "请查看账号详情";
   }
 
+  // 总览收入格：今日 / 近 7 天 / 本月入账 / 团队收入（已入账 ＋ 在跑）。没数时显示"—"，不显示 $0.00。
+  function renderOverviewRevenue(summary) {
+    const fmt = window.Team48Format;
+    const coverageNotes = (data, prefix = "") => {
+      if (!data || typeof data !== "object") return [];
+      const notes = [];
+      const synced = Number(data.synced) || 0, total = Number(data.total) || 0;
+      if (total > 0 && synced < total) notes.push(`${prefix}${synced}/${total} 个号已同步，部分号未同步`);
+      if (data.stale) notes.push(`${prefix}旧快照`);
+      if (data.note) notes.push(String(data.note));
+      return notes;
+    };
+    const hintText = (data) => {
+      if (!data || typeof data !== "object") return "";
+      if (data.stale) return "旧快照";
+      const synced = Number(data.synced) || 0, total = Number(data.total) || 0;
+      return total > 0 && synced < total ? "部分" : "";
+    };
+    const cell = (key, value, notes, hint = "") => {
+      const node = document.querySelector(`[data-summary="${key}"]`);
+      if (!node) return;
+      node.textContent = value;
+      const item = node.closest(".summary-item");
+      if (!item) return;
+      item.title = notes.filter(Boolean).join("；");
+      item.classList.toggle("is-partial", Boolean(hint));
+      const marker = item.querySelector(".summary-hint");
+      if (marker) { marker.textContent = hint; marker.hidden = !hint; }
+    };
+    const today = summary.revenue_today, sevenDay = summary.revenue_seven_day, running = summary.revenue_running;
+    cell("revenue_today", fmt.formatCost(today?.user_cost),
+      ["北京时间 0 点起，所有团队的用户扣费（U），含今天已换掉的号", ...coverageNotes(today)], hintText(today));
+    cell("revenue_seven_day", fmt.formatCost(sevenDay?.user_cost),
+      ["今天及前 6 天，含期间已换掉的号", ...coverageNotes(sevenDay)], hintText(sevenDay));
+    cell("revenue_month", fmt.formatCost(summary.revenue_month), ["本月离队号入账之和，不含在跑"]);
+    const zero = (value) => value == null || Number(value) === 0;
+    const runningCost = running && typeof running === "object" ? running.user_cost : null;
+    const runningNotes = runningCost == null ? ["在跑：尚无全程用量快照"] : [];
+    const teamText = zero(summary.revenue_total) && zero(runningCost) ? "—"
+      : `已入账 ${fmt.formatCost(summary.revenue_total ?? "0")} ＋ 在跑 ${fmt.formatCost(runningCost)}`;
+    cell("revenue_total", teamText,
+      ["已入账 = 所有离队号全程 U 之和（含已删团队）；在跑 = 当前在席成员（含母号）全程 U 之和", ...coverageNotes(running, "在跑："), ...runningNotes], hintText(running));
+  }
+
   function renderOverview(payload) {
     const breakdown = document.getElementById("overview-attention-breakdown");
     if (breakdown) breakdown.textContent = Object.entries(payload.attention_breakdown || {}).filter(([,n])=>n).map(([key,n])=>`${({auth:"授权",onboarding:"入组中断",quota:"额度",check:"检测",remote:"远端",identity:"身份",sync:"同步"})[key]} ${n}`).join(" · ");
@@ -1338,8 +1382,7 @@ function hmeRow(item) {
     set("accounts", summary.accounts ?? payload.accounts);
     set("attention", attention.length, true);
     set("conflicts", summary.identity_conflicts, true);
-    set("revenue_total", window.Team48Format.formatCost(summary.revenue_total));
-    set("revenue_month", window.Team48Format.formatCost(summary.revenue_month));
+    renderOverviewRevenue(summary);
 
     const attentionRoot = document.getElementById("overview-attention");
     const attentionPanel = document.getElementById("overview-attention-panel");

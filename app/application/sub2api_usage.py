@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -21,6 +22,8 @@ from app.persistence.models.sub2api import Sub2ApiUsageSnapshot
 WINDOW_KINDS = ("five_hour", "today", "seven_day", "lifetime")
 USAGE_STALE_AFTER = timedelta(minutes=30)
 LIFETIME_MAX_DAYS = 90
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_error(exc: BaseException | str) -> str:
@@ -176,6 +179,34 @@ class Sub2ApiUsageService:
         await db.flush()
         return row
 
+    async def _record_daily(
+        self, db: AsyncSession, binding: ExternalBinding, row: Sub2ApiUsageSnapshot, now: datetime
+    ) -> None:
+        """Copy a fresh `today` snapshot into the daily revenue record; failures only log."""
+        from app.application.revenue_daily import revenue_daily
+        from app.persistence.models.identity import Account
+
+        try:
+            start = as_utc(row.window_start_at)
+            if start is None or row.user_cost is None:
+                return
+            # Day from the snapshot window, not a new clock read, so a sync straddling midnight stays on one day.
+            day = start.astimezone(zone(load_settings().timezone)).date()
+            account = await db.get(Account, binding.local_account_id) if binding.local_account_id else None
+            await revenue_daily.record_day(
+                db,
+                remote_account_id=str(binding.remote_account_id),
+                day=day,
+                user_cost=row.user_cost,
+                source="sync",
+                workspace_id=binding.workspace_id,
+                account_id=binding.local_account_id,
+                email=(account.email if account else None) or binding.verified_email,
+                now=now,
+            )
+        except Exception as exc:
+            logger.warning("revenue daily: sync record failed for binding %s: %s", binding.id, _safe_error(exc))
+
     async def _record_failure(
         self,
         db: AsyncSession,
@@ -316,8 +347,10 @@ class Sub2ApiUsageService:
                 item = windows.get(kind, {}).get(key)
                 if isinstance(item, dict):
                     try:
-                        await self._record_success(db, binding, kind, item, now)
+                        row = await self._record_success(db, binding, kind, item, now)
                         updated += 1
+                        if kind == "today":
+                            await self._record_daily(db, binding, row, now)
                         continue
                     except Exception as exc:
                         remote_errors = {**remote_errors, kind: _safe_error(exc)}

@@ -486,25 +486,27 @@
 }
 
 /* 骨架加载 Skeleton */
-/* 总览概览 KPI Strip */
+/* 总览概览 KPI Strip：格子之间 1px 缝隙透出底色当分隔线，换行时边框也不会错乱 */
 .summary-strip {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--border);
   margin-bottom: var(--space-md);
   overflow: hidden;
   box-shadow: var(--shadow-xs);
 }
 
+/* 宽度平分；内容放不下时整格换到下一行，数值不会被挤出格子 */
 .summary-item {
-  min-width: 0;
+  flex: 1 1 0;
   padding: var(--space-sm) var(--space-md);
   display: grid;
+  align-content: start;
   gap: 2px;
-  border-right: 1px solid var(--border);
+  background: var(--surface);
   transition: background 0.12s ease;
   text-align: left;
 }
@@ -514,11 +516,7 @@
 }
 
 div.summary-item:hover {
-  background: none;
-}
-
-.summary-item:last-child {
-  border-right: 0;
+  background: var(--surface);
 }
 
 .summary-label {
@@ -526,6 +524,7 @@ div.summary-item:hover {
   font-weight: 600;
   color: var(--muted);
   letter-spacing: 0;
+  white-space: nowrap;
 }
 
 .summary-item strong {
@@ -533,10 +532,34 @@ div.summary-item:hover {
   font-weight: 700;
   color: var(--text);
   line-height: 1.2;
+  white-space: nowrap;
 }
 
 .summary-item.is-alert strong {
   color: var(--danger-text);
+}
+
+/* 团队收入格文字较长：字号略小（行高补齐到与其他格同高），靠内容撑宽，桌面端一行显示 */
+.summary-item-wide strong {
+  font-size: var(--text-heading);
+  line-height: 1.8;
+}
+
+/* 收入覆盖不全 / 旧快照：低调提示，不用告警色 */
+.summary-hint {
+  margin-left: var(--space-xxs);
+  font-size: var(--text-meta);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.summary-hint::before {
+  content: "·";
+  margin-right: var(--space-xxs);
+}
+
+.summary-item.is-partial strong {
+  color: var(--text-secondary);
 }
 
 /* 总览布局 12 栅格 (8 + 4) */
@@ -1155,14 +1178,11 @@ div.summary-item:hover {
   .overview-layout {
     grid-template-columns: 1fr;
   }
-  .summary-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .summary-item {
+    flex-basis: 40%;
   }
-  .summary-item:nth-child(even) {
-    border-right: 0;
-  }
-  .summary-item:not(:nth-last-child(-n+2)) {
-    border-bottom: 1px solid var(--border);
+  .summary-item-wide strong {
+    white-space: normal;
   }
 }
 
@@ -1409,19 +1429,6 @@ div.summary-item:hover {
   }
   .portfolio-row::before {
     display: none;
-  }
-  .summary-strip {
-    grid-template-columns: 1fr 1fr;
-  }
-  .summary-item {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .summary-item:nth-child(odd) {
-    border-right: 1px solid var(--border);
-  }
-  .summary-item:nth-last-child(-n+2) {
-    border-bottom: 0;
   }
   .team-mother-grid {
     grid-template-columns: 1fr;

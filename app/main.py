@@ -104,6 +104,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     logger.info("revenue ledger: backfilled %s departed members", count)
             except Exception:
                 logger.exception("revenue ledger: startup backfill failed")
+            # Daily revenue of recently departed accounts (read-only against Sub2API).
+            from app.application.revenue_daily import revenue_daily
+
+            try:
+                async with session_factory() as session:
+                    written = await revenue_daily.backfill_recent(session)
+                if written:
+                    logger.info("revenue daily: backfilled %s day rows", written)
+            except Exception:
+                logger.exception("revenue daily: startup backfill failed")
 
         backfill_task = asyncio.create_task(backfill_revenue())
         yield

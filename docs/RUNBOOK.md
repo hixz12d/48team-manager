@@ -92,6 +92,7 @@
 | `phone_verification_required` / `registration_home_not_ready` | 注册或 OAuth 需要手机 / 主页未就绪 | 保留同一账号续接，不要重新注册或领新别名 |
 | Codex 导出被拒 | 某账号缺 AT、将过期或待授权 | 先刷新或授权该账号 |
 | 团队卡"在跑"显示 — / 收入记录标"估算""未取到" | 用量同步还没跑出全程窗口 / 离队时读 Sub2API 失败 | 等下一次用量同步（5 分钟）；账本不支持手改，"估算"会在删旧远端前再读一次时更新 |
+| 总览今日 / 近 7 天收入悬停提示 Sub2API 日边界不同，日志有 `revenue daily ... day boundary ... differs from TIMEZONE` | Sub2API 的 `TZ` 与本项目 `TIMEZONE` 不一致 | 改本项目 `/opt/team48/.env` 的 `TIMEZONE` 对齐后重建；不动 Sub2API |
 | 轮转预检报 `runner_not_configured` / `proxy_auth_unsupported` / `runner_mailbox_invalid` | 运行器未装好 Chromix / 母号是带账号密码的 HTTP 代理 / Cloudflare 邮箱地址不是插件内置的 | 按"常用操作"装好 Chromix 或修正设置；代理改 SOCKS5 或无认证；临时可切回 `ROTATION_SIGNUP_RUNNER=playwright` |
 | 运行器轮转停在 `runner_oauth_required` 等待人工 | 注册或授权时出现手机 / 人机验证 | 人工授权该邮箱后点"继续轮转"，不要重新发起 |
 | 插件 / 运行器暂停 `phone_pool_empty` | 号码池没有可用号 | 在"资源 → 手机号"导入（`+1xxxxxxxxxx----接码链接`）后点继续 |

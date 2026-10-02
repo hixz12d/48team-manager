@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.revenue_daily import revenue_daily
 from app.application.sub2api_usage import _decimal, _money_text, _safe_error, lifetime_window
 from app.core.config import load_settings
 from app.core.time import as_utc, isoformat, utcnow, zone
@@ -36,12 +37,13 @@ AMOUNT_RANK = {
 class RevenueLedger:
     async def _remote_amount(
         self, db: AsyncSession, binding: ExternalBinding
-    ) -> tuple[Decimal, str, int]:
+    ) -> tuple[tuple[Decimal, str, int], dict[str, Any]]:
         days, capped = lifetime_window(binding.created_at)
         summary = await sub2api_client.fetch_account_stats_summary(
             db, int(binding.remote_account_id), days
         )
-        return _decimal(summary.get("total_user_cost")), ("lifetime_capped_90d" if capped else "lifetime"), days
+        amount = (_decimal(summary.get("total_user_cost")), ("lifetime_capped_90d" if capped else "lifetime"), days)
+        return amount, summary
 
     async def _cached_amount(
         self, db: AsyncSession, binding: ExternalBinding
@@ -139,14 +141,17 @@ class RevenueLedger:
                 return {"ok": False, "error_code": "no_workspace", "error": "绑定没有所属团队，不记账"}
             remote_error = None
             fetched = None
+            remote_summary = None
             if allow_remote:
                 try:
-                    fetched = await self._remote_amount(db, binding)
+                    fetched, remote_summary = await self._remote_amount(db, binding)
                 except Exception as exc:
                     remote_error = _safe_error(exc)
                     logger.warning(
                         "revenue ledger: remote lifetime read failed for binding %s: %s", binding.id, remote_error
                     )
+            # Today's amount for the daily record: the lifetime read's `summary.today`, else the local snapshot.
+            await revenue_daily.record_settle(db, binding, summary=remote_summary)
             amount, amount_source, window_days = fetched or await self._cached_amount(db, binding)
             now = utcnow()
             try:

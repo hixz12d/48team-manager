@@ -17,6 +17,7 @@ from app.application.queries.identity import (
     workspaces_query,
 )
 from app.application.quota import quota_service
+from app.application.revenue_daily import revenue_daily
 from app.application.revenue_ledger import revenue_ledger
 from app.application.sub2api_usage import sub2api_usage_service
 from app.application import sub2api_status
@@ -403,6 +404,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
                 for key in ("needs_attention", "attention_reasons", "interrupted_operation_id"):
                     if key in source:
                         member[key] = source[key]
+    revenue_overview = await revenue_daily.overview_totals(db, groups)
     return {
         "accounts": account_items,
         "summary": summary,
@@ -411,6 +413,7 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         "groups": groups,
         "unassigned": unassigned,
         "revenue_totals": {"total": revenue_totals["total"], "month": revenue_totals["month"]},
+        "revenue_overview": revenue_overview,
         "usage_available": any(item.get("available") for item in usage_by_context.values()),
         "sub2api_status": remote_summary,
         "usage_note": "Sub2API 用量仅来自后台同步的本地快照；缺失和失败不会显示为 0。",
