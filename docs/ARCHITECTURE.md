@@ -13,7 +13,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `app/domain/` | 纯规则：身份、额度健康、轮转条件、HME 占用判定（`resources/__init__.py`） |
 | `app/application/` | 业务服务：同步、额度、授权、邀请 / 补位、手动 / 自动轮转、Sub2API、Codex 导出 |
 | `app/application/jobs/` | `scheduler.py` 定时任务、`dispatcher.py` 队列派发、`commands.py` 进程内命令执行 |
-| `app/application/resources/` | HME 领号（`hme.py`）、手机号池、代理 |
+| `app/application/resources/` | HME 领号（`hme.py`）、手机号池、插件接码中转（`phone_relay.py`）、代理 |
 | `app/integrations/` | 外部客户端：`openai`（官方 API + `browser/` 浏览器自动化）、`sub2api`、`codex`、`mail`、`sms`、`proxy` |
 | `app/persistence/` | 表模型、仓储、`migrations/bootstrap.py`（启动时幂等建表 / 补列 / 补索引） |
 | `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口）、模板、静态资源 |
@@ -69,8 +69,9 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - `extension_runner.py`：运行登记、`signup_and_authorize`（轮转用，成功时在同一会话写凭据、`auth_state`、入组关系并提交）、`run_selfcheck`（自检）、错误码常量。不自己拿浏览器槽，调用方先 `InvitedBrowserSession().try_reserve()`。
 - `integrations/openai/browser/runner_process.py`：生成运行目录 `data/runner-runs/<run_id>/`（复制插件、改写 manifest、生成 `private-config.mjs`，结束即删）、启动 / 按进程组结束 Chromix、Xvfb 1920×1080、带认证 SOCKS5 走本地桥；启动前拒绝 `--remote-debugging*`、`--headless` 等参数。
 - `runner_profile.py`：档案 `data/chrome-profiles/runner/<email>/`，首次建档经母号代理查出口（`integrations/proxy/geo.py`）固定时区，之后不改；`chromix_args` 生成指纹参数。
-- `web/routes/runner.py`：`/api/ext/runner/{run_id}/job|event|callback|probe`，只认本次运行令牌，错误一律 404，不接受管理员会话。
-- 接入点：`onboard.py` 的 `_extension_signup`（`signup_runner` 参数透传）；手动轮转在踢人前做 `validate_runner_configuration()` + `check_runner_proxy`，任务上下文记 `signup_runner`。
+- `web/routes/runner.py`：`/api/ext/runner/{run_id}/job|event|callback|probe|phone`，只认本次运行令牌，错误一律 404，不接受管理员会话。
+- 接码：`signup_and_authorize(use_phone_pool=True)`（手动 / 自动轮转都开）时 `/job` 下发 `phonePool: true`，`/phone` 用 `runner_phone_context` 建上下文交 `phone_relay.handle`；运行结束关浏览器后释放本次锁的号。阶段 `phone` / `phone_otp` 记为进度步骤 `add_phone` / `sms_otp`。
+- 接入点：`onboard.py` 的 `_extension_signup`（`signup_runner`、`use_phone_pool` 参数透传）；手动轮转在踢人前做 `validate_runner_configuration()` + `check_runner_proxy`，任务上下文记 `signup_runner`。
 - 自检：任务类型 `runner_selfcheck`（浏览器类，占全局浏览器槽，不占团队锁），`console_actions.start_runner_selfcheck`；接口 `GET/POST /api/runner/selfcheck`、`GET /api/runner/selfcheck/{id}/screenshots/{name}`；截图 `data/selfcheck/`（保留最近 10 次）；启动时 `recover_runner_selfchecks` 把中断的自检标失败。步骤中文在 `presenters.py`。
 
 ### 团队收入账本（`application/revenue_ledger.py`）
@@ -99,7 +100,11 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 
 ### 插件接口（`web/routes/extension.py`、`application/member_handoff.py`）
 
-`EXTENSION_API_TOKEN` 做 Bearer 鉴权，少于 24 位时 `/api/ext/*` 全部 404，不接受管理员会话。接口：`GET /ping`、`GET /workspaces`、`POST /resolve`（单团队 20 秒、总 60 秒）、`POST /handoff`、`POST /handoff/complete`。
+`EXTENSION_API_TOKEN` 做 Bearer 鉴权，少于 24 位时 `/api/ext/*` 全部 404，不接受管理员会话。接口：`GET /ping`、`GET /workspaces`、`POST /resolve`（单团队 20 秒、总 60 秒）、`POST /phone`（接码，请求体 ≤ 4KB）、`POST /handoff`（可带 `phone_session`，接入时把成功的号码和接码链接写到账号）、`POST /handoff/complete`。
+
+### 插件接码中转（`application/resources/phone_relay.py`）
+
+协议见 [contracts/phone-relay.md](contracts/phone-relay.md)。`handle` 分派 `acquire`（领号，同会话幂等并续期锁）/ `code`（读短信，只返回与领号时基线不同的码）/ `report`（写 `phone_attempts`、按原因降级号码）/ `release`。本机模式 `personal_context` 按账号代理 → 母号代理定位读短信代理，按会话缓存 2 小时。基线存进程内存，服务重启后丢失。插件侧在 `content.js`（识别手机页、填号、换号）和 `background.js`（调用接口、每账号最多 3 个号），新增暂停原因 `phone_pool_empty` / `phone_limit` / `phone_back_missing` / `phone_relay_error`。
 
 ## 数据存储
 

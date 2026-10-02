@@ -172,6 +172,8 @@ _EMAIL = re.compile(r"[^\s@\"'<>]+@[^\s@\"'<>]+")
 _CODE = re.compile(r"(?<!\d)\d{6}(?!\d)")
 # Plugin stage -> existing browser stage names (HME "signup started" marking, progress plan).
 _STAGE_PROGRESS = {"otp": "email_otp", "profile": "about_you"}
+# Phone pages appear in both phases (signup and Codex authorization).
+_PHONE_STAGE_PROGRESS = {"phone": "add_phone", "phone_otp": "sms_otp"}
 _EXIT_KEYS = ("ip", "country", "region", "city", "timezone", "org")
 
 
@@ -201,6 +203,11 @@ class RunState:
     screenshots: dict[str, str] = field(default_factory=dict)
     screenshot_dir: Path | None = None
     plugin_diagnostics: dict[str, Any] | None = None
+    # Phone relay (docs/contracts/phone-relay.md): only signup runs started with the pool enabled.
+    phone_pool: bool = False
+    phone_lease_key: str = ""
+    phone_account_id: int | None = None
+    phone_proxy_url: str = ""
     closed: bool = False
     wake: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -374,6 +381,23 @@ def runner_probe(run_id: str, token: str, *, name: str, kind: str, data: Any) ->
             state.probes[kind] = data
     state.wake.set()
     return {"ok": True}
+
+
+def runner_phone_context(run_id: str, token: str) -> dict[str, Any] | None:
+    """Relay context for ``POST /api/ext/runner/{run_id}/phone``; ``None`` means 404."""
+    state = _lookup(run_id, token)
+    if state is None:
+        return None
+    state.last_event_at = time.monotonic()  # SMS polling counts as a heartbeat
+    if state.kind != "signup" or not state.phone_pool:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "lease_key": state.phone_lease_key,
+        "account_id": state.phone_account_id,
+        "proxy_url": state.phone_proxy_url,
+        "phase": state.phase if state.phase in {"signup", "oauth"} else "signup",
+    }
 
 
 # ---- Shared launch / wait / shutdown ----
@@ -658,6 +682,20 @@ def _new_run(kind: str, job: dict[str, Any], proxy_url: str) -> _Launched:
     return _Launched(state=state, token=token, proxy_url=proxy_url)
 
 
+async def _release_phones(db, state: RunState, *keep) -> None:
+    """Free any number this run still holds; a failure only leaves it to the 180 s lease expiry."""
+    from app.application.resources import phone_relay
+
+    try:
+        await phone_relay.release(db, phone_relay.RelayContext(
+            lease_key=state.phone_lease_key, account_id=state.phone_account_id,
+            proxy_url=state.phone_proxy_url, phase="signup",
+        ))
+    except Exception as exc:  # noqa: BLE001 - cleanup must not change the run outcome
+        await _recover(db, *keep)
+        logger.debug("runner phone release failed: %s", type(exc).__name__)
+
+
 def _unexpected(exc: BaseException, launched: _Launched | None) -> tuple[str, str]:
     """Map an unexpected error to a protocol code; the message never carries exception text."""
     logger.warning("extension runner failed unexpectedly: %s", type(exc).__name__)
@@ -755,7 +793,7 @@ async def _exchange(db, *, account, ticket: str, callback_url: str) -> None:
     await db.commit()
 
 
-async def _signup_job(db, account, workspace, profile_dir: Path) -> dict[str, Any]:
+async def _signup_job(db, account, workspace, profile_dir: Path, *, phone_pool: bool = False) -> dict[str, Any]:
     from app.application.member_handoff import _workspace_names
     from app.application.tokens import decrypt_secret, encrypt_secret
     from app.domain.onboard import random_password
@@ -781,17 +819,21 @@ async def _signup_job(db, account, workspace, profile_dir: Path) -> dict[str, An
         "mode": "auto",
         "workspaceNames": names,
         "probeUrls": [],
+        "phonePool": bool(phone_pool),
     }
 
 
 async def signup_and_authorize(
     db, *, account, workspace, role: str, seat_intent: str,
     proxy_url: str, job_id: str, on_stage: OnStage | None = None,
+    use_phone_pool: bool = False,
 ) -> RunnerOutcome:
     """Launch browser -> signup -> confirm join -> authorize -> exchange -> store tokens.
 
     Preconditions: the invitation was sent and confirmed; the caller holds the global
     browser slot. Always closes the browser and deletes the run directory before return.
+    ``use_phone_pool`` (with a ``job_id``) lets the extension relay phone checks through
+    the number pool; the lease key is the job's public id.
     """
     from app.application.identity import ensure_membership
     from app.application.oauth_sessions import OAuthSessionError, oauth_session_store
@@ -829,9 +871,14 @@ async def signup_and_authorize(
             )
             summary = profile_summary(profile)
             await progress.stage("browser_environment", f"{summary} {exit_note}".strip())
-            job = await _signup_job(db, account, workspace, profile_dir)
+            job = await _signup_job(db, account, workspace, profile_dir, phone_pool=bool(use_phone_pool and job_id))
             launched = _new_run("signup", job, proxy_url)
             state = launched.state
+            if use_phone_pool and job_id:
+                state.phone_pool = True
+                state.phone_lease_key = job_id
+                state.phone_account_id = account.id
+                state.phone_proxy_url = proxy_url
             _RUNS[state.run_id] = state
             await _launch(launched, mailbox=mailbox, profile=profile, user_data_dir=profile_dir, summary=summary)
             await progress.stage("runner_started", "已启动 Chromix 浏览器并加载插件，等待插件注册")
@@ -849,6 +896,11 @@ async def signup_and_authorize(
                     await progress.stage("runner_authorized", "已换票并写入凭据")
                     break
                 _check_run(state, launched.process, deadline=deadline)
+                phone_step = _PHONE_STAGE_PROGRESS.get(state.stage)
+                if phone_step and f"{state.phase}:{phone_step}" not in progress.sent:
+                    # Once per phase: a phone page during authorization shows even after one in signup.
+                    progress.sent.add(f"{state.phase}:{phone_step}")
+                    await progress.stage(phone_step)
                 mapped = _STAGE_PROGRESS.get(state.stage) if state.phase == "signup" else None
                 if mapped:
                     await progress.once(mapped)
@@ -900,6 +952,8 @@ async def signup_and_authorize(
         if launched is not None:
             tail = await _shutdown(launched)
             diagnostics = _diagnostics(launched.state, summary, tail)
+            if launched.state.phone_pool:
+                await _release_phones(db, launched.state, account, workspace)
         if ticket:
             oauth_sessions.pop_session(ticket)
         if stored is not None:

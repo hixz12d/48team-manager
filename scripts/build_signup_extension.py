@@ -51,6 +51,7 @@ def remote_config():
 
 
 TEAM48_URL = "https://48team.xiaozhudf2026.foo"
+HME_URL = "https://icloud.xiaozhudf2026.foo"
 
 
 def embedded(source, name):
@@ -64,6 +65,9 @@ def main():
     parser.add_argument('--unpack', action='store_true', help='Also update dist/chatgpt-signup for loading unpacked')
     parser.add_argument('--team48-token', help='EXTENSION_API_TOKEN of the Team48 server; enables the automatic handoff')
     parser.add_argument('--no-team48', action='store_true', help='Remove the embedded Team48 handoff configuration')
+    parser.add_argument('--hme-token', help='ICLOUD_HME_SERVICE_TOKEN; read verification codes from iCloud through icloud-hme')
+    parser.add_argument('--hme-account', help='icloud-hme account id (acc_...) whose aliases receive the signup mail')
+    parser.add_argument('--no-hme', action='store_true', help='Remove the embedded icloud-hme configuration (read codes from Cloudflare)')
     args = parser.parse_args()
     extension = ROOT / 'extensions' / 'chatgpt-signup'
     private = extension / 'private-config.mjs'
@@ -86,10 +90,25 @@ def main():
         team48 = {"baseUrl": TEAM48_URL, "token": args.team48_token.strip()}
     if team48 and team48.get("baseUrl", "").rstrip("/") != TEAM48_URL:
         raise RuntimeError("Team48 origin differs from the extension's fixed host permission")
+    # The icloud-hme mailbox is kept across rebuilds the same way; either option replaces one field.
+    hme = None if args.no_hme else embedded(source, 'HME')
+    if args.hme_token or args.hme_account:
+        hme = {"baseUrl": HME_URL, **(hme or {})}
+        if args.hme_token:
+            hme["token"] = args.hme_token.strip()
+        if args.hme_account:
+            hme["accountId"] = args.hme_account.strip()
+    if hme:
+        if hme.get("baseUrl", "").rstrip("/") != HME_URL:
+            raise RuntimeError("icloud-hme origin differs from the extension's fixed host permission")
+        if len(str(hme.get("token", ""))) < 16 or not re.fullmatch(r"acc_[\w-]{4,80}", str(hme.get("accountId", ""))):
+            raise RuntimeError("icloud-hme needs both --hme-token (>=16 chars) and --hme-account (acc_...)")
     text = ("// Personal package configuration. Generated locally; excluded from Git.\n"
             "export const MAILBOX = Object.freeze(" + json.dumps(config, ensure_ascii=True) + ");\n")
     if team48:
         text += "export const TEAM48 = Object.freeze(" + json.dumps(team48, ensure_ascii=True) + ");\n"
+    if hme:
+        text += "export const HME = Object.freeze(" + json.dumps(hme, ensure_ascii=True) + ");\n"
     private.write_text(text, encoding="utf-8")
     version = json.loads((extension / "manifest.json").read_text(encoding="utf-8"))["version"]
     destination = ROOT / "dist" / f"team48-chatgpt-signup-{version}-personal.zip"
@@ -104,7 +123,8 @@ def main():
     if args.unpack:
         shutil.copytree(extension, ROOT / 'dist' / 'chatgpt-signup', dirs_exist_ok=True)
     handoff = "Team48 handoff enabled" if team48 else "Team48 handoff not configured"
-    print(f"Built {destination.name}; existing mailbox settings embedded; {handoff}; no server changes.")
+    mail = "codes from iCloud via icloud-hme" if hme else "codes from Cloudflare"
+    print(f"Built {destination.name}; {mail}; {handoff}; no server changes.")
 
 
 if __name__ == "__main__":

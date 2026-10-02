@@ -8,7 +8,8 @@ Operation, so "continue" only runs what is still unconfirmed:
 
 The old Sub2API account is paused before the kick but deleted only after the
 new account reads back healthy. The replacement mailbox is used as typed: no
-standby pool, no HME claim or label, no phone pool; codes come from Cloudflare.
+standby pool, no HME claim or label; codes come from Cloudflare. A phone page is
+handled through the phone pool (frozen per task at preflight as ``use_phone_pool``).
 """
 
 from __future__ import annotations
@@ -623,6 +624,8 @@ async def preflight(db, rotate, workspace_id: int, old: str, new: str) -> dict[s
         "replacement_email": new,
         "signup_flow": SIGNUP_FLOW,
         "signup_runner": signup_runner,
+        # Frozen per task: tasks created before the phone relay keep running without the pool.
+        "use_phone_pool": True,
         "observed_at": isoformat(utcnow()),
     }
 
@@ -930,7 +933,8 @@ class _Rotation:
             self.db, workspace_id=self.op.workspace_id, email_line=self.ctx["replacement_email"],
             reuse_existing=True, job_id=self.public_id, in_test=self.in_test,
             role=self.ctx["role"], seat_intent=self.ctx["seat_intent"],
-            oauth_signup=True, use_phone_pool=False, signup_flow=self.ctx.get("signup_flow") or SIGNUP_FLOW,
+            oauth_signup=True, use_phone_pool=bool(self.ctx.get("use_phone_pool", False)),
+            signup_flow=self.ctx.get("signup_flow") or SIGNUP_FLOW,
             browser_session=self.session, keep_operation_identity=True,
             # Frozen at preflight; tasks from before the runner existed stay on Playwright.
             signup_runner=self.ctx.get("signup_runner") or "playwright",

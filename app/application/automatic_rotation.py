@@ -118,11 +118,11 @@ async def publish_replacement(db, invite, workspace_id):
 async def refill_and_publish(service, db, *, seat_intent="workspace_default", **kwargs):
     from app.application.extension_runner import runner_enabled
 
-    # The runner stops on phone checks for a person; it never uses the number pool.
+    # Both engines use the number pool; the runner relays it to the extension (docs/contracts/phone-relay.md).
     extension_runner = runner_enabled()
     invite = await service.onboard.refill(
         db, **kwargs, seat_intent=seat_intent, oauth_signup=True,
-        use_phone_pool=not extension_runner,
+        use_phone_pool=True,
         signup_runner="extension" if extension_runner else "playwright",
     )
     if not invite.get("success"):

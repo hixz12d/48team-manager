@@ -6,7 +6,7 @@ from typing import Literal
 from datetime import date
 import re
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProxySelection(BaseModel):
@@ -40,10 +40,42 @@ class CompleteAccountOAuthRequest(BaseModel):
     count_switch: bool = False
 
 
+PHONE_SESSION_PATTERN = r"^[a-f0-9]{32}$"
+
+
 class ExtensionHandoffRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     workspace_id: int = Field(gt=0)
     sync_operation_id: str | None = Field(default=None, min_length=4, max_length=80)
+    # Phone relay session of this extension job (docs/contracts/phone-relay.md §7).
+    phone_session: str | None = Field(default=None, pattern=PHONE_SESSION_PATTERN)
+
+
+class ExtensionPhoneRequest(BaseModel):
+    """Local-extension SMS relay body (docs/contracts/phone-relay.md)."""
+    model_config = ConfigDict(extra="ignore")
+
+    action: Literal["acquire", "code", "report", "release"]
+    phase: Literal["signup", "oauth"] = "signup"
+    phoneId: int | None = Field(default=None, ge=0)
+    bound: bool = False
+    outcome: Literal["success", "invalid", "recently_used", "risk", "no_sms", "wrong_code", "cancelled"] | None = None
+    session: str = Field(pattern=PHONE_SESSION_PATTERN)
+    email: str = Field(min_length=3, max_length=254)
+    workspaceId: int | None = Field(default=None, gt=0)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def required_fields(self):
+        if self.action in {"code", "report"} and self.phoneId is None:
+            raise ValueError("phoneId is required")
+        if self.action == "report" and self.outcome is None:
+            raise ValueError("outcome is required")
+        return self
 
 
 class ExtensionResolveRequest(BaseModel):

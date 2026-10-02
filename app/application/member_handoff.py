@@ -7,6 +7,8 @@ The counter is idempotent per membership, so retries or re-authorizations never 
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from sqlalchemy import select, update
@@ -25,6 +27,8 @@ from app.domain.workspaces.names import resolve_display_name
 from app.persistence.models.identity import Account, Workspace, WorkspaceMembership, WorkspaceOfficialMemberSnapshot
 
 UNAVAILABLE_WORKSPACE_STATES = {"archived", "disabled"}
+
+logger = logging.getLogger(__name__)
 
 
 def _step(ok: bool | None, message: str, **extra: Any) -> dict[str, Any]:
@@ -278,18 +282,52 @@ async def resolve_extension_workspace(db: AsyncSession, *, email: str) -> dict[s
             "message": "各团队的成员和邀请里都没有这个邮箱，请确认已在 ChatGPT 后台发出邀请"}
 
 
+async def _record_relay_phone(db: AsyncSession, account: Account, phone_session: str) -> None:
+    """Write the number the extension verified (phone relay ``success``) onto the account; skip if none."""
+    from app.persistence.models.resources import PhoneAttempt, PhonePool
+
+    session = str(phone_session or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", session):
+        return
+    try:
+        attempt = await db.scalar(
+            select(PhoneAttempt)
+            .where(PhoneAttempt.operation_public_id == session, PhoneAttempt.result == "success")
+            .order_by(PhoneAttempt.id.desc())
+            .limit(1)
+        )
+        row = await db.get(PhonePool, attempt.phone_id) if attempt is not None else None
+        if attempt is None or row is None:
+            return
+        account.phone = row.number
+        account.sms_url = row.sms_url
+        account.updated_at = utcnow()
+        if attempt.account_id is None:
+            attempt.account_id = account.id
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - recording the number must never block the handoff
+        await db.rollback()
+        logger.warning("extension handoff could not record relay phone: %s", type(exc).__name__)
+        try:
+            await db.refresh(account)  # rolled-back objects are expired; async code cannot lazy-load
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def extension_handoff(
     db: AsyncSession,
     *,
     email: str,
     workspace_id: int,
     sync_operation_id: str | None = None,
+    phone_session: str | None = None,
 ) -> dict[str, Any]:
     """One short step of: sync the team, link the joined member, start OAuth.
 
     Without ``sync_operation_id`` a (deduplicated) team sync is queued and ``syncing`` is
     returned. The caller polls with the returned id until the sync finishes; then the
     member is linked if needed and a manual OAuth session is created for it.
+    ``phone_session`` records the number the extension verified through the phone relay.
     """
     from app.application.jobs.workspace_sync import enqueue_workspace_sync
     from app.application.console_maintenance import link_remote_only_member
@@ -341,6 +379,8 @@ async def extension_handoff(
         account = await db.get(Account, int(linked["account_id"]))
     if account is None:
         return _handoff_error("account_not_found", "接入后未找到本地账号")
+    if phone_session:
+        await _record_relay_phone(db, account, phone_session)
     try:
         started = await reauth_service.start_manual_reauth(db, account)
     except OAuthSessionError as exc:

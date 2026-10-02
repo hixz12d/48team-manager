@@ -70,11 +70,15 @@ export function oauthCallback(value) {
 
 
 export const MODES = new Set(['auto', 'review', 'submit', 'manual']);
-export const STAGES = new Set(['signup', 'email', 'password', 'otp', 'profile', 'consent', 'home', 'unknown']);
+// phone: the "add phone number" form; phone_otp: the SMS code form (never an email code).
+export const STAGES = new Set(['signup', 'email', 'password', 'otp', 'profile', 'consent', 'home', 'unknown', 'phone', 'phone_otp']);
 const EVENTS = new Set(['started', 'page', 'filled', 'submit_attempt', 'form_submit', 'manual_submit',
   'waiting_manual', 'code_received', 'paused', 'resumed', 'stopped', 'expired', 'session_check',
   'session_error', 'email_mismatch', 'email_unverified', 'completed', 'captcha', 'phone', 'rate_limit', 'entry_fallback', 'click_response', 'continue_retry',
-  'oauth_started', 'oauth_callback', 'session_anonymous', 'manual_complete', 'auto_resumed', 'submit_stalled', 'page_reload', 'control_wait', 'auto_retried']);
+  'oauth_started', 'oauth_callback', 'session_anonymous', 'manual_complete', 'auto_resumed', 'submit_stalled', 'page_reload', 'control_wait', 'auto_retried',
+  'phone_acquired', 'phone_submitted', 'sms_received', 'phone_rejected']);
+// Phone relay results reported to the server (docs/contracts/phone-relay.md section 4).
+export const PHONE_OUTCOMES = new Set(['success', 'invalid', 'recently_used', 'risk', 'no_sms', 'wrong_code', 'cancelled']);
 const PAGES = new Set(['chatgpt', 'signup', 'password', 'email_verification', 'profile', 'phone', 'consent', 'auth_other', 'unknown']);
 const CLICK_OUTCOMES = new Set(['submitted', 'loading', 'advanced', 'validation', 'timeout']);
 const CONTROL_OUTCOMES = new Set(['waiting', 'ready', 'timeout']);
@@ -96,7 +100,7 @@ export const PAUSE_REASONS = new Set(['user', 'submit_timeout', 'click_timeout',
   'otp_wait', 'attempt_limit', 'retry_limit', 'profile_timeout', 'button_unavailable', 'no_submit_button', 'validation',
   'form_changed', 'fill_incomplete', 'user_edit', 'email_mismatch', 'email_unverified', 'session_error', 'home_unconfirmed',
   'entry_missing', 'unknown_page', 'manual_step', 'captcha', 'phone', 'rate_limit', 'redraw', 'reload_failed',
-  'debugger_detached', 'error', 'other']);
+  'debugger_detached', 'error', 'other', 'phone_pool_empty', 'phone_limit', 'phone_back_missing', 'phone_relay_error']);
 // A pause for these reasons only means "the page did not move in time": once the page reaches
 // a later step by itself, the run may continue without the user clicking Continue.
 export const AUTO_RESUME_REASONS = new Set(['submit_timeout', 'click_timeout', 'claim_timeout', 'otp_submit_timeout',
@@ -150,6 +154,7 @@ export function recordEvent(job, event, {page, stage, verified, outcome, reason,
   if (STAGES.has(stage)) entry.stage = stage;
   if (typeof verified === 'boolean') entry.verified = verified;
   if (event === 'click_response' && CLICK_OUTCOMES.has(outcome)) entry.outcome = outcome;
+  if (event === 'phone_rejected' && PHONE_OUTCOMES.has(outcome)) entry.outcome = outcome;
   if (event === 'control_wait') {
     if (CONTROL_OUTCOMES.has(outcome)) entry.outcome = outcome;
     entry.control = controlGeometry(control);
@@ -183,6 +188,7 @@ export function diagnosticReport(job, version) {
       ...(STAGES.has(entry.stage) ? {stage: entry.stage} : {}),
       ...(typeof entry.verified === 'boolean' ? {verified: entry.verified} : {}),
       ...(entry.event === 'click_response' && CLICK_OUTCOMES.has(entry.outcome) ? {outcome: entry.outcome} : {}),
+      ...(entry.event === 'phone_rejected' && PHONE_OUTCOMES.has(entry.outcome) ? {outcome: entry.outcome} : {}),
       ...(entry.event === 'control_wait' ? {control: controlGeometry(entry.control),
         ...(CONTROL_OUTCOMES.has(entry.outcome) ? {outcome: entry.outcome} : {})} : {}),
       ...(entry.event === 'paused' && PAUSE_REASONS.has(entry.reason) ? {reason: entry.reason} : {}),

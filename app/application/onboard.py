@@ -295,6 +295,7 @@ class OnboardService:
                 signup_flow=signup_flow,
                 keep_operation_identity=keep_operation_identity,
                 signup_runner=signup_runner,
+                use_phone_pool=use_phone_pool,
             )
             label = ""
             if claimed and result.get("success"):
@@ -353,6 +354,7 @@ class OnboardService:
         signup_flow: str | None = None,
         keep_operation_identity: bool = False,
         signup_runner: str = "playwright",
+        use_phone_pool: bool = False,
     ) -> dict[str, Any]:
         requested_seat = parse_invite_seat_intent(seat_intent)
         busy = await operation_store.active_for_workspace(
@@ -573,7 +575,7 @@ class OnboardService:
             return await self._extension_signup(
                 db, child=child, workspace=workspace, role=requested_role,
                 seat_intent=requested_seat.value, job_id=job_id, claimed=claimed,
-                browser_session=browser_session,
+                browser_session=browser_session, use_phone_pool=use_phone_pool,
             )
 
         has_session = bool(decrypt_secret(child.access_token_encrypted) or decrypt_secret(child.session_token_encrypted))
@@ -779,6 +781,7 @@ class OnboardService:
         job_id: str | None,
         claimed=None,
         browser_session=None,
+        use_phone_pool: bool = False,
     ) -> dict[str, Any]:
         """Signup + OAuth through the extension runner; the invitation is already confirmed."""
         from app.application.extension_runner import check_runner_proxy, signup_and_authorize
@@ -816,6 +819,7 @@ class OnboardService:
             outcome = await signup_and_authorize(
                 db, account=child, workspace=workspace, role=role, seat_intent=seat_intent,
                 proxy_url=proxy_url, job_id=job_id or "", on_stage=on_stage,
+                use_phone_pool=use_phone_pool,
             )
         except BrowserEnvironmentError as exc:
             # Profile / geo errors surface before the browser starts.

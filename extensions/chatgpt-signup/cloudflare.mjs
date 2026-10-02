@@ -1,5 +1,6 @@
 // Browser equivalent of app/integrations/mail/cloudflare.py and otp.py.
 import PostalMime, {addressParser, decodeWords} from './vendor/postal-mime/src/postal-mime.js';
+import {fetchHmeMessages} from './hme.mjs';
 
 export const MAIL_ORIGIN = 'https://apimail.xiaozhudf2026.foo';
 export const RUN_TTL = 10 * 60 * 1000;
@@ -100,13 +101,15 @@ export async function fetchMessages(config, email) {
   const messages = await Promise.all(unwrapItems(payload).map(parseMessage));
   return messages.filter(message => registrationMail(message, email));
 }
+// config.kind === 'hme' reads through icloud-hme; otherwise the Cloudflare mailbox.
+const fetchMail = (config, email) => config.kind === 'hme' ? fetchHmeMessages(config, email) : fetchMessages(config, email);
 export async function startMailbox(config, email) {
-  const messages = await fetchMessages(config, email);
+  const messages = await fetchMail(config, email);
   return {started: Date.now(), seen: await Promise.all(messages.map(fingerprint)),
     codes: [...new Set(messages.map(message => extractCode(`${message.subject}\n${message.body}`)).filter(Boolean))]};
 }
 export async function pollMailbox(config, email, baseline, ignoredCodes) {
-  const messages = await fetchMessages(config, email);
+  const messages = await fetchMail(config, email);
   const ignored = new Set([...baseline.codes, ...ignoredCodes]);
   for (const message of messages) {
     if (baseline.seen.includes(await fingerprint(message))) continue;

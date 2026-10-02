@@ -97,7 +97,8 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
   "profile": {"name": "Emma Clark", "birthday": "1998-04-17"},
   "mode": "auto",
   "workspaceNames": ["团队显示名", "官方名"],
-  "probeUrls": []
+  "probeUrls": [],
+  "phonePool": true
 }
 ```
 
@@ -110,6 +111,7 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
 | `mode` | `"auto"` | 固定 |
 | `workspaceNames` | string[] ≤5 | `member_handoff._workspace_names(workspace, owner_email)`；OAuth 选团队用 |
 | `probeUrls` | `[]` | signup 为空数组 |
+| `phonePool` | bool | 服务端是否允许本次运行接码（轮转打开号码池且有任务 ID 时为 `true`）；插件存进 `job.runner.phonePool` |
 
 `selfcheck`：
 
@@ -148,14 +150,16 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
 | `seq` | int ≥ 1 | 本次运行内递增；服务端忽略不大于已收最大值的事件（仍正常回复指令） |
 | `status` | `"running"` / `"paused"` / `"stopped"` / `"done"` | 插件 job 状态；自检也用这四个值 |
 | `phase` | `"signup"` / `"oauth"` / `"selfcheck"` | |
-| `stage` | `shared.mjs` `STAGES` 之一 | 自检固定 `"unknown"` |
+| `stage` | `shared.mjs` `STAGES` 之一 | 含 `phone`（号码输入页）、`phone_otp`（短信验证码页），服务端分别映射为任务步骤 `add_phone`、`sms_otp`（注册和授权阶段都映射）；自检固定 `"unknown"` |
 | `pauseReason` | `PAUSE_REASONS` 之一或 `null` | 仅 `status:"paused"` 时非空 |
 | `pauseFinal` | bool | `true`：插件不会自己恢复（人工类暂停，或自动重试次数用完）；`false`：插件还会自动重试 / 页面前进后自动继续（`autoRetryAllowed(job)` 为真或原因属于 `AUTO_RESUME_REASONS`，且不在下表"人工类"里） |
 | `message` | string ≤200 | 插件 job 的中文状态文字；不得含邮箱、密码、验证码、页面原文 |
 | `codexResult` | `"unknown"` / `"no_phone"` / `"phone_required"` / `"failed"` | |
 | `diagnostics` | object 或 `null` | 仅在 `status` 为 `done` / `stopped` / 最终暂停时附带 `diagnosticReport(job, VERSION)`；其他时候 `null` |
 
-服务器模式的人工类暂停（`pauseFinal` 必为 `true`，插件原地停住不自动恢复）：`phone`、`captcha`、`rate_limit`、`manual_step`、`email_mismatch`、`email_unverified`、`session_error`、`debugger_detached`；`unknown_page` 在自动重试次数用完后也为最终。
+服务器模式的人工类暂停（`pauseFinal` 必为 `true`，插件原地停住不自动恢复）：`phone`、`phone_pool_empty`、`phone_limit`、`phone_back_missing`、`phone_relay_error`、`captcha`、`rate_limit`、`manual_step`、`email_mismatch`、`email_unverified`、`session_error`、`debugger_detached`；`unknown_page` 在自动重试次数用完后也为最终。
+
+手机页：`phonePool:true` 时插件遇手机页先走接码中转（`POST /phone`），只有中转失败才以 `phone_pool_empty` / `phone_limit` / `phone_back_missing` / `phone_relay_error` 暂停；`phonePool:false` 时照旧以 `phone` 暂停。
 
 发送时机：`status/phase/stage/pauseReason/codexResult` 任一变化立即发；无变化时每 30 秒心跳一次；注册完成等待授权期间每 5 秒一次。同一时刻只保留一个在途请求，后到的变化合并进下一次。
 
@@ -185,6 +189,10 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
 | `{"ok": false, "error_code": "not_authorizing"}` | 服务端尚未下发授权链接 | 不重试，上报 `status:"stopped"` |
 
 网络错误 / 5xx：每 5 秒重试，最多 12 次；仍失败上报 `status:"stopped"`。服务器模式下 `captureCallback` 不调用 `/api/ext/handoff/complete`。
+
+### POST `/phone`（仅 signup）
+
+接码中转：领号、读短信验证码、报告结果、释放。见 [phone-relay.md](phone-relay.md)。
 
 ### POST `/probe`（仅自检）
 
@@ -272,7 +280,7 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
 | `runner_timeout` | 超过 `RUNNER_TIMEOUT_SECONDS` | partial |
 | `phone_verification_required` | 插件暂停原因 `phone` | manual_required |
 | `captcha_required` | 插件暂停原因 `captcha` | manual_required |
-| `runner_paused_<pauseReason>` | 其他最终暂停，如 `runner_paused_rate_limit`、`runner_paused_email_mismatch` | 含 `mismatch` 的为 manual_required，其余 partial |
+| `runner_paused_<pauseReason>` | 其他最终暂停，如 `runner_paused_rate_limit`、`runner_paused_email_mismatch`、`runner_paused_phone_limit` | 含 `MANUAL_MARKERS` 子串（如 `mismatch`、`phone`）的为 manual_required，其余 partial |
 | `not_joined` | 注册完成但官方列表未确认入组 | partial |
 | `membership_mismatch` | 已入组但角色 / 席位不符 | partial |
 | `oauth_exchange_failed` | 换票失败、授权会话过期或 revision 不符 | partial |
@@ -289,6 +297,9 @@ runner_job(run_id, token) -> dict | None
 runner_event(run_id, token, event: dict) -> dict | None
 runner_callback(run_id, token, callback_url: str) -> dict | None
 runner_probe(run_id, token, *, name: str, kind: str, data) -> dict | None
+runner_phone_context(run_id, token) -> dict | None
 ```
+
+`runner_phone_context`：`kind != "signup"` 或本次未开放接码时返回 `{"enabled": False}`；否则返回 `{"enabled": True, "lease_key": <任务 public_id>, "account_id", "proxy_url", "phase"}`，并刷新 `last_event_at`。路由据此构造 `phone_relay.RelayContext`。
 
 大小上限常量：`EVENT_MAX_BYTES`（64KB）、`PROBE_JSON_MAX_BYTES`（64KB）、`PROBE_SCREENSHOT_MAX_BYTES`（4MB）。

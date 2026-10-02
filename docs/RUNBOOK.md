@@ -94,6 +94,9 @@
 | 团队卡"在跑"显示 — / 收入记录标"估算""未取到" | 用量同步还没跑出全程窗口 / 离队时读 Sub2API 失败 | 等下一次用量同步（5 分钟）；账本不支持手改，"估算"会在删旧远端前再读一次时更新 |
 | 轮转预检报 `runner_not_configured` / `proxy_auth_unsupported` / `runner_mailbox_invalid` | 运行器未装好 Chromix / 母号是带账号密码的 HTTP 代理 / Cloudflare 邮箱地址不是插件内置的 | 按"常用操作"装好 Chromix 或修正设置；代理改 SOCKS5 或无认证；临时可切回 `ROTATION_SIGNUP_RUNNER=playwright` |
 | 运行器轮转停在 `runner_oauth_required` 等待人工 | 注册或授权时出现手机 / 人机验证 | 人工授权该邮箱后点"继续轮转"，不要重新发起 |
+| 插件 / 运行器暂停 `phone_pool_empty` | 号码池没有可用号 | 在"资源 → 手机号"导入（`+1xxxxxxxxxx----接码链接`）后点继续 |
+| 暂停 `phone_limit` | 同一账号已换 3 个号仍失败 | 看资源页接码记录的失败原因；人工继续只再给 1 次，轮转"继续轮转"重新计 3 个 |
+| 暂停 `phone_back_missing` / `phone_relay_error` | 页面上找不到"换号码"入口 / 接码接口不可用、选不到 +1、已绑号无记录 | 人工回到号码输入页或手动完成手机验证后点继续；本机包提示"未启用接码接口"时检查服务端版本和 `EXTENSION_API_TOKEN` |
 
 ## 常用操作
 
@@ -104,6 +107,6 @@
 - **浏览器环境自检**：设置页"浏览器环境"卡片，选团队（取母号代理）和平台，点自检；不注册、不碰官方团队，占用全局浏览器槽。先按 linux / windows 各跑一次，按结果定 `RUNNER_FINGERPRINT_PLATFORM` / `RUNNER_GPU_MODE`（只影响新建档案）。服务器没有 GPU 时 Chromix 会强制显示真实软件渲染型号，`preset` 可能不生效（结果里 `gpu_preset_ignored`）。服务重启会把进行中的自检标失败（`runner_interrupted`），重新发起即可。
 - **切换轮转注册方式**：`/opt/team48/.env` 改 `ROTATION_SIGNUP_RUNNER=extension`（回退改 `playwright`）后重建。前提：自检通过；设置里 Cloudflare 邮箱地址必须是插件内置的 `https://apimail.xiaozhudf2026.foo`，否则报 `runner_mailbox_invalid`。运行目录 `data/runner-runs/` 结束即删；容器重启会丢失进行中的运行，任务停在待人工，按"继续轮转"处理。
 - **启用插件接口**：`python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成令牌 → 写 `/opt/team48/.env` 的 `EXTENSION_API_TOKEN` → 重建 → 本机重新打包插件。
-- **打包插件（本机）**：`python scripts/build_signup_extension.py --local-config --unpack`（只用本机 `private-config.mjs`）；首次不带 `--local-config` 会经 SSH 只读 VPS 上的 Cloudflare 配置。`--team48-token <令牌>` / `--no-team48` 写入 / 移除令牌。产物在 `dist/`（gitignore）。安装说明见 `extensions/chatgpt-signup/README.md`。
+- **打包插件（本机）**：`python scripts/build_signup_extension.py --local-config --unpack`（只用本机 `private-config.mjs`）；首次不带 `--local-config` 会经 SSH 只读 VPS 上的 Cloudflare 配置。`--team48-token <令牌>` / `--no-team48` 写入 / 移除令牌（带令牌才会接码）；`--hme-token <ICLOUD_HME_SERVICE_TOKEN> --hme-account acc_...` / `--no-hme` 让本机包改从 iCloud（经 icloud-hme）读邮件验证码 / 改回 Cloudflare。产物在 `dist/`（gitignore），重新加载后确认插件版本号。安装说明见 `extensions/chatgpt-signup/README.md`。
 - **单席位补位（本机）**：`python -m scripts.signup_one --workspace-id N --role member` 只显示预检，加 `--confirm` 才执行；短信用 `--sms-stdin` 从标准输入传，不写在命令参数里。
 - **HubStudio 本机观察**：`scripts/hubstudio_probe.py --port <CDP端口>` 只读探测；`scripts/hubstudio_record.py record|mark|stop --port <p> --out dist/hubstudio-record-<时间>` 录时间线，用 `stop` 结束，不要强杀。端口每次重新识别。

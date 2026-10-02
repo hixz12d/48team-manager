@@ -11,9 +11,10 @@ import json
 import re
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import extension_runner as runner
 
@@ -46,6 +47,28 @@ class RunnerProbeRequest(BaseModel):
     name: str = Field(pattern=runner.PROBE_NAME_PATTERN)
     kind: Literal["signals", "exit", "screenshot"]
     data: Any = None
+
+
+class RunnerPhoneRequest(BaseModel):
+    """``docs/contracts/phone-relay.md``; ``session`` / ``email`` / ``workspaceId`` are ignored here."""
+    model_config = ConfigDict(extra="ignore")
+
+    action: Literal["acquire", "code", "report", "release"]
+    phase: Literal["signup", "oauth"] = "signup"
+    phoneId: int | None = Field(default=None, ge=0)
+    bound: bool = False
+    outcome: Literal["success", "invalid", "recently_used", "risk", "no_sms", "wrong_code", "cancelled"] | None = None
+
+    @model_validator(mode="after")
+    def _required_fields(self):
+        if self.action in {"code", "report"} and self.phoneId is None:
+            raise ValueError("phoneId is required")
+        if self.action == "report" and self.outcome is None:
+            raise ValueError("outcome is required")
+        return self
+
+
+PHONE_MAX_BYTES = 4 * 1024
 
 
 def _not_found() -> HTTPException:
@@ -89,7 +112,8 @@ def _parse(model: type[BaseModel], payload: Any) -> BaseModel:
 
 
 def build_runner_router(get_db=None) -> APIRouter:
-    """``get_db`` is accepted for symmetry with other routers; the registry is in-process."""
+    """The run registry is in-process; ``get_db`` is only used by ``/phone`` (a fresh session per
+    request, never the session ``signup_and_authorize`` is using)."""
     router = APIRouter(prefix="/api/ext/runner", tags=["extension-runner"])
 
     def _authorized(run_id: str, request: Request) -> str:
@@ -132,5 +156,32 @@ def build_runner_router(get_db=None) -> APIRouter:
             if size > runner.PROBE_JSON_MAX_BYTES:
                 raise HTTPException(status_code=413, detail="payload too large", headers=NO_STORE)
         return _reply(runner.runner_probe(run_id, token, name=payload.name, kind=payload.kind, data=payload.data))
+
+    if get_db is not None:
+        @router.post("/{run_id}/phone")
+        async def phone(run_id: str, request: Request, db: AsyncSession = Depends(get_db)) -> JSONResponse:
+            from app.application.resources import phone_relay
+
+            token = _authorized(run_id, request)
+            payload = _parse(RunnerPhoneRequest, await _read_json(request, PHONE_MAX_BYTES))
+            context = runner.runner_phone_context(run_id, token)
+            if context is None:
+                raise _not_found()
+            if not context.get("enabled"):
+                return _reply({"ok": False, "error_code": "phone_relay_disabled",
+                               "message": "本次运行未开放自动接码"})
+            # The plugin's own phase is the freshest; the registry's phase only fills in when it is omitted.
+            phase = payload.phase if "phase" in payload.model_fields_set else str(context.get("phase") or "signup")
+            ctx = phone_relay.RelayContext(
+                lease_key=str(context["lease_key"]),
+                account_id=context.get("account_id"),
+                proxy_url=str(context.get("proxy_url") or ""),
+                phase=phase,
+            )
+            result = await phone_relay.handle(
+                db, ctx, action=payload.action, phone_id=payload.phoneId,
+                bound=payload.bound, outcome=payload.outcome,
+            )
+            return _reply(result)
 
     return router

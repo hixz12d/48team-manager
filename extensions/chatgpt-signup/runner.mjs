@@ -20,7 +20,8 @@ const EVENT_LIMIT = 60 * 1024, SCREENSHOT_LIMIT = 4 * 1024 * 1024;
 const CODEX_RESULTS = new Set(['unknown', 'no_phone', 'phone_required', 'failed']);
 // Nobody resolves these on a server: report them as final and stay where the page stopped.
 export const RUNNER_MANUAL_REASONS = new Set(['phone', 'captcha', 'rate_limit', 'manual_step', 'email_mismatch',
-  'email_unverified', 'session_error', 'debugger_detached']);
+  'email_unverified', 'session_error', 'debugger_detached',
+  'phone_pool_empty', 'phone_limit', 'phone_back_missing', 'phone_relay_error']);
 const CALLBACK_ERRORS = {
   callback_invalid: '服务器认为授权回调无效。',
   callback_already_received: '服务器已收到另一条授权回调。',
@@ -377,7 +378,8 @@ export function createRunner(config, host) {
         }
         const workspaceNames = (Array.isArray(task.workspaceNames) ? task.workspaceNames : [])
           .map(name => String(name || '').trim()).filter(Boolean).slice(0, 5);
-        await host.startJob({email: task.email, password: task.password, profile: task.profile, workspaceNames});
+        await host.startJob({email: task.email, password: task.password, profile: task.profile, workspaceNames,
+          phonePool: task.phonePool === true});
       } catch (error) { startError = `无法开始注册：${error?.message || '未知错误'}`; }
     }
     return updateState(s => Object.assign(s, {started: true, kind: 'signup', ...(startError ? {startError} : {})}));
@@ -411,10 +413,23 @@ export function createRunner(config, host) {
     return booting;
   }
 
+  // ---- Phone relay (docs/contracts/phone-relay.md): one request, the caller owns retries. ----
+  // Must not be awaited inside background.js's job queue: a 404 stops the job through it.
+  async function phone(body) {
+    const state = await readState();
+    if (halted(state) || state?.kind !== 'signup') return {ok: false, error_code: 'run_gone', message: '运行已结束。'};
+    const result = await request('/phone', body);
+    if (result.gone) { await gone(); return {ok: false, error_code: 'run_gone', message: '运行已结束。'}; }
+    if (result.ok && result.data && typeof result.data === 'object') return result.data;
+    if (result.rejected) return {ok: false, error_code: 'invalid_request', message: '服务器拒绝了接码请求。'};
+    return {ok: false, network: true, message: '无法连接服务器接码接口。'};
+  }
+
   return {
     boot,
     // Called after every save of a server-mode job; the report loop decides whether it changed.
     jobSaved: wake,
     submitCallback,
+    phone,
   };
 }
