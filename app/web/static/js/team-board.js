@@ -89,14 +89,20 @@
     const switches = window.Team48SwitchCount?.countForToday?.(group.switch_count) ?? 0;
     const expiry = window.Team48Expiry?.summary?.(group.expiry);
     const c = counts(all);
-    // 今日切换单独做成小标签放最前；席位没同步时直接不写，不再显示“席位未同步”。
+    // 卡头数字一律做成中性小标签；异常（不在 Sub2API、到期临近 / 已过期）用“符号 + 彩色文字”。
+    // 席位没同步时直接不写，不再显示“席位未同步”。
     const chip = el("span", `board-switch${switches ? " is-active" : ""}`, "今日切换 ");
     chip.append(el("strong", "", String(switches)), " 次");
-    const parts = [`在 Sub2API ${c.inSub}/${all.length}`];
-    if (group.occupied_seats != null && group.seat_limit) parts.unshift(`${group.occupied_seats}/${group.seat_limit} 席`);
-    if (expiry?.date) parts.push(`到期 ${expiry.label}`);
-    meta.append(chip, el("span", "", parts.join(" · ")));
-    if (c.out) meta.append(el("span", "text-warning", `· ${c.out} 个不在 Sub2API`));
+    meta.append(chip);
+    const neutral = (value, suffix, prefix = "") => { const n = el("span", "board-chip", prefix); n.append(el("strong", "", value), suffix); return n; };
+    if (group.occupied_seats != null && group.seat_limit) meta.append(neutral(`${group.occupied_seats}/${group.seat_limit}`, " 席"));
+    meta.append(neutral(`${c.inSub}/${all.length}`, "", "在 Sub2API "));
+    if (expiry?.date) {
+      const alert = { error: "is-danger", warning: "is-warning" }[expiry.tone];
+      const node = el("span", alert ? `board-flag ${alert}` : "board-chip", `到期 ${expiry.label}`); node.title = `到期日 ${expiry.date}（手动记录）`;
+      meta.append(node);
+    }
+    if (c.out) meta.append(el("span", "board-flag is-warning", `${c.out} 个不在 Sub2API`));
     const revenue = window.Team48Revenue?.line?.(group);
     if (revenue) { const node = el("span", "board-revenue", revenue.text); node.title = revenue.title; meta.append(node); }
     const manage = el("a", "button compact", "管理团队"); manage.href = `/accounts?view=teams&workspace=${encodeURIComponent(group.id)}`;

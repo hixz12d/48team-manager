@@ -1,32 +1,54 @@
-/* The same stage vocabulary at card, drawer and task-center densities. */
+/* The same stage vocabulary at card, drawer and task-center densities.
+   Flat & square: current = money green, failed = danger, pending = muted; every state has a symbol. */
 .task-progress { min-width: 0; padding: var(--space-md) 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
 .task-progress-title, .task-progress-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
 .task-progress-title { justify-content: space-between; }
 .task-progress p { margin: var(--space-xs) 0; }
-.task-progress-title strong { font-size: var(--text-body); }
+.task-progress-title strong { font-size: var(--text-body); font-weight: 600; }
 .task-elapsed { color: var(--muted); font-size: var(--text-meta); font-variant-numeric: tabular-nums; }
-.task-progress-stage { font-size: var(--text-body); }
-.task-progress[data-state="failed"] .task-progress-stage,
+.task-progress-stage { font-size: var(--text-body); color: var(--text-secondary); }
+.task-progress-stage::before { content: "\25CB  "; font-size: 10px; color: var(--muted); }
+.task-progress:is([data-state="pending"], [data-state="queued"], [data-state="running"], [data-state="waiting"]) .task-progress-stage { color: var(--accent-text); }
+.task-progress:is([data-state="pending"], [data-state="queued"], [data-state="running"], [data-state="waiting"]) .task-progress-stage::before { content: "\25CF  "; color: inherit; }
+.task-progress[data-state="success"] .task-progress-stage::before { content: "\25CF  "; color: var(--success-text); }
+.task-progress[data-state="failed"] .task-progress-stage { color: var(--danger-text); }
+.task-progress[data-state="failed"] .task-progress-stage::before { content: "\2715  "; color: inherit; }
 .task-progress[data-state="partial"] .task-progress-stage,
 .task-progress[data-state="manual_required"] .task-progress-stage { color: var(--warning-text); }
+.task-progress[data-state="partial"] .task-progress-stage::before,
+.task-progress[data-state="manual_required"] .task-progress-stage::before { content: "\25B2  "; color: inherit; }
 .task-steps, .task-segments { padding: 0; margin: var(--space-sm) 0; list-style: none; }
-.task-steps { display: grid; gap: var(--space-xs); }
+.task-steps { display: grid; gap: 0; }
 .task-steps .task-step { display: flex; align-items: flex-start; gap: var(--space-sm); padding-block: var(--space-xs); }
-.task-step-mark { flex: 0 0 18px; width: 18px; height: 18px; border: 1px solid var(--border-strong); border-radius: 50%; font-size: var(--text-meta); text-align: center; line-height: 16px; }
+/* Step marks: 16px square, symbol inside; done keeps the CSS-drawn tick. */
+.task-step-mark { flex: 0 0 16px; width: 16px; height: 16px; margin-top: 1px; border: 1px solid var(--border-strong); border-radius: 0; background: transparent; color: var(--muted); font-size: 10px; font-weight: 700; text-align: center; line-height: 14px; }
 .task-step-copy { display: grid; gap: 2px; min-width: 0; }
-.task-step-copy strong { font-size: var(--text-body); font-weight: 500; }
+.task-step-copy strong { font-size: var(--text-body); font-weight: 500; color: var(--text-secondary); }
 .task-step-copy small { color: var(--muted); font-size: var(--text-meta); }
 .is-done > .task-step-mark { background: var(--accent); border-color: var(--accent); }
-.is-done > .task-step-mark::after { content: ""; display: block; width: 7px; height: 4px; border: solid var(--primary-text); border-width: 0 0 2px 2px; transform: rotate(-45deg); margin: 4px; }
-.is-current > .task-step-mark { background: var(--accent-bg); border: 2px solid var(--accent); }
-.is-visited > .task-step-mark { background: var(--surface-muted); border-color: var(--text-secondary); }
-.is-skipped > .task-step-mark::after { content: ""; display: block; width: 8px; height: 1px; margin: 7px 4px; background: var(--muted); }
-.is-failed > .task-step-mark { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning-text); font-weight: 700; }
-.task-segments { display: flex; gap: 4px; }
+.is-done > .task-step-mark::after { content: ""; display: block; width: 7px; height: 4px; border: solid var(--primary-text); border-width: 0 0 2px 2px; transform: rotate(-45deg); margin: 3px 3px; }
+.is-done .task-step-copy strong { color: var(--text); }
+.is-current > .task-step-mark { border-color: var(--accent); color: var(--accent-text); }
+.is-current > .task-step-mark::after { content: ""; display: block; width: 6px; height: 6px; margin: 4px; background: var(--accent); }
+.is-current .task-step-copy strong { color: var(--accent-text); font-weight: 600; }
+.is-current .task-step-copy small { color: var(--accent-text); }
+.is-visited > .task-step-mark { border-color: var(--text-secondary); }
+.is-visited > .task-step-mark::after { content: ""; display: block; width: 4px; height: 4px; margin: 5px; background: var(--text-secondary); }
+.is-skipped > .task-step-mark { border-style: dashed; }
+.is-skipped > .task-step-mark::after { content: ""; display: block; width: 8px; height: 1px; margin: 7px 3px; background: var(--muted); }
+.is-failed > .task-step-mark { background: transparent; border-color: var(--danger); color: var(--danger-text); }
+.is-failed .task-step-copy strong,
+.is-failed .task-step-copy small { color: var(--danger-text); }
+/* Compact density: one flat segment per stage. */
+.task-segments { display: flex; gap: 2px; }
 .task-segments .task-step { flex: 1; min-width: 0; }
-.task-segments .task-step-mark { display: block; width: 100%; height: 12px; border-radius: 2px; line-height: 10px; }
-.task-segments .is-done > .task-step-mark::after { display: none; }
-.task-segments .is-current > .task-step-mark { background-image: repeating-linear-gradient(110deg, transparent 0 5px, var(--accent-border) 5px 10px); background-size: 20px 100%; animation: task-stage-stripe 1s linear infinite; }
+.task-segments .task-step-mark { display: block; width: 100%; height: 12px; margin: 0; border: 0; border-radius: var(--radius-sm); background: var(--surface-strong); line-height: 12px; font-size: 9px; }
+.task-segments .task-step-mark::after { display: none; }
+.task-segments .is-done > .task-step-mark { background: color-mix(in srgb, var(--accent) 45%, var(--surface-strong)); }
+.task-segments .is-current > .task-step-mark { background: var(--accent); }
+.task-segments .is-visited > .task-step-mark { background: var(--border-strong); }
+.task-segments .is-skipped > .task-step-mark { background: var(--surface-muted); }
+.task-segments .is-failed > .task-step-mark { background: var(--danger-solid); color: #ffffff; }
 .task-progress-compact { padding: var(--space-sm) 0; }
 .management-group-title .task-progress-compact { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; }
 .management-group-title .task-progress-title, .management-group-title .task-progress-stage { grid-column: 1 / -1; }
@@ -35,12 +57,22 @@
 .management-group-title .task-progress-actions { justify-self: end; }
 .management-group-title .task-progress-title strong { font-size: var(--text-body); }
 .task-result { padding-block: var(--space-xs); font-size: var(--text-body); }
-#task-center-open[data-attention="true"] { color: var(--warning-text); border-color: var(--warning-border); }
-#task-center-open::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; background: currentColor; }
+.task-progress[data-state="failed"] .task-result { color: var(--danger-text); }
+.task-progress:is([data-state="partial"], [data-state="manual_required"]) .task-result { color: var(--warning-text); }
+/* Badge density (account rows): symbol + coloured text, no fill, no frame. */
+.task-progress-badge > .management-badge { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; border-radius: 0; background: transparent; font-weight: 500; cursor: pointer; }
+.task-progress-badge > .management-badge:hover { text-decoration: underline; text-underline-offset: 3px; }
+.task-progress-badge > .management-badge::before { content: "\25CF"; font-size: 10px; line-height: 1; }
+.task-progress-badge > .management-badge.tone-info { color: var(--accent-text); }
+.task-progress-badge > .management-badge.tone-warning { color: var(--warning-text); }
+.task-progress-badge > .management-badge.tone-warning::before { content: "\25B2"; }
+/* Topbar task button: neutral square marker; attention switches to warning text + triangle. */
+#task-center-open::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 0; margin-right: 2px; background: currentColor; }
+#task-center-open[data-attention="true"] { color: var(--warning-text); }
+#task-center-open[data-attention="true"]::before { content: "\25B2"; width: auto; height: auto; background: none; font-size: 10px; }
 .task-center-panel { width: min(620px, 100vw); max-width: 100vw; }
-#task-center .sheet-body { padding: var(--space-md); min-width: 0; }
+#task-center .sheet-body { padding: 0; min-width: 0; }
+#task-center-list > .task-progress:last-child { border-bottom: 0; }
 .task-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.task-technical { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-meta); }
-@keyframes task-stage-stripe { to { background-position: 20px 0; } }
-@media (prefers-reduced-motion: reduce) { .task-segments .is-current > .task-step-mark { animation: none; } }
+.task-technical { max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--text-meta); padding: var(--space-xs) var(--space-sm); background: var(--surface); }
 @media (max-width: 720px) { .task-progress-actions .button { min-height: 36px; } }

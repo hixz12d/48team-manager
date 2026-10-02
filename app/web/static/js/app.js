@@ -597,13 +597,21 @@
       if (titleEl) titleEl.textContent = title || "确认操作";
       if (subtitleEl) subtitleEl.textContent = subtitle;
       if (messageEl) messageEl.textContent = message;
-      if (hintEl) { hintEl.hidden = !hint; hintEl.textContent = hint || ""; }
+      // 危险确认里"会改动什么 / 不会改什么"只做外观区分：会改动的用危险色 + ▲，不改官方 / 只改本地的用 ● 次要色。
+      const impactClass = (text) => {
+        const value = String(text || "");
+        if (/^(不|保留|只|仅)/.test(value) || /不影响官方|官方团队不会改变|不会改官方/.test(value)) return "is-safe";
+        return tone === "danger" ? "is-impact" : "";
+      };
+      if (hintEl) { hintEl.hidden = !hint; hintEl.textContent = hint || ""; hintEl.className = `hint ${hint ? impactClass(hint) : ""}`.trim(); }
       if (listEl) {
         listEl.replaceChildren();
         listEl.hidden = !items.length;
         items.forEach((text) => {
           const li = document.createElement("li");
           li.textContent = text;
+          const cls = impactClass(text);
+          if (cls) li.className = cls;
           listEl.append(li);
         });
       }
@@ -1226,7 +1234,7 @@ function hmeRow(item) {
     cell(row, item.email);
     cell(row, item.state);
     cell(row, item.label || "—");
-    cell(row, item.pending ? "待同步" : "已同步");
+    cell(row, statusNode(item.pending ? "pending" : "success", item.pending ? "待同步" : "已同步"));
     cell(row, item.job_id || "—");
     cell(row, timeNode(item.expires_at));
     const actions = document.createElement("div");
@@ -1375,7 +1383,14 @@ function hmeRow(item) {
       const node = document.querySelector(`[data-summary="${key}"]`);
       if (!node) return;
       node.textContent = value ?? 0;
-      node.parentElement.classList.toggle("is-alert", Boolean(alert && value));
+      const item = node.parentElement;
+      const alerting = Boolean(alert && value);
+      item.classList.toggle("is-alert", alerting);
+      // 告警符号是 CSS 伪元素，读屏读不到；告警时在可访问名称里补上"需处理"。
+      const label = item.querySelector(".summary-label")?.textContent || "";
+      const detail = item.querySelector("#overview-attention-breakdown")?.textContent || "";
+      if (alerting && label) item.setAttribute("aria-label", [`${label} ${value}，需处理`, detail].filter(Boolean).join("："));
+      else item.removeAttribute("aria-label");
     };
     const attention = (payload.attention || []).filter((item) => item.kind !== "operation");
     set("workspaces", summary.workspaces ?? payload.workspaces);
@@ -1464,8 +1479,6 @@ function hmeRow(item) {
   function kvSection(title, rows) {
     const section = document.createElement("section");
     section.className = "sheet-section";
-    const heading = document.createElement("h3");
-    heading.textContent = title;
     const dl = document.createElement("dl");
     dl.className = "kv";
     rows.forEach(([label, value]) => {
@@ -1475,7 +1488,12 @@ function hmeRow(item) {
       dd.textContent = value == null || value === "" ? "—" : String(value);
       dl.append(dt, dd);
     });
-    section.append(heading, dl);
+    if (title) {
+      const heading = document.createElement("h3");
+      heading.textContent = title;
+      section.append(heading);
+    }
+    section.append(dl);
     return section;
   }
 

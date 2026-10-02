@@ -64,8 +64,8 @@ def check(base, output):
                 page.wait_for_function("document.querySelector('[data-summary=workspaces]').textContent !== '—'")
             expect(theme).to_have_value("dark")
             expect(page.locator("html")).to_have_attribute("data-theme", "dark")
-            assert page.locator(".topbar").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(25, 28, 33)", path
-            assert page.locator(".workspace").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(16, 18, 21)", path
+            assert page.locator(".topbar").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(0, 0, 0)", path
+            assert page.locator(".workspace").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(0, 0, 0)", path
             for width in (1440, 768, 390):
                 page.set_viewport_size({"width": width, "height": 1000 if width > 540 else 844})
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), (path, width)
@@ -77,11 +77,11 @@ def check(base, output):
 
         page.goto(base + "/accounts")
         page.wait_for_selector(".management-table tbody tr")
-        assert page.locator(".management-table-scroll").first.evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(25, 28, 33)"
+        assert page.locator(".management-table-scroll").first.evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(20, 21, 20)"
         page.locator(".workspace-expiry-trigger").first.click()
         expect(page.locator(".workspace-expiry-editor")).to_be_visible()
         assert page.locator(".workspace-expiry-editor").evaluate("n => getComputedStyle(n).backgroundColor") == "rgba(0, 0, 0, 0)"
-        assert page.locator('#entity-sheet .sheet-panel').evaluate('n => getComputedStyle(n).backgroundColor') == 'rgb(25, 28, 33)'
+        assert page.locator('#entity-sheet .sheet-panel').evaluate('n => getComputedStyle(n).backgroundColor') == 'rgb(0, 0, 0)'
         page.screenshot(animations="disabled", path=str(output / "expiry-dark.png"))
         page.keyboard.press("Escape")
         page.get_by_role("button", name="登记账号或团队", exact=True).click()
@@ -97,19 +97,26 @@ def check(base, output):
         page.locator('[data-focus-key="team-menu:1"]').click()
         page.get_by_role('menuitem', name='移除本地记录', exact=True).click()
         expect(page.locator("#confirm-sheet")).to_be_visible()
-        assert page.locator(".confirm-panel").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(25, 28, 33)"
+        assert page.locator(".confirm-panel").evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(0, 0, 0)"
         page.screenshot(animations="disabled", path=str(output / "confirm-dark.png"))
         page.locator("#confirm-sheet .confirm-actions [data-close-confirm]").click()
 
         # Semantic text stays readable on its matching dark background (WCAG AA).
+        # Dark *-bg tokens are translucent, so composite them over the tile (--surface) they sit on.
         contrasts = page.evaluate("""() => {
-          const rgb = name => {
+          const rgba = name => {
             const n = document.createElement('span');
             n.style.color = `var(--${name})`;
             document.body.append(n);
-            const value = getComputedStyle(n).color.match(/[\\d.]+/g).slice(0, 3).map(Number);
+            const value = getComputedStyle(n).color.match(/[\\d.]+/g).map(Number);
             n.remove();
-            return value;
+            return value.length > 3 ? value : [...value, 1];
+          };
+          const rgb = name => {
+            const [r, g, b, a] = rgba(name);
+            if (a >= 1) return [r, g, b];
+            const base = rgba('surface');
+            return [r, g, b].map((v, i) => v * a + base[i] * (1 - a));
           };
           const luminance = color => color.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; })
             .reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);

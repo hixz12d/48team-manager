@@ -1,74 +1,84 @@
+/* 设计 token：规范见项目根 DESIGN.md。
+   平涂、直角、无阴影；钱绿是唯一强调色；中性灰略带绿调；层次靠底色深浅（页面底 → tile → tile-2）。 */
 :root {
   color-scheme: light;
-  
-  /* 颜色 (Light Mode / Primer & Polaris Inspired) */
-  --bg: #f8fafc;
-  --surface: #ffffff;
-  --surface-subtle: #f8fafc;
-  --surface-muted: #f1f5f9;
-  --surface-hover: #f1f5f9;
-  --sidebar: #ffffff;
-  --overlay: rgba(15, 23, 42, 0.45);
-  
-  --border: #e2e8f0;
-  --border-subtle: #edf2f7;
-  --border-strong: #cbd5e1;
-  
-  --text: #0f172a;
-  --text-secondary: #475569;
-  --muted: #64748b;
-  --muted-light: #94a3b8;
-  
-  /* 语义危险/警告/成功/高亮 */
-  --danger: #ef4444;
-  --danger-text: #b91c1c;
-  --danger-bg: #fef2f2;
-  --danger-border: #fecaca;
-  
-  --warning: #f59e0b;
-  --warning-text: #b45309;
-  --warning-bg: #fffbeb;
-  --warning-border: #fde68a;
-  
-  --success: #10b981;
-  --success-text: #047857;
-  --success-bg: #ecfdf5;
-  --success-border: #a7f3d0;
-  
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-text: #1d4ed8;
-  --accent-bg: #eff6ff;
-  --accent-border: #bfdbfe;
 
-  --neutral-bg: #f1f5f9;
-  --neutral-border: #e2e8f0;
-  --neutral-text: #475569;
+  /* 底色层次（浅色） */
+  --bg: #ffffff;
+  --sidebar: #ffffff;
+  --surface: #f1f2f0;          /* tile：卡片、面板 */
+  --surface-subtle: #f1f2f0;   /* 与 tile 同色：表头、区块不再另铺一层 */
+  --surface-muted: #e6e8e4;    /* tile-2：悬停、卡内二级块、标签底 */
+  --surface-hover: #e6e8e4;
+  --surface-strong: #d2d5d0;   /* tile-3：放在 tile-2 上的悬停 */
+  --surface-overlay: var(--bg); /* 抽屉、确认框、下拉、任务中心：页面底 + 1px 细线外框 */
+  /* 次按钮底色：默认 tile（放在页面底上）；放在 tile 卡片里时由容器改成 tile-2 / tile-3 */
+  --button-bg: var(--surface);
+  --button-hover-bg: var(--surface-muted);
+  --overlay: rgba(0, 0, 0, 0.45);
+  --overlay-strong: rgba(0, 0, 0, 0.6);
+
+  --border: #dfe1dd;
+  --border-subtle: #dfe1dd;
+  --border-strong: #a3a8a2;    /* 输入框边框 */
+
+  --text: #0a0b0a;
+  --text-secondary: #464a46;
+  --muted: #6a6f6a;
+  --muted-light: #8d938d;
+
+  /* 状态色：默认只给符号和文字上色；*-bg / *-border 是弱化版，只给少数必须铺底的地方用 */
+  --danger: #b4002a;
+  --danger-text: #b4002a;
+  --danger-bg: #fbecef;
+  --danger-border: #f0c4ce;
+  --danger-hover-bg: #f7dde3;
+  --danger-hover-border: #e3a2b1;
+  --danger-solid: #b4002a;     /* 危险按钮实心底（白字） */
+  --danger-solid-hover: #8f0021;
+
+  --warning: #a24b00;
+  --warning-text: #a24b00;
+  --warning-bg: #fbf2e9;
+  --warning-border: #eed3b8;
+
+  --success: #00703c;
+  --success-text: #00703c;
+  --success-bg: #e8f6ee;
+  --success-border: #c9ebd7;
+
+  /* 钱绿 */
+  --accent: #00703c;
+  --accent-hover: #005c31;
+  --accent-text: #00703c;
+  --accent-bg: #e8f6ee;
+  --accent-border: #c9ebd7;
+
+  --neutral-bg: var(--surface-muted);
+  --neutral-border: var(--border);
+  --neutral-text: var(--text-secondary);
 
   --primary-bg: var(--accent);
   --primary-hover: var(--accent-hover);
   --primary-text: #ffffff;
-  --danger-hover-bg: #fee2e2;
-  --danger-hover-border: #fca5a5;
-  --overlay-strong: rgba(15, 23, 42, 0.64);
-  --toast-close-hover: rgba(15, 23, 42, 0.08);
-  
-  /* 圆角规范 */
-  --radius-xs: 3px;
-  --radius-sm: 4px;
-  --radius: 6px;
-  --radius-md: 8px;
-  --radius-lg: 10px;
+  --toast-close-hover: rgba(10, 11, 10, 0.08);
+
+  /* 圆角：全站直角；2px 只给复选框 / 进度条；pill 只给圆点、开关、加载圈 */
+  --radius-xs: 0;
+  --radius-sm: 2px;
+  --radius: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
   --radius-pill: 9999px;
-  
-  /* 尺寸与布局规范 */
+
+  /* 尺寸与布局 */
   --sidebar-w: 240px;
   --sheet-w: 600px;
   --content-max: 1440px;
   --settings-max: 1200px;
   --readable-max: 760px;
-  
-  /* 间距规范 (micro, xxs, xs, sm, md, lg, xl, 2xl) */
+
+  /* 间距 */
   --space-micro: 2px;
   --space-xxs: 4px;
   --space-1: 4px;
@@ -82,7 +92,10 @@
   --space-5: 24px;
   --space-xl: 32px;
   --space-6: 32px;
-  
+  --tile-gap: 8px;             /* 卡片之间的缝隙 */
+  --tile-pad: 16px 20px;       /* 卡片内边距 */
+  --section-gap: 32px;         /* 区块之间 */
+
   /* 控件与行高 */
   --control-h-sm: 28px;
   --control-h: 36px;
@@ -90,33 +103,36 @@
   --table-header-h: 38px;
   --table-row-h: 52px;
   --table-row-compact-h: 42px;
-  
-  /* 阴影 */
-  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.07), 0 2px 4px -2px rgba(15, 23, 42, 0.05);
-  --shadow-overlay: 0 20px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.08);
-  
-  /* 焦点 */
-  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
 
-  /* 字体与排版
-     Anthropic Sans / Mono 只从本机已安装字体读取（local），不随站点分发；
-     它们不含中文字形，中文按顺序回退到系统中文字体，其他机器整体回退到系统字体。 */
+  /* 阴影：全部取消；浮层用 1px 细线外框代替 */
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-overlay: 0 0 0 1px var(--border);
+
+  /* 焦点：全站唯一一套 */
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+
+  /* 字体：Anthropic Sans / Mono 随站点分发（本机装了则优先用本机），
+     只接管拉丁字符；中文按顺序回退到系统中文字体。 */
   --font: "Team48 Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: "Team48 Mono", ui-monospace, "SF Mono", "Cascadia Code", "Source Code Pro", Menlo, Monaco, Consolas, monospace;
 
-  /* 字号角色：数据密集界面，12px 是下限 */
-  --text-meta: 12px;      /* 次要信息、表头、徽章、提示 */
+  /* 字号角色：12px 是下限；粗体只用在 16px 及以下，大字靠字号不靠粗细 */
+  --text-meta: 12px;      /* 表头、标签、提示 */
   --text-body: 14px;      /* 正文、表格、按钮、输入框 */
-  --text-heading: 16px;   /* 面板与抽屉标题（h2 / h3） */
-  --text-title: 20px;     /* 页面标题（h1） */
-  --text-figure: 24px;    /* 汇总数字 */
+  --text-heading: 16px;   /* 面板与抽屉标题，字重 600 */
+  --text-title: 28px;     /* 页面标题 h1，字重 400，字距 -0.02em */
+  --text-figure: 28px;    /* 汇总数字，字重 400 */
 }
 
 @font-face {
   font-family: "Team48 Sans";
-  src: local("Anthropic Sans Variable Text Regular"), local("AnthropicSansVariable-TextRegular"), local("Anthropic Sans Variable Text");
+  src: local("Anthropic Sans Variable Text Regular"), local("AnthropicSansVariable-TextRegular"), local("Anthropic Sans Variable Text"),
+       url("/static/fonts/anthropic-sans.ttf") format("truetype");
+  /* 静态单字重：粗体由浏览器合成，不声明细体。 */
+  font-weight: 400;
+  font-style: normal;
   font-display: swap;
   /* 只接管拉丁字符，中文与全角标点交给系统中文字体。 */
   unicode-range: U+0000-02FF, U+2000-206F, U+20AC, U+2100-218F, U+2190-21FF, U+2212, U+2215;
@@ -124,62 +140,65 @@
 
 @font-face {
   font-family: "Team48 Mono";
-  src: local("Anthropic Mono Web"), local("AnthropicMonoWebWeb-Regular");
+  src: local("Anthropic Mono Web"), local("AnthropicMonoWebWeb-Regular"),
+       url("/static/fonts/anthropic-mono.ttf") format("truetype");
   font-weight: 300 800;
+  font-style: normal;
   font-display: swap;
   unicode-range: U+0000-02FF, U+2000-206F, U+2190-21FF, U+2212;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  /* 低饱和中性冷灰：大面积底色不带明显蓝调，正文不用纯白，
-     状态色降饱和，只在小面积徽章和数字上出现，长时间看不刺眼。 */
-  --bg: #101215;
-  --surface: #191c21;
-  --surface-subtle: #1c2025;
-  --surface-muted: #23272d;
-  --surface-hover: #22262c;
-  --sidebar: #14161a;
-  --overlay: rgba(6, 7, 9, 0.65);
-  --overlay-strong: rgba(6, 7, 9, 0.78);
 
-  --border: #2c3138;
-  --border-subtle: #24282e;
-  --border-strong: #434a54;
-  --text: #d3d8de;
-  --text-secondary: #adb4bd;
-  --muted: #8b939d;
-  --muted-light: #7e8691;
+  /* 底色层次（深色，默认）：纯黑底 + 近黑 tile */
+  --bg: #000000;
+  --sidebar: #000000;
+  --surface: #141514;
+  --surface-subtle: #141514;
+  --surface-muted: #1d1f1d;
+  --surface-hover: #1d1f1d;
+  --surface-strong: #2a2d2a;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --overlay-strong: rgba(0, 0, 0, 0.75);
 
-  --danger: #d4777d;
-  --danger-text: #e4a3a7;
-  --danger-bg: #2c2124;
-  --danger-border: #4d3236;
-  --danger-hover-bg: #372629;
-  --danger-hover-border: #664045;
-  --warning: #cfa656;
-  --warning-text: #d9bf8c;
-  --warning-bg: #29251d;
-  --warning-border: #4a412f;
-  --success: #5fae8c;
-  --success-text: #93c9b0;
-  --success-bg: #1b2824;
-  --success-border: #2f463d;
-  --accent: #8fa6d4;
-  --accent-hover: #a6b9df;
-  --accent-text: #a6b9df;
-  --accent-bg: #212a38;
-  --accent-border: #38475f;
-  --neutral-bg: var(--surface-muted);
-  --neutral-border: var(--border);
-  --neutral-text: var(--text-secondary);
+  --border: #262826;
+  --border-subtle: #262826;
+  --border-strong: #464a46;
 
-  --primary-bg: #8fa6d4;
-  --primary-hover: #a6b9df;
-  --primary-text: #131a26;
+  --text: #ffffff;
+  --text-secondary: #b9beb9;
+  --muted: #8d938d;
+  --muted-light: #6a6f6a;
+
+  --danger: #ff6b85;
+  --danger-text: #ff6b85;
+  --danger-bg: rgba(255, 107, 133, 0.15);
+  --danger-border: rgba(255, 107, 133, 0.35);
+  --danger-hover-bg: rgba(255, 107, 133, 0.22);
+  --danger-hover-border: rgba(255, 107, 133, 0.5);
+  --danger-solid: #b4002a;
+  --danger-solid-hover: #d0103f;
+
+  --warning: #ffa53a;
+  --warning-text: #ffa53a;
+  --warning-bg: rgba(255, 165, 58, 0.15);
+  --warning-border: rgba(255, 165, 58, 0.35);
+
+  --success: #34d17a;
+  --success-text: #34d17a;
+  --success-bg: rgba(52, 209, 122, 0.15);
+  --success-border: rgba(52, 209, 122, 0.35);
+
+  /* 钱绿：实心填充用 #00873F（白字），黑底上的绿色文字用提亮的 #00A14C */
+  --accent: #00873f;
+  --accent-hover: #00a14c;
+  --accent-text: #00a14c;
+  --accent-bg: rgba(0, 161, 76, 0.15);
+  --accent-border: rgba(0, 161, 76, 0.35);
+
+  --primary-bg: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-text: #ffffff;
   --toast-close-hover: rgba(255, 255, 255, 0.1);
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.15);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.3);
-  --shadow-overlay: 0 20px 32px rgba(0, 0, 0, 0.45);
 }

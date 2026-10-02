@@ -16,7 +16,8 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `app/application/resources/` | HME 领号（`hme.py`）、手机号池、插件接码中转（`phone_relay.py`）、代理 |
 | `app/integrations/` | 外部客户端：`openai`（官方 API + `browser/` 浏览器自动化）、`sub2api`、`codex`、`mail`、`sms`、`proxy` |
 | `app/persistence/` | 表模型、仓储、`migrations/bootstrap.py`（启动时幂等建表 / 补列 / 补索引） |
-| `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口）、模板、静态资源 |
+| `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口）、模板、静态资源；`static/fonts/` 是自托管的 Anthropic Sans / Mono |
+| `DESIGN.md` | 界面设计规范（配色、字号、组件、状态写法），改界面前先读 |
 | `extensions/chatgpt-signup/` | 自用注册插件；`content.js` 也被服务端托管注册复用；`runner.mjs` 是服务器模式 |
 | `scripts/` | 本机工具：插件打包、单席位补位、浏览器冒烟、HubStudio 观察 |
 | `tests/` | Python / Node / Playwright 回归；`preview_app.py` 本地示例数据预览 |

@@ -8,7 +8,9 @@ html, body {
   font-family: var(--font);
   font-size: var(--text-body);
   line-height: 1.5;
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
+  caret-color: var(--accent);
   /* clip 同样禁止横向滚动，但不会把 body 变成滚动容器，否则 sticky 表头失效。*/
   overflow-x: clip;
 }
@@ -29,7 +31,7 @@ button, input, select, textarea { font: inherit; }
 }
 .tabular { font-variant-numeric: tabular-nums; }
 
-/* 标题层级：页面 h1 20px > 面板 h2 16px > 分组 h3 14px（半粗） */
+/* 标题层级：页面 h1 28px 常规字重 > 面板 h2 16px 半粗 > 分组 h3 14px 半粗 */
 h1, h2, h3 { line-height: 1.3; letter-spacing: 0; text-wrap: balance; }
 h2 { font-size: var(--text-heading); font-weight: 600; }
 h3 { font-size: var(--text-body); font-weight: 600; }
@@ -37,17 +39,24 @@ h3 { font-size: var(--text-body); font-weight: 600; }
 /* 额度、席位、金额、用时等数字宽度一致，计时刷新时不会左右跳动。*/
 table, time, progress, meter, .num, .task-elapsed, [data-summary], .management-meter, .management-quota { font-variant-numeric: tabular-nums; }
 
-::selection { background: var(--accent-bg); color: var(--text); }
+::selection { background: var(--accent); color: var(--primary-text); }
+
+/* 细滚动条，颜色取自说明色 */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
 .eyebrow {
-  margin: 0 0 var(--space-xs);
-  color: var(--muted);
-  font-size: var(--text-meta);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-body);
   letter-spacing: 0;
-  text-transform: uppercase;
   font-weight: 600;
 }
 
-/* 登录页面 Auth */
+/* 登录页面 Auth：页面底 + 一块 tile 卡片，无阴影无边框 */
 .auth-body {
   min-height: 100vh;
   display: grid;
@@ -57,31 +66,38 @@ table, time, progress, meter, .num, .task-elapsed, [data-summary], .management-m
 }
 
 .auth-card {
-  width: min(380px, 100%);
+  width: min(400px, 100%);
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-lg);
-  box-shadow: var(--shadow-sm);
+  border: 0;
+  border-radius: 0;
+  padding: var(--space-xl) var(--space-lg) var(--space-lg);
+  box-shadow: none;
 }
 
 .auth-card h1 {
-  margin: 0 0 var(--space-xs);
+  margin: 0;
   font-size: var(--text-title);
-  font-weight: 700;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.auth-card > .muted {
+  margin: var(--space-sm) 0 0;
+  color: var(--text-secondary);
 }
 
 .auth-brand {
   display: flex;
   gap: var(--space-sm);
   align-items: center;
-  margin-bottom: var(--space-sm);
+  margin-bottom: var(--space-lg);
 }
 
 .brand-logo {
   width: 32px;
   height: 32px;
-  border-radius: var(--radius);
+  border-radius: 0;
   display: block;
 }
 
@@ -92,7 +108,11 @@ table, time, progress, meter, .num, .task-elapsed, [data-summary], .management-m
 }
 
 .auth-card .stack {
-  margin-top: var(--space-md);
+  margin-top: var(--space-lg);
+}
+
+.auth-card .button.primary {
+  margin-top: var(--space-xs);
 }
 
 .check {
@@ -109,34 +129,43 @@ table, time, progress, meter, .num, .task-elapsed, [data-summary], .management-m
   cursor: pointer;
 }
 
-/* 表单元素 Form Elements */
+input[type="checkbox"], input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* 表单元素 Form Elements：直角、1px 强边框、页面底色；聚焦变钱绿，不加光晕 */
 label {
   display: grid;
   gap: 4px;
   font-size: var(--text-meta);
-  font-weight: 500;
-  color: var(--text);
+  font-weight: 400;
+  color: var(--text-secondary);
   min-width: 0;
 }
 
 input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
   padding: 0 var(--space-sm);
-  background: var(--surface);
+  background: var(--bg);
   color: var(--text);
   min-width: 0;
   width: 100%;
   font-size: var(--text-body);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
 }
 
 input:not([type="checkbox"]):not([type="radio"]):hover,
 select:hover,
 textarea:hover {
-  border-color: var(--border-strong);
+  border-color: var(--muted);
 }
 
 input:not([type="checkbox"]):not([type="radio"]):focus,
@@ -144,7 +173,15 @@ select:focus,
 textarea:focus {
   border-color: var(--accent);
   outline: none;
-  box-shadow: 0 0 0 3px var(--accent-bg);
+  box-shadow: none;
+}
+
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"],
+input:user-invalid,
+textarea:user-invalid {
+  border-color: var(--danger);
 }
 
 input:not([type="checkbox"]):not([type="radio"]),
@@ -160,7 +197,7 @@ select {
   min-width: 16px;
   padding: 0;
   margin: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   flex: 0 0 auto;
   accent-color: var(--accent);
 }
@@ -173,82 +210,99 @@ textarea {
   font-family: inherit;
 }
 
-input:disabled, select:disabled, .button:disabled {
-  opacity: 0.55;
+input:disabled, select:disabled, textarea:disabled {
   cursor: not-allowed;
-  background: var(--surface-muted);
+  background: var(--surface);
+  color: var(--muted);
+  border-color: var(--border);
 }
 
-/* 按钮规范 Buttons */
+/* 按钮规范 Buttons：直角、字重 600；悬停只换底色，按下轻微缩小 */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   height: var(--control-h);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  border: 0;
+  border-radius: 0;
+  background: var(--button-bg);
   color: var(--text);
-  padding: 0 var(--space-sm);
+  padding: 0 var(--space-md);
   font-size: var(--text-body);
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
   white-space: nowrap;
   line-height: 1;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
+  background: var(--button-hover-bg);
+}
+
+.button:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .button.primary {
   background: var(--primary-bg);
   color: var(--primary-text);
-  border-color: var(--primary-bg);
-  font-weight: 600;
 }
 
 .button.primary:hover:not(:disabled) {
   background: var(--primary-hover);
-  border-color: var(--primary-hover);
 }
 
 .button.ghost {
-  border-color: transparent;
   background: transparent;
   color: var(--text-secondary);
 }
 
 .button.ghost:hover:not(:disabled) {
-  background: var(--surface-subtle);
+  background: var(--button-bg);
   color: var(--text);
 }
 
 .button.sm,
 .button.compact {
   height: var(--control-h-sm);
-  padding: 0 8px;
+  padding: 0 var(--space-xs);
   font-size: var(--text-meta);
 }
 
 .button.danger {
-  color: var(--danger-text);
-  background: var(--danger-bg);
-  border-color: var(--danger-border);
+  color: #ffffff;
+  background: var(--danger-solid);
 }
 
 .button.danger:hover:not(:disabled) {
-  background: var(--danger-hover-bg);
-  border-color: var(--danger-hover-border);
+  background: var(--danger-solid-hover);
+}
+
+/* 行内小号危险操作（ghost + danger）：只用危险色文字，悬停铺弱化底 */
+.button.ghost.danger {
+  color: var(--danger-text);
+  background: transparent;
+}
+
+.button.ghost.danger:hover:not(:disabled) {
+  background: var(--danger-bg);
 }
 
 .error {
   color: var(--danger-text);
   font-size: var(--text-meta);
-  font-weight: 500;
+  font-weight: 400;
+}
+
+.error:not(:empty)::before {
+  content: "✕ ";
 }
 
 .version {
@@ -265,10 +319,10 @@ input:disabled, select:disabled, .button:disabled {
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
 }
 
-/* 侧边栏 Sidebar */
+/* 侧边栏 Sidebar：与页面同底色、无右边框 */
 .sidebar {
   background: var(--sidebar);
-  border-right: 1px solid var(--border);
+  border-right: 0;
   display: flex;
   flex-direction: column;
   padding: var(--space-md) var(--space-sm);
@@ -279,7 +333,7 @@ input:disabled, select:disabled, .button:disabled {
   display: flex;
   gap: var(--space-sm);
   align-items: center;
-  padding: var(--space-xs) var(--space-xs) var(--space-md);
+  padding: var(--space-xs) var(--space-xs) var(--space-lg);
 }
 
 .brand strong, .brand span {
@@ -289,7 +343,7 @@ input:disabled, select:disabled, .button:disabled {
 
 .brand strong {
   font-size: var(--text-body);
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
 }
 
@@ -299,42 +353,54 @@ input:disabled, select:disabled, .button:disabled {
   margin-top: 1px;
 }
 
-/* 导航 Links */
+/* 导航 Links：悬停只变正文色；当前项钱绿 + 半粗 + 左侧 8×8 实心方块 */
 .nav {
   display: grid;
-  gap: 2px;
+  gap: 0;
 }
 
 .nav-label {
-  margin: var(--space-md) var(--space-xs) 4px;
-  color: var(--muted-light);
+  margin: var(--space-lg) var(--space-xs) var(--space-xxs) 20px;
+  color: var(--muted);
   font-size: var(--text-meta);
-  font-weight: 700;
+  font-weight: 400;
   letter-spacing: 0;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .nav-link {
+  position: relative;
   min-height: 34px;
   display: flex;
   align-items: center;
-  padding: 0 var(--space-sm);
-  border-radius: var(--radius);
+  padding: 0 var(--space-sm) 0 20px;
+  border-radius: 0;
   color: var(--text-secondary);
-  font-weight: 500;
+  font-weight: 400;
   font-size: var(--text-body);
-  transition: all 0.12s ease;
+  transition: color 0.15s ease;
 }
 
 .nav-link:hover {
-  background: var(--surface-hover);
+  background: transparent;
   color: var(--text);
 }
 
 .nav-link.is-active {
-  background: var(--surface-muted);
+  background: transparent;
   color: var(--accent-text);
   font-weight: 600;
+}
+
+.nav-link.is-active::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-top: -4px;
+  background: currentColor;
 }
 
 .sidebar-foot {
@@ -355,11 +421,11 @@ input:disabled, select:disabled, .button:disabled {
 .dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-pill);
   background: var(--success);
 }
 
-/* 主工作台与顶栏 Workspace & Topbar */
+/* 主工作台与顶栏 Workspace & Topbar：顶栏无下边框，大号常规字重标题 */
 .workspace {
   min-width: 0;
   display: grid;
@@ -372,25 +438,26 @@ input:disabled, select:disabled, .button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-md);
-  padding: 0 var(--space-lg);
-  min-height: 56px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  padding: var(--space-lg) var(--space-lg) var(--space-xs);
+  min-height: 76px;
+  border-bottom: 0;
+  background: var(--bg);
   min-width: 0;
 }
 
 .topbar h1 {
   margin: 0;
   font-size: var(--text-title);
-  font-weight: 700;
-  line-height: 1.25;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
   color: var(--text);
 }
 
 .topbar p {
-  margin: 2px 0 0;
-  font-size: var(--text-meta);
-  color: var(--muted);
+  margin: var(--space-xxs) 0 0;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
   max-width: var(--readable-max);
 }
 
@@ -414,7 +481,7 @@ select.theme-select {
 .auth-theme {
   display: flex;
   justify-content: center;
-  margin-top: var(--space-md);
+  margin-top: var(--space-lg);
 }
 
 .topbar-actions {
@@ -451,7 +518,8 @@ select.theme-select {
   margin: 0 auto;
 }
 
-/* 焦点样式：全站唯一一套，组件不再各自叠加 box-shadow 焦点环 */
+/* 焦点样式：全站唯一一套（与 --focus-ring 等效：2px 间隙 + 2px 钱绿外圈）。
+   用 outline 而不是 box-shadow，组件自己的 box-shadow 不会把它盖掉。 */
 :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -463,7 +531,7 @@ select.theme-select {
     padding: var(--space-md) var(--space-md) 64px;
   }
   .topbar {
-    padding: 0 var(--space-md);
+    padding: var(--space-md) var(--space-md) var(--space-xs);
   }
 }
 
@@ -471,7 +539,7 @@ select.theme-select {
   .shell {
     grid-template-columns: 1fr;
   }
-  
+
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
@@ -481,23 +549,29 @@ select.theme-select {
     transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     box-shadow: none;
   }
-  
+
   body.nav-open .sidebar {
     transform: none;
     box-shadow: var(--shadow-overlay);
   }
-  
+
   .sidebar-toggle {
     display: inline-flex;
   }
-  
+
+  /* 标题紧跟"菜单"按钮靠左，不被 space-between 推到右侧 */
+  .topbar > div:not(.topbar-actions) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   .page {
     padding: var(--space-sm) var(--space-sm) 64px;
   }
-  
+
   .topbar {
-    padding: 0 var(--space-sm);
-    min-height: 52px;
+    padding: var(--space-sm);
+    min-height: 60px;
   }
 }
 
@@ -509,7 +583,7 @@ select.theme-select {
   }
 
   .topbar h1 {
-    font-size: var(--text-heading);
+    font-size: 22px;
   }
 
   .topbar p {
@@ -534,5 +608,9 @@ select.theme-select {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .button:active:not(:disabled) {
+    transform: none;
   }
 }

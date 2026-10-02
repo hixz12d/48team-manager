@@ -20,6 +20,8 @@
       const pieces = [enabled ? "已开启 · 每分钟检查" : "已关闭", scope, `每团队每日上限 ${rotation.daily_limit ?? 2} 次`];
       const summary = document.getElementById("auto-rotation-summary");
       if (summary) summary.textContent = `${enabled ? "已开启" : "已关闭"} · ${rotation.scope === "all" ? "全部团队" : `范围 ${(rotation.workspace_ids || []).length} 个团队`} · 每日上限 ${rotation.daily_limit ?? 2}${rotation.blocked_workspaces ? ` · ${rotation.blocked_workspaces} 个需核对` : ""}`;
+      // 状态写法：符号 + 文字（CSS 按 data-tone 加 ● / ▲ / ○）。
+      if (summary) summary.dataset.tone = rotation.blocked_workspaces || (enabled && data.runner?.state !== "healthy") ? "warning" : enabled ? "success" : "muted";
       if (enabled && data.runner?.state !== "healthy") pieces.push("后台心跳未就绪，请核对运行状态");
       const blocked = rotation.blocked || [];
       if (rotation.blocked_workspaces && !blocked.length) pieces.push(`${rotation.blocked_workspaces} 个团队有未完成轮转，暂停进一步换号`);
@@ -48,7 +50,7 @@
         status.append(link);
       }
     },
-    onError: () => { status.textContent = "后台状态读取失败，保留开关状态；稍后自动重试"; button.disabled = true; const summary = document.getElementById("auto-rotation-summary"); if (summary) summary.textContent = "状态更新中断，保留上次设置"; },
+    onError: () => { status.textContent = "后台状态读取失败，保留开关状态；稍后自动重试"; button.disabled = true; const summary = document.getElementById("auto-rotation-summary"); if (summary) { summary.textContent = "状态更新中断，保留上次设置"; summary.dataset.tone = "danger"; } },
   };
   const poller = window.Team48Runtime;
   let lastData = null;

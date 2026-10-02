@@ -10,7 +10,7 @@
           "app/web/templates/console.html"
         ],
         "createdAt": "2026-09-30T15:04:53.507Z",
-        "reason": "项目规定：docs/PRODUCT.md 体验约定限定字号只用 12/14/16/20/24 的紧凑后台字阶；新卡片沿用 --text-heading/--text-body/--text-meta 变量，未新增字号"
+        "reason": "项目规定：字阶以根目录 DESIGN.md 为准（12 / 14 / 16 / 28，28px 只给页面标题和汇总数字）；数据密集后台正文与表格固定 14px，各页沿用 --text-meta / --text-body / --text-heading / --text-title / --text-figure 变量，未新增字号"
       }
     ]
   }

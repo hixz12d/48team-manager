@@ -25,7 +25,7 @@
 
 ### 代码拉取
 
-仓库私有。VPS 用只读 Deploy Key（`/root/.ssh/team48_deploy`，SSH 别名 `github.com-team48`，remote `git@github.com-team48:hixz12d/48team-manager.git`）只 `git pull`，不在生产目录提交。推送只在本机（`gh` 已登录 `hixz12d`）。不要把本机 `gh` 登录态或带 repo 权限的 token 拷到 VPS。`.env`、`data/` 不进仓库。
+GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据。VPS 用只读 Deploy Key（`/root/.ssh/team48_deploy`，SSH 别名 `github.com-team48`，remote `git@github.com-team48:hixz12d/48team-manager.git`）只 `git pull`，不在生产目录提交。推送只在本机（`gh` 已登录 `hixz12d`）。不要把本机 `gh` 登录态或带 repo 权限的 token 拷到 VPS。`.env`、`data/` 不进仓库。
 
 ## 部署
 

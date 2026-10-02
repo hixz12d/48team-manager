@@ -1,11 +1,15 @@
-/* Settings keep the console palette and share the existing form contracts. */
+/* 设置页：每张卡片一块 tile（无边框、无阴影、直角），卡内分组用 12px 说明色小标题，不用边框。规范见 DESIGN.md。 */
 body:has(#settings-savebar:not([hidden])) .toast-region {
   bottom: 112px;
   max-height: calc(100dvh - 144px);
 }
 .page-settings { overflow: visible; }
 .settings-page { min-width: 0; }
-.settings-column,
+.settings-column {
+  display: grid;
+  gap: var(--tile-gap);
+  min-width: 0;
+}
 .settings-security .panel-body {
   display: grid;
   gap: var(--space-md);
@@ -15,15 +19,22 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 .settings-columns {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  gap: var(--space-lg);
+  gap: var(--tile-gap);
   align-items: start;
 }
 
 .settings-column { align-content: start; }
 .settings-security { margin-top: var(--space-lg); }
-.settings-page .panel-header { padding-block: var(--space-sm); }
+
+/* 卡片外观沿用通用 .panel（components.css）；这里只调卡头 / 卡身的内边距 */
+.page-settings .panel-header {
+  min-height: 0;
+  padding: 16px 20px 0;
+  align-items: flex-start;
+}
+.page-settings .panel-body { padding: 12px 20px 20px; }
 .settings-page .panel-title,
-.settings-security .panel-title { font-size: var(--text-heading); }
+.settings-security .panel-title { font-size: var(--text-heading); font-weight: 600; }
 .settings-page p,
 .settings-security p { margin: 0; }
 
@@ -37,17 +48,30 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 .service-edit {
   display: grid;
   gap: var(--space-sm);
-  border-top: 1px solid var(--border);
-  padding-top: var(--space-md);
+  padding-top: var(--space-xs);
 }
 .settings-page .service-management-grid {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  padding-block: var(--space-xxs);
+  border-block: 0;
 }
 .settings-page .service-management-grid > :last-child { grid-column: auto; width: auto; }
+.settings-page .sub2api-push-defaults { padding-top: 0; border-top: 0; }
 .settings-page .sub2api-push-defaults .panel-header {
-  padding: var(--space-xs) 0;
+  padding: var(--space-sm) 0 0;
+  border: 0;
   background: transparent;
+  align-items: center;
+}
+
+/* 卡内分组小标题：12px 说明色 */
+.settings-page .field-label,
+.settings-page .sub2api-push-defaults .panel-header strong,
+.runner-result h3 {
+  font-size: var(--text-meta);
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .settings-page fieldset,
@@ -60,8 +84,9 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 .settings-page legend,
 .settings-security legend {
   padding: 0 0 var(--space-xs);
-  font-size: var(--text-body);
-  font-weight: 600;
+  font-size: var(--text-meta);
+  font-weight: 400;
+  color: var(--muted);
 }
 .settings-page .automation-card .panel-body {
   display: grid;
@@ -172,10 +197,11 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
   justify-content: space-between;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-md);
-  background: var(--surface);
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
+  /* 浮在内容上：页面底 + 1px 细线外框，不用阴影 */
+  background: var(--surface-overlay);
+  border: 0;
+  border-radius: 0;
+  box-shadow: var(--shadow-overlay);
 }
 .settings-savebar-actions {
   display: flex;
@@ -204,11 +230,10 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 .runner-result {
   display: grid;
   gap: var(--space-sm);
-  border-top: 1px solid var(--border);
-  padding-top: var(--space-md);
+  padding-top: var(--space-xs);
   min-width: 0;
 }
-.runner-result h3 { margin: 0; }
+.runner-result h3 { margin: 0; line-height: 1.4; }
 .runner-verdict,
 .runner-findings li {
   display: flex;
@@ -221,12 +246,9 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
   flex: none;
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  font-size: var(--text-meta);
-  font-weight: 700;
+  width: 1.2em;
+  font-size: var(--text-body);
+  font-weight: 600;
   line-height: 1;
 }
 .runner-findings {
@@ -250,11 +272,12 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 .runner-shots figure { margin: 0; display: grid; gap: var(--space-xs); }
 .runner-shots a {
   display: block;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 0;
+  border-radius: 0;
   overflow: hidden;
-  background: var(--surface-subtle);
+  background: var(--surface-muted);
 }
+.runner-shots a:hover { outline: 1px solid var(--border-strong); }
 .runner-shots img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; object-position: top; }
 .runner-shots figcaption { color: var(--muted); font-size: var(--text-meta); }
 

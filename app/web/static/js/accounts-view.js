@@ -456,8 +456,8 @@
       setQuery("page", String(number)); render(payload);
       document.querySelector(".management-content")?.scrollIntoView({behavior: "instant", block: "start"});
     };
-    const previous = button("上一页", () => go(page.page - 1)); previous.disabled = page.page <= 1;
-    const next = button("下一页", () => go(page.page + 1)); next.disabled = page.page >= page.pages;
+    const previous = button("上一页", () => go(page.page - 1), "button ghost"); previous.disabled = page.page <= 1;
+    const next = button("下一页", () => go(page.page + 1), "button ghost"); next.disabled = page.page >= page.pages;
     const label = el("label", "", "每页"); const size = el("select"); size.setAttribute("aria-label", "每页条数");
     [20, 50, 100].forEach(n => size.add(new Option(`${n} 条`, String(n)))); size.value = String(page.size);
     size.addEventListener("change", () => {
@@ -465,7 +465,8 @@
       setQuery("page_size", size.value); go(1);
     });
     label.append(size);
-    pager.append(label, el("span", "muted", `第 ${page.page} / ${page.pages} 页 · 共 ${page.total} 条`), previous, next);
+    const position = el("span", "muted"); position.append("第 ", el("span", "management-page-current", String(page.page)), ` / ${page.pages} 页 · 共 ${page.total} 条`);
+    pager.append(label, position, previous, next);
   }
   function render(data) {
     if (!data) return;
@@ -478,6 +479,8 @@
     root.replaceChildren();
     document.querySelectorAll(".management-tabs [data-management-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.managementView === view)));
     for (const [key, value] of Object.entries(data.summary || {})) { const node = document.getElementById(`summary-${key}`); if (node) node.textContent = value; }
+    // 告警格只在有数时把数字染成危险 / 警告色并加符号；0 保持正文色。
+    for (const key of ["needs_auth", "retry"]) document.getElementById(`summary-${key}`)?.closest("button")?.toggleAttribute("data-alert", Number(data.summary?.[key]) > 0);
     const attentionCount = document.getElementById("accounts-attention-count"); if (attentionCount) attentionCount.textContent = data.summary?.attention ?? "";
     const breakdown = document.getElementById("accounts-attention-breakdown");
     if (breakdown) { breakdown.hidden = view !== "attention"; breakdown.textContent = Object.entries(data.attention_breakdown || {}).filter(([,n])=>n).map(([key,n])=>`${({auth:"授权",onboarding:"入组中断",quota:"额度用尽",check:"检测",remote:"远端",identity:"身份",sync:"同步"})[key]} ${n}`).join(" · ") + "（同一账号可能有多项原因）"; }

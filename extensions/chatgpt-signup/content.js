@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.8.0';
+  const VERSION = '0.8.1';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -1387,7 +1387,8 @@
     const choice = [...scope.querySelectorAll('input[type="radio"],[role="radio"],[role="tab"],label,button,[role="button"]')]
       .find(node => (visible(node) || node.matches('input[type="radio"]')) && SMS_CHOICE.test(label(node).trim()));
     if (!choice) return null;
-    if (choice.matches('button,[role="button"]') && /send|text me|发送/i.test(label(choice))) return choice;
+    // Word boundaries: the "Text Message" toggle is not a "Text me" button.
+    if (choice.matches('button,[role="button"]') && /\bsend\b|\btext me\b|发送/i.test(label(choice))) return choice;
     const radio = choice.matches('label') ? choice.control : choice;
     const checked = radio?.checked || ['aria-checked', 'aria-selected', 'aria-pressed'].some(name => choice.getAttribute(name) === 'true') ||
       ['active', 'checked', 'on'].includes(choice.getAttribute('data-state'));
