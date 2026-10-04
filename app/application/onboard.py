@@ -222,8 +222,9 @@ class OnboardService:
         """signup_flow pins the engine for this run; browser_session is caller-owned (not closed here).
 
         signup_runner="extension" hands signup + OAuth to the extension runner (rotation only).
-        login_existing=True logs into an already registered account (HME mailbox, one-time code,
-        legacy browser flow); it never claims HME, never creates a password and never registers.
+        login_existing=True logs an already registered account in through the Codex authorize URL after
+        the invite (HME mailbox, one-time code; no invite mail); it never claims HME, never creates a
+        password and never registers.
         """
         if login_existing:
             signup_runner = "playwright"
@@ -319,7 +320,7 @@ class OnboardService:
                 cfg = await hme_service.load_config(db)
                 label = hme_service.resolve_workspace_tag(workspace, cfg.team_tag_map)
             await hme_service.finalize_claim(db, claimed, result, label)
-            if oauth_signup and result.get("success") and signup_runner != "extension":
+            if oauth_signup and result.get("success") and not result.get("authorized") and signup_runner != "extension":
                 from app.application.invitation_flow import authorize_joined
 
                 result = await authorize_joined(
@@ -604,6 +605,13 @@ class OnboardService:
                         "error": "官方邀请已发出，但多次读取仍未确认邀请、角色或席位，未开始注册",
                         "child": serialize_child(child)}
 
+        if login_existing:
+            return await self._login_existing_join(
+                db, child=child, workspace=workspace, role=requested_role, seat_intent=requested_seat,
+                job_id=job_id, mailbox=mailbox or {}, executable_path=browser_executable,
+                browser_session=browser_session, use_phone_pool=use_phone_pool, in_test=in_test,
+            )
+
         if oauth_signup and signup_runner == "extension":
             return await self._extension_signup(
                 db, child=child, workspace=workspace, role=requested_role,
@@ -618,22 +626,14 @@ class OnboardService:
             pickup_url = parse_mail_line(child.mail_raw).get("pickup_url") or ""
         cf_config = await load_cf_config(db)
         use_cloudflare = (not pickup_url) and bool(cf_config["admin_password"])
-        hme_kwargs: dict[str, str] = {}
-        if login_existing:
-            pickup_url, use_cloudflare = "", False
-            hme_kwargs = {
-                "hme_base_url": str((mailbox or {}).get("hme_base_url") or ""),
-                "hme_service_token": str((mailbox or {}).get("hme_service_token") or ""),
-                "hme_account_id": str((mailbox or {}).get("hme_account_id") or ""),
-            }
-        if not pickup_url and not use_cloudflare and not login_existing:
+        if not pickup_url and not use_cloudflare:
             error = "请先在系统中心配置 Cloudflare 邮箱，或输入 email----pickup_url"
             await self._progress(db, job_id=job_id, stage="mail_missing", message=error, error=error, error_code="mail_missing")
             return {"success": False, "error": error, "error_code": "mail_missing", "status": "mail_missing"}
 
         from app.core.config import load_settings
 
-        homepage_signup = oauth_signup and not login_existing and (signup_flow or load_settings().browser_signup_flow) == "extension"
+        homepage_signup = oauth_signup and (signup_flow or load_settings().browser_signup_flow) == "extension"
         invite_url = "https://chatgpt.com/" if homepage_signup else ""
         if oauth_signup and not homepage_signup:
             from app.integrations.mail.otp import wait_for_mailbox_item, extract_invite_url
@@ -646,7 +646,6 @@ class OnboardService:
                     proxy=self._child_proxy(child, workspace), kind="invite", timeout_sec=120,
                     cf_base_url=cf_config["base_url"], cf_address=cf_config["address"],
                     cf_admin_password=cf_config["admin_password"],
-                    **hme_kwargs,
                 )
             except Exception:
                 invite_url = None
@@ -657,20 +656,16 @@ class OnboardService:
         browser_options = {"allow_sms": False, "executable_path": browser_executable, "invite_entry": not homepage_signup} if oauth_signup else {}
         if signup_flow:
             browser_options["signup_flow"] = signup_flow
-        if login_existing:
-            browser_options.update(hme_kwargs)
-            browser_options["invite_entry"] = True
 
         if claimed is not None:
             await hme_service.mark_signup_started(db, claimed, stage="browser")
 
-        browser_mode = "login" if login_existing else ("register" if should_register else "relogin")
+        browser_mode = "register" if should_register else "relogin"
         await self._progress(
             db,
             job_id=job_id,
             stage="browser",
-            message="正在打开浏览器登录已有账号" if browser_mode == "login" else (
-                "正在打开浏览器走注册" if browser_mode == "register" else "正在打开浏览器复用登录"),
+            message="正在打开浏览器走注册" if browser_mode == "register" else "正在打开浏览器复用登录",
         )
 
         def on_stage(stage: str, message: str) -> None:
@@ -814,6 +809,93 @@ class OnboardService:
             "message": f"{email} 已入组。本轮未推送 Sub2API",
             "child": serialize_child(child),
             "pushed": False,
+        }
+
+    async def _login_existing_join(
+        self,
+        db: AsyncSession,
+        *,
+        child: Account,
+        workspace: Workspace,
+        role: str,
+        seat_intent: InviteSeatIntent,
+        job_id: str | None,
+        mailbox: dict[str, str],
+        executable_path: str = "",
+        browser_session=None,
+        use_phone_pool: bool = False,
+        in_test: bool = False,
+    ) -> dict[str, Any]:
+        """Join through the Codex authorize URL: logging in accepts the pending invite, no invite mail needed.
+
+        Tokens are kept only after the official member list shows the account in this team.
+        """
+        from app.application.oauth_signup import run_invited_oauth_signup
+
+        email = child.email
+        child_info = serialize_child(child)
+        await self._progress(db, job_id=job_id, stage="authorizing", message="邀请已确认，正在用授权链接登录入组")
+        await db.commit()
+        outcome = await run_invited_oauth_signup(
+            db, child=child, workspace=workspace, password="", pickup_url="", use_cloudflare=False,
+            cf_config=await load_cf_config(db), job_id=job_id, executable_path=executable_path,
+            browser_session=browser_session, use_phone_pool=use_phone_pool, mailbox=mailbox, login_only=True,
+        )
+        if not outcome.get("ok"):
+            code = str(outcome.get("error_code") or "oauth_failed")
+            error = str(outcome.get("error") or "授权登录未完成，请使用同一邮箱继续")
+            await self._progress(db, job_id=job_id, stage="auth_failed", message=error, error=error, error_code=code)
+            return {"success": False, "error_code": code, "error": error, "status": "invited",
+                    "child": child_info}
+
+        member = None
+        last_error = ""
+        await self._progress(db, job_id=job_id, stage="reconciling", message="授权登录完成，正在对账是否已加入")
+        for attempt in range(1 if in_test else JOIN_CONFIRM_ATTEMPTS):
+            if attempt:
+                await asyncio.sleep(JOIN_CONFIRM_INTERVAL)
+            try:
+                member = await self._confirm_joined(db, workspace, email)
+                if member:
+                    break
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+        if not member:
+            await db.rollback()
+            detail = last_error or "授权登录后对账未看到该成员，未保存凭据"
+            await self._progress(db, job_id=job_id, stage="not_joined", message=detail, error=detail, error_code="not_joined")
+            return {"success": False, "error_code": "not_joined", "error": detail, "status": "not_joined",
+                    "child": child_info}
+
+        await auth_service.apply_tokens(child, outcome)
+        child.auth_state = "healthy"
+        if outcome.get("sms_verified") and outcome.get("phone"):
+            child.phone = outcome["phone"]
+        await ensure_membership(
+            db,
+            workspace_id=workspace.id,
+            account_id=child.id,
+            official_role=normalize_official_role(member.get("role")) or role,
+            membership_state=MEMBERSHIP_STATE_JOINED,
+            local_purpose=LOCAL_PURPOSE_CHILD,
+            joined_at=utcnow(),
+        )
+        child.operational_state = "active"
+        if child.local_purpose != LOCAL_PURPOSE_MOTHER:
+            child.local_purpose = LOCAL_PURPOSE_CHILD
+        await db.commit()
+        if existing_invite_seat_error(seat_intent, member.get("seat_type")) or not official_roles_equivalent(member.get("role"), role):
+            return {"success": False, "partial": True, "joined": True, "authorized": True, "status": "partial",
+                    "error_code": "membership_mismatch", "error": "已入组并保存授权，但官方角色或席位与请求不一致",
+                    "child": serialize_child(child)}
+        return {
+            "success": True,
+            "status": "active",
+            "joined": True,
+            "authorized": True,
+            "pushed": False,
+            "child": serialize_child(child),
+            "message": f"{email} 已入组并完成授权，未推送 Sub2API",
         }
 
     async def _extension_signup(

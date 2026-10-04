@@ -133,6 +133,7 @@ async def authorize_joined(service, db, result, *, workspace_id, phone_line, rol
             pickup_url=parsed.get("pickup_url") or "", use_cloudflare=not parsed.get("pickup_url"),
             cf_config=cf, job_id=job_id, executable_path=executable_path, phone_line=phone_line,
             browser_session=browser_session, use_phone_pool=use_phone_pool, mailbox=mailbox,
+            login_only=bool(mailbox),
         )
         if not outcome.get("ok"):
             child.auth_state = "oauth_required"

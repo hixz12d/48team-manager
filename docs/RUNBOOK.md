@@ -98,7 +98,7 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 | 插件 / 运行器暂停 `phone_pool_empty` | 号码池没有可用号 | 在"资源 → 手机号"导入（`+1xxxxxxxxxx----接码链接`）后点继续 |
 | 暂停 `phone_limit` | 同一账号已换 3 个号仍失败 | 看资源页接码记录的失败原因；人工继续只再给 1 次，轮转"继续轮转"重新计 3 个 |
 | 暂停 `phone_back_missing` / `phone_relay_error` | 页面上找不到"换号码"入口 / 接码接口不可用、选不到 +1、已绑号无记录 | 人工回到号码输入页或手动完成手机验证后点继续；本机包提示"未启用接码接口"时检查服务端版本和 `EXTENSION_API_TOKEN` |
-| 号池拉入失败 `account_not_registered` | 该邮箱没注册过 ChatGPT，登录进了创建账号页（也可能是 OpenAI 页面改版导致误判） | 本地先注册好再"继续"；确认已注册仍报错时查 `browser/onboard.py` 的 login 模式判断 |
+| 号池拉入失败 `account_not_registered` | 该邮箱没注册过 ChatGPT，授权登录进了创建账号 / 填年龄页（也可能是 OpenAI 页面改版导致误判） | 本地先注册好再"继续"；确认已注册仍报错时查 `browser/reauth.py` 的 `login_only` 判断 |
 | 号池拉入失败 `mail_missing` / 邮箱不可读 | HME 地址 / 服务 token 未配置，或别名不在 icloud-hme 已接入账号下 | 设置页配好 HME 后在号池页"重新检测" |
 | codex-rs 检测失败 `codex_unreachable` / `codex_auth_failed` | 容器连不到宿主机 8180 / 管理 Key 错 | 容器内跑 `docker exec team48-manager python -c "import urllib.request;print(urllib.request.urlopen('http://host.docker.internal:8180/healthz').status)"` 应输出 `204`，不通查 UFW 是否放行 docker 网段访问 8180；Key 错就在 codex-rs 后台重新生成后填入 |
 | 导入 codex-rs 报 `no_proxy` | codex-rs 里没有最近测试通过的代理 | 到 codex-rs 后台测试代理后再导入，不直连 |

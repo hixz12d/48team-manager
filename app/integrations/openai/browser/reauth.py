@@ -9,6 +9,7 @@ from app.core.config import load_settings
 from app.integrations.openai.browser.environment import BrowserEnvironmentError, environment_summary
 from app.integrations.openai.browser.onboard import (
     ABOUT_YOU_STUCK_LIMIT,
+    NOT_REGISTERED_ERROR,
     _accept_terms,
     _click_exact,
     _click_first,
@@ -26,6 +27,7 @@ from app.integrations.openai.browser.onboard import (
     chromium_context_kwargs,
     goto_with_retries,
     looks_like_about_you,
+    looks_like_registration,
     looks_like_session_ended,
     page_phone_rejection,
     phone_page_outcome,
@@ -77,6 +79,7 @@ def run_browser_oauth_reauth(
     hme_service_token: str = "",
     hme_account_id: str = "",
     allow_signup: bool = False,
+    login_only: bool = False,
     allow_sms: bool = True,
     max_sms_submissions: int = 7,
     max_sms_code_submissions: int = 2,
@@ -199,6 +202,14 @@ def run_browser_oauth_reauth(
                     result["error"] = "账号已被 deactivate，停止重授权"
                     result["error_code"] = "account_deactivated"
                     report("deactivated", result["error"])
+                    break
+                if login_only and (
+                    looks_like_registration(url=url, body=page_body)
+                    or looks_like_about_you(title=page.title() or "", body=page_body, url=url)
+                ):
+                    result["error"] = NOT_REGISTERED_ERROR
+                    result["error_code"] = "account_not_registered"
+                    report("not_registered", result["error"])
                     break
                 if looks_like_about_you(title=page.title() or "", body=page_body, url=url):
                     about_you_tries += 1
