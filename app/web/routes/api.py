@@ -89,6 +89,16 @@ def build_api_router(get_db) -> APIRouter:
         from app.application.codex_publish import options
         return JSONResponse(await options(db), headers={"Cache-Control": "no-store"})
 
+    @router.get("/codex-rs/refill")
+    async def codex_rs_refill_status(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application import codex_refill
+        return JSONResponse(await codex_refill.status(db), headers={"Cache-Control": "no-store"})
+
+    @router.post("/codex-rs/refill/resume")
+    async def codex_rs_refill_resume(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application import codex_refill
+        return JSONResponse(await codex_refill.resume(db), headers={"Cache-Control": "no-store"})
+
     @router.post("/accounts/codex/export")
     async def export_codex_accounts(
         payload: CodexTransferRequest,

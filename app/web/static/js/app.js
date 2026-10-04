@@ -1369,6 +1369,37 @@ function hmeRow(item) {
       ["已入账 = 所有离队号全程 U 之和（含已删团队）；在跑 = 当前在席成员（含母号）全程 U 之和", ...coverageNotes(running, "在跑："), ...runningNotes], hintText(running));
   }
 
+  // 总览 "codex-rs 可用" 格子：能干活 / 目标；异常写在格子下方小字，符号 + 文字，悬停看原因。
+  function renderOverviewCodexRs(data) {
+    const node = document.querySelector('[data-summary="codex_rs_refill"]');
+    const item = node?.closest(".summary-item");
+    if (!node || !item) return;
+    const note = document.getElementById("overview-codex-rs-note");
+    const info = data && typeof data === "object" ? data : {};
+    const marks = [], reasons = [];
+    if (!info.enabled) {
+      node.textContent = info.working == null ? "—" : `${info.working} 个`;
+      reasons.push("自动补号未开启");
+    } else {
+      node.textContent = `${info.working ?? "—"} / ${info.target ?? "—"}`;
+      if (info.paused) { marks.push("■ 已暂停"); reasons.push(`已暂停：${info.pause_reason || "原因未记录"}`); }
+      const pool = Number(info.pool_available) || 0;
+      if (pool < 2) { marks.push(`▲ 号池剩 ${pool}`); reasons.push(`备用号池只剩 ${pool} 个可拉入`); }
+      if (info.error || info.stale) {
+        marks.push(info.error ? "▲ 读取失败" : "▲ 检查过期");
+        reasons.push(info.error ? `codex-rs 读取失败：${info.error}` : "超过 15 分钟没有检查 codex-rs");
+      }
+      if (info.blocked_reason) reasons.push(`本轮未补号：${info.blocked_reason}`);
+    }
+    if (note) {
+      note.textContent = marks.join(" · ");
+      note.hidden = !marks.length;
+      note.className = marks.length ? "hint text-warn" : "hint";
+    }
+    item.title = reasons.join("；") || "能干活的号数 / 目标数，点击去设置";
+    item.setAttribute("aria-label", `codex-rs 可用 ${node.textContent}${marks.length ? `，${marks.join("，")}` : ""}${reasons.length ? `：${reasons.join("；")}` : ""}`);
+  }
+
   function renderOverview(payload) {
     const breakdown = document.getElementById("overview-attention-breakdown");
     if (breakdown) breakdown.textContent = Object.entries(payload.attention_breakdown || {}).filter(([,n])=>n).map(([key,n])=>`${({auth:"授权",onboarding:"入组中断",quota:"额度",check:"检测",remote:"远端",identity:"身份",sync:"同步"})[key]} ${n}`).join(" · ");
@@ -1400,6 +1431,7 @@ function hmeRow(item) {
     set("attention", attention.length, true);
     set("conflicts", summary.identity_conflicts, true);
     renderOverviewRevenue(summary);
+    renderOverviewCodexRs(summary.codex_rs_refill);
 
     const attentionRoot = document.getElementById("overview-attention");
     const attentionPanel = document.getElementById("overview-attention-panel");
@@ -3673,7 +3705,9 @@ function hmeRow(item) {
       return { ...fields, sub2api_concurrency: push.concurrency, sub2api_group_ids: push.group_ids,
         sub2api_proxy_mode: [mode, push.proxy_id, push.proxy_group_id],
         codex_rs_push_target: codex.push_target, codex_rs_group_ids: codex.group_ids,
-        codex_rs_concurrency: codex.concurrency_limit ?? null, codex_rs_weight: codex.weight, codex_rs_enabled: codex.enabled };
+        codex_rs_concurrency: codex.concurrency_limit ?? null, codex_rs_weight: codex.weight, codex_rs_enabled: codex.enabled,
+        codex_rs_refill_enabled: codex.refill?.enabled, codex_rs_refill_target: codex.refill?.target,
+        codex_rs_refill_daily_limit: codex.refill?.daily_limit, codex_rs_refill_workspace_ids: codex.refill?.workspace_ids };
     };
     const draft = flatten(current), saved = flatten(baseline);
     return Object.keys(draft).filter(key => JSON.stringify(draft[key]) !== JSON.stringify(saved[key]));
@@ -3695,7 +3729,8 @@ function hmeRow(item) {
         : key === "auto_rotate_workspace_ids" ? document.getElementById("auto-rotation-workspaces")
           : key === "codex_rs_group_ids" ? document.getElementById("codex-rs-group-field")
             : key === "codex_rs_push_target" ? document.getElementById("codex-rs-push-target")
-              : form.elements.namedItem(key)?.closest?.("label");
+              : key === "codex_rs_refill_workspace_ids" ? document.getElementById("codex-rs-refill-workspaces")
+                : form.elements.namedItem(key)?.closest?.("label");
       target?.classList.add("is-dirty");
     }
     if (discard) discard.hidden = !settingsDirty;
@@ -3754,7 +3789,7 @@ function hmeRow(item) {
     const secretState = payload.secret_state || {};
     const account = payload.account || {};
     window.Team48Sub2ApiDefaults.fill(payload.sub2api_push);
-    window.Team48CodexRs.fill(payload.codex_rs || {});
+    window.Team48CodexRs.fill(payload.codex_rs || {}, automation.rotation_workspaces || []);
     authPushTarget = payload.codex_rs?.push_target === "codex_rs" ? "codex_rs" : "sub2api";
     form.codex_base_url.value = connections.codex_base_url || "";
     form.codex_admin_key.value = "";
@@ -3996,6 +4031,7 @@ function hmeRow(item) {
       fillSettings(saved);
       void window.Team48Sub2ApiDefaults.refresh();
       void window.Team48CodexRs.refresh();
+      void window.Team48CodexRs.refreshRefill();
       if (statusEl) {
         statusEl.className = "muted";
         statusEl.textContent = "已保存 · 刚刚";
@@ -4330,6 +4366,7 @@ function hmeRow(item) {
     fillSettings(await fetchEntity("settings", "/api/settings"));
     void window.Team48Sub2ApiDefaults.refresh();
     void window.Team48CodexRs.refresh();
+    void window.Team48CodexRs.refreshRefill();
     void loadSub2ApiManagement();
     void loadRunnerCard();
   }

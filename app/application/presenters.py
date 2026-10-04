@@ -140,7 +140,7 @@ BUSINESS_STEP_LABELS = {
     "runner_callback": "已收到授权回调",
     "runner_authorized": "插件授权完成",
     "runner_diagnostics": "运行诊断",
-    "pool_finish": "推送 Sub2API 并计数",
+    "pool_finish": "推送并计数",
     "pool_label": "更新 HME 标签",
 }
 

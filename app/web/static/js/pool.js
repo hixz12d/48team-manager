@@ -9,7 +9,7 @@
   const STATE_TONE = { pending: "", joining: "accent", joined: "success", failed: "danger", manual_required: "warning" };
   const ROLE_TEXT = { member: "成员 Member", owner: "所有者 Owner" };
   const SEAT_TEXT = { workspace_default: "团队默认", standard: "Standard", premium: "Premium" };
-  const IMPACT_TEXT = "会修改官方 Team：向该邮箱发送邀请，服务器登录这个账号接受邀请并授权，成功后推送 Sub2API、今日切换 +1。";
+  const IMPACT_TEXT = "会修改官方 Team：向该邮箱发送邀请，服务器登录这个账号接受邀请并授权，成功后按“授权后推送到”推送（Sub2API 或 codex-rs）、今日切换 +1。";
   const REPLACE_TEXT = "先把被替换的子号移出官方团队（本地档案保留，Sub2API 只暂停调度不删）。";
 
   const body = document.getElementById("pool-body");

@@ -50,6 +50,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `sub2api_status_sync` | 15 秒 | 远端状态核对；超过 45 秒算旧，单次 20 秒超时 |
 | `sub2api_usage_sync` | 5 分钟 | 计费用量：5h / 今日 / 自然 7 天 / 全程（`lifetime`，自绑定起最多 90 天，`/accounts/{id}/stats?days=N`） |
 | `auto_reauth_scan` | 30 分钟 | 自动重授权（默认关闭） |
+| `codex_rs_refill_scan` | 5 分钟 | codex-rs 自动补号 `codex_refill.run_once`（开关关闭时不访问 codex-rs） |
 
 ### 手动轮转（`application/manual_rotation.py`）
 
@@ -89,6 +90,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - 表 `standby_pool_entries`（模型 `persistence/models/pool.py`）；接口 `web/routes/pool.py`（`/api/pool*`，schema 在 `web/schemas/pool.py`）；页面 `/resources/pool`（`templates/pool.html`、`static/js/pool.js`、`static/css/pool.css`）。
 - `standby_pool.py`：导入、HME 收件检测（`probe_account_mailbox`）、打 / 恢复 `GPT号池` 标签、列表（按任务结果纠偏状态并算 `can_join / can_continue / can_remove`）、推荐团队（只读本地数据；席位未知不挡，每个候选团队带上次同步快照里的非母号已入组成员 `members`，含继承用的角色 / 席位）、移出、拉入成功后 `apply_team_label`。HME 调用用 `asyncio.to_thread`。
 - `pool_join.py`：`start_pool_join` / `continue_pool_join` 预检后建 `pool_join` 任务（占全局浏览器槽 + 团队锁，禁止通用重试，重启后标待人工），可带 `replace_email`：后台先 `rotate.kick_to_standby(reason="pool_replace")` 移出该子号（步骤 `official_removed`，远端只暂停不删；回执显示空位计费时停在待人工），再调 `onboard.invite_and_onboard(login_existing=True, mailbox=…)`，成功后步骤 `pool_finish`（复用 `finish_after_authorization` 推送 + 计数）、`pool_label`（改团队标签），回写条目状态。继续时读上一任务的 `replace_email`，已移出的不重踢。
+- 推送去向：`start_pool_join(push_target=None, source="manual")`，`push_target` 为空时取 `load_auth_push_target`，写进任务 `input_payload.push_target`；`continue_pool_join` 沿用上一任务的 `push_target` 和 `Operation.source`。
 - `login_existing=True` 模式：强制 playwright + legacy 流程；不领 HME、不设密码、不走 Cloudflare，邀请邮件和验证码从 HME 收件读；浏览器 `run_browser_onboard(mode="login")` 只登录，识别到创建账号 / about-you 页返回 `account_not_registered`。不传新参数时原有邀请 / 补位 / 轮转路径不变。
 
 ### HME 领号（`application/resources/hme.py`）
@@ -117,9 +119,17 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - `client.py`：codex-rs 管理 API 客户端（`x-api-key`，不跟随重定向、不自动重试、15 秒超时）；HTTP 只放行回环和 `host.docker.internal`（容器经它访问同机 codex-rs `:8180`）。导出接口读到的 `refreshToken` 在客户端里就丢弃。
 - `codex_publish.py`：`import_account` / `import_accounts`（单次 ≤ 50，逐个）、`pull_access_token`（在 `tokens.refresh_account` 的 `CredentialLease` 内读回 AT）、`disable_on_departure`（`batch-update enabled=false`）、`options`（分组 + 可用代理数）、`probe`。绑定表 `codex_bindings`（租约串行、`import_attempted` 一旦为真即视为 codex 续期；首次导入被 4xx 明确拒绝时删掉占位绑定）。
 - 续期归属：`refresh_ownership.codex_refresh_owner` / `refresh_owner_kind`；`tokens.py`（刷新改读回）、`reauth.py` / `oauth_sessions.py`（自动重授权拦截 `remote_refresh_owned`）、`quota.py`（健康按远端续期处理、401 重试走读回）、`sub2api_publish.py`（互斥 `codex_rs_bound`）。
-- 推送去向：`settings.load_auth_push_target` → `console_actions.account_reauth_complete(push_target=)` → `member_handoff.finish_after_authorization`；管理端重授权接口和插件 `/handoff/complete` 都传，轮转、号池不传（默认 `sub2api`）。
+- 推送去向：`settings.load_auth_push_target` → `console_actions.account_reauth_complete(push_target=)` → `member_handoff.finish_after_authorization`；管理端重授权接口、插件 `/handoff/complete`、号池拉入都传，轮转不传（默认 `sub2api`）。
+- `client.list_accounts()`：`GET /api/admin/accounts?provider=openai` 分页，供自动补号计数。
 - 离队停用接入点：`rotate.kick_to_standby`（离队记账后，返回 `codex_rs_disable`）、`workspace_sync.py`（离队记账循环）。
 - 接口：`GET /api/codex-rs/options`、`POST /api/accounts/codex-rs/import`（部分失败也是 200，看 `ok` / `results`）、`POST /api/settings/probe` 的 `codex_rs` 目标；账号行字段 `codex_rs`（`queries/identity.py`）。前端设置卡片 `static/js/codex-rs-settings.js`（`window.Team48CodexRs`）。
+
+### codex-rs 自动补号（`application/codex_refill.py`）
+
+- 设置键 `codex_rs_refill`（`{enabled, target, daily_limit, workspace_ids}`，随设置 `codex_rs.refill` 整块保存；开关由关变开时 `clear_pause`）、运行状态键 `codex_rs_refill_state`（计数、`not_working`、防抖 `suspects`、`disabled_by_refill` 最近 20 条、暂停、`last_operation_id`、`today`、`blocked_reason`），只由本模块读写。
+- `run_once`：读账号列表分类计数 → 防抖后出错且启用的号 `set_enabled(False)` + `detail` 核对，同步本地 `codex_bindings.remote_enabled` → 统计上一个补号任务（成功标准 `followups.codex_rs.ok`），连续 2 次失败暂停 → 不足目标时按序检查并调 `pool_join.start_pool_join(push_target="codex_rs", source="codex_refill")`；团队类失败换团队、号的问题换号，每轮最多 1 个任务。全程不抛异常，网络 I/O 前先 commit。
+- 7 天用完判定：`status == "quota_exhausted"` 时，`quota.windows` 中 `windowSeconds >= 604800×95%` 的窗口 `limitReached` 或 `usedPercent >= 100`；字段缺失按 5 小时用完算在数。
+- 接口：`GET /api/codex-rs/refill`、`POST /api/codex-rs/refill/resume`；总览 summary 带 `codex_rs_refill`；任务来源 `codex_refill` 显示"自动补号"。
 
 ### 插件接码中转（`application/resources/phone_relay.py`）
 
@@ -186,4 +196,4 @@ for f in app/web/static/js/*.js extensions/chatgpt-signup/*.js extensions/chatgp
 | `OFFICIAL_QUOTA_PROBE_ENABLED` / `AUTO_REAUTH_ENABLED` / `AUTO_ROTATE_ENABLED` / `FORCE_REFILL` | 自动化开关，默认全关，数据库设置优先 |
 | `LOG_LEVEL` / `DATABASE_ECHO` / `TIMEZONE` | 日志、SQL 回显、时区 |
 
-界面设置（存 `system_settings`）：Sub2API 地址与密钥、`sub2api_push_defaults`、codex-rs 地址与管理 Key（`codex_base_url` / `codex_admin_key_encrypted`）、`auth_push_target`（`sub2api` / `codex_rs`）、`codex_rs_import_defaults`（分组、并发、权重、启用）、HME 地址与服务 token（`hme_base_url` 默认 `http://icloud-hme:8081`）、Cloudflare 邮箱、`invite_seat_wire_standard/premium`、`official_quota_probe_batch_size`、自动轮转各项。
+界面设置（存 `system_settings`）：Sub2API 地址与密钥、`sub2api_push_defaults`、codex-rs 地址与管理 Key（`codex_base_url` / `codex_admin_key_encrypted`）、`auth_push_target`（`sub2api` / `codex_rs`）、`codex_rs_import_defaults`（分组、并发、权重、启用）、`codex_rs_refill`（自动补号）、HME 地址与服务 token（`hme_base_url` 默认 `http://icloud-hme:8081`）、Cloudflare 邮箱、`invite_seat_wire_standard/premium`、`official_quota_probe_batch_size`、自动轮转各项。

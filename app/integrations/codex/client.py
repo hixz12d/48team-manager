@@ -176,6 +176,9 @@ class CodexClient:
             await self._object("POST", "/api/admin/accounts/batch-update",
                                json={"accountIds": [remote_id], "enabled": False})
 
+    async def list_accounts(self) -> list[dict]:
+        return await self._pages("/api/admin/accounts", provider="openai")
+
     async def list_proxies(self) -> list[dict]:
         return await self._pages("/api/admin/proxies")
 

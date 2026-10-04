@@ -1,4 +1,4 @@
-"""号池拉入任务编排：（可选）移出被替换的子号 → 邀请 → 登录已有账号入组 → 授权 → 推送 Sub2API 并计数 → 改团队标签。"""
+"""号池拉入任务编排：（可选）移出被替换的子号 → 邀请 → 登录已有账号入组 → 授权 → 推送（Sub2API 或 codex-rs）并计数 → 改团队标签。"""
 
 from __future__ import annotations
 
@@ -32,10 +32,21 @@ KICK_MANUAL_STATUSES = {"partial", "awaiting_confirmation", "manual_required", "
 # Never worth a retry on the same team without a human decision.
 FAILED_CODES = {"account_not_registered"}
 PUSH_FAILED_NOTE = "推送 Sub2API 失败，请到账号页重推"
+CODEX_RS_FAILED_NOTE = "导入 codex-rs 失败，请到账号页重新导入"
+PUSH_TARGETS = ("sub2api", "codex_rs")
 
 
 def _fail(code: str, message: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "error_code": code, "error": message, **extra}
+
+
+async def _push_target(db: AsyncSession, value: Any) -> str:
+    """Explicit target wins; otherwise follow the "授权后推送到" switch."""
+    if value in PUSH_TARGETS:
+        return str(value)
+    from app.application.settings import load_auth_push_target
+
+    return await load_auth_push_target(db)
 
 
 async def _joined_elsewhere(db: AsyncSession, account_id: int) -> bool:
@@ -54,19 +65,28 @@ async def start_pool_join(
     role: str = "member",
     seat_intent: str = "workspace_default",
     replace_email: str = "",
+    push_target: str | None = None,
+    source: str = "manual",
 ) -> dict[str, Any]:
-    """为号池条目创建 pool_join 任务，拉入指定团队；replace_email 非空时先移出该子号腾席位。"""
+    """为号池条目创建 pool_join 任务，拉入指定团队；replace_email 非空时先移出该子号腾席位。
+
+    push_target 为 None 时跟随"授权后推送到"开关；source 记到任务来源（自动补号传 codex_refill）。
+    """
     entry = await db.get(StandbyPoolEntry, int(entry_id))
     if entry is None:
         return _fail("not_found", "号池条目不存在")
     if entry.state not in JOINABLE_STATES:
         return _fail("not_joinable", "当前状态不能拉入")
     return await _launch(db, entry, workspace_id=workspace_id, role=role, seat_intent=seat_intent,
-                         replace_email=replace_email)
+                         replace_email=replace_email, push_target=await _push_target(db, push_target),
+                         source=source or "manual")
 
 
 async def continue_pool_join(db: AsyncSession, entry_id: int) -> dict[str, Any]:
-    """接着上次的团队继续未完成的拉入（已移出不重踢、已邀请不重发、已入组直接授权）。"""
+    """接着上次的团队继续未完成的拉入（已移出不重踢、已邀请不重发、已入组直接授权）。
+
+    推送去向和任务来源沿用上一次任务，自动补号的号人工点"继续"也会导入 codex-rs。
+    """
     entry = await db.get(StandbyPoolEntry, int(entry_id))
     if entry is None:
         return _fail("not_found", "号池条目不存在")
@@ -79,6 +99,7 @@ async def continue_pool_join(db: AsyncSession, entry_id: int) -> dict[str, Any]:
         replace_email and previous is not None
         and await operation_store.step_succeeded(db, previous, "official_removed")
     )
+    source = str(getattr(previous, "source", None) or "manual")
     return await _launch(
         db, entry,
         workspace_id=int(entry.workspace_id),
@@ -86,6 +107,8 @@ async def continue_pool_join(db: AsyncSession, entry_id: int) -> dict[str, Any]:
         seat_intent=entry.seat_intent or "workspace_default",
         replace_email=replace_email,
         replace_done=replace_done,
+        push_target=await _push_target(db, context.get("push_target")),
+        source=source,
     )
 
 
@@ -98,6 +121,8 @@ async def _launch(
     seat_intent: str,
     replace_email: str = "",
     replace_done: bool = False,
+    push_target: str = "sub2api",
+    source: str = "manual",
 ) -> dict[str, Any]:
     try:
         role = parse_invite_role(role, default="member")
@@ -151,7 +176,9 @@ async def _launch(
             "seat_intent": seat_intent,
             "replace_email": replace_email,
             "replace_done": replace_done,
+            "push_target": push_target,
         },
+        source=source,
     )
     if blocker is not None:
         blocker_id = blocker.public_id
@@ -182,6 +209,7 @@ async def _launch(
             job_id=job_id,
             replace_email=replace_email,
             replace_done=replace_done,
+            push_target=push_target,
         )
 
     from app.application.console_actions import _run_command
@@ -211,6 +239,7 @@ async def _run_pool_join(
     job_id: str,
     replace_email: str = "",
     replace_done: bool = False,
+    push_target: str = "sub2api",
 ) -> dict[str, Any]:
     from app.application.onboard import onboard_service
 
@@ -249,7 +278,7 @@ async def _run_pool_join(
 
         if result.get("success") and result.get("authorized"):
             return await _finish_joined(session, result, entry_id=entry_id, account_id=account_id,
-                                        workspace_id=workspace_id, job_id=job_id)
+                                        workspace_id=workspace_id, job_id=job_id, push_target=push_target)
 
         code = str(result.get("error_code") or "pool_join_failed")
         error = str(result.get("error") or "拉入未完成")
@@ -338,15 +367,17 @@ async def _finish_joined(
     account_id: int,
     workspace_id: int,
     job_id: str,
+    push_target: str = "sub2api",
 ) -> dict[str, Any]:
     from app.application import standby_pool
     from app.application.member_handoff import finish_after_authorization
     from app.application.onboard import onboard_service
 
-    await onboard_service._progress(session, job_id=job_id, stage="pool_finish", message="正在推送 Sub2API 并计数")
+    await onboard_service._progress(session, job_id=job_id, stage="pool_finish", message="正在推送并计数")
     await session.commit()
     followups = await finish_after_authorization(
         session, account_id, workspace_id=workspace_id, push_sub2api=True, count_switch=True,
+        push_target=push_target,
     )
     await session.commit()
 
@@ -363,9 +394,12 @@ async def _finish_joined(
 
     email = str((result.get("child") or {}).get("email") or "")
     message = f"{email} 已入组并完成授权".strip()
-    push = followups.get("sub2api") or {}
+    if push_target == "codex_rs":
+        push, note = followups.get("codex_rs") or {}, CODEX_RS_FAILED_NOTE
+    else:
+        push, note = followups.get("sub2api") or {}, PUSH_FAILED_NOTE
     if push.get("ok") is False:
-        message = f"{message}；{PUSH_FAILED_NOTE}"
+        message = f"{message}；{note}"
     return {
         **result,
         "success": True,

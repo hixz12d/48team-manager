@@ -185,6 +185,8 @@ async def overview(db: AsyncSession) -> dict[str, Any]:
     summary["revenue_running"] = overview.get("running")
     summary["revenue_today"] = overview.get("today")
     summary["revenue_seven_day"] = overview.get("seven_day")
+    from app.application import codex_refill
+    summary["codex_rs_refill"] = await codex_refill.overview(db)
     payload["summary"] = summary
     payload["healthy"] = not attention
     payload["freshness"] = {

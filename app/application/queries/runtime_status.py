@@ -28,7 +28,7 @@ SAFE_ERRORS = {
     "cancelled": "已取消",
     "http_429": "请求受限，等待重试",
 }
-SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动", "auto": "自动轮转", "auto_sync": "同步重试", "extension": "插件", "manual_rotation": "手动轮转"}
+SOURCE_LABELS = {"manual": "手动", "scheduled": "定时", "retry": "重试", "oauth_callback": "授权后续", "automatic": "自动", "auto": "自动轮转", "auto_sync": "同步重试", "extension": "插件", "manual_rotation": "手动轮转", "codex_refill": "自动补号"}
 
 
 def runtime_operation(row, *, workspace_name=None, now=None, next_retry_at=None):

@@ -103,6 +103,8 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 | codex-rs 检测失败 `codex_unreachable` / `codex_auth_failed` | 容器连不到宿主机 8180 / 管理 Key 错 | 容器内跑 `docker exec team48-manager python -c "import urllib.request;print(urllib.request.urlopen('http://host.docker.internal:8180/healthz').status)"` 应输出 `204`，不通查 UFW 是否放行 docker 网段访问 8180；Key 错就在 codex-rs 后台重新生成后填入 |
 | 导入 codex-rs 报 `no_proxy` | codex-rs 里没有最近测试通过的代理 | 到 codex-rs 后台测试代理后再导入，不直连 |
 | 导入报 `sub2api_bound` / 推送报 `codex_rs_bound` | 一个号只能进一边 | 先在对应一边删号；从 codex-rs 换回 Sub2API 需删号后手动重新授权 |
+| 自动补号"已暂停：连续 2 次补号失败" | 两次号池拉入失败、待人工或导入 codex-rs 失败 | 到任务页看"号池拉入（自动补号）"任务原因，处理后（继续 / 换号）在设置页 codex-rs 卡片点"恢复" |
+| 自动补号"本轮未补号：…" | 号池空、没勾团队、团队忙、浏览器占用、今日上限、codex-rs 无测试通过代理或读取失败 | 按原因补号池 / 勾团队 / 测代理；忙碌类等下一轮（5 分钟）自动重试 |
 | codex-rs 绑定状态"结果不明" | 导入超时 / 5xx / 读回核对失败 | 直接再点导入（codex-rs 按身份覆盖，可安全重试） |
 
 ## 常用操作
@@ -114,6 +116,7 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 - **浏览器环境自检**：设置页"浏览器环境"卡片，选团队（取母号代理）和平台，点自检；不注册、不碰官方团队，占用全局浏览器槽。先按 linux / windows 各跑一次，按结果定 `RUNNER_FINGERPRINT_PLATFORM` / `RUNNER_GPU_MODE`（只影响新建档案）。服务器没有 GPU 时 Chromix 会强制显示真实软件渲染型号，`preset` 可能不生效（结果里 `gpu_preset_ignored`）。服务重启会把进行中的自检标失败（`runner_interrupted`），重新发起即可。
 - **切换轮转注册方式**：`/opt/team48/.env` 改 `ROTATION_SIGNUP_RUNNER=extension`（回退改 `playwright`）后重建。前提：自检通过；设置里 Cloudflare 邮箱地址必须是插件内置的 `https://apimail.xiaozhudf2026.foo`，否则报 `runner_mailbox_invalid`。运行目录 `data/runner-runs/` 结束即删；容器重启会丢失进行中的运行，任务停在待人工，按"继续轮转"处理。
 - **接入 codex-rs**：在 codex-rs 后台「系统设置 → 安全与访问」生成管理员 API Key（只显示一次），Team48 设置页 codex-rs 卡片填地址 `http://host.docker.internal:8180` 和 Key，点检测。第一次真实导入用不重要的号，导入后在 codex-rs 后台确认有账号、有 RT、代理已绑定。
+- **启用 codex-rs 自动补号**：先往备用号池导入一批已注册的 HME 邮箱，在设置页 codex-rs 卡片勾选有空位的目标团队（线上团队大多没记录席位上限，系统判断不了满员），再打开开关保存。第一次盯一轮：任务页的"号池拉入（自动补号）"走完，codex-rs 后台出现新号且已启用。
 - **启用插件接口**：`python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成令牌 → 写 `/opt/team48/.env` 的 `EXTENSION_API_TOKEN` → 重建 → 本机重新打包插件。
 - **打包插件（本机）**：`python scripts/build_signup_extension.py --local-config --unpack`（只用本机 `private-config.mjs`）；首次不带 `--local-config` 会经 SSH 只读 VPS 上的 Cloudflare 配置。`--team48-token <令牌>` / `--no-team48` 写入 / 移除令牌（带令牌才会接码）；`--hme-token <ICLOUD_HME_SERVICE_TOKEN> --hme-account acc_...` / `--no-hme` 让本机包改从 iCloud（经 icloud-hme）读邮件验证码 / 改回 Cloudflare。产物在 `dist/`（gitignore），重新加载后确认插件版本号。安装说明见 `extensions/chatgpt-signup/README.md`。
 - **单席位补位（本机）**：`python -m scripts.signup_one --workspace-id N --role member` 只显示预检，加 `--confirm` 才执行；短信用 `--sms-stdin` 从标准输入传，不写在命令参数里。

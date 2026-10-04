@@ -51,6 +51,20 @@ async def scheduled_auto_reauth() -> None:
         await reauth_service.run_once(session)
 
 
+async def scheduled_codex_refill() -> None:
+    from app.application import codex_refill
+
+    factory = _session_factory
+    if factory is None:
+        return
+    async with factory() as session:
+        try:
+            await codex_refill.run_once(session)
+        except Exception:
+            logger.exception("codex-rs auto refill scan failed")
+            await session.rollback()
+
+
 async def scheduled_auto_rotate() -> None:
     import json
     from app.application.rotate import rotate_service
@@ -135,6 +149,7 @@ def configure_jobs(settings: Settings) -> None:
         "auto_rotate_scan",
         "sub2api_usage_sync",
         "sub2api_status_sync",
+        "codex_rs_refill_scan",
     )
     for job_id in job_ids:
         if scheduler.get_job(job_id):
@@ -147,6 +162,7 @@ def configure_jobs(settings: Settings) -> None:
     scheduler.add_job(scheduled_sub2api_status_sync, IntervalTrigger(seconds=15), id="sub2api_status_sync", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_auto_reauth, IntervalTrigger(minutes=30), id="auto_reauth_scan", replace_existing=True)
     scheduler.add_job(scheduled_auto_rotate, IntervalTrigger(minutes=1), id="auto_rotate_scan", replace_existing=True, max_instances=1, coalesce=True)
+    scheduler.add_job(scheduled_codex_refill, IntervalTrigger(minutes=5), id="codex_rs_refill_scan", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(
         scheduled_sub2api_usage_sync,
         IntervalTrigger(minutes=5),

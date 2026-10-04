@@ -77,6 +77,7 @@
           <div class="summary-item"><span class="summary-label">近 7 天收入<small class="summary-hint" hidden></small></span><strong class="tabular" data-summary="revenue_seven_day">—</strong></div>
           <div class="summary-item"><span class="summary-label">本月入账</span><strong class="tabular" data-summary="revenue_month">—</strong></div>
           <div class="summary-item summary-item-wide"><span class="summary-label">团队收入<small class="summary-hint" hidden></small></span><strong class="tabular" data-summary="revenue_total">—</strong></div>
+          <a class="summary-item" href="/settings#codex-rs" id="overview-codex-rs"><span class="summary-label">codex-rs 可用</span><strong class="tabular" data-summary="codex_rs_refill">—</strong><small class="hint" id="overview-codex-rs-note" hidden></small></a>
         </section>
         <section class="team-board" id="team-board" aria-labelledby="team-board-title">
           <header class="team-board-header"><h2 id="team-board-title">团队看板</h2><a href="/accounts?view=attention">查看待处理</a></header>
@@ -386,7 +387,7 @@
                   </div>
                 </div>
               </article>
-              <article class="panel service-card" data-service="codex_rs">
+              <article class="panel service-card" data-service="codex_rs" id="codex-rs">
                 <div class="panel-header">
                   <div>
                     <span class="panel-title">codex-rs</span>
@@ -406,7 +407,7 @@
                       <label class="check"><input type="radio" name="codex_rs_push_target" value="codex_rs">codex-rs</label>
                     </div>
                   </fieldset>
-                  <p class="hint">只影响重新授权后的推送（账号页 / 团队授权面板、注册插件接入）；轮转、号池仍推 Sub2API。</p>
+                  <p class="hint">只影响重新授权后的推送（账号页 / 团队授权面板、注册插件接入）；手动 / 自动轮转仍推 Sub2API；号池拉入跟随这里，自动补号固定导入 codex-rs。</p>
                   <section class="sub2api-push-defaults stack" aria-labelledby="codex-rs-defaults-title">
                     <div class="panel-header">
                       <strong id="codex-rs-defaults-title">导入参数（只对首次导入的号生效）</strong>
@@ -422,6 +423,34 @@
                     <label class="check"><input type="checkbox" name="codex_rs_enabled" checked>导入后启用</label>
                     <p id="codex-rs-proxy-status" class="hint">可用代理读取中…</p>
                     <p id="codex-rs-options-status" class="hint" role="status">读取分组中…</p>
+                  </section>
+                  <section class="sub2api-push-defaults codex-rs-refill stack" id="codex-rs-refill" aria-labelledby="codex-rs-refill-title">
+                    <div class="panel-header">
+                      <strong id="codex-rs-refill-title">自动补号</strong>
+                      <button type="button" class="button compact" id="codex-rs-refill-refresh">刷新状态</button>
+                    </div>
+                    <label class="setting-row">
+                      <span>
+                        <strong>开启自动补号</strong>
+                        <span class="hint">每 5 分钟检查一次 codex-rs，能干活的号少于目标时，从备用号池按导入顺序取一个号，拉进勾选的团队（今日切换最少优先）并导入 codex-rs。出错的号会在 codex-rs 关调度，不踢人、不删号。</span>
+                        <span class="hint text-warn">▲ 会修改官方 Team：发送邀请、接受邀请、今日切换 +1。</span>
+                      </span>
+                      <input type="checkbox" name="codex_rs_refill_enabled">
+                    </label>
+                    <label>目标数量<input name="codex_rs_refill_target" type="number" min="1" max="50" step="1" value="6" required></label>
+                    <label>每天最多补<input name="codex_rs_refill_daily_limit" type="number" min="0" max="50" step="1" value="6" required></label>
+                    <p class="hint">0 = 不补；北京时间 0 点归零，失败也占名额。</p>
+                    <fieldset id="codex-rs-refill-workspaces" class="stack">
+                      <legend>补号目标团队</legend>
+                      <div class="toolbar">
+                        <button type="button" class="button ghost" id="codex-rs-refill-select-all">全选</button>
+                        <button type="button" class="button ghost" id="codex-rs-refill-clear">清空</button>
+                      </div>
+                      <div id="codex-rs-refill-workspace-list" class="sub2api-group-options"></div>
+                    </fieldset>
+                    <div id="codex-rs-refill-status" class="codex-rs-refill-status stack" role="status" aria-live="polite">
+                      <p class="hint">状态读取中…</p>
+                    </div>
                   </section>
                   <div class="service-edit" data-edit-panel="codex_rs" hidden>
                     <label>服务地址<input name="codex_base_url" autocomplete="off" placeholder="http://host.docker.internal:8180"></label>

@@ -95,7 +95,13 @@ async def load_codex_rs_import_defaults(db: AsyncSession) -> dict[str, Any]:
 
 
 async def load_codex_rs_settings(db: AsyncSession) -> dict[str, Any]:
-    return {"push_target": await load_auth_push_target(db), **(await load_codex_rs_import_defaults(db))}
+    from app.application import codex_refill
+
+    return {
+        "push_target": await load_auth_push_target(db),
+        **(await load_codex_rs_import_defaults(db)),
+        "refill": await codex_refill.load_config(db),
+    }
 
 
 async def save_codex_rs_settings(db: AsyncSession, patch) -> None:
@@ -121,6 +127,13 @@ async def save_codex_rs_settings(db: AsyncSession, patch) -> None:
         changed = True
     if changed:
         await upsert_setting(db, CODEX_RS_DEFAULTS_KEY, json.dumps(current), "codex-rs 首次导入默认值")
+    if patch.refill is not None:
+        from app.application import codex_refill
+
+        was_enabled = (await codex_refill.load_config(db))["enabled"]
+        await codex_refill.save_config(db, patch.refill.model_dump())
+        if patch.refill.enabled and not was_enabled:
+            await codex_refill.clear_pause(db)
 
 
 async def load_console_settings(db: AsyncSession) -> dict[str, Any]:

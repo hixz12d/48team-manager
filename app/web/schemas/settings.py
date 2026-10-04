@@ -62,6 +62,20 @@ class Sub2ApiPushDefaults(BaseModel):
         return self
 
 
+class CodexRsRefillSettings(BaseModel):
+    """codex-rs auto refill config; saved as a whole block."""
+
+    enabled: bool
+    target: int = Field(ge=1, le=50)
+    daily_limit: int = Field(ge=0, le=50)  # 0 = never refill
+    workspace_ids: list[PositiveInt] = Field(max_length=500)
+
+    @model_validator(mode="after")
+    def dedupe_workspaces(self):
+        self.workspace_ids = sorted(set(self.workspace_ids))
+        return self
+
+
 class CodexRsSettings(BaseModel):
     """codex-rs import defaults and the post-authorization push target; only sent fields are saved."""
 
@@ -71,6 +85,7 @@ class CodexRsSettings(BaseModel):
     concurrency_inherit: bool | None = None  # True clears concurrency_limit (inherit codex-rs global)
     weight: int | None = Field(default=None, ge=1, le=100)
     enabled: bool | None = None
+    refill: CodexRsRefillSettings | None = None
 
 
 class SettingsPatch(BaseModel):
