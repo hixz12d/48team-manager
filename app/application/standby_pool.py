@@ -391,6 +391,36 @@ async def recheck_mailbox(db: AsyncSession, entry_id: int) -> dict[str, Any]:
     return {"ok": True, "item": item}
 
 
+SEAT_BY_OFFICIAL = {"default": "standard", "prolite": "premium"}
+
+
+async def _replace_candidates(db: AsyncSession, workspace: Workspace, owner: Account | None) -> list[dict[str, Any]]:
+    """上次同步快照里的已入组成员（不含母号），供"替换子号"选择并继承角色 / 席位。"""
+    owner_email = normalize_email(owner.email) if owner else ""
+    rows = (
+        await db.scalars(
+            select(WorkspaceOfficialMemberSnapshot)
+            .where(
+                WorkspaceOfficialMemberSnapshot.workspace_id == workspace.id,
+                WorkspaceOfficialMemberSnapshot.remote_state == "joined",
+            )
+            .order_by(WorkspaceOfficialMemberSnapshot.normalized_email)
+        )
+    ).all()
+    members = []
+    for row in rows:
+        email = normalize_email(row.normalized_email)
+        if not email or email == owner_email:
+            continue
+        role = str(row.official_role or "").lower()
+        members.append({
+            "email": email,
+            "role": role if role in {"owner", "member"} else "member",
+            "seat_intent": SEAT_BY_OFFICIAL.get(str(row.seat_type or ""), "workspace_default"),
+        })
+    return members
+
+
 def _expired(workspace: Workspace) -> bool:
     if not workspace.manual_expires_on:
         return False
@@ -420,10 +450,6 @@ async def recommend_workspaces(db: AsyncSession, entry_id: int) -> dict[str, Any
             reason = "母号未配置代理"
         elif not workspace.official_workspace_id:
             reason = "团队未同步"
-        elif limit is None or occupied is None:
-            reason = "席位未知，请先同步"
-        elif occupied >= limit:
-            reason = "已满"
         elif await operation_store.active_for_workspace(db, workspace.id, actions=WORKSPACE_LOCK_ACTIONS) is not None:
             reason = "有进行中任务"
         elif await unresolved_for_workspace(db, workspace.id) is not None:
@@ -437,6 +463,9 @@ async def recommend_workspaces(db: AsyncSession, entry_id: int) -> dict[str, Any
             "occupied": occupied,
             "limit": limit,
             "switch_count": int(switch_count_record(workspace)["count"]),
+            # 满员（或席位未知）不挡：拉入时选一个子号替换，先移出再邀请。
+            "full": limit is not None and occupied is not None and occupied >= limit,
+            "members": await _replace_candidates(db, workspace, owner) if not reason else [],
             "eligible": not reason,
             "reason": reason or None,
         }

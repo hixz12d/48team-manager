@@ -10,6 +10,7 @@
   const ROLE_TEXT = { member: "成员 Member", owner: "所有者 Owner" };
   const SEAT_TEXT = { workspace_default: "团队默认", standard: "Standard", premium: "Premium" };
   const IMPACT_TEXT = "会修改官方 Team：向该邮箱发送邀请，服务器登录这个账号接受邀请并授权，成功后推送 Sub2API、今日切换 +1。";
+  const REPLACE_TEXT = "先把被替换的子号移出官方团队（本地档案保留，Sub2API 只暂停调度不删）。";
 
   const body = document.getElementById("pool-body");
   const importSheet = document.getElementById("pool-import-sheet");
@@ -17,6 +18,7 @@
   const importForm = document.getElementById("pool-import-form");
   const joinForm = document.getElementById("pool-join-form");
   const workspaceSelect = document.getElementById("pool-join-workspace");
+  const replaceSelect = document.getElementById("pool-join-replace");
   const joinSubmit = document.getElementById("pool-join-submit");
   const busyEntries = new Set();
   let joinEntry = null;
@@ -305,10 +307,41 @@
   // ---------- 拉入团队 ----------
 
   function workspaceOptionText(ws) {
-    const parts = [ws.name || `团队 ${ws.id}`, `${ws.occupied ?? "?"}/${ws.limit ?? "?"}`, `今日切换 ${ws.switch_count ?? 0}`];
+    const seats = ws.limit != null && ws.occupied != null ? `${ws.occupied}/${ws.limit}` : "席位未知";
+    const parts = [ws.name || `团队 ${ws.id}`, seats, `今日切换 ${ws.switch_count ?? 0}`];
     let text = parts.join(" · ");
     if (!ws.eligible) text += `（${ws.reason || "不可选"}）`;
     return text;
+  }
+
+  function selectedWorkspace() {
+    return joinWorkspaces.find((ws) => ws.id === Number(workspaceSelect?.value));
+  }
+
+  function renderReplaceOptions() {
+    if (!replaceSelect) return;
+    const ws = selectedWorkspace();
+    const members = ws?.members || [];
+    // 团队一般是满的：除非确知有空位，默认选第一个子号替换（提交前确认框会再列出来）。
+    const hasRoom = ws?.limit != null && ws?.occupied != null && ws.occupied < ws.limit;
+    const none = new Option(hasRoom ? "不替换（团队有空位）" : "不替换（直接邀请，满员时会失败或多占席位）", "");
+    replaceSelect.replaceChildren(none, ...members.map((member) => new Option(
+      `${member.email} · ${ROLE_TEXT[member.role] || member.role} · ${SEAT_TEXT[member.seat_intent] || member.seat_intent}`,
+      member.email,
+    )));
+    replaceSelect.value = !hasRoom && members.length ? members[0].email : "";
+    replaceSelect.disabled = !members.length;
+    applyReplaceDefaults();
+  }
+
+  // 选了被替换的号就沿用它的角色和席位，仍可手动改。
+  function applyReplaceDefaults() {
+    const member = (selectedWorkspace()?.members || []).find((item) => item.email === replaceSelect?.value);
+    if (!member) return;
+    const role = document.getElementById("pool-join-role");
+    const seat = document.getElementById("pool-join-seat");
+    if (role) role.value = member.role;
+    if (seat) seat.value = member.seat_intent;
   }
 
   function setJoinEmpty(empty) {
@@ -321,6 +354,7 @@
     const token = ++recommendToken;
     workspaceSelect.replaceChildren(new Option("正在读取团队…", ""));
     workspaceSelect.disabled = true;
+    if (replaceSelect) { replaceSelect.replaceChildren(new Option("不替换", "")); replaceSelect.disabled = true; }
     if (joinSubmit) joinSubmit.disabled = true;
     document.getElementById("pool-join-empty").hidden = true;
     try {
@@ -345,6 +379,7 @@
       workspaceSelect.value = String(recommended.id);
       workspaceSelect.disabled = false;
       setJoinEmpty(false);
+      renderReplaceOptions();
     } catch (error) {
       if (token !== recommendToken) return;
       const message = T.friendlyError(error);
@@ -384,16 +419,22 @@
     }
     const role = document.getElementById("pool-join-role")?.value || "member";
     const seatIntent = document.getElementById("pool-join-seat")?.value || "workspace_default";
+    const replaceEmail = replaceSelect?.value || "";
+    if (workspace.full && !replaceEmail) {
+      setStatus("pool-join-status", "团队已满，请选一个要替换的子号。", "error");
+      return;
+    }
     const confirmed = await T.openConfirm({
-      title: "拉入团队",
-      message: IMPACT_TEXT,
+      title: replaceEmail ? "替换子号" : "拉入团队",
+      message: replaceEmail ? `${REPLACE_TEXT}${IMPACT_TEXT}` : IMPACT_TEXT,
       items: [
         `邮箱：${entry.email}`,
         `团队：${workspace.name || workspace.id}`,
+        ...(replaceEmail ? [`移出：${replaceEmail}`] : []),
         `角色：${ROLE_TEXT[role] || role}`,
         `席位：${SEAT_TEXT[seatIntent] || seatIntent}`,
       ],
-      confirmLabel: "确认拉入",
+      confirmLabel: replaceEmail ? "确认替换" : "确认拉入",
       tone: "danger",
     }, joinSubmit);
     if (!confirmed) return;
@@ -404,7 +445,7 @@
       const result = await T.fetchEntity(`pool-join-${entry.id}`, `/api/pool/${encodeURIComponent(entry.id)}/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ workspace_id: workspaceId, role, seat_intent: seatIntent }),
+        body: JSON.stringify({ workspace_id: workspaceId, role, seat_intent: seatIntent, replace_email: replaceEmail }),
       });
       startedToast(result);
       if (T.getActiveOverlay() === "pool-join") T.closeOverlay();
@@ -421,7 +462,8 @@
 
   joinSheet?.querySelector("[data-close-pool-join]")?.addEventListener("click", () => T.closeOverlay());
   joinForm?.addEventListener("submit", submitJoin);
-  workspaceSelect?.addEventListener("change", () => setStatus("pool-join-status", "", "muted"));
+  workspaceSelect?.addEventListener("change", () => { setStatus("pool-join-status", "", "muted"); renderReplaceOptions(); });
+  replaceSelect?.addEventListener("change", () => { setStatus("pool-join-status", "", "muted"); applyReplaceDefaults(); });
 
   // ---------- 行内操作 ----------
 

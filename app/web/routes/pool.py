@@ -76,6 +76,7 @@ def build_pool_router(get_db) -> APIRouter:
             workspace_id=payload.workspace_id,
             role=payload.role,
             seat_intent=payload.seat_intent,
+            replace_email=payload.replace_email,
         )
         _raise_for(result, "拉入没有启动")
         return result

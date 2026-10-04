@@ -15,3 +15,5 @@ class PoolJoinRequest(BaseModel):
     workspace_id: int
     role: Literal["owner", "member"] = "member"
     seat_intent: Literal["workspace_default", "standard", "premium"] = "workspace_default"
+    # 被替换的子号邮箱；为空表示直接拉入（团队要有空位）
+    replace_email: str = Field(default="", max_length=255)

@@ -161,7 +161,7 @@ _ONBOARD_PLAN = (
 OPERATION_STAGE_PLANS = {
     "onboard": _ONBOARD_PLAN,
     "replenish": _ONBOARD_PLAN,
-    "pool_join": _ONBOARD_PLAN[:-1] + (
+    "pool_join": (("kicked", ("kicking", "official_removed", "kicked")),) + _ONBOARD_PLAN[:-1] + (
         ("pool_finish", ("pool_finish",)),
         ("pool_label", ("pool_label",)),
         _ONBOARD_PLAN[-1],

@@ -87,8 +87,8 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 ### 备用号池（`application/standby_pool.py`、`pool_join.py`）
 
 - 表 `standby_pool_entries`（模型 `persistence/models/pool.py`）；接口 `web/routes/pool.py`（`/api/pool*`，schema 在 `web/schemas/pool.py`）；页面 `/resources/pool`（`templates/pool.html`、`static/js/pool.js`、`static/css/pool.css`）。
-- `standby_pool.py`：导入、HME 收件检测（`probe_account_mailbox`）、打 / 恢复 `GPT号池` 标签、列表（按任务结果纠偏状态并算 `can_join / can_continue / can_remove`）、推荐团队（只读本地数据）、移出、拉入成功后 `apply_team_label`。HME 调用用 `asyncio.to_thread`。
-- `pool_join.py`：`start_pool_join` / `continue_pool_join` 预检后建 `pool_join` 任务（占全局浏览器槽 + 团队锁，禁止通用重试，重启后标待人工），后台调 `onboard.invite_and_onboard(login_existing=True, mailbox=…)`，成功后步骤 `pool_finish`（复用 `finish_after_authorization` 推送 + 计数）、`pool_label`（改团队标签），回写条目状态。
+- `standby_pool.py`：导入、HME 收件检测（`probe_account_mailbox`）、打 / 恢复 `GPT号池` 标签、列表（按任务结果纠偏状态并算 `can_join / can_continue / can_remove`）、推荐团队（只读本地数据；席位未知不挡，每个候选团队带上次同步快照里的非母号已入组成员 `members`，含继承用的角色 / 席位）、移出、拉入成功后 `apply_team_label`。HME 调用用 `asyncio.to_thread`。
+- `pool_join.py`：`start_pool_join` / `continue_pool_join` 预检后建 `pool_join` 任务（占全局浏览器槽 + 团队锁，禁止通用重试，重启后标待人工），可带 `replace_email`：后台先 `rotate.kick_to_standby(reason="pool_replace")` 移出该子号（步骤 `official_removed`，远端只暂停不删；回执显示空位计费时停在待人工），再调 `onboard.invite_and_onboard(login_existing=True, mailbox=…)`，成功后步骤 `pool_finish`（复用 `finish_after_authorization` 推送 + 计数）、`pool_label`（改团队标签），回写条目状态。继续时读上一任务的 `replace_email`，已移出的不重踢。
 - `login_existing=True` 模式：强制 playwright + legacy 流程；不领 HME、不设密码、不走 Cloudflare，邀请邮件和验证码从 HME 收件读；浏览器 `run_browser_onboard(mode="login")` 只登录，识别到创建账号 / about-you 页返回 `account_not_registered`。不传新参数时原有邀请 / 补位 / 轮转路径不变。
 
 ### HME 领号（`application/resources/hme.py`）
