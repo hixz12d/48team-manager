@@ -41,7 +41,8 @@ def mailbox_readiness_snapshot(account: Account) -> dict[str, Any]:
 async def _find_hme_owner(cfg: HmeConfig, alias: str, preferred_id: str = "") -> tuple[str, list[dict[str, Any]]]:
     accounts = await asyncio.to_thread(hme_client.list_accounts, cfg)
     candidates = accounts
-    wanted = str(preferred_id or cfg.account_id or "").strip()
+    # 设置里的 hme_account_id 只管领号；读已有别名时没绑定就搜全部已接入账号
+    wanted = str(preferred_id or "").strip()
     if wanted:
         candidates = [item for item in accounts if str(item.get("id") or "") == wanted]
         if not candidates:
