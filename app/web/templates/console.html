@@ -161,6 +161,7 @@
             <span id="account-selection-count" aria-live="polite">已选 0 个</span>
             <button type="button" class="button" id="account-selection-clear">取消选择</button>
             <button type="button" class="button" id="account-selection-export">导出 Codex JSON</button>
+            <button type="button" class="button" id="account-selection-codex-rs">导入 codex-rs</button>
             <button type="button" class="button danger" id="account-selection-delete">永久删除本地档案</button>
           </div>
           <div class="table-scroll">
@@ -382,6 +383,51 @@
                     <label>API Key<input name="sub2api_api_key" type="password" autocomplete="new-password" data-secret="sub2api_api_key"></label>
                     <label>管理员邮箱<input name="sub2api_admin_email" autocomplete="off"></label>
                     <label>管理员密码<input name="sub2api_admin_password" type="password" autocomplete="new-password" data-secret="sub2api_admin_password"></label>
+                  </div>
+                </div>
+              </article>
+              <article class="panel service-card" data-service="codex_rs">
+                <div class="panel-header">
+                  <div>
+                    <span class="panel-title">codex-rs</span>
+                    <p class="service-meta muted" data-service-meta="codex_rs">未检测</p>
+                  </div>
+                  <div class="panel-actions">
+                    <button class="button" type="button" data-probe="codex_rs">检测</button>
+                    <button class="button ghost" type="button" data-edit-toggle="codex_rs">编辑</button>
+                  </div>
+                </div>
+                <div class="panel-body stack">
+                  <p class="service-summary muted" data-service-summary="codex_rs">同机部署的 codex-proxy-rs。导入时带上刷新令牌，之后由 codex-rs 续期。管理 Key 留空则不修改。</p>
+                  <fieldset id="codex-rs-push-target" class="codex-rs-push-target">
+                    <legend>授权后推送到</legend>
+                    <div class="codex-rs-choice-row">
+                      <label class="check"><input type="radio" name="codex_rs_push_target" value="sub2api" checked>Sub2API</label>
+                      <label class="check"><input type="radio" name="codex_rs_push_target" value="codex_rs">codex-rs</label>
+                    </div>
+                  </fieldset>
+                  <p class="hint">只影响重新授权后的推送（账号页 / 团队授权面板、注册插件接入）；轮转、号池仍推 Sub2API。</p>
+                  <section class="sub2api-push-defaults stack" aria-labelledby="codex-rs-defaults-title">
+                    <div class="panel-header">
+                      <strong id="codex-rs-defaults-title">导入参数（只对首次导入的号生效）</strong>
+                      <button type="button" class="button compact" id="codex-rs-options-refresh">刷新分组</button>
+                    </div>
+                    <fieldset id="codex-rs-group-field" class="sub2api-default-groups">
+                      <legend>分组（可多选）</legend>
+                      <div id="codex-rs-groups" class="sub2api-group-options"></div>
+                    </fieldset>
+                    <label>并发上限<input name="codex_rs_concurrency" type="number" min="1" max="4294967295" step="1" placeholder="继承 codex-rs 全局设置"></label>
+                    <p class="hint">留空表示继承 codex-rs 全局设置。</p>
+                    <label>权重<input name="codex_rs_weight" type="number" min="1" max="100" step="1" value="1" required></label>
+                    <label class="check"><input type="checkbox" name="codex_rs_enabled" checked>导入后启用</label>
+                    <p id="codex-rs-proxy-status" class="hint">可用代理读取中…</p>
+                    <p id="codex-rs-options-status" class="hint" role="status">读取分组中…</p>
+                  </section>
+                  <div class="service-edit" data-edit-panel="codex_rs" hidden>
+                    <label>服务地址<input name="codex_base_url" autocomplete="off" placeholder="http://host.docker.internal:8180"></label>
+                    <p class="hint">同机部署填 http://host.docker.internal:8180。更改地址时必须重新填写管理员 API Key。</p>
+                    <label>管理员 API Key<input name="codex_admin_key" type="password" autocomplete="new-password" data-secret="codex_admin_key"></label>
+                    <p class="hint">在 codex-rs 后台 系统设置 → 安全与访问 生成；留空不修改。</p>
                   </div>
                 </div>
               </article>
@@ -730,6 +776,7 @@
   <script src="{{ static_url('js/accounts-view.js') }}"></script>
   {% if page == 'accounts' %}<script src="{{ static_url('js/auto-rotation.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/sub2api-defaults.js') }}"></script>
+  <script src="{{ static_url('js/codex-rs-settings.js') }}"></script>
   <script src="{{ static_url('js/sub2api-state-view.js') }}"></script>
   {% if page == 'overview' %}<script src="{{ static_url('js/team-board.js') }}"></script>{% endif %}
   <script src="{{ static_url('js/app.js') }}"></script>

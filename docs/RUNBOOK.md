@@ -100,6 +100,10 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 | 暂停 `phone_back_missing` / `phone_relay_error` | 页面上找不到"换号码"入口 / 接码接口不可用、选不到 +1、已绑号无记录 | 人工回到号码输入页或手动完成手机验证后点继续；本机包提示"未启用接码接口"时检查服务端版本和 `EXTENSION_API_TOKEN` |
 | 号池拉入失败 `account_not_registered` | 该邮箱没注册过 ChatGPT，登录进了创建账号页（也可能是 OpenAI 页面改版导致误判） | 本地先注册好再"继续"；确认已注册仍报错时查 `browser/onboard.py` 的 login 模式判断 |
 | 号池拉入失败 `mail_missing` / 邮箱不可读 | HME 地址 / 服务 token 未配置，或别名不在 icloud-hme 已接入账号下 | 设置页配好 HME 后在号池页"重新检测" |
+| codex-rs 检测失败 `codex_unreachable` / `codex_auth_failed` | 容器连不到宿主机 8180 / 管理 Key 错 | 容器内跑 `docker exec team48-manager python -c "import urllib.request;print(urllib.request.urlopen('http://host.docker.internal:8180/healthz').status)"` 应输出 `204`，不通查 UFW 是否放行 docker 网段访问 8180；Key 错就在 codex-rs 后台重新生成后填入 |
+| 导入 codex-rs 报 `no_proxy` | codex-rs 里没有最近测试通过的代理 | 到 codex-rs 后台测试代理后再导入，不直连 |
+| 导入报 `sub2api_bound` / 推送报 `codex_rs_bound` | 一个号只能进一边 | 先在对应一边删号；从 codex-rs 换回 Sub2API 需删号后手动重新授权 |
+| codex-rs 绑定状态"结果不明" | 导入超时 / 5xx / 读回核对失败 | 直接再点导入（codex-rs 按身份覆盖，可安全重试） |
 
 ## 常用操作
 
@@ -109,6 +113,7 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 - **安装运行器用的 Chromix 153**：从 https://github.com/xiaozhou26/Chromix/releases 的 `v153.0.8010.36` 下载 `chromix-linux-x64.zip`（`lwhx/Chromix` 是 fork，没有发布包），SHA256 必须是 `8a9cdc3692a82e84ca62cbd04025b2e11b3aafd47d86fdfa9d13f48e497454ef`，解压到 `/opt/team48/data/browsers/chromix153/`（得到 `chromix/` 目录）。`.env` 设 `RUNNER_BROWSER_EXECUTABLE=/app/data/browsers/chromix153/chromix/chromix`（启动脚本，会加载包内字体；不要直接指 `chrome`），其余 `RUNNER_*` 见 `deploy.env.example`，重建生效。
 - **浏览器环境自检**：设置页"浏览器环境"卡片，选团队（取母号代理）和平台，点自检；不注册、不碰官方团队，占用全局浏览器槽。先按 linux / windows 各跑一次，按结果定 `RUNNER_FINGERPRINT_PLATFORM` / `RUNNER_GPU_MODE`（只影响新建档案）。服务器没有 GPU 时 Chromix 会强制显示真实软件渲染型号，`preset` 可能不生效（结果里 `gpu_preset_ignored`）。服务重启会把进行中的自检标失败（`runner_interrupted`），重新发起即可。
 - **切换轮转注册方式**：`/opt/team48/.env` 改 `ROTATION_SIGNUP_RUNNER=extension`（回退改 `playwright`）后重建。前提：自检通过；设置里 Cloudflare 邮箱地址必须是插件内置的 `https://apimail.xiaozhudf2026.foo`，否则报 `runner_mailbox_invalid`。运行目录 `data/runner-runs/` 结束即删；容器重启会丢失进行中的运行，任务停在待人工，按"继续轮转"处理。
+- **接入 codex-rs**：在 codex-rs 后台「系统设置 → 安全与访问」生成管理员 API Key（只显示一次），Team48 设置页 codex-rs 卡片填地址 `http://host.docker.internal:8180` 和 Key，点检测。第一次真实导入用不重要的号，导入后在 codex-rs 后台确认有账号、有 RT、代理已绑定。
 - **启用插件接口**：`python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成令牌 → 写 `/opt/team48/.env` 的 `EXTENSION_API_TOKEN` → 重建 → 本机重新打包插件。
 - **打包插件（本机）**：`python scripts/build_signup_extension.py --local-config --unpack`（只用本机 `private-config.mjs`）；首次不带 `--local-config` 会经 SSH 只读 VPS 上的 Cloudflare 配置。`--team48-token <令牌>` / `--no-team48` 写入 / 移除令牌（带令牌才会接码）；`--hme-token <ICLOUD_HME_SERVICE_TOKEN> --hme-account acc_...` / `--no-hme` 让本机包改从 iCloud（经 icloud-hme）读邮件验证码 / 改回 Cloudflare。产物在 `dist/`（gitignore），重新加载后确认插件版本号。安装说明见 `extensions/chatgpt-signup/README.md`。
 - **单席位补位（本机）**：`python -m scripts.signup_one --workspace-id N --role member` 只显示预检，加 `--confirm` 才执行；短信用 `--sms-stdin` 从标准输入传，不写在命令参数里。

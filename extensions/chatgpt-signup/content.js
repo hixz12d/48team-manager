@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.8.2';
+  const VERSION = '0.8.4';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -1065,8 +1065,7 @@
     // Input/change validation can fire submit without any actual Continue click.
     // Let the normal mode continue once the complete form has stayed idle; review
     // will show its manual-submit prompt, never silently authorize a first click.
-    // The phone page counts too: its SMS/WhatsApp toggle may submit the form without a request.
-    if ((continueStage(currentStage) || currentStage === 'phone') && job.mode !== 'manual' && !submitted.loadingSeen && !submitted.control && !pendingClick &&
+    if (continueStage(currentStage) && job.mode !== 'manual' && !submitted.loadingSeen && !submitted.control && !pendingClick &&
         clock() - submitted.at >= SUBMISSION_WAIT && submitted.values === formValues(form) &&
         validationSnapshot(form).size === 0 && enabled(continueButton(form))) {
       requireForeground();
@@ -1078,7 +1077,7 @@
     // (reusing the same values and OTP). Auto mode only; never while typing, loading or after our own click.
     const stallKey = `${currentStage}:${location.pathname}`;
     const submitButton = continueButton(form);
-    if (!filling && (continueStage(currentStage) || currentStage === 'phone') && (job.mode || 'auto') === 'auto' && submitted.loadingSeen && !submitted.control && !pendingClick &&
+    if (!filling && continueStage(currentStage) && (job.mode || 'auto') === 'auto' && submitted.loadingSeen && !submitted.control && !pendingClick &&
         (stallReleases.get(stallKey) || 0) < STALL_RELEASES && !loading && !loadingNow(form, submitButton) &&
         clock() - Math.max(submitted.at, submitted.busyAt || 0) >= STALL_WAIT &&
         submitted.values === formValues(form) && !incomplete && validationSnapshot(form).size === 0 && enabled(submitButton)) {
@@ -1280,7 +1279,6 @@
   const SMS_WRONG = ['incorrect code', 'invalid code', 'wrong code', 'code is incorrect', 'code is invalid', 'code is not valid',
     'code was incorrect', 'code you entered', 'code has expired', 'code expired', '验证码错误', '验证码无效', '验证码不正确', '验证码已过期'];
   const PHONE_SUBMIT = /^(continue|next|verify|send|send code|send (a )?text( message)?|send sms|text me( a code)?|继续|下一步|验证|发送|发送验证码|发送短信)$/i;
-  const SMS_CHOICE = /^(text|text message|sms|text me( a code)?|send (a )?text( message)?|send sms|send (code )?(via|by) (text|sms)|短信|短信验证码?|发送短信)$/i;
   const PHONE_BACK = /^(change|edit|back|go back|change (phone )?number|edit (phone )?number|use (a )?different (phone )?number|try (a )?different (phone )?number|use another (phone )?number|返回|更换(手机)?号码|更改(手机)?号码|修改(手机)?号码|换个号码|使用其他号码)$/i;
   const hasAny = (text, tokens) => tokens.some(token => text.includes(token));
   // Visible page messages without control labels: "Use a different number" as a link is not an error.
@@ -1300,46 +1298,13 @@
     hasAny(text, PHONE_RECENT) ? 'recently_used' : hasAny(text, PHONE_RISK) ? 'risk' : hasAny(text, PHONE_INVALID) ? 'invalid' : '';
   const plainText = node => (node.innerText || node.getAttribute('aria-label') || node.textContent || '')
     .replace(/[^\p{L}\p{N}+()\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-  const US_OPTION = /^(us )?united states( \(\+1\)| \+1)?$|^\+1 united states$/i;
-  const countryIsUS = text => !/canada/i.test(text) && (/united states|(^|\s)us(\s|$)|\(\+1\)|(^|\s)\+1(?!\d)/i.test(text));
-  // The page's country picker next to the number field: a native select or a "+1" / "United States" button.
-  const countryControl = field => {
-    for (const scope of [field.closest('form'), document].filter(Boolean)) {
-      const select = [...scope.querySelectorAll('select')].find(node => visible(node) &&
-        [...node.options].some(option => US_OPTION.test(plainText(option)) || /\+\s?1(?!\d)/.test(option.textContent)));
-      if (select) return {select, text: plainText(select.selectedOptions[0] || select)};
-      const picker = [...scope.querySelectorAll('button,[role="combobox"],[aria-haspopup="listbox"]')].find(node => node !== field &&
-        visible(node) && !node.closest('#team48-signup-progress') && /\+\d{1,4}(?!\d)|united states|country|国家|地区/i.test(plainText(node)));
-      if (picker) return {button: picker, text: plainText(picker)};
-    }
-    return null;
-  };
-  async function ensureUSCountry(field) {
-    let control = countryControl(field);
-    if (!control) return 'none';
-    if (countryIsUS(control.text)) return 'us';
-    if (control.select) {
-      const option = [...control.select.options].find(item => !item.disabled && US_OPTION.test(plainText(item)));
-      if (option) await typeValue(control.select, option.value);
-    } else if (await clickControl(control.button)) {
-      await rest(400, 700);
-      const search = first('input[type="search"],input[placeholder*="search" i],input[aria-autocomplete="list"]');
-      if (search && search !== field) { await typeValue(search, 'United States'); await rest(500, 800); }
-      const option = all('[role="option"],[role="menuitem"],li,button')
-        .filter(node => !node.closest('#team48-signup-progress') && US_OPTION.test(plainText(node)))[0];
-      if (option) { await clickControl(option); await rest(400, 700); }
-    }
-    control = countryControl(field);
-    if (control && countryIsUS(control.text)) return 'us';
-    await pause('号码输入页的国家/地区无法切换到 United States (+1)，请手动选好后点继续。', 'phone_relay_error');
-    return null;
-  }
   // Phone fields reformat while typing ("(555) 123-…"), so success is judged on the digits only.
-  async function typePhone(original, value, national) {
+  // `force` clears and retypes even a field that already ends with the number.
+  async function typePhone(original, value, national, force = false) {
     const resolve = fieldRef(original);
     const digits = () => String(resolve()?.value || '').replace(/\D/g, '');
     const done = () => digits().endsWith(national) && digits().length <= national.length + 1;
-    if (done()) return true;
+    if (!force && done()) return true;
     const active = async () => {
       if (userEditing || !(await send('state')).active || userEditing) throw new StopStep();
       requireForeground();
@@ -1381,28 +1346,74 @@
     await rest(300, 500);
     return done();
   }
-  // A Text/SMS channel toggle is selected now; a "Send text" style button is returned as the button that submits.
-  async function chooseSms(field) {
-    const scope = field.closest('form') || document;
-    const label = node => node.matches('input') ? [...(node.labels || [])].map(item => item.innerText).join(' ') || node.value : plainText(node);
-    const choice = [...scope.querySelectorAll('input[type="radio"],[role="radio"],[role="tab"],label,button,[role="button"]')]
-      .find(node => (visible(node) || node.matches('input[type="radio"]')) && SMS_CHOICE.test(label(node).trim()));
-    if (!choice) return null;
-    // Word boundaries: the "Text Message" toggle is not a "Text me" button.
-    if (choice.matches('button,[role="button"]') && /\bsend\b|\btext me\b|发送/i.test(label(choice))) return choice;
-    const radio = choice.matches('label') ? choice.control : choice;
-    const checked = radio?.checked || ['aria-checked', 'aria-selected', 'aria-pressed'].some(name => choice.getAttribute(name) === 'true') ||
-      ['active', 'checked', 'on'].includes(choice.getAttribute('data-state'));
-    if (!checked) {
-      const target = choice.matches('input') ? [...(choice.labels || [])].find(visible) || choice : choice;
-      const form = field.closest('form'), before = form && submittedForms.get(form);
-      if (await clickControl(target)) await rest(300, 600);
-      // The toggle can fire a DOM submit of its own. Without a spinner it is not the real submission:
-      // drop it so Continue still gets clicked. With one, the page's response decides (error -> next number).
-      const record = form && submittedForms.get(form);
-      if (record && record !== before) { record.flush(); if (!record.loadingSeen) forgetSubmission(form); }
+  // ---- Number page (stage `phone`): fill -> check -> Continue -> judge. A failed number is reported and the
+  // page reloaded for a fresh form. The country is never checked: the page picks it from the area code.
+  const PHONE_RESULT_WAIT = 20000, PHONE_BUSY_WAIT = 40000, PHONE_RELOAD_WAIT = 15000;
+  const PHONE_FAIL_TEXT = {invalid: '不被 OpenAI 接受', recently_used: '刚被用过', risk: '被转到 WhatsApp 或发不出短信',
+    cancelled: '提交后页面没有反应'};
+  const phoneInput = email => all('input[autocomplete="tel"],input[name="phone"],input[type="tel"]')
+    .find(element => element !== email && element.maxLength !== 1 && element.autocomplete !== 'one-time-code' && !/^(code|otp|pin)$/i.test(element.name));
+  const phoneDigits = value => String(value || '').replace(/\D/g, '');
+  const phoneScope = field => field?.closest('form') || document;
+  // Hidden form fields: `channel` is the delivery method (sms / whatsapp), `phoneNumber` the full E.164 number.
+  const phoneChannel = field => field ? phoneScope(field).querySelector('input[name="channel"]')?.value : undefined;
+  const phoneShown = (field, reply) => {
+    const hidden = phoneScope(field).querySelector('input[name="phoneNumber"]');
+    return hidden ? phoneDigits(hidden.value) === phoneDigits(reply.number) : phoneDigits(field.value).endsWith(reply.national);
+  };
+  const phoneSubmitButton = field => {
+    const scope = phoneScope(field);
+    return [...scope.querySelectorAll('button[type="submit"]')].find(visible) || button(PHONE_SUBMIT, scope);
+  };
+  // Spinner, or a Continue that went disabled after the click: the page is still working on the number.
+  const phoneBusy = field => {
+    const form = field?.closest('form');
+    if (!form) return false;
+    const target = phoneSubmitButton(field);
+    return loadingNow(form, target) || (!!target && !enabled(target));
+  };
+  // The re-rendered form keeps the number in its hidden field; give it a moment to catch up.
+  async function phoneSettled(reply) {
+    for (let waited = 0; ; waited += 250) {
+      const field = phoneInput(emailField());
+      if (field && phoneShown(field, reply)) return true;
+      if (waited >= 1500) return false;
+      await sleep(250);
     }
-    return null;
+  }
+  let phoneReloadAt = 0, phoneReloads = 0, phoneReloadedId = 0;
+  // The page's answer to this number, or '' while undecided: an error that was not there before the click,
+  // or the same error once the page moved the number off SMS (e.g. the previous number's WhatsApp notice).
+  function phoneVerdict(field, phone) {
+    const before = phone.snapshot?.step === 'number' ? phone.snapshot.outcome : '';
+    const now = phoneOutcome(phoneMessages(), false);
+    const channel = phoneChannel(field);
+    return now && !phoneBusy(field) && (now !== before || (channel !== undefined && channel !== 'sms')) ? now : '';
+  }
+  // Report the number, then reload the page for a fresh form; the reloaded page takes the next number.
+  async function phoneFail(phone, outcome) {
+    await send('phone-result', {phoneId: phone.id, outcome});
+    const state = await send('state');
+    if (!state.active) { renderProgress(state); return; }
+    if (state.phone?.id === phone.id) return pause('换号失败：插件没能放弃当前号码，请刷新页面后点继续。', 'phone_relay_error');
+    renderProgress({...state, message: `尾号 ${phone.tail} ${PHONE_FAIL_TEXT[outcome] || '不可用'}，正在刷新页面换号`});
+    // One reload per number.
+    if (phoneReloadedId === phone.id) return;
+    phoneReloadedId = phone.id; phoneReloads = 1; phoneReloadAt = clock();
+    location.reload();
+  }
+  // Still on the old page after location.reload(): try once more, then pause.
+  async function phoneReloading() {
+    if (clock() - phoneReloadAt < PHONE_RELOAD_WAIT) {
+      renderProgress({...job, message: '正在刷新页面换号，请稍候。'});
+      return;
+    }
+    if (phoneReloads >= 2) {
+      phoneReloadAt = 0;
+      return pause('已刷新手机页两次，页面仍没有重新加载，请手动刷新后点继续。', 'unknown_page');
+    }
+    phoneReloads++; phoneReloadAt = clock();
+    location.reload();
   }
   // Local to this page: what the page said when this number / code was submitted.
   let phoneSnapshot = null, phoneTraced = '', backSince = 0, backClickedAt = 0, phoneWaitSince = 0, codeWaitSince = 0;
@@ -1464,6 +1475,8 @@
     if (await clickControl(back)) backClickedAt = clock();
   }
   async function phoneNumberStep(field) {
+    // Submitted: judge first, the field may be gone for a moment while the page works.
+    if (job.phone?.submitted && !job.phone.bound && job.mode !== 'review') return phoneJudge(field, job.phone);
     if (!field) {
       phoneWaitSince ||= clock();
       renderProgress({...job, message: '等待号码输入框出现。'});
@@ -1472,29 +1485,116 @@
     }
     phoneWaitSince = 0;
     if (job.mode === 'review' && job.reviewSteps?.[`phone:${location.pathname}`] && job.phone) {
+      // The person clicks Continue; a new error on this number still takes the next one.
+      const verdict = !job.phone.bound && phoneVerdict(field, job.phone);
+      if (verdict) return phoneFail(job.phone, verdict);
       renderProgress({...job, message: `已填写尾号 ${job.phone.tail} 的号码，请核对后点击网页的按钮发送短信。`});
       return;
     }
-    const resolve = fieldRef(field);
     const reply = await send('phone-number', {bound: false});
     if (!reply.number) { if (!reply.paused) renderProgress(await send('state')); return; }
-    if (!(await claim('phone', true)) || !resolve()) return;
-    const country = await ensureUSCountry(field);
-    if (!country || !resolve()) return;
+    if (!(await claim('phone', true)) || !field.isConnected) return;
+    renderProgress(await send('state'));
     // Without a country picker, a field that shows "+" takes the full E.164 number.
-    const full = country === 'none' && /^\+/.test(`${field.placeholder || ''}${field.value || ''}`.trim());
-    if (!(await typePhone(resolve(), full ? reply.number : reply.national, reply.national))) {
-      return pause('手机号输入未完成，请检查网页后继续。', 'fill_incomplete');
+    const picker = phoneScope(field).querySelector('select,[aria-haspopup="listbox"],[role="combobox"]');
+    const value = !picker && /^\+/.test(`${field.placeholder || ''}${field.value || ''}`.trim()) ? reply.number : reply.national;
+    if (!(await typePhone(field, value, reply.national))) return pause('手机号输入未完成，请检查网页后继续。', 'fill_incomplete');
+    // The area code may switch the country and re-render the form; check what the page will submit.
+    if (!(await phoneSettled(reply))) {
+      const again = phoneInput(emailField());
+      if (!again || !(await typePhone(again, value, reply.national, true)) || !(await phoneSettled(reply))) {
+        return pause('号码框内容与领取的号码不一致，请检查后继续。', 'fill_incomplete');
+      }
     }
-    // Before the SMS toggle: clicking it may already submit, and its error must count as new.
+    if (!(await phoneSmsChannel())) return;
+    // What the page already says before the click; only a different message, or the same one with the
+    // number moved off SMS, is this number's answer. Kept by the worker across a reload.
     await rememberPhoneSnapshot({id: reply.id, step: 'number', outcome: phoneOutcome(phoneMessages(), false)});
-    const preferred = await chooseSms(resolve() || field);
-    if (!resolve()) return;
+    if (job.mode === 'review') {
+      job.reviewSteps ||= {};
+      job.reviewSteps[`phone:${location.pathname}`] = true;
+      await send('review-ready', {stage: 'phone'});
+      renderProgress({...job, message: `已填写尾号 ${reply.tail} 的号码，请核对后点击网页的按钮发送短信。`});
+      return;
+    }
     await trace('filled', {stage: 'phone'});
-    const digits = () => String(resolve()?.value || '').replace(/\D/g, '');
-    const sent = await submit(resolve(), 'phone', () => !resolve() || digits().endsWith(reply.national) ? '' :
-      '号码框内容与领取的号码不一致，请检查后继续。', preferred);
-    if (sent === true) await send('phone-submitted', {phoneId: reply.id, step: 'number'});
+    renderProgress({...job, message: `已填好尾号 ${reply.tail}，正在点 Continue`});
+    if (!(await phoneContinue(reply))) return;
+    await send('phone-submitted', {phoneId: reply.id, step: 'number'});
+    renderProgress({...job, message: `已提交尾号 ${reply.tail}，等待短信验证码页`});
+  }
+  // `channel` other than sms (e.g. WhatsApp preselected): pick Text Message once. Toggling it may fire a
+  // DOM submit; the number page never reads submit events, so that is not taken as the number submitted.
+  async function phoneSmsChannel() {
+    let field = phoneInput(emailField());
+    const channel = phoneChannel(field);
+    if (channel === undefined || channel === 'sms') return true;
+    const radio = phoneScope(field).querySelector('input[type="radio"][value="sms"]');
+    const target = radio && ([...(radio.labels || [])].find(visible) || radio.closest('label'));
+    if (target) await clickControl(target);
+    await sleep(500);
+    field = phoneInput(emailField());
+    if (phoneChannel(field) === 'sms') return true;
+    await pause('页面不允许短信方式（发送方式不是 Text Message），请检查网页后继续。', 'phone_relay_error');
+    return false;
+  }
+  // Click Continue of the form that holds the number. The button is looked up again right before the
+  // click: a form re-rendered for the area code brings a new one, which is fine while the number still checks.
+  // The worker's per-page click count (claim / finish-click, limit 2) keeps this from looping.
+  async function phoneContinue(reply) {
+    const current = () => {
+      const field = phoneInput(emailField());
+      return field && phoneShown(field, reply) ? {field, target: phoneSubmitButton(field)} : null;
+    };
+    const deadline = clock() + 10000;
+    let found, point;
+    for (;;) {
+      if (!(await send('state')).active || userEditing) return false;
+      requireForeground();
+      found = current();
+      if (!found) { await pause('号码框内容与领取的号码不一致，请检查后继续。', 'fill_incomplete'); return false; }
+      point = found.target && enabled(found.target) ? hitPoint(found.target) : null;
+      if (point) break;
+      // Off screen: scroll once per pass; a re-rendered button is simply looked up again.
+      if (found.target && enabled(found.target)) {
+        try { await scrollToControl(found.target, clock() + 1500); } catch (error) { if (!(error instanceof RetryStep)) throw error; }
+      }
+      if (clock() > deadline) {
+        await pause(found.target ? '手机页的 Continue 按钮 10 秒内一直不可点，请检查网页后继续。' : '手机页找不到 Continue 按钮，请检查网页后继续。',
+          found.target ? 'button_unavailable' : 'no_submit_button');
+        return false;
+      }
+      await sleep(250);
+    }
+    if (trustedInput) { await own(() => send('input-move', {x: point.x, y: point.y})); await rest(120, 240); }
+    const reservation = await send('claim', {stage: 'phone', reserve: true});
+    if (!reservation.granted) return false;
+    let sent = false;
+    try {
+      if (!(await send('state')).active || userEditing) return false;
+      requireForeground();
+      found = current();
+      point = found?.target && enabled(found.target) ? hitPoint(found.target) : null;
+      if (!point) return false;
+      // A click that may have submitted before the page navigated keeps its reservation.
+      sent = true;
+      if (trustedInput) sent = !!(await own(() => send('input-click', {x: point.x, y: point.y}))).sent;
+      else { showClick(point); found.target.click(); }
+      return sent;
+    } finally {
+      await send('finish-click', {stage: 'phone', token: reservation.token, sent});
+    }
+  }
+  // Submitted and still on the number page: wait for the SMS page, a new error, or the time limit.
+  async function phoneJudge(field, phone) {
+    const waited = phone.sinceSubmit || 0;
+    const verdict = phoneVerdict(field, phone);
+    if (verdict) return phoneFail(phone, verdict);
+    if (waited < PHONE_RESULT_WAIT || (phoneBusy(field) && waited < PHONE_BUSY_WAIT)) {
+      renderProgress({...job, message: `已提交尾号 ${phone.tail}，等待短信验证码页（已等 ${Math.round(waited / 1000)} 秒）`});
+      return;
+    }
+    return phoneFail(phone, 'cancelled');
   }
   async function phoneCodeStep(anchor, boxes) {
     if (!job.phone) {
@@ -1547,13 +1647,16 @@
     unknownSince = clock();
     if (phoneTraced !== path) { phoneTraced = path; await trace('phone'); }
     if (stage === 'phone') { backSince = 0; backClickedAt = 0; }
+    if (stage === 'phone' && phoneReloadAt) return phoneReloading();
     if (trustedInput && clock() < readUntil) { renderProgress({...job, message: '页面已打开，稍候确认当前表单。'}); return; }
+    // The number page judges its own result (phoneJudge); the rest is the SMS code page.
+    if (stage === 'phone') return phoneNumberStep(field);
     if (await phoneRejected(stage)) return;
     if (await waitForClick(stage)) return;
-    if (stage === 'phone_otp' && job.phoneBack) return phoneGoBack();
-    const form = (stage === 'phone' ? field : anchor)?.closest('form');
+    if (job.phoneBack) return phoneGoBack();
+    const form = anchor?.closest('form');
     if (form && await waitForSubmission(form)) return;
-    return stage === 'phone' ? phoneNumberStep(field) : phoneCodeStep(anchor, boxes);
+    return phoneCodeStep(anchor, boxes);
   }
 
   let readUntil = 0, nextDrift = 0;
@@ -1616,7 +1719,7 @@
       submittedForms = new WeakMap(); userEditing = false; pendingClick = null; stallReleases = new Map();
       resumeCount = job.resumeCount || 0;
       entryWaitSince = 0; homeSince = 0; sessionErrors = 0;
-      backSince = 0; backClickedAt = 0; phoneWaitSince = 0; codeWaitSince = 0;
+      backSince = 0; backClickedAt = 0; phoneWaitSince = 0; codeWaitSince = 0; phoneReloadAt = 0;
     }
     renderProgress(job);
     if (job.active && job.mode !== 'manual' && trustedInput === null) {
@@ -1647,8 +1750,10 @@
     const phone = all('input[autocomplete="tel"],input[name="phone"],input[type="tel"]')
       .find(element => element !== email && element.maxLength !== 1 && element.autocomplete !== 'one-time-code' && !/^(code|otp|pin)$/i.test(element.name));
     const phonePage = PHONE_PATH.test(path) || !!phone ||
-      // A code form right after this job submitted a number is the SMS step, whatever its path.
-      (!!job.phone?.submitted && !job.phone.codeSubmitted && (!!otp || boxes.length === 6) && !/email-verification/.test(path));
+      // A code form while this job holds a number is the SMS step, whatever its path; also when the
+      // person clicked Continue on the number page, so the plugin never saw the number submitted.
+      (!!job.phone && !job.phone.codeSubmitted && (!!otp || boxes.length === 6) && !/email-verification/.test(path)) ||
+      ((!!otp || boxes.length === 6) && /check your phone|查看(你|您)的手机/.test(text) && !/email-verification/.test(path));
     // Phone relay: number form -> phone, SMS code form -> phone_otp (never the email code step).
     const relay = phonePage && !managed && job.phoneRelay === true;
     const stage = !relay ? pageStage : phone ? 'phone' :
@@ -1791,7 +1896,7 @@
     catch (error) {
       try {
         if (error instanceof RetryStep) {
-          if (++retryCount >= 3) await pause('输入框持续重绘或无法聚焦，请检查页面后继续。', 'redraw');
+          if (++retryCount >= 3) await pause(`输入框持续重绘或无法聚焦（${error.message || '控件已更新'}），请检查页面后继续。`, 'redraw');
         } else if (error instanceof StopStep) retryCount = 0;
         else if (job?.active) await pause(error.message, 'error');
       } catch { /* extension reloaded */ }

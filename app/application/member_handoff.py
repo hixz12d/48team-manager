@@ -104,8 +104,13 @@ async def finish_after_authorization(
     token_sync: dict[str, Any] | None = None,
     push_sub2api: bool = False,
     count_switch: bool = False,
+    push_target: str = "sub2api",
 ) -> dict[str, Any]:
-    """Run the requested follow-ups once authorization has succeeded. Never raises."""
+    """Run the requested follow-ups once authorization has succeeded. Never raises.
+
+    ``push_sub2api`` means "push after authorization"; ``push_target`` ("sub2api" / "codex_rs")
+    picks the destination. Results go to followups["sub2api"] or followups["codex_rs"].
+    """
     if not push_sub2api and not count_switch:
         return {}
     account = await db.get(Account, int(account_id))
@@ -117,6 +122,7 @@ async def finish_after_authorization(
     member = await _joined_membership(db, workspace.id, account.id) if workspace is not None else None
     mismatch = token_workspace_mismatch(account, workspace)
     followups: dict[str, Any] = {}
+    push_key = "codex_rs" if push_target == "codex_rs" else "sub2api"
     from app.persistence.models.operations import Operation
     from app.application.operations import unpack_input
     roots = await db.scalars(select(Operation).where(
@@ -130,7 +136,7 @@ async def finish_after_authorization(
         if normalize_email(unpack_input(root.input_json).get("replacement_email")) == account.email:
             deferred = _step(None, "授权已保存，原轮转会接着完成推送、旧号清理和计数",
                              rotation_operation_id=root.public_id, counted=False)
-            return {key: deferred for key, requested in (("sub2api", push_sub2api), ("switch_count", count_switch)) if requested}
+            return {key: deferred for key, requested in ((push_key, push_sub2api), ("switch_count", count_switch)) if requested}
 
     def blocked() -> dict[str, Any] | None:
         if owner:
@@ -141,7 +147,24 @@ async def finish_after_authorization(
             return _step(False, "授权时选择的工作空间不是该团队，已跳过；请重新授权并选择这个团队", error_code="workspace_mismatch")
         return None
 
-    if push_sub2api:
+    if push_sub2api and push_key == "codex_rs":
+        skip = blocked()
+        if skip is not None:
+            followups["codex_rs"] = skip
+        else:
+            from app.application import codex_publish
+            try:
+                imported = await codex_publish.import_account(db, account.id)
+            except Exception as exc:  # noqa: BLE001 - the authorization already succeeded
+                await db.rollback()
+                imported = {"ok": False, "error_code": "import_failed", "message": f"导入失败：{exc}"}
+            if imported.get("ok"):
+                followups["codex_rs"] = _step(True, "已导入 codex-rs，续期由 codex-rs 负责",
+                                              remote_account_id=imported.get("remote_account_id"))
+            else:
+                followups["codex_rs"] = _step(False, str(imported.get("message") or "codex-rs 导入失败"),
+                                              error_code=imported.get("error_code"))
+    elif push_sub2api:
         skip = blocked()
         sync = token_sync or {}
         if skip is not None:

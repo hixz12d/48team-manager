@@ -443,6 +443,7 @@ async def account_reauth_complete(
     workspace_id: int | None = None,
     push_sub2api: bool = False,
     count_switch: bool = False,
+    push_target: str = "sub2api",
 ) -> dict[str, Any]:
     account = await db.get(Account, int(account_id))
     if account is None:
@@ -463,6 +464,7 @@ async def account_reauth_complete(
             token_sync=result.get("sub2api_token_sync"),
             push_sub2api=push_sub2api,
             count_switch=count_switch,
+            push_target=push_target,
         )
     if result.get("ok"):
         from app.application import manual_rotation

@@ -115,6 +115,7 @@ def build_extension_router(get_db, settings: Settings) -> APIRouter:
         db: AsyncSession = Depends(get_db),
     ) -> dict:
         from app.application import console_actions
+        from app.application.settings import load_auth_push_target
         result = await console_actions.account_reauth_complete(
             db,
             payload.account_id,
@@ -123,6 +124,7 @@ def build_extension_router(get_db, settings: Settings) -> APIRouter:
             workspace_id=payload.workspace_id,
             push_sub2api=payload.push_sub2api,
             count_switch=payload.count_switch,
+            push_target=await load_auth_push_target(db),
         )
         if not result.get("ok"):
             return {"ok": False, "error_code": str(result.get("error_code") or "reauth_failed"),

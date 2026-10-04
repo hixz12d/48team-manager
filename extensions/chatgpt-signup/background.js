@@ -44,7 +44,7 @@ async function team48(path, body) {
 // The full number stays in the job and the page; status text shows its last 4 digits only.
 const PHONE_TRIES = 3, SMS_WAIT = 90000, SMS_POLL = 5000;
 const PHONE_REASONS = {invalid: '不被 OpenAI 接受', recently_used: '刚被用过', risk: '收不到短信或被切到 WhatsApp',
-  no_sms: '90 秒内没收到短信', wrong_code: '短信验证码被拒', lease_lost: '已不在本任务名下'};
+  no_sms: '90 秒内没收到短信', wrong_code: '短信验证码被拒', lease_lost: '已不在本任务名下', cancelled: '提交后页面没有反应'};
 let phoneCalls = 0; // relay requests in flight; a new number is only requested when none is
 const phoneRelayEnabled = job => !!job && !job.phoneRelayOff && ['auto', 'review'].includes(job.mode || 'auto') &&
   (RUNNER && job.runner ? job.runner.phonePool === true : !RUNNER && !!TEAM48);
@@ -1076,7 +1076,7 @@ async function contentMessage(message, sender) {
   if (message.type === 'phone-result') {
     // The page rejected the number or the SMS code.
     if (!job.phone || job.phone.id !== Number(message.phoneId) ||
-        !['invalid', 'recently_used', 'risk', 'wrong_code'].includes(message.outcome)) return {};
+        !['invalid', 'recently_used', 'risk', 'wrong_code', 'cancelled'].includes(message.outcome)) return {};
     failPhone(job, message.outcome);
     await saveJob(job);
     return {};

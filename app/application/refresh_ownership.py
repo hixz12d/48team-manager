@@ -19,6 +19,24 @@ async def remote_refresh_owner(db, account_id):
     return owner
 
 
+async def codex_refresh_owner(db, account_id):
+    """codex-rs owns refresh once an import was attempted: the RT may already be there."""
+    from app.persistence.models.codex import CodexBinding
+    binding = await db.get(CodexBinding, account_id, populate_existing=True)
+    if binding is None or not binding.import_attempted:
+        return None
+    return binding
+
+
+async def refresh_owner_kind(db, account_id):
+    """Return "sub2api", "codex_rs", or None when Team48 refreshes locally."""
+    if await remote_refresh_owner(db, account_id) is not None:
+        return "sub2api"
+    if await codex_refresh_owner(db, account_id) is not None:
+        return "codex_rs"
+    return None
+
+
 async def remote_accepts_access_token_only(db, remote_id):
     from sqlalchemy import select
     from app.persistence.models.identity import ExternalBinding

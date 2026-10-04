@@ -332,6 +332,10 @@ async def account_sub2api_push(
             "message": eligibility.get("reason") or "该账号不适用 Sub2API 推送",
             **eligibility,
         }
+    from app.application.refresh_ownership import codex_refresh_owner
+    if await codex_refresh_owner(db, account.id) is not None:
+        return {"ok": False, "error_code": "codex_rs_bound", "outcome": "not_eligible", "status": "failed",
+                "message": "该号已导入 codex-rs，由 codex-rs 续期，不能再推送 Sub2API"}
 
     try:
         workspace, expected_ws = await _resolve_push_context(db, account, workspace_id)

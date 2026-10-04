@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, JSONResponse
 from app.application.codex_export import CodexTransferError, export_document
-from app.web.schemas.accounts import CodexTransferRequest, CodexPushRequest
+from app.web.schemas.accounts import CodexRsImportRequest, CodexTransferRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import console_actions
@@ -78,14 +78,16 @@ def build_api_router(get_db) -> APIRouter:
         from app.application.codex_publish import binding_status
         return JSONResponse(await binding_status(db), headers={"Cache-Control": "no-store"})
 
-    @router.post("/accounts/codex/push")
-    async def push_codex_accounts(payload: CodexPushRequest, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-        from app.application.codex_publish import push_accounts
-        try:
-            result = await push_accounts(db, payload.account_ids, expected_target=payload.expected_target)
-        except CodexTransferError as exc:
-            raise HTTPException(status_code=exc.status, detail={"message": str(exc), "error_code": exc.code}) from None
+    @router.post("/accounts/codex-rs/import")
+    async def import_codex_rs_accounts(payload: CodexRsImportRequest, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application.codex_publish import import_accounts
+        result = await import_accounts(db, payload.account_ids)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.get("/codex-rs/options")
+    async def codex_rs_options(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application.codex_publish import options
+        return JSONResponse(await options(db), headers={"Cache-Control": "no-store"})
 
     @router.post("/accounts/codex/export")
     async def export_codex_accounts(
@@ -749,6 +751,8 @@ def build_api_router(get_db) -> APIRouter:
         _: dict = Depends(require_admin),
         db: AsyncSession = Depends(get_db),
     ) -> dict:
+        from app.application.settings import load_auth_push_target
+        push_target = await load_auth_push_target(db)
         result = await console_actions.account_reauth_complete(
             db,
             account_id,
@@ -757,6 +761,7 @@ def build_api_router(get_db) -> APIRouter:
             workspace_id=payload.workspace_id,
             push_sub2api=payload.push_sub2api,
             count_switch=payload.count_switch,
+            push_target=push_target,
         )
         if result.get("error_code") in {"not_found", "account_not_found"}:
             raise HTTPException(status_code=404, detail=_error_detail(result, "account not found"))
@@ -1234,13 +1239,19 @@ def build_api_router(get_db) -> APIRouter:
         sub2api = await probe_sub2api(db, body) if target in {"all", "sub2api"} else empty
         hme = await probe_hme(db, body) if target in {"all", "hme"} else empty
         mail = await probe_mail(db, body) if target in {"all", "mail"} else empty
-        checked = [item for item in (sub2api, hme, mail) if not item.get("skipped")]
+        if target in {"all", "codex_rs"}:
+            from app.application.codex_publish import probe as probe_codex_rs
+            codex_rs = await probe_codex_rs(db, body)
+        else:
+            codex_rs = empty
+        checked = [item for item in (sub2api, hme, mail, codex_rs) if not item.get("skipped")]
         return {
             "ok": all(bool(item.get("ok")) for item in checked) if checked else False,
             "target": target,
             "sub2api": sub2api,
             "hme": hme,
             "mail": mail,
+            "codex_rs": codex_rs,
         }
 
     @router.get("/runner/selfcheck")

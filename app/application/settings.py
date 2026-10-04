@@ -55,6 +55,74 @@ def _keep_secret(value: str | None) -> bool:
     return (not text) or text == SECRET_MASK
 
 
+AUTH_PUSH_TARGET_KEY = "auth_push_target"
+CODEX_RS_DEFAULTS_KEY = "codex_rs_import_defaults"
+AUTH_PUSH_TARGETS = ("sub2api", "codex_rs")
+
+
+def _default_codex_rs_import() -> dict[str, Any]:
+    return {"group_ids": [], "concurrency_limit": None, "weight": 1, "enabled": True}
+
+
+async def load_auth_push_target(db: AsyncSession) -> str:
+    """Where account-page reauth pushes after success: "sub2api" (default) or "codex_rs"."""
+    value = (await get_setting_value(db, AUTH_PUSH_TARGET_KEY, "") or "").strip()
+    return value if value in AUTH_PUSH_TARGETS else "sub2api"
+
+
+async def load_codex_rs_import_defaults(db: AsyncSession) -> dict[str, Any]:
+    """codex-rs first-import settings; malformed stored values fall back field by field."""
+    result = _default_codex_rs_import()
+    raw = await get_setting_value(db, CODEX_RS_DEFAULTS_KEY)
+    try:
+        stored = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    groups = stored.get("group_ids")
+    if isinstance(groups, list):
+        result["group_ids"] = list(dict.fromkeys(str(item) for item in groups if str(item or "").strip()))
+    limit = stored.get("concurrency_limit")
+    if type(limit) is int and 1 <= limit <= 4294967295:
+        result["concurrency_limit"] = limit
+    weight = stored.get("weight")
+    if type(weight) is int and 1 <= weight <= 100:
+        result["weight"] = weight
+    if isinstance(stored.get("enabled"), bool):
+        result["enabled"] = stored["enabled"]
+    return result
+
+
+async def load_codex_rs_settings(db: AsyncSession) -> dict[str, Any]:
+    return {"push_target": await load_auth_push_target(db), **(await load_codex_rs_import_defaults(db))}
+
+
+async def save_codex_rs_settings(db: AsyncSession, patch) -> None:
+    """Write only the fields present in ``patch`` (a ``CodexRsSettings``)."""
+    if patch.push_target is not None:
+        await upsert_setting(db, AUTH_PUSH_TARGET_KEY, patch.push_target, "授权后推送去向")
+    changed = False
+    current = await load_codex_rs_import_defaults(db)
+    if patch.group_ids is not None:
+        current["group_ids"] = list(dict.fromkeys(item.strip() for item in patch.group_ids if item.strip()))
+        changed = True
+    if patch.concurrency_inherit:
+        current["concurrency_limit"] = None
+        changed = True
+    elif patch.concurrency_limit is not None:
+        current["concurrency_limit"] = int(patch.concurrency_limit)
+        changed = True
+    if patch.weight is not None:
+        current["weight"] = int(patch.weight)
+        changed = True
+    if patch.enabled is not None:
+        current["enabled"] = bool(patch.enabled)
+        changed = True
+    if changed:
+        await upsert_setting(db, CODEX_RS_DEFAULTS_KEY, json.dumps(current), "codex-rs 首次导入默认值")
+
+
 async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
     from app.application.resources.hme import DEFAULT_HME_BASE_URL, load_config as load_hme_config
     from app.application.resources.phones import phone_pool_service
@@ -126,6 +194,7 @@ async def load_console_settings(db: AsyncSession) -> dict[str, Any]:
             "mail": {"configured": mail_configured},
         },
         "sub2api_push": push_defaults.model_dump(),
+        "codex_rs": await load_codex_rs_settings(db),
         "automation": {
             "official_quota_probe": stored_quota,
             "quota_runtime": quota_runtime,
@@ -233,6 +302,8 @@ async def save_console_settings(db: AsyncSession, payload) -> dict[str, Any]:
         from app.application.sub2api_defaults import save_defaults
 
         await save_defaults(db, payload.sub2api_push)
+    if payload.codex_rs is not None:
+        await save_codex_rs_settings(db, payload.codex_rs)
     if payload.resources is not None:
         res = payload.resources
         numbers = {

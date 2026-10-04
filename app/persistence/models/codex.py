@@ -21,3 +21,7 @@ class CodexBinding(Base):
     credential_revision: Mapped[int | None] = mapped_column(Integer)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(80))
+    # Last confirmed codex-rs enabled flag; the workspace seen at import; last AT readback.
+    remote_enabled: Mapped[bool | None] = mapped_column(Boolean)
+    official_workspace_id: Mapped[str | None] = mapped_column(String(100))
+    last_pulled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

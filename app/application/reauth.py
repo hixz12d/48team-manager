@@ -64,10 +64,13 @@ async def load_cf_config(db: AsyncSession) -> dict[str, str]:
 
 async def _remote_refresh_guard(db, account_id):
     from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
-    from app.application.refresh_ownership import remote_refresh_owner
+    from app.application.refresh_ownership import remote_refresh_owner, codex_refresh_owner
     if await remote_refresh_owner(db, account_id):
         return {"success": False, "skipped": True, "allow_oauth": False, "error_code": "remote_refresh_owned",
                 "error": "账号已委托 Sub2API 刷新，请人工核对后再重新授权", "status": "skipped"}
+    if await codex_refresh_owner(db, account_id):
+        return {"success": False, "skipped": True, "allow_oauth": False, "error_code": "remote_refresh_owned",
+                "error": "账号由 codex-rs 续期，请人工核对后再重新授权", "status": "skipped"}
     return None
 
 

@@ -58,6 +58,14 @@ body:has(#settings-savebar:not([hidden])) .toast-region {
 }
 .settings-page .service-management-grid > :last-child { grid-column: auto; width: auto; }
 .settings-page .sub2api-push-defaults { padding-top: 0; border-top: 0; }
+/* codex-rs 卡片：推送去向单选横排；导入参数小节沿用 sub2api-push-defaults 的类 */
+.codex-rs-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-lg);
+}
+.codex-rs-choice-row .check { min-height: var(--control-h-sm); color: var(--text); font-size: var(--text-body); }
+.settings-page .hint.text-warn { color: var(--warning-text); }
 .settings-page .sub2api-push-defaults .panel-header {
   padding: var(--space-sm) 0 0;
   border: 0;

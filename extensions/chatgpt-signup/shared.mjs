@@ -43,7 +43,7 @@ export function publicHandoff(handoff) {
   const step = value => value && typeof value === 'object' ?
     {ok: typeof value.ok === 'boolean' ? value.ok : null, message: String(value.message || '').slice(0, 200)} : null;
   return {status: handoff.status, workspaceId: handoff.workspaceId, workspaceName: handoff.workspaceName || '',
-    message: handoff.message || '', followups: {sub2api: step(handoff.followups?.sub2api), switchCount: step(handoff.followups?.switch_count)}};
+    message: handoff.message || '', followups: {sub2api: step(handoff.followups?.sub2api), codexRs: step(handoff.followups?.codex_rs), switchCount: step(handoff.followups?.switch_count)}};
 }
 
 export function publicJob(job) {

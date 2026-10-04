@@ -154,6 +154,9 @@ class QuotaService:
             Sub2ApiRefreshHandoff, Sub2ApiRefreshHandoff.account_id == Sub2ApiRefreshAuthority.account_id))).all()
         remote_owned = {owner.account_id for owner, handoff in owners
                         if not (handoff and handoff.state == "completed" and handoff.authority_epoch == owner.epoch)}
+        from app.persistence.models.codex import CodexBinding
+        remote_owned |= set((await db.execute(select(CodexBinding.account_id).where(
+            CodexBinding.import_attempted.is_(True)))).scalars())
         latest = await self._latest(db)
         successes = await self._latest(db, success_only=True)
         authority = await self._latest(db, authority=True)
@@ -397,7 +400,11 @@ class QuotaService:
                     workspace_id=official_id, identifier=identifier, now=now), timeout=90)
         except Exception:
             result = QuotaResult(success=False, error_code="transport", error_source="official_quota")
-        if result.http_status == 401 and account.refresh_token_encrypted:
+        codex_owned = False
+        if result.http_status == 401 and not account.refresh_token_encrypted:
+            from app.application.refresh_ownership import codex_refresh_owner
+            codex_owned = await codex_refresh_owner(db, account_id) is not None
+        if result.http_status == 401 and (account.refresh_token_encrypted or codex_owned):
             from app.application.tokens import auth_service
             cfg = await auth_service.load_settings(db)
             if cfg["enabled"]:

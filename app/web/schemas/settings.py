@@ -33,7 +33,7 @@ class AutomationSettings(BaseModel):
 
 class ConnectionProbeRequest(BaseModel):
     connections: ConnectionSettings | None = None
-    target: Literal["sub2api", "hme", "mail", "all"] = "all"
+    target: Literal["sub2api", "hme", "mail", "codex_rs", "all"] = "all"
 
 
 class ResourceSettings(BaseModel):
@@ -62,12 +62,24 @@ class Sub2ApiPushDefaults(BaseModel):
         return self
 
 
+class CodexRsSettings(BaseModel):
+    """codex-rs import defaults and the post-authorization push target; only sent fields are saved."""
+
+    push_target: Literal["sub2api", "codex_rs"] | None = None
+    group_ids: list[str] | None = Field(default=None, max_length=50)
+    concurrency_limit: int | None = Field(default=None, ge=1, le=4294967295)
+    concurrency_inherit: bool | None = None  # True clears concurrency_limit (inherit codex-rs global)
+    weight: int | None = Field(default=None, ge=1, le=100)
+    enabled: bool | None = None
+
+
 class SettingsPatch(BaseModel):
     sub2api_push: Sub2ApiPushDefaults | None = None
     connections: ConnectionSettings | None = None
     automation: AutomationSettings | None = None
     resources: ResourceSettings | None = None
     password: PasswordSettings | None = None
+    codex_rs: CodexRsSettings | None = None
 
 
 class RunnerSelfcheckRequest(BaseModel):

@@ -115,8 +115,9 @@ class AuthService:
         await db.execute(insert(CredentialLease).values(account_id=account_id).on_conflict_do_nothing())
         # The first write serializes ownership handoff with local refresh acquisition.
         from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
-        from app.application.refresh_ownership import remote_refresh_owner
+        from app.application.refresh_ownership import remote_refresh_owner, codex_refresh_owner
         remote_owner = await remote_refresh_owner(db, account_id)
+        codex_owner = None if remote_owner is not None else await codex_refresh_owner(db, account_id)
         claimed = await db.execute(update(CredentialLease).execution_options(synchronize_session="fetch").where(
             CredentialLease.account_id == account_id,
             CredentialLease.token.is_(None),
@@ -129,10 +130,14 @@ class AuthService:
         release_lease = True
         try:
             await db.refresh(account)
-            if remote_owner is not None:
+            if remote_owner is not None or codex_owner is not None:
                 from app.application.sub2api_refresh_authority import pull_owned_access_token, failure
                 try:
-                    result = await asyncio.wait_for(pull_owned_access_token(db, account_id, ticket), timeout=90)
+                    if remote_owner is not None:
+                        result = await asyncio.wait_for(pull_owned_access_token(db, account_id, ticket), timeout=90)
+                    else:
+                        from app.application import codex_publish
+                        result = await asyncio.wait_for(codex_publish.pull_access_token(db, account_id, ticket), timeout=90)
                 except Exception:
                     await db.rollback()
                     result = failure("remote_unavailable")
@@ -262,8 +267,8 @@ class AuthService:
                 stats["skipped"] += 1
                 continue
             from app.persistence.models.sub2api import Sub2ApiRefreshAuthority
-            from app.application.refresh_ownership import remote_refresh_owner
-            remote_owned = await remote_refresh_owner(db, account.id) if account.auth_state == "oauth_required" else None
+            from app.application.refresh_ownership import refresh_owner_kind
+            remote_owned = await refresh_owner_kind(db, account.id) if account.auth_state == "oauth_required" else None
             if str(account.auth_state or "") in {"deactivated", "manual_required", "oauth_required", "phone_required"} and remote_owned is None:
                 stats["skipped"] += 1
                 continue

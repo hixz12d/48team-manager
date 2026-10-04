@@ -48,6 +48,8 @@
     if (del) del.disabled = items.length === 0 || items.length > 50 || items.some(account => !canDelete(account));
     const exportButton = document.getElementById("account-selection-export");
     if (exportButton) exportButton.disabled = items.length === 0 || items.length > 50;
+    const codexButton = document.getElementById("account-selection-codex-rs");
+    if (codexButton) codexButton.disabled = items.length === 0 || items.length > 50;
   }
   const el = (tag, cls, text) => {
     const node = document.createElement(tag);
@@ -567,9 +569,28 @@
     const current = contexts(account).find(c => String(c.workspace_id || "") === box.dataset.workspace) || account;
     box.replaceChildren(healthDetails(current));
   }
+  // codex-rs binding: state uses symbol + text (management-badge tone), never colour alone.
+  function codexRsSection(info) {
+    const section = el("section", "sheet-section codex-rs-detail"); section.append(el("h3", "", "codex-rs"));
+    const states = {synced: ["已同步", "success"], pushing: ["推送中", "info"], uncertain: ["结果不明", "warning"], pending: ["待处理", "muted"]};
+    const [label, tone] = states[info.state] || [info.state || "未知", "muted"];
+    const badge = el("span", `management-badge tone-${info.stale ? "warning" : tone}`, `${label}${info.stale ? " · 待核对" : ""}`);
+    const time = value => value ? `${new Date(value).toLocaleString("zh-CN")}（${api.relativeTime(value)}）` : "—";
+    const dl = el("dl", "kv");
+    for (const [name, value] of [["远端 ID", info.remote_account_id || "—"],
+      ["远端启用", info.remote_enabled === true ? "启用" : info.remote_enabled === false ? "已停用" : "未知"],
+      ["最近导入", time(info.synced_at)], ["最近读回 AT", time(info.last_pulled_at)],
+      ["错误码", info.last_error || "—"], ["当前刷新方", "codex-rs"]]) {
+      const dd = el("dd", name === "远端 ID" ? "mono" : name === "错误码" && info.last_error ? "text-warning" : "", value);
+      dl.append(el("dt", "", name), dd);
+    }
+    section.append(badge, dl);
+    return section;
+  }
   function decorateDetails(account, body, trigger) {
     const advanced = el("details", "management-advanced"); advanced.append(el("summary", "", "身份、凭证与 Sub2API 详情"));
     while (body.firstChild) advanced.append(body.firstChild);
+    if (account.codex_rs) body.append(codexRsSection(account.codex_rs));
     if (account.subscription) {
       const section = el("section", "sheet-section"); section.append(el("h3", "", "订阅与席位"));
       const info = account.subscription;
@@ -737,6 +758,16 @@
           api.toast("已导出 Codex 凭据（不含 RT）", "success");
         } catch (error) { api.toast(api.friendlyError(error), "error"); }
         finally { b.disabled = false; }
+      });
+      document.getElementById("account-selection-codex-rs")?.addEventListener("click", async event => {
+        const b = event.currentTarget, items = selectedItems();
+        if (!items.length || items.length > 50 || b.disabled) return;
+        b.disabled = true;
+        try {
+          const result = await api.importCodexRsAccounts(items, b);
+          (result?.results || []).filter(item => item.ok).forEach(item => selected.delete(item.account_id));
+        } catch (error) { api.toast(api.friendlyError(error), "error"); }
+        finally { b.disabled = false; render(payload); }
       });
       document.getElementById("account-selection-clear")?.addEventListener("click", () => { selected.clear(); render(payload); });
       document.getElementById("account-selection-delete")?.addEventListener("click", async event => {

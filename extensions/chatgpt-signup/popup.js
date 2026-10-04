@@ -38,10 +38,10 @@ function renderHandoff(job) {
   box.dataset.status = status;
   $('handoff-title').textContent = HANDOFF_TITLES[status] || '接入 Team48';
   $('handoff-team').textContent = handoff?.workspaceName || '';
-  $('handoff-message').textContent = handoff?.message || '选择团队后自动：同步 → 接入本地 → 授权 → 推送 Sub2API → 今日切换 +1。';
+  $('handoff-message').textContent = handoff?.message || '选择团队后自动：同步 → 接入本地 → 授权 → 推送（按 Team48 设置推到 Sub2API 或 codex-rs）→ 今日切换 +1。';
   const steps = $('handoff-steps');
   const rows = status === 'done' ? [['授权', {ok: true, message: handoff.message}], ['Sub2API', handoff.followups?.sub2api],
-    ['切换次数', handoff.followups?.switchCount]].filter(([, step]) => step) : [];
+    ['codex-rs', handoff.followups?.codexRs], ['切换次数', handoff.followups?.switchCount]].filter(([, step]) => step) : [];
   steps.hidden = !rows.length;
   steps.replaceChildren(...rows.map(([name, step]) => {
     const li = document.createElement('li');

@@ -29,8 +29,8 @@ class CodexTransferRequest(BaseModel):
         return value
 
 
-class CodexPushRequest(CodexTransferRequest):
-    expected_target: str = Field(min_length=1, max_length=500)
+class CodexRsImportRequest(CodexTransferRequest):
+    pass
 
 
 class RegisterAccountRequest(BaseModel):

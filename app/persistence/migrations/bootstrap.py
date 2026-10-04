@@ -98,6 +98,12 @@ ACCOUNT_COLUMNS = (
     ("credential_revision", "INTEGER DEFAULT 1 NOT NULL"),
 )
 
+CODEX_BINDING_COLUMNS = (
+    ("remote_enabled", "BOOLEAN"),
+    ("official_workspace_id", "VARCHAR(100)"),
+    ("last_pulled_at", "DATETIME"),
+)
+
 
 async def _ensure_sqlite_columns(conn, table: str, columns: tuple[tuple[str, str], ...]) -> None:
     existing = {
@@ -205,6 +211,7 @@ async def bootstrap_schema(engine: AsyncEngine) -> None:
         await _ensure_sqlite_columns(conn, "quota_snapshots", QUOTA_COLUMNS)
         await _ensure_sqlite_columns(conn, "external_bindings", BINDING_COLUMNS)
         await _ensure_sqlite_columns(conn, "accounts", ACCOUNT_COLUMNS)
+        await _ensure_sqlite_columns(conn, "codex_bindings", CODEX_BINDING_COLUMNS)
         await _rebuild_external_bindings(conn)
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_operations_archived_finished "

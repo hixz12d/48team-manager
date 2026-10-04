@@ -293,6 +293,7 @@
       ["workspace-sync", "同步团队成员"], ["workspace-delete", "移除本地团队记录"],
       ["workspace-expiry", "修改团队到期日期"], ["workspace-role", "修改成员角色"],
       ["workspace-list", "读取团队列表"], ["workspace", "更新团队成员"], ["rotate", "执行受控轮转"],
+      ["account-codex-rs", "导入 codex-rs"], ["codex-rs-options", "读取 codex-rs 分组和代理"],
       ["account-reauth", "重新授权账号"], ["account-refresh", "刷新账号凭据"],
       ["account-quota", "检测官方额度"], ["account-auth", "检测账号授权"],
       ["account-sub2api", "同步 Sub2API"], ["account-delete-local", "删除本地账号档案"],
@@ -1659,6 +1660,51 @@ function hmeRow(item) {
     });
   }
 
+  // A codex-rs binding means codex-rs owns the refresh token; Sub2API pushes are refused for it.
+  const codexRsImported = (item) => Boolean(item?.codex_rs);
+  const CODEX_RS_IMPORT_MESSAGE = "会把该号的访问令牌和刷新令牌发到 codex-rs，之后由 codex-rs 续期，Team48 不再自己刷新。不修改官方 Team，不写 Sub2API。";
+
+  // Imports 1–50 accounts; partial failure still returns HTTP 200, so read ok/results per account.
+  async function importCodexRsAccounts(items, trigger) {
+    const rows = (items || []).filter((item) => Number.isInteger(item?.id) && item.id > 0);
+    if (!rows.length) return null;
+    if (rows.length > 50) {
+      toast("一次最多导入 50 个账号", "warning");
+      return null;
+    }
+    const single = rows.length === 1;
+    const resync = single && rows[0].codex_rs?.state === "synced";
+    const ok = await confirmDanger(CODEX_RS_IMPORT_MESSAGE, {
+      title: resync ? "重新导入 codex-rs" : "导入 codex-rs",
+      subtitle: single ? rows[0].email || "" : `已选 ${rows.length} 个账号`,
+      hint: "逐个导入，允许部分成功；结果不明时可以安全重试。",
+      items: rows.map((item) => item.email || `账号 #${item.id}`),
+      confirmLabel: single ? (resync ? "重新导入" : "导入") : `导入 ${rows.length} 个`,
+      tone: "primary",
+    }, trigger);
+    if (!ok) return null;
+    const result = await postAction(
+      single ? `account-codex-rs-import-${rows[0].id}` : "account-codex-rs-import-batch",
+      "/api/accounts/codex-rs/import",
+      { confirm: true, account_ids: rows.map((item) => item.id) },
+    );
+    const results = Array.isArray(result?.results) ? result.results : [];
+    const emailOf = (id) => rows.find((item) => item.id === id)?.email || `账号 #${id}`;
+    const reason = (entry) => entry?.message || entry?.error_code || "导入失败";
+    const failed = results.filter((entry) => !entry.ok);
+    const synced = results.filter((entry) => entry.ok).length;
+    if (single) {
+      const entry = results[0];
+      if (entry?.ok) toast(entry.message || "已导入 codex-rs", "success");
+      else toast(`导入 codex-rs 失败：${reason(entry || result)}`, "error");
+    } else {
+      toast(`codex-rs 已导入 ${synced}/${rows.length}`, failed.length ? "warning" : "success");
+      if (failed.length) toast(failed.map((entry) => `${emailOf(entry.account_id)}：${reason(entry)}`).join("；"), "error");
+    }
+    await bootPage();
+    return result;
+  }
+
   const autoReauthBlockedLabels = {
     account_not_opted_in: "账号尚未允许自动授权",
     deployment_disabled: "自动授权总开关未启用",
@@ -1885,14 +1931,20 @@ function hmeRow(item) {
       {
         id: "account.sub2api.push",
         label: "推送到 Sub2API",
-        visible: (item) => (item.sub2api_publish?.eligible !== false) && ["missing", "unbound", "none", "pending"].includes(item.sub2api),
+        visible: (item) => !codexRsImported(item) && (item.sub2api_publish?.eligible !== false) && ["missing", "unbound", "none", "pending"].includes(item.sub2api),
         run: (item) => pushSub2ApiAccount(item),
       },
       {
         id: "account.sub2api.update",
         label: "更新 Sub2API",
-        visible: (item) => (item.sub2api_publish?.eligible !== false) && item.sub2api === "verified",
+        visible: (item) => !codexRsImported(item) && (item.sub2api_publish?.eligible !== false) && item.sub2api === "verified",
         run: (item) => pushSub2ApiAccount(item),
+      },
+      {
+        id: "account.codex-rs.import",
+        label: (item) => item.codex_rs?.state === "synced" ? "重新导入 codex-rs" : "导入 codex-rs",
+        visible: (item) => item.purpose !== "mother" && ["unbound", "missing", "orphaned"].includes(item.sub2api),
+        run: (item, trigger) => importCodexRsAccounts([item], trigger),
       },
       {
         id: "account.sub2api.reconcile",
@@ -2145,7 +2197,7 @@ function hmeRow(item) {
       return option;
     };
     const actions = (entityActions[kind] || []).filter((action) => !action.visible || action.visible(item));
-    const category = action => action.danger ? 2 : /refresh|quota|probe|sub2api|sync/.test(action.id) ? 1 : 0;
+    const category = action => action.danger ? 2 : /refresh|quota|probe|sub2api|codex-rs|sync/.test(action.id) ? 1 : 0;
     let previousGroup = -1;
     actions.sort((a,b) => category(a)-category(b)).forEach(action => {
       const group = category(action);
@@ -3198,7 +3250,13 @@ function hmeRow(item) {
         return input;
       };
       followups.append(legend);
-      const pushBox = followupBox("push", "推送到 Sub2API（使用设置里的默认分组和代理）");
+      const pushBox = followupBox("push", authPushLabel(authPushTarget));
+      if (!followups.hidden) {
+        void loadAuthPushTarget().then((target) => {
+          const text = pushBox.nextSibling;
+          if (text && text.nodeType === Node.TEXT_NODE) text.textContent = authPushLabel(target);
+        });
+      }
       const countBox = followupBox("count", "今日切换 +1（同一成员只计一次）");
       const autoLabel = document.createElement("label");
       autoLabel.className = "check";
@@ -3266,7 +3324,8 @@ function hmeRow(item) {
             }),
           });
           const steps = [["授权", { ok: true, message: result.message || "授权成功" }],
-            ["Sub2API", result.followups?.sub2api], ["切换次数", result.followups?.switch_count]].filter(([, step]) => step);
+            ["Sub2API", result.followups?.sub2api], ["codex-rs", result.followups?.codex_rs],
+            ["切换次数", result.followups?.switch_count]].filter(([, step]) => step);
           const failed = steps.some(([, step]) => step.ok === false);
           teamDetailState.stage = "authorization_completed";
           await reloadTeamDetails();
@@ -3299,6 +3358,20 @@ function hmeRow(item) {
     }
 
   const AUTH_FOLLOWUPS_KEY = "team48:auth-followups";
+  // Where reauth pushes after success follows the settings switch; the request body stays push_sub2api.
+  let authPushTarget = null;
+  function authPushLabel(target) {
+    return target === "codex_rs"
+      ? "导入 codex-rs（带刷新令牌，之后由 codex-rs 续期）"
+      : "推送到 Sub2API（使用设置里的默认分组和代理）";
+  }
+  async function loadAuthPushTarget() {
+    try {
+      const settings = await fetchEntity("settings-push-target", "/api/settings");
+      authPushTarget = settings?.codex_rs?.push_target === "codex_rs" ? "codex_rs" : "sub2api";
+    } catch (_) {}
+    return authPushTarget;
+  }
   function readAuthFollowups() {
     const defaults = { push: true, count: true, autoSubmit: true };
     try {
@@ -3568,7 +3641,10 @@ function hmeRow(item) {
     const data = new FormData(form);
     return JSON.stringify({
       sub2api_push: window.Team48Sub2ApiDefaults.value(),
+      codex_rs: window.Team48CodexRs.value(),
       sub2api_proxy_mode: data.get("sub2api_proxy_mode"),
+      codex_base_url: data.get("codex_base_url"),
+      codex_admin_key: data.get("codex_admin_key"),
       sub2api_base_url: data.get("sub2api_base_url"),
       sub2api_api_key: data.get("sub2api_api_key"),
       sub2api_admin_email: data.get("sub2api_admin_email"),
@@ -3593,9 +3669,11 @@ function hmeRow(item) {
 
   function changedSettings(current, baseline) {
     const flatten = (snapshot) => {
-      const { sub2api_push: push = {}, sub2api_proxy_mode: mode, ...fields } = JSON.parse(snapshot || "{}");
+      const { sub2api_push: push = {}, codex_rs: codex = {}, sub2api_proxy_mode: mode, ...fields } = JSON.parse(snapshot || "{}");
       return { ...fields, sub2api_concurrency: push.concurrency, sub2api_group_ids: push.group_ids,
-        sub2api_proxy_mode: [mode, push.proxy_id, push.proxy_group_id] };
+        sub2api_proxy_mode: [mode, push.proxy_id, push.proxy_group_id],
+        codex_rs_push_target: codex.push_target, codex_rs_group_ids: codex.group_ids,
+        codex_rs_concurrency: codex.concurrency_limit ?? null, codex_rs_weight: codex.weight, codex_rs_enabled: codex.enabled };
     };
     const draft = flatten(current), saved = flatten(baseline);
     return Object.keys(draft).filter(key => JSON.stringify(draft[key]) !== JSON.stringify(saved[key]));
@@ -3615,7 +3693,9 @@ function hmeRow(item) {
     for (const key of changes) {
       const target = key === "sub2api_group_ids" ? form.querySelector(".sub2api-default-groups")
         : key === "auto_rotate_workspace_ids" ? document.getElementById("auto-rotation-workspaces")
-          : form.elements.namedItem(key)?.closest("label");
+          : key === "codex_rs_group_ids" ? document.getElementById("codex-rs-group-field")
+            : key === "codex_rs_push_target" ? document.getElementById("codex-rs-push-target")
+              : form.elements.namedItem(key)?.closest?.("label");
       target?.classList.add("is-dirty");
     }
     if (discard) discard.hidden = !settingsDirty;
@@ -3674,6 +3754,10 @@ function hmeRow(item) {
     const secretState = payload.secret_state || {};
     const account = payload.account || {};
     window.Team48Sub2ApiDefaults.fill(payload.sub2api_push);
+    window.Team48CodexRs.fill(payload.codex_rs || {});
+    authPushTarget = payload.codex_rs?.push_target === "codex_rs" ? "codex_rs" : "sub2api";
+    form.codex_base_url.value = connections.codex_base_url || "";
+    form.codex_admin_key.value = "";
     form.sub2api_base_url.value = connections.sub2api_base_url || "";
     form.sub2api_admin_email.value = connections.sub2api_admin_email || "";
     form.hme_base_url.value = connections.hme_base_url || "";
@@ -3723,6 +3807,7 @@ function hmeRow(item) {
     setMeta("sub2api", connections.sub2api?.configured);
     setMeta("hme", connections.hme?.configured);
     setMeta("mail", connections.mail?.configured);
+    setMeta("codex_rs", connections.codex?.configured);
     const accountEl = document.getElementById("settings-account");
     if (accountEl) accountEl.textContent = account.username ? `当前登录账号：${account.username}` : "登录账号会显示在这里。";
     settingsBaseline = snapshotSettings(form);
@@ -3751,6 +3836,8 @@ function hmeRow(item) {
 
   function connectionsPayload(form) {
     return {
+      codex_base_url: form.codex_base_url.value,
+      codex_admin_key: secretOrNull(form.codex_admin_key.value),
       sub2api_base_url: form.sub2api_base_url.value,
       sub2api_admin_email: form.sub2api_admin_email.value,
       hme_base_url: form.hme_base_url.value,
@@ -3797,6 +3884,12 @@ function hmeRow(item) {
     } else if (payload.mail) {
       setServiceState("mail", mail.error || "检测失败", mail.error || "连不上临时邮箱");
     }
+    const codex = payload.codex_rs || {};
+    if (payload.codex_rs && !codex.skipped) {
+      const when = codex.checked_at ? ` · ${relativeTime(codex.checked_at)}` : "";
+      if (codex.ok) setServiceState("codex_rs", `连接正常${when}`, codex.message || "连接成功");
+      else setServiceState("codex_rs", codex.message || codex.error || "检测失败", codex.message || codex.error || "连不上 codex-rs");
+    }
   }
 
   async function probeSettings(focus) {
@@ -3807,8 +3900,9 @@ function hmeRow(item) {
       button.disabled = true;
     });
     const target = focus || "all";
+    const allServices = ["sub2api", "codex_rs", "hme", "mail"];
     if (target === "all") {
-      ["sub2api", "hme", "mail"].forEach((service) => setServiceState(service, "检测中…"));
+      allServices.forEach((service) => setServiceState(service, "检测中…"));
     } else {
       setServiceState(target, "检测中…");
     }
@@ -3821,7 +3915,7 @@ function hmeRow(item) {
       probeCopy(payload);
     } catch (error) {
       const message = friendlyError(error);
-      (target === "all" ? ["sub2api", "hme", "mail"] : [target]).forEach((service) => setServiceState(service, message));
+      (target === "all" ? allServices : [target]).forEach((service) => setServiceState(service, message));
     } finally {
       buttons.forEach((button) => {
         button.disabled = false;
@@ -3872,6 +3966,7 @@ function hmeRow(item) {
     const payload = {
       connections: connectionsPayload(form),
       sub2api_push: window.Team48Sub2ApiDefaults.value(),
+      codex_rs: window.Team48CodexRs.value(),
       automation: {
         official_quota_probe: form.official_quota_probe.checked,
         auto_reauth: form.auto_reauth.checked,
@@ -3900,6 +3995,7 @@ function hmeRow(item) {
       });
       fillSettings(saved);
       void window.Team48Sub2ApiDefaults.refresh();
+      void window.Team48CodexRs.refresh();
       if (statusEl) {
         statusEl.className = "muted";
         statusEl.textContent = "已保存 · 刚刚";
@@ -3965,6 +4061,7 @@ function hmeRow(item) {
         openWorkspaceExpiry,
         openWorkspaceProxy,
         openSheet, openWorkspaceDetails, openOverlay, openRegister, openConfirm, relativeTime, toast, friendlyError, showPageError,
+        importCodexRsAccounts,
         cache: pageCache,
       });
     }
@@ -4205,6 +4302,7 @@ function hmeRow(item) {
     const form = document.getElementById("settings-form");
     const passwordForm = document.getElementById("password-form");
     window.Team48Sub2ApiDefaults.init(form, fetchEntity);
+    window.Team48CodexRs.init(form, fetchEntity);
     if (form && !form.dataset.bound) {
       form.dataset.bound = "1";
       form.addEventListener("submit", saveSettings);
@@ -4231,6 +4329,7 @@ function hmeRow(item) {
     }
     fillSettings(await fetchEntity("settings", "/api/settings"));
     void window.Team48Sub2ApiDefaults.refresh();
+    void window.Team48CodexRs.refresh();
     void loadSub2ApiManagement();
     void loadRunnerCard();
   }

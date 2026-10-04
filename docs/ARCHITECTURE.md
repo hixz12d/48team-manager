@@ -110,11 +110,20 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 
 ### 插件接口（`web/routes/extension.py`、`application/member_handoff.py`）
 
-`EXTENSION_API_TOKEN` 做 Bearer 鉴权，少于 24 位时 `/api/ext/*` 全部 404，不接受管理员会话。接口：`GET /ping`、`GET /workspaces`、`POST /resolve`（单团队 20 秒、总 60 秒）、`POST /phone`（接码，请求体 ≤ 4KB）、`POST /handoff`（可带 `phone_session`，接入时把成功的号码和接码链接写到账号）、`POST /handoff/complete`。
+`EXTENSION_API_TOKEN` 做 Bearer 鉴权，少于 24 位时 `/api/ext/*` 全部 404，不接受管理员会话。接口：`GET /ping`、`GET /workspaces`、`POST /resolve`（单团队 20 秒、总 60 秒）、`POST /phone`（接码，请求体 ≤ 4KB）、`POST /handoff`（可带 `phone_session`，接入时把成功的号码和接码链接写到账号）、`POST /handoff/complete`（推送去向读 `auth_push_target`，结果在 `followups.sub2api` 或 `followups.codex_rs`）。
+
+### codex-rs 导入（`application/codex_publish.py`、`integrations/codex/client.py`）
+
+- `client.py`：codex-rs 管理 API 客户端（`x-api-key`，不跟随重定向、不自动重试、15 秒超时）；HTTP 只放行回环和 `host.docker.internal`（容器经它访问同机 codex-rs `:8180`）。导出接口读到的 `refreshToken` 在客户端里就丢弃。
+- `codex_publish.py`：`import_account` / `import_accounts`（单次 ≤ 50，逐个）、`pull_access_token`（在 `tokens.refresh_account` 的 `CredentialLease` 内读回 AT）、`disable_on_departure`（`batch-update enabled=false`）、`options`（分组 + 可用代理数）、`probe`。绑定表 `codex_bindings`（租约串行、`import_attempted` 一旦为真即视为 codex 续期；首次导入被 4xx 明确拒绝时删掉占位绑定）。
+- 续期归属：`refresh_ownership.codex_refresh_owner` / `refresh_owner_kind`；`tokens.py`（刷新改读回）、`reauth.py` / `oauth_sessions.py`（自动重授权拦截 `remote_refresh_owned`）、`quota.py`（健康按远端续期处理、401 重试走读回）、`sub2api_publish.py`（互斥 `codex_rs_bound`）。
+- 推送去向：`settings.load_auth_push_target` → `console_actions.account_reauth_complete(push_target=)` → `member_handoff.finish_after_authorization`；管理端重授权接口和插件 `/handoff/complete` 都传，轮转、号池不传（默认 `sub2api`）。
+- 离队停用接入点：`rotate.kick_to_standby`（离队记账后，返回 `codex_rs_disable`）、`workspace_sync.py`（离队记账循环）。
+- 接口：`GET /api/codex-rs/options`、`POST /api/accounts/codex-rs/import`（部分失败也是 200，看 `ok` / `results`）、`POST /api/settings/probe` 的 `codex_rs` 目标；账号行字段 `codex_rs`（`queries/identity.py`）。前端设置卡片 `static/js/codex-rs-settings.js`（`window.Team48CodexRs`）。
 
 ### 插件接码中转（`application/resources/phone_relay.py`）
 
-协议见 [contracts/phone-relay.md](contracts/phone-relay.md)。`handle` 分派 `acquire`（领号，同会话幂等并续期锁）/ `code`（读短信，只返回与领号时基线不同的码）/ `report`（写 `phone_attempts`、按原因降级号码）/ `release`。本机模式 `personal_context` 按账号代理 → 母号代理定位读短信代理，按会话缓存 2 小时。基线存进程内存，服务重启后丢失。插件侧在 `content.js`（识别手机页、填号、换号）和 `background.js`（调用接口、每账号最多 3 个号），新增暂停原因 `phone_pool_empty` / `phone_limit` / `phone_back_missing` / `phone_relay_error`。
+协议见 [contracts/phone-relay.md](contracts/phone-relay.md)。`handle` 分派 `acquire`（领号，同会话幂等并续期锁）/ `code`（读短信，只返回与领号时基线不同的码）/ `report`（写 `phone_attempts`、按原因降级号码）/ `release`。本机模式 `personal_context` 按账号代理 → 母号代理定位读短信代理，按会话缓存 2 小时。基线存进程内存，服务重启后丢失。插件侧在 `content.js`（识别手机页；号码页直线流程 `phoneNumberStep` → `phoneSmsChannel` → `phoneContinue` → `phoneJudge`，失败上报后刷新页面换号，20 秒无反应按 `cancelled` 上报；短信页 90 秒无码点"更换号码"）和 `background.js`（调用接口、每账号最多 3 个号），新增暂停原因 `phone_pool_empty` / `phone_limit` / `phone_back_missing` / `phone_relay_error`。
 
 ## 数据存储
 
@@ -126,7 +135,7 @@ SQLite `data/team48.db`（WAL；需 SQLite ≥ 3.25）。表由 `bootstrap.py` �
 | 任务 | `operations`、`operation_steps` |
 | 额度 | `quota_snapshots`、`quota_probe_states`、`quota_dispatch_lease`、`credential_leases` |
 | Sub2API | `sub2api_sync_observations`、`sub2api_refresh_authorities`、`sub2api_refresh_handoffs`、`sub2api_account_status`、`sub2api_usage_snapshots`、`sub2api_proxy_bindings`、`sub2api_revenue_entries`（收入账本，无外键，存邮箱和团队名快照，唯一键 团队 + 远端账号 ID）、`sub2api_revenue_daily`（每日收入，每个远端号每天一行存当天累计 U，只增不减，无外键，不随团队 / 账号 / 绑定删除） |
-| 其他 | `oauth_sessions`、`codex_bindings`、`system_settings`、`hme_alias_leases`、`phone_pool`、`phone_attempts`、`proxy_profiles`、`seat_vacancy_events`、`standby_pool_entries`（备用号池条目） |
+| 其他 | `oauth_sessions`、`codex_bindings`（codex-rs 绑定：远端 ID、`import_attempted`、`remote_enabled`、`official_workspace_id`、`last_pulled_at`）、`system_settings`、`hme_alias_leases`、`phone_pool`、`phone_attempts`、`proxy_profiles`、`seat_vacancy_events`、`standby_pool_entries`（备用号池条目） |
 
 凭据加密存储；接口只返回 `secret_state`（stored / missing），不回显密钥。浏览器档案也在 `data/` 下。
 
@@ -177,4 +186,4 @@ for f in app/web/static/js/*.js extensions/chatgpt-signup/*.js extensions/chatgp
 | `OFFICIAL_QUOTA_PROBE_ENABLED` / `AUTO_REAUTH_ENABLED` / `AUTO_ROTATE_ENABLED` / `FORCE_REFILL` | 自动化开关，默认全关，数据库设置优先 |
 | `LOG_LEVEL` / `DATABASE_ECHO` / `TIMEZONE` | 日志、SQL 回显、时区 |
 
-界面设置（存 `system_settings`）：Sub2API 地址与密钥、`sub2api_push_defaults`、HME 地址与服务 token（`hme_base_url` 默认 `http://icloud-hme:8081`）、Cloudflare 邮箱、`invite_seat_wire_standard/premium`、`official_quota_probe_batch_size`、自动轮转各项。
+界面设置（存 `system_settings`）：Sub2API 地址与密钥、`sub2api_push_defaults`、codex-rs 地址与管理 Key（`codex_base_url` / `codex_admin_key_encrypted`）、`auth_push_target`（`sub2api` / `codex_rs`）、`codex_rs_import_defaults`（分组、并发、权重、启用）、HME 地址与服务 token（`hme_base_url` 默认 `http://icloud-hme:8081`）、Cloudflare 邮箱、`invite_seat_wire_standard/premium`、`official_quota_probe_batch_size`、自动轮转各项。

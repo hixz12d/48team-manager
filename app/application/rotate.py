@@ -715,6 +715,20 @@ class RotateService:
                 operation_id=job_id,
             )
             await db.commit()
+        # Disable (never delete) the codex-rs copy; a failure is only recorded, never blocks the kick.
+        codex_rs_disable = None
+        if child is not None and not invitation_only:
+            from app.application import codex_publish
+            try:
+                codex_rs_disable = await codex_publish.disable_on_departure(db, child.id, workspace.official_workspace_id)
+            except Exception as exc:  # noqa: BLE001
+                await db.rollback()
+                await db.refresh(child)  # rolled-back objects are expired; async code cannot lazy-load
+                await db.refresh(workspace)
+                codex_rs_disable = {"ok": False, "skipped": False, "error_code": "codex_rs_disable_failed", "message": str(exc)}
+            if not codex_rs_disable.get("ok") and not codex_rs_disable.get("skipped"):
+                logger.warning("codex-rs 停用失败 email=%s error=%s", target,
+                               codex_rs_disable.get("error_code") or codex_rs_disable.get("message"))
         other_context = bool(child and await has_other_active_context(db, child, workspace.id))
         unbind = False if keep_remote else bool(unbind_sub2api or should_unbind_sub2api(reason) or purge_local)
         deleted_sub = None
@@ -823,6 +837,7 @@ class RotateService:
             "paused_sub2api": bool(pause_result and pause_result.get("ok") and not pause_result.get("skipped")),
             "pause_result": pause_result,
             "deleted_sub2api": deleted_sub,
+            "codex_rs_disable": codex_rs_disable,
             "error": binding_error if status == "partial" else None,
             "error_code": "sub2api_unbind_failed" if status == "partial" else None,
         }
