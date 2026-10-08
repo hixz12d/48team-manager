@@ -308,8 +308,9 @@
 
   function workspaceOptionText(ws) {
     const seats = ws.limit != null && ws.occupied != null ? `${ws.occupied}/${ws.limit}` : "席位未知";
-    const parts = [ws.name || `团队 ${ws.id}`, seats, `今日切换 ${ws.switch_count ?? 0}`];
-    let text = parts.join(" · ");
+    const gap = window.Team48SwitchCount?.gapSince?.(ws);
+    const parts = [ws.name || `团队 ${ws.id}`, seats, `今日切换 ${ws.switch_count ?? 0}`, gap?.text];
+    let text = parts.filter(Boolean).join(" · ");
     if (!ws.eligible) text += `（${ws.reason || "不可选"}）`;
     return text;
   }
@@ -364,6 +365,7 @@
       const options = joinWorkspaces.map((ws) => {
         const option = new Option(workspaceOptionText(ws), String(ws.id));
         option.disabled = !ws.eligible;
+        option.title = window.Team48SwitchCount?.gapSince?.(ws)?.title || "";
         return option;
       });
       const eligible = joinWorkspaces.filter((ws) => ws.eligible);

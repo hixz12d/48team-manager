@@ -57,6 +57,7 @@ WORKSPACE_COLUMNS = (
     ("manual_expiry_updated_at", "DATETIME"),
     ("manual_switch_date", "DATE"),
     ("manual_switch_count", "INTEGER DEFAULT 0 NOT NULL"),
+    ("last_switched_at", "DATETIME"),
     ("official_name", "VARCHAR(255)"),
     ("custom_name", "VARCHAR(255)"),
     ("name_source", "VARCHAR(20) DEFAULT 'placeholder' NOT NULL"),

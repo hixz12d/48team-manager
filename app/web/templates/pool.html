@@ -63,7 +63,7 @@
     <form id="pool-join-form" class="sheet-body">
       <div class="sheet-section">
         <label>团队<select name="workspace_id" id="pool-join-workspace" required><option value="">正在读取团队…</option></select></label>
-        <p class="hint" id="pool-join-workspace-hint">已预选推荐团队（无进行中任务、今日切换最少），可改选。</p>
+        <p class="hint" id="pool-join-workspace-hint">已预选推荐团队（无进行中任务；距上次切换已满 8h 的优先，再按今日切换最少），可改选。</p>
         <p class="error" id="pool-join-empty" hidden>暂无可拉入的团队</p>
         <label>替换子号<select name="replace_email" id="pool-join-replace">
           <option value="">不替换（团队有空位）</option>

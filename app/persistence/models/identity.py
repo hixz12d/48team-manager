@@ -115,6 +115,8 @@ class Workspace(Base):
     manual_expiry_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     manual_switch_date: Mapped[date | None] = mapped_column(Date)
     manual_switch_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # Updated with every switch +1; teams switched before this column existed stay NULL (not backfilled).
+    last_switched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     owner_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"))
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     seat_limit: Mapped[int | None] = mapped_column(Integer)

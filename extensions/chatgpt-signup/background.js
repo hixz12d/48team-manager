@@ -466,7 +466,14 @@ function applyResolved(job, result) {
 }
 function prefetchTeam({id, email}) {
   resolveTeam({id, email}).then(result => patchJob(id, current => {
-    if (current.autoHandoff?.resolve?.status === 'resolving') applyResolved(current, result);
+    if (current.autoHandoff?.resolve?.status !== 'resolving') return;
+    applyResolved(current, result);
+    // Several teams already hold this email: stop the signup at once instead of finishing it
+    // for an account that can never be handed off automatically.
+    if (current.autoHandoff.resolve.status === 'ambiguous' && ACTIVE.has(current.status) && current.phase !== 'oauth') {
+      applyStop(current);
+      current.message = `${current.autoHandoff.resolve.message}，已自动停止注册，以免接入错团队。请先撤掉多余的邀请或成员再重新开始。`;
+    }
   })).catch(() => {});
 }
 async function resolveForHandoff(job) {

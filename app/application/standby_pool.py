@@ -21,7 +21,7 @@ from app.application.resources.hme import (
     resolve_workspace_tag,
 )
 from app.application.workspace_expiry import EXPIRY_TIMEZONE
-from app.application.workspace_switch_count import switch_count_record
+from app.application.workspace_switch_count import switch_count_record, switch_gap_met
 from app.core.time import isoformat, utcnow, zone
 from app.domain.automation import ACTIVE_STATES, WORKSPACE_LOCK_ACTIONS
 from app.domain.identity import MEMBERSHIP_STATE_JOINED, PROVIDER_SUB2API
@@ -457,12 +457,15 @@ async def recommend_workspaces(db: AsyncSession, entry_id: int) -> dict[str, Any
         elif _expired(workspace):
             reason = "已到期"
         name = resolve_display_name(workspace, owner_email=owner.email if owner else None)["display_name"]
+        switch = switch_count_record(workspace)
         item = {
             "id": workspace.id,
             "name": str(name),
             "occupied": occupied,
             "limit": limit,
-            "switch_count": int(switch_count_record(workspace)["count"]),
+            "switch_count": int(switch["count"]),
+            "last_switched_at": switch["last_switched_at"],
+            "switch_gap_met": switch_gap_met(workspace),
             # 满员（或席位未知）不挡：拉入时选一个子号替换，先移出再邀请。
             "full": limit is not None and occupied is not None and occupied >= limit,
             "members": await _replace_candidates(db, workspace, owner) if not reason else [],
@@ -470,7 +473,9 @@ async def recommend_workspaces(db: AsyncSession, entry_id: int) -> dict[str, Any
             "reason": reason or None,
         }
         (blocked if reason else eligible).append(item)
-    eligible.sort(key=lambda item: (item["switch_count"], -((item["limit"] or 0) - (item["occupied"] or 0)), item["id"]))
+    # 距上次切换已满 8h（或无记录）的优先，再按今日切换少、空位多。只影响推荐，不拦选择。
+    eligible.sort(key=lambda item: (not item["switch_gap_met"], item["switch_count"],
+                                    -((item["limit"] or 0) - (item["occupied"] or 0)), item["id"]))
     return {
         "recommended_id": eligible[0]["id"] if eligible else None,
         "workspaces": eligible + blocked,

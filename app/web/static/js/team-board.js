@@ -94,6 +94,12 @@
     const chip = el("span", `board-switch${switches ? " is-active" : ""}`, "今日切换 ");
     chip.append(el("strong", "", String(switches)), " 次");
     meta.append(chip);
+    const gap = window.Team48SwitchCount?.gapSince?.(group.switch_count);
+    if (gap) {
+      // 未满 8h 用黄色提醒；只提示，不拦操作。
+      const node = el("span", gap.met ? "board-chip" : "board-flag is-warning", gap.text); node.title = gap.title;
+      meta.append(node);
+    }
     const neutral = (value, suffix, prefix = "") => { const n = el("span", "board-chip", prefix); n.append(el("strong", "", value), suffix); return n; };
     if (group.occupied_seats != null && group.seat_limit) meta.append(neutral(`${group.occupied_seats}/${group.seat_limit}`, " 席"));
     meta.append(neutral(`${c.inSub}/${all.length}`, "", "在 Sub2API "));
