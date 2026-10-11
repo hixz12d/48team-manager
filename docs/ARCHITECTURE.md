@@ -116,7 +116,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 
 ### codex-rs 导入（`application/codex_publish.py`、`integrations/codex/client.py`）
 
-- `client.py`：codex-rs 管理 API 客户端（`x-api-key`，不跟随重定向、不自动重试、15 秒超时）；HTTP 只放行回环和 `host.docker.internal`（容器经它访问同机 codex-rs `:8180`）。导出接口读到的 `refreshToken` 在客户端里就丢弃。
+- `client.py`：codex-rs 管理 API 客户端（`x-api-key`，不跟随重定向、不自动重试、15 秒超时）；HTTP 只放行回环、`host.docker.internal` 和同机 Docker 服务名 `codex-proxy-rs`。共享 codex-rs 网络时使用 `http://codex-proxy-rs:8080`；其他主机仍要求 HTTPS。导出接口读到的 `refreshToken` 在客户端里就丢弃。
 - `codex_publish.py`：`import_account` / `import_accounts`（单次 ≤ 50，逐个）、`pull_access_token`（在 `tokens.refresh_account` 的 `CredentialLease` 内读回 AT）、`disable_on_departure`（`batch-update enabled=false`）、`options`（分组 + 可用代理数）、`probe`。绑定表 `codex_bindings`（租约串行、`import_attempted` 一旦为真即视为 codex 续期；首次导入被 4xx 明确拒绝时删掉占位绑定）。
 - 续期归属：`refresh_ownership.codex_refresh_owner` / `refresh_owner_kind`；`tokens.py`（刷新改读回）、`reauth.py` / `oauth_sessions.py`（自动重授权拦截 `remote_refresh_owned`）、`quota.py`（健康按远端续期处理、401 重试走读回）、`sub2api_publish.py`（互斥 `codex_rs_bound`）。
 - 推送去向：`settings.load_auth_push_target` → `console_actions.account_reauth_complete(push_target=)` → `member_handoff.finish_after_authorization`；管理端重授权接口、插件 `/handoff/complete`、号池拉入都传，轮转不传（默认 `sub2api`）。

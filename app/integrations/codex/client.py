@@ -12,8 +12,8 @@ from app.application.codex_export import CodexTransferError
 from app.application.settings import get_setting_value
 from app.application.tokens import decrypt_secret
 
-# Hosts that may use plain HTTP: loopback, plus Docker's alias for the same machine.
-PLAIN_HTTP_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
+# Plain HTTP is allowed only for loopback and explicit same-host Docker aliases.
+PLAIN_HTTP_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal", "codex-proxy-rs"}
 PAGE_SIZE = 200
 MAX_PAGES = 20
 
