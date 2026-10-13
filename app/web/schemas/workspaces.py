@@ -44,6 +44,7 @@ PHONE_SESSION_PATTERN = r"^[a-f0-9]{32}$"
 
 
 class ExtensionHandoffRequest(BaseModel):
+    proxy_policy: Literal["workspace_owner"] | None = None
     email: str = Field(min_length=3, max_length=254)
     workspace_id: int = Field(gt=0)
     sync_operation_id: str | None = Field(default=None, min_length=4, max_length=80)

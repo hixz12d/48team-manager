@@ -344,6 +344,7 @@ async def extension_handoff(
     workspace_id: int,
     sync_operation_id: str | None = None,
     phone_session: str | None = None,
+    proxy_policy: str | None = None,
 ) -> dict[str, Any]:
     """One short step of: sync the team, link the joined member, start OAuth.
 
@@ -405,6 +406,13 @@ async def extension_handoff(
     if phone_session:
         await _record_relay_phone(db, account, phone_session)
     try:
+        if proxy_policy == "workspace_owner":
+            from app.application.workspace_proxy import bind_workspace_proxy, WorkspaceProxyError
+            try:
+                await bind_workspace_proxy(db, account, workspace)
+            except WorkspaceProxyError as exc:
+                await db.rollback()
+                return _handoff_error("workspace_proxy_required", str(exc))
         started = await reauth_service.start_manual_reauth(db, account)
     except OAuthSessionError as exc:
         await db.rollback()
@@ -416,6 +424,7 @@ async def extension_handoff(
     return {
         "ok": True,
         "state": "authorize",
+        "proxy_policy": proxy_policy,
         "account_id": account.id,
         "email": account.email,
         "ticket": started["ticket"],

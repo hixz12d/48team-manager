@@ -59,7 +59,7 @@ def build_extension_router(get_db, settings: Settings) -> APIRouter:
 
     @router.get("/ping")
     async def ping(_: None = Depends(require_extension)) -> dict:
-        return {"ok": True}
+        return {"ok": True, "proxy_policy": "workspace_owner"}
 
     @router.get("/workspaces")
     async def workspaces(_: None = Depends(require_extension), db: AsyncSession = Depends(get_db)) -> dict:
@@ -84,7 +84,7 @@ def build_extension_router(get_db, settings: Settings) -> APIRouter:
         from app.application.member_handoff import extension_handoff
         return await extension_handoff(
             db, email=payload.email, workspace_id=payload.workspace_id, sync_operation_id=payload.sync_operation_id,
-            phone_session=payload.phone_session,
+            phone_session=payload.phone_session, proxy_policy=payload.proxy_policy,
         )
 
     @router.post("/phone")

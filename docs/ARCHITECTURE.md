@@ -112,6 +112,8 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 
 ### 插件接口（`web/routes/extension.py`、`application/member_handoff.py`）
 
+- 本机插件通过 `/ping` 的 `proxy_policy=workspace_owner` 确认能力，`/handoff` 带同名策略并要求授权响应确认。`workspace_proxy.bind_workspace_proxy` 在写锁内检查绑定、刷新租约和未完成授权，复制所选团队母号代理到子号；`reauth` 换票使用 `OAuthSession` 代理快照并核对账号配置未变化。首次 rs 导入用 `/api/admin/proxies/probe` 检测 IPv4 后传 `outboundProxyUrl`，不再随机选代理；凭据提交同时检查代理字段未变化。
+
 `EXTENSION_API_TOKEN` 做 Bearer 鉴权，少于 24 位时 `/api/ext/*` 全部 404，不接受管理员会话。接口：`GET /ping`、`GET /workspaces`、`POST /resolve`（单团队 20 秒、总 60 秒）、`POST /phone`（接码，请求体 ≤ 4KB）、`POST /handoff`（可带 `phone_session`，接入时把成功的号码和接码链接写到账号）、`POST /handoff/complete`（推送去向读 `auth_push_target`，结果在 `followups.sub2api` 或 `followups.codex_rs`）。
 
 ### codex-rs 导入（`application/codex_publish.py`、`integrations/codex/client.py`）

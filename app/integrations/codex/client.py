@@ -179,6 +179,11 @@ class CodexClient:
     async def list_accounts(self) -> list[dict]:
         return await self._pages("/api/admin/accounts", provider="openai")
 
+    async def probe_proxy(self, proxy: str) -> dict:
+        """只验证指定出口，不创建代理或更改账号绑定。"""
+        return await self._object("POST", "/api/admin/proxies/probe",
+                                  json={"proxyUrl": proxy, "detectLocation": False})
+
     async def list_proxies(self) -> list[dict]:
         return await self._pages("/api/admin/proxies")
 

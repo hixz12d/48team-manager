@@ -39,7 +39,7 @@ PULLABLE_STATES = ("synced", "uncertain")
 DEFINITE_REJECTIONS = {"codex_rejected", "codex_auth_failed", "remote_not_found"}
 # Local fields that must stay untouched between reading and writing credentials.
 GUARD_FIELDS = ("email", "official_account_id", "credential_revision", "client_id", "access_token_encrypted",
-                "refresh_token_encrypted", "id_token_encrypted", "session_token_encrypted")
+                "refresh_token_encrypted", "id_token_encrypted", "session_token_encrypted", "proxy", "proxy_source")
 NOT_CONFIGURED = "请先保存 codex-rs 地址和管理员 API Key"
 
 MESSAGES = {
@@ -289,7 +289,17 @@ async def _import(db, account_id: int) -> dict:
             settings = proxy_id = None
             if first:
                 # Also proves the admin key works before anything is marked as handed over.
-                proxy_id = _pick_proxy(await client.list_proxies())
+                if prepared["snapshot"]["proxy_source"] == "workspace_owner":
+                    from app.core.proxy import normalize_proxy_url
+                    proxy = normalize_proxy_url(prepared["snapshot"]["proxy"])
+                    if not proxy:
+                        raise CodexTransferError("no_proxy", "团队母号代理缺失，未导入 codex-rs")
+                    probe = await client.probe_proxy(proxy)
+                    if probe.get("success") is not True or not probe.get("exitIpv4"):
+                        raise CodexTransferError("no_proxy", "团队母号代理未通过 IPv4 检测，未导入 codex-rs")
+                    prepared["document"]["outboundProxyUrl"] = proxy
+                else:
+                    proxy_id = _pick_proxy(await client.list_proxies())
                 settings = await load_codex_rs_import_defaults(db)
             await _mark_attempted(db, account_id, ticket, prepared["snapshot"])
             sent = True

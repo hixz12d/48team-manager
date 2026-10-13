@@ -525,11 +525,13 @@ function applyHandoff(job, result) {
     }
   }
   if (result?.ok && result.state === 'authorize' && result.ticket && result.account_id) {
+    if (result.proxy_policy !== 'workspace_owner') return failHandoff(job, '服务器未确认沿用团队母号代理，请先更新 48team 服务。');
+    handoff.proxyPolicy = result.proxy_policy;
     let url;
     try { url = new URL(result.authorize_url); } catch { url = null; }
     if (url?.origin !== 'https://auth.openai.com') return failHandoff(job, 'Team48 返回的授权链接无效。');
     Object.assign(handoff, {status: 'opening', accountId: Number(result.account_id), ticket: String(result.ticket),
-      authorizeUrl: url.href, message: '已接入本地，正在打开授权页面',
+      authorizeUrl: url.href, message: '已绑定团队母号代理，正在打开授权页面',
       workspaceNames: (result.workspace?.names || [handoff.workspaceName]).map(String).filter(Boolean).slice(0, 5)});
     if (result.workspace?.name) handoff.workspaceName = String(result.workspace.name).slice(0, 120);
     return;
@@ -557,7 +559,10 @@ async function runHandoff() {
     }
     let result;
     try {
+      const capability = await team48('/api/ext/ping');
+      if (capability.proxy_policy !== 'workspace_owner') throw new Error('服务器尚不支持母号代理接入，请先更新 48team 服务。');
       result = await team48('/api/ext/handoff', {email: job.email, workspace_id: handoff.workspaceId,
+        proxy_policy: 'workspace_owner',
         ...(handoff.syncOperationId ? {sync_operation_id: handoff.syncOperationId} : {}),
         // Lets Team48 store the number that passed OpenAI's phone check on this account.
         ...(job.phoneSuccess ? {phone_session: phoneContext(job).session} : {})});
@@ -573,6 +578,7 @@ async function openAuthorization(id) {
   const job = await serial(loadJob);
   if (job?.id !== id || job.handoff?.status !== 'opening') return;
   const fail = message => patchJob(id, current => { if (current.handoff?.status === 'opening') failHandoff(current, message); });
+  if (!job.runner && job.handoff.proxyPolicy !== 'workspace_owner') return fail('这次接入由旧版插件创建，请停止旧任务后重新接入以绑定母号代理。');
   let baseline = null;
   if (['auto', 'review'].includes(job.mode)) {
     // Snapshot the inbox first so only a fresh login code is ever used.
@@ -617,6 +623,10 @@ async function completeAuthorization(id) {
   const job = await serial(loadJob);
   const handoff = job?.handoff;
   if (job?.id !== id || handoff?.status !== 'completing') return;
+  if (handoff.proxyPolicy !== 'workspace_owner') {
+    await patchJob(id, current => failHandoff(current, '旧授权未绑定母号代理，请重新接入，未提交回调。'));
+    return;
+  }
   if (!handoff.callbackUrl || !handoff.ticket) {
     await patchJob(id, current => failHandoff(current, '授权回调已丢失，请重新接入。'));
     return;
