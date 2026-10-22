@@ -4,10 +4,11 @@
 
 | 环境 | 地址 | 服务器上的目录 | 访问方式 | 凭据在哪 |
 |---|---|---|---|---|
-| 生产 | `https://48team.xiaozhudf2026.foo`（Nginx → `127.0.0.1:8018` → 容器 8008） | 代码 `/opt/team48`，数据 `/data/team48` bind 到 `/opt/team48/data` | `ssh root@156.238.254.8`（速维云-美国-8H8G-三网） | SSH 密码：本机 `VPS.local.md`（已 gitignore）或 `C:/Projects/VPS/速维云-美国-8H8G-三网/机子登录.txt`；应用配置：VPS `/opt/team48/.env` |
+| 生产 | `https://48team.xiaozhudf2026.foo`（Nginx → `127.0.0.1:8018` → 容器 8008） | 代码 `/opt/team48`（root 所有的 git 工作副本），数据 `/opt/team48/data` | `ssh -i ~/.ssh/sub2api-baseline/ops_ed25519 -o IdentitiesOnly=yes ops@148.163.73.236`（天理云美西 8H16G；`ops` 免密 sudo、在 docker 组；root 和密码登录已关闭） | SSH 私钥：本机 `C:\Users\Lovewell\.ssh\sub2api-baseline\ops_ed25519`；整机运维资料见 `C:/Projects/VPS/天理云-美西国际大宽带-8H16G/docs/RUNBOOK.md`；应用配置：VPS `/opt/team48/.env` |
 | 本地 | `http://127.0.0.1:8008` | 仓库根，数据 `data/` | 见 [ARCHITECTURE.md](ARCHITECTURE.md#本地运行) | 本地 `.env` |
 
-- Compose 项目 `team48`、容器 `team48-manager`、网络 `team48_net`；外挂现有网络 `sub2api_sub2api-network`，容器内访问 Sub2API 用 `http://sub2api-canary:8080`（宿主机 `http://127.0.0.1:8101`）。
+- Compose 项目 `team48`、容器 `team48-manager`；网络 `team48_net`（external，和 icloud-hme 共用）、`sub2api_sub2api-network`（容器内访问 Sub2API 用 `http://sub2api-canary:8080`）、`codex-proxy-rs_default`（`http://codex-proxy-rs:8080`）。
+- 服务器上的 `deploy/docker-compose.yml` 有一处未提交的本地改动（`team48_net` 改为 `external: true` 并加入 `codex-proxy-rs_default`），拉代码时保留，不要 `git checkout` / `reset` 掉。
 - HME 服务在同机容器 `icloud-hme`（`http://icloud-hme:8081`），部署见 `../icloud-hme/docs/RUNBOOK.md`。
 - Nginx 站点配置在仓库 `deploy/nginx-48team.conf`，独立 server_name，不写进 Sub2API 的站点文件。
 - 生产 `.env` 必须覆盖 `SECRET_KEY`、`ADMIN_PASSWORD`（代码默认值是弱占位），并设 `SESSION_COOKIE_SECURE=True`；模板 `deploy.env.example`。
@@ -25,27 +26,27 @@
 
 ### 代码拉取
 
-GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据。VPS 用只读 Deploy Key（`/root/.ssh/team48_deploy`，SSH 别名 `github.com-team48`，remote `git@github.com-team48:hixz12d/48team-manager.git`）只 `git pull`，不在生产目录提交。推送只在本机（`gh` 已登录 `hixz12d`）。不要把本机 `gh` 登录态或带 repo 权限的 token 拷到 VPS。`.env`、`data/` 不进仓库。
+GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据。VPS 上的远端是 HTTPS（`https://github.com/hixz12d/48team-manager.git`），只 `git pull`，不在生产目录提交；仓库属 root，git 命令前加 `sudo`。推送只在本机（`gh` 已登录 `hixz12d`）。不要把本机 `gh` 登录态或带 repo 权限的 token 拷到 VPS。`.env`、`data/` 不进仓库。
 
 ## 部署
 
 未经明确批准不部署，不在生产做真实踢人、邀请或改席位的测试。
 
 1. 本机推送 `origin/main`。 —— 确认：`git status` 干净，`git log origin/main -1` 是目标提交。
-2. 登录 VPS，确认没有进行中的任务（任务页无 running / queued，尤其是凭据写入、团队同步、轮转）。宿主机没有 `sqlite3` 命令，要查库用 `python3` 只读打开 `file:data/team48.db?mode=ro`，任务表是 `operations`（列 `type`、`state`）。
-3. 备份（`<tag>` 用提交短 SHA）：
+2. 登录 VPS，确认没有进行中的任务（任务页无 running / queued，尤其是凭据写入、团队同步、轮转），且 `data/runner-runs/` 为空。宿主机没有 `sqlite3` 命令，要查库用 `sudo python3` 只读打开 `file:/opt/team48/data/team48.db?mode=ro`，任务表是 `operations`（列 `type`、`state`）。
+3. 备份（`<tag>` 用提交短 SHA；`ops` 用户执行，文件属 root 的步骤加 `sudo`）：
    ```bash
    cd /opt/team48
-   mkdir -p -m 700 deploy/releases/<tag>
-   python3 -c "import sqlite3; s=sqlite3.connect('data/team48.db'); d=sqlite3.connect('deploy/releases/<tag>/team48.db'); s.backup(d); print(d.execute('pragma integrity_check').fetchone()[0])"
-   cp .env deploy/releases/<tag>/.env && chmod 600 deploy/releases/<tag>/*
+   sudo mkdir -p -m 700 deploy/releases/<tag>
+   sudo python3 -c "import sqlite3; s=sqlite3.connect('data/team48.db'); d=sqlite3.connect('deploy/releases/<tag>/team48.db'); s.backup(d); print(d.execute('pragma integrity_check').fetchone()[0])"
+   sudo cp .env deploy/releases/<tag>/.env && sudo sh -c "chmod 600 deploy/releases/<tag>/*"
    docker tag team48-manager:local team48-manager:rollback-<tag>
    ```
    —— 确认：`integrity_check` 输出 `ok`，`docker images | grep rollback-<tag>` 存在。
 4. 拉取并只重建自己：
    ```bash
-   git pull --ff-only origin main
-   docker compose -p team48 -f deploy/docker-compose.yml up -d --build --no-deps team48
+   sudo git pull --ff-only origin main
+   sudo docker compose -p team48 -f deploy/docker-compose.yml up -d --build --no-deps team48
    ```
    新表 / 新列由启动时 bootstrap 自动补，无单独迁移命令。改了 `deploy/Dockerfile`（镜像带完整插件但不含 `private-config.mjs`、Xvfb、字体）时必须带 `--build`。
 5. 健康检查（见下）。 —— 确认：全部通过。
@@ -59,8 +60,8 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
    ```bash
    cd /opt/team48
    docker tag team48-manager:rollback-<tag> team48-manager:local
-   git checkout <上一版提交>
-   docker compose -p team48 -f deploy/docker-compose.yml up -d --no-deps team48
+   sudo git checkout <上一版提交>
+   sudo docker compose -p team48 -f deploy/docker-compose.yml up -d --no-deps team48
    ```
 3. 默认保留新增的表、列和审计记录（旧代码会忽略它们），不删库。只有数据确实被写坏时，才停容器后用 `deploy/releases/<tag>/team48.db` 覆盖 `data/team48.db`。
 4. 注意：已发生过刷新权交回的，不能直接回滚到不认识刷新归属的旧版本；回滚也撤销不了已经发生的官方授权、RT 消费或成员变动。

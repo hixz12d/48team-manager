@@ -144,7 +144,7 @@ async def apply(path: Path, commit: bool, overwrite: bool, assign: dict[int, int
         async with session_factory() as db:
             plans = []
             for item in items:
-                issues, blocking = [], False
+                issues, blocking, swapped = [], False, False
                 workspaces: list = []
                 if item.get("workspace_id"):
                     workspace = await db.get(Workspace, int(item["workspace_id"]))
@@ -162,6 +162,7 @@ async def apply(path: Path, commit: bool, overwrite: bool, assign: dict[int, int
                             continue
                         workspaces = list(await db.scalars(select(Workspace).where(Workspace.owner_account_id == account.id).order_by(Workspace.id)))
                         if workspaces and index:
+                            swapped = True
                             issues.append(f"按 {email} 匹配（gmail / googlemail 互换）")
                         if workspaces and account.local_purpose != "mother":
                             issues.append(f"该账号本地用途是 {account.local_purpose}，不是母号")
@@ -205,13 +206,21 @@ async def apply(path: Path, commit: bool, overwrite: bool, assign: dict[int, int
                         issues.append("团队已有购买信息" + ("，--overwrite 覆盖" if overwrite else "，跳过（加 --overwrite 才覆盖）"))
                         blocking = blocking or not overwrite
                 plans.append({"item": item, "workspace": workspace, "fields": fields, "issues": issues,
-                              "blocking": blocking, "db_expiry": db_expiry})
+                              "blocking": blocking, "db_expiry": db_expiry, "swapped": swapped})
 
             seen: dict[int, list] = {}
             for plan in plans:
                 if plan["workspace"] is not None:
                     seen.setdefault(plan["workspace"].id, []).append(plan)
             for same in seen.values():
+                # 邮箱完全一致的优先；只靠 gmail / googlemail 互换匹配上的让出这个团队，算未匹配。
+                exact = [p for p in same if not p["swapped"]]
+                if len(same) > 1 and len(exact) == 1:
+                    for plan in same:
+                        if plan["swapped"]:
+                            plan["issues"].append(f"该团队已由第 {exact[0]['item']['row']} 行（邮箱完全一致）占用，本行算未匹配")
+                            plan["workspace"], plan["blocking"] = None, True
+                    continue
                 if len(same) > 1:
                     rows = "、".join(str(p["item"]["row"]) for p in same)
                     for plan in same:

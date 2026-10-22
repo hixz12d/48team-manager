@@ -20,7 +20,7 @@
 
 ### 默认机器
 
-后续部署、排障、SSH，默认就是速维云美西这台，细节见 [docs/RUNBOOK.md](docs/RUNBOOK.md)。密码只在本机 `VPS.local.md` 和 `C:/Projects/VPS/速维云-美国-8H8G-三网/机子登录.txt`。
+后续部署、排障、SSH，默认就是天理云美西 8H16G 这台（`ops@148.163.73.236`，密钥登录；旧速维云机器已下线），细节见 [docs/RUNBOOK.md](docs/RUNBOOK.md)。
 
 ### 绝对不能碰
 
