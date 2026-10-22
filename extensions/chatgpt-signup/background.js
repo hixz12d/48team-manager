@@ -901,7 +901,10 @@ async function contentMessage(message, sender) {
       status: job.status, message: job.message, stage: job.stage, mode: job.mode || 'auto', resumeCount: job.resumeCount || 0,
       hidePanel: job.hidePanel === true, entryFallbackUsed: !!job.entryFallbackUsed, entryFormSeen: !!job.entryFormSeen,
       phase: job.phase === 'oauth' ? 'oauth' : 'signup', passwordSet: !!job.passwordSet,
-      workspaceNames: job.phase === 'oauth' ? job.handoff?.workspaceNames || [] : [],
+      // Signup may also end on the workspace chooser: the chosen or recognised team (server mode: its task).
+      workspaceNames: job.phase === 'oauth' ? job.handoff?.workspaceNames || [] :
+        job.runner ? job.runner.workspaceNames || [] : [job.autoHandoff?.workspaceName].filter(Boolean),
+      workspacePending: job.autoHandoff?.resolve?.status === 'resolving',
       phoneRelay: phoneRelayEnabled(job),
       ...(job.status === 'paused' ? {pausedStage: job.pausedStage || job.stage, reloadAt: job.reloadAt || 0,
         autoResume: AUTO_RESUME_REASONS.has(job.pauseReason), autoRetry: autoRetryAllowed(job)} : {})};

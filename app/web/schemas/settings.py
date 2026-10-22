@@ -86,6 +86,7 @@ class CodexRsSettings(BaseModel):
     weight: int | None = Field(default=None, ge=1, le=100)
     enabled: bool | None = None
     refill: CodexRsRefillSettings | None = None
+    auto_reauth: bool | None = None
 
 
 class SettingsPatch(BaseModel):

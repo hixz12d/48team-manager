@@ -64,6 +64,7 @@ UNSAFE_RETRY_TYPES = {
     "invite_child",
     "update_member_role",
     "pool_join",
+    "codex_reauth",
 }
 
 

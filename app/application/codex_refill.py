@@ -281,7 +281,18 @@ async def _run(db: AsyncSession, config: dict[str, Any]) -> dict[str, Any]:
     working, not_working, to_disable = _classify(items, state, now)
     state.update(checked_at=stamp, ok=True, error=None, working=working, total=len(items), not_working=not_working)
 
+    from app.application import codex_status, codex_reauth
+    snapshot = await codex_status.load_snapshot(db)
     for item in to_disable:
+        binding = await db.scalar(select(CodexBinding).where(CodexBinding.remote_account_id == item["remote_id"]))
+        account = await db.get(Account, binding.account_id) if binding is not None else None
+        if account is not None and await codex_status.reauth_enabled(db):
+            active = await codex_reauth.last_operation(db, account.id)
+            health = codex_status.present(snapshot, binding)
+            waiting_retry = (health.get("can_reauth") and int(account.reauth_fail_count or 0) < codex_reauth.MAX_ATTEMPTS
+                             and (active is None or active.state in {"failed", "success"}))
+            if (active is not None and active.state in ACTIVE_STATES or waiting_retry):
+                continue  # Give mailbox recovery a chance before disabling scheduling.
         state["disabled_by_refill"].append(await _disable(db, client, item))
         logger.info("codex-rs auto refill: disabled errored account email=%s ok=%s",
                     item.get("email"), state["disabled_by_refill"][-1]["ok"])

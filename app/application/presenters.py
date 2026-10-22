@@ -70,6 +70,7 @@ OPERATION_TYPE_LABELS = {
     "reregister": "重注册",
     "runner_selfcheck": "浏览器环境自检",
     "pool_join": "号池拉入",
+    "codex_reauth": "rs 邮箱重授权",
 }
 
 BUSINESS_STEP_LABELS = {
@@ -128,6 +129,7 @@ BUSINESS_STEP_LABELS = {
     "mailbox": "绑定邮箱",
     "authorizing": "自动授权",
     "authorized": "已授权",
+    "codex_push": "更新并核对 rs 账号",
     "auth_failed": "授权失败",
     "blocked": "已拦截",
     "hme_failed": "领取邮箱失败",
@@ -159,6 +161,8 @@ _ONBOARD_PLAN = (
     ("active", ("active",)),
 )
 OPERATION_STAGE_PLANS = {
+    "codex_reauth": (("authorizing", ("authorizing",) + _BROWSER_STAGES),
+                     ("authorized", ("authorized",)), ("codex_push", ("codex_push",))),
     "onboard": _ONBOARD_PLAN,
     "replenish": _ONBOARD_PLAN,
     "pool_join": (("kicked", ("kicking", "official_removed", "kicked")),) + _ONBOARD_PLAN[:-1] + (

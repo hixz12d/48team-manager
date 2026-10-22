@@ -274,7 +274,7 @@ async def _record_failure(db, account_id: int, ticket: str, *, sent: bool, relea
     return state, values.get("remote_account_id", binding.remote_account_id)
 
 
-async def _import(db, account_id: int) -> dict:
+async def _import(db, account_id: int, *, reenable: bool = True, expected_remote_id: str | None = None) -> dict:
     try:
         client = await _client(db)
         prepared = await _prepare(db, account_id, client.base_url)
@@ -302,15 +302,27 @@ async def _import(db, account_id: int) -> dict:
                     proxy_id = _pick_proxy(await client.list_proxies())
                 settings = await load_codex_rs_import_defaults(db)
             await _mark_attempted(db, account_id, ticket, prepared["snapshot"])
+            if expected_remote_id is not None:
+                binding = await db.get(CodexBinding, account_id, populate_existing=True)
+                if first or binding.remote_account_id != expected_remote_id:
+                    raise _error("remote_identity_mismatch")
+                await db.commit()
+                current = await client.detail(expected_remote_id)
+                if (current.get("email", "").strip().lower() != identity["email"]
+                        or current.get("accountId") != identity["account_id"]
+                        or current.get("userId") != identity["user_id"] or current.get("enabled") is not True):
+                    raise _error("remote_identity_mismatch")
             sent = True
             remote_id = (await client.import_accounts(prepared["document"], settings=settings, proxy_id=proxy_id))[0]
             imported = True
+            if expected_remote_id is not None and remote_id != expected_remote_id:
+                raise _error("remote_identity_mismatch")
             remote = await client.detail(remote_id)
             _verify_remote(remote, identity)
             verified = (remote_id, identity["account_id"])
             enabled, note = remote.get("enabled"), None
             # Re-enable an account that was disabled when it left a team, once it is back in one.
-            back_in_team = not first and enabled is False and await _in_team(db, account_id)
+            back_in_team = reenable and not first and enabled is False and await _in_team(db, account_id)
             await db.commit()  # never hold a read transaction across network I/O
             if back_in_team:
                 try:
@@ -347,7 +359,7 @@ async def _import(db, account_id: int) -> dict:
         await db.commit()
 
 
-async def import_account(db, account_id: int) -> dict:
+async def import_account(db, account_id: int, *, reenable: bool = True, expected_remote_id: str | None = None) -> dict:
     """Import one account (with RT) into codex-rs. Never raises.
 
     Returns {"account_id", "ok", "state", "remote_account_id", "error_code", "message"}.
@@ -356,7 +368,7 @@ async def import_account(db, account_id: int) -> dict:
     """
     account_id = int(account_id)
     try:
-        return await _import(db, account_id)
+        return await _import(db, account_id, reenable=reenable, expected_remote_id=expected_remote_id)
     except Exception as exc:  # noqa: BLE001 - callers rely on a result, never an exception
         await _rollback(db)
         logger.warning("codex-rs 导入异常 account_id=%s error=%s", account_id, type(exc).__name__)
@@ -377,6 +389,11 @@ async def import_accounts(db, account_ids: list[int]) -> dict:
 
 
 async def _pull(db, account_id: int, lease_ticket: str) -> dict:
+    from app.persistence.models.operations import Operation
+    from app.domain.automation import ACTIVE_STATES
+    if await db.scalar(select(Operation.id).where(Operation.account_id == account_id,
+            Operation.op_type == "codex_reauth", Operation.state.in_(ACTIVE_STATES)).limit(1)):
+        return _pull_failure("remote_refresh_pending")
     binding = await db.get(CodexBinding, account_id, populate_existing=True)
     account = await db.get(Account, account_id, populate_existing=True)
     # A failed re-import leaves "uncertain" with a verified remote ID; codex-rs still owns that account.
@@ -393,6 +410,12 @@ async def _pull(db, account_id: int, lease_ticket: str) -> dict:
         client = await _client(db)
         await db.commit()  # end the read transaction before network I/O
         tokens = await client.export_tokens(remote_id)
+        pending_push = bool(account.refresh_token_encrypted and binding.credential_revision != account.credential_revision)
+        if pending_push:
+            remote = await client.detail(remote_id)
+            _verify_remote(remote, expected)
+            if remote.get("status") not in {"normal", "rate_limited", "quota_exhausted"}:
+                return _pull_failure("remote_refresh_pending")
     except CodexTransferError:
         return _pull_failure("remote_unavailable")
     access, id_token = tokens["access_token"], tokens.get("id_token")
@@ -411,7 +434,8 @@ async def _pull(db, account_id: int, lease_ticket: str) -> dict:
                 or id_identity["user_id"] not in (None, identity["user_id"])):
             return _pull_failure("remote_identity_mismatch")
     remote_exp = jwt_parser.expiration_utc(access)
-    if remote_exp is None or remote_exp <= utcnow() or (local_exp is not None and remote_exp <= local_exp):
+    if remote_exp is None or remote_exp <= utcnow() or (local_exp is not None and remote_exp <= local_exp
+            and not (pending_push and access == local_access)):
         return _pull_failure("remote_refresh_pending")
     if not await _guard(db, account_id, snapshot):
         await _rollback(db)
@@ -424,6 +448,9 @@ async def _pull(db, account_id: int, lease_ticket: str) -> dict:
     if binding is None or binding.state not in PULLABLE_STATES or binding.remote_account_id != remote_id:
         await _rollback(db)
         return _pull_failure("codex_binding_missing")
+    if await db.scalar(select(Operation.id).where(Operation.account_id == account_id,
+            Operation.op_type == "codex_reauth", Operation.state.in_(ACTIVE_STATES)).limit(1)):
+        return _pull_failure("remote_refresh_pending")
     revision = int(snapshot["credential_revision"] or 1) + 1
     now = utcnow()
     values = {"access_token_encrypted": encrypt_secret(access), "refresh_token_encrypted": None,

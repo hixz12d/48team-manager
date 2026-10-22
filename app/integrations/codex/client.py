@@ -111,7 +111,9 @@ class CodexClient:
                 raise CodexTransferError("codex_invalid_list", "codex-rs 列表响应不完整", 502)
             items.extend(batch)
             total = meta.get("total")
-            if not batch or type(total) is not int or len(items) >= total:
+            if type(total) is not int or total < 0 or (not batch and len(items) < total):
+                raise CodexTransferError("codex_invalid_list", "codex-rs 列表未完整读取，保留旧状态", 502)
+            if len(items) >= total:
                 return items
         raise CodexTransferError("codex_list_limit", "codex-rs 列表过长，未读取完整", 502)
 

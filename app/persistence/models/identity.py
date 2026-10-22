@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func, inspect
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, event, func, inspect
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.persistence.database import Base
@@ -123,6 +124,13 @@ class Workspace(Base):
     occupied_seats: Mapped[int | None] = mapped_column(Integer)
     last_official_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_official_sync_state: Mapped[str | None] = mapped_column(String(20))
+    # One purchase per team (no renewals). Owner 2FA is encrypted like credentials.
+    purchase_payment_card: Mapped[str | None] = mapped_column(String(100))
+    purchase_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    purchase_currency: Mapped[str | None] = mapped_column(String(3))
+    purchase_note: Mapped[str | None] = mapped_column(Text)
+    owner_totp_secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    purchase_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_team_id: Mapped[int | None] = mapped_column(Integer, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

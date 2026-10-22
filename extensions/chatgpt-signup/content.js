@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.8.6';
+  const VERSION = '0.8.8';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -1218,12 +1218,58 @@
     await trace('filled'); await submit(password, 'password');
   }
   const choiceText = node => (node.innerText || node.getAttribute('aria-label') || '').trim().toLowerCase();
-  let pickedOn = '';
+  const CHOICES = '[role="radio"],[role="option"],[role="menuitemradio"],[role="button"],[role="link"],label,button,li,a';
+  // The team's row: a control whose text is the name, or one of whose lines is (rows also carry avatar
+  // initials and chevrons). Rows built from plain divs fall back to the text element itself.
+  function workspaceChoice(names) {
+    const lines = node => (node.innerText || '').split('\n').map(line => line.trim().toLowerCase());
+    const own = node => !node.closest('#team48-signup-progress');
+    let matches = all(CHOICES).filter(node => own(node) &&
+      (names.includes(choiceText(node)) || lines(node).some(line => names.includes(line))));
+    if (!matches.length) matches = all('span,div,p,strong,h2,h3').filter(node => own(node) && !node.children.length && names.includes(choiceText(node)));
+    return matches.find(node => !matches.some(other => other !== node && node.contains(other)));
+  }
+  let pickedOn = '', pickedAt = 0;
+  const workspaceNames = () => (job.workspaceNames || []).map(name => String(name).trim().toLowerCase()).filter(Boolean);
+  // "Choose a workspace" lists clickable rows and has no Continue button of its own.
+  const chooserPage = (text, path) => /workspace|organization/.test(path) || /choose a workspace|select a workspace|选择工作空间|选择一个工作空间/.test(text);
+  async function pickWorkspace(names) {
+    const target = workspaceChoice(names);
+    if (!target) {
+      await pause(`网页没有找到团队「${job.workspaceNames[0]}」，请手动选择该团队后点击插件中的继续。`, 'manual_step');
+      return;
+    }
+    renderProgress({...job, message: `正在选择团队「${job.workspaceNames[0]}」。`});
+    // Rows grey out behind a spinner while the page loads; wait instead of timing out the click.
+    if (!enabled(target)) return;
+    if (await clickControl(target)) { pickedOn = location.pathname; pickedAt = clock(); }
+    await rest(600, 1000);
+  }
+  // Signup can also end on the chooser (the invited team next to Personal account): pick the team.
+  async function signupWorkspace(text, path) {
+    if (!chooserPage(text, path) || !/personal account|个人帐户|个人账户/.test(text)) return false;
+    unknownSince = clock();
+    const names = workspaceNames();
+    if (!autoFill() || job.mode !== 'auto') {
+      renderProgress({...job, message: '请在网页选择要加入的团队。'});
+      return true;
+    }
+    if (!names.length) {
+      if (job.workspacePending) renderProgress({...job, message: '正在识别邀请的团队，识别后自动选择。'});
+      else await pause('网页要求选择团队，但没有识别到要接入的团队，请手动选择后点击插件中的继续。', 'manual_step');
+      return true;
+    }
+    if (pickedOn !== location.pathname) await pickWorkspace(names);
+    else if (clock() - pickedAt > 20000) await pause('已点选团队，但页面 20 秒没有前进，请在网页手动选择该团队后点击插件中的继续。', 'manual_step');
+    else renderProgress({...job, message: '已选择团队，等待网页进入下一步。'});
+    return true;
+  }
   async function oauthPage(text, path) {
-    const names = (job.workspaceNames || []).map(name => String(name).trim().toLowerCase()).filter(Boolean);
+    const names = workspaceNames();
     const approve = button(/^(continue|allow|authorize|accept|confirm|继续|允许|授权|确认)$/i);
     const approval = /consent|authorize|workspace|organization/.test(path) || /codex/.test(text);
-    if (!approve || !approval) {
+    const chooser = chooserPage(text, path);
+    if ((!approve || !approval) && !chooser) {
       const login = button(/^(log in|continue with password|使用密码继续|登录)$/i);
       if (autoFill() && job.mode === 'auto' && login && enabled(login) && location.hostname !== 'chatgpt.com') {
         unknownSince = clock();
@@ -1239,22 +1285,26 @@
       return true;
     }
     // A team chooser has selectable options or a workspace path; consent text alone is not one.
-    const picker = /workspace|organization/.test(path) ||
+    const picker = chooser ||
       all('[role="radio"],[role="option"],[role="menuitemradio"],input[type="radio"]').length > 1;
     if (picker && names.length && pickedOn !== location.pathname) {
-      // Same rule as the project's browser runner: click the team's exact name once, then approve.
-      const matches = all('[role="radio"],[role="option"],[role="menuitemradio"],label,button,li,a')
-        .filter(node => !node.closest('#team48-signup-progress') && names.includes(choiceText(node)));
-      const target = matches.find(node => !matches.some(other => other !== node && node.contains(other)));
-      if (!target) {
-        await pause(`授权页没有找到团队「${job.workspaceNames[0]}」，请手动选择该团队后点击插件中的继续。`, 'manual_step');
-        return true;
-      }
-      if (await clickControl(target)) pickedOn = location.pathname;
-      await rest(600, 1000);
+      // Same rule as the project's browser runner: click the team's name once, then approve.
+      await pickWorkspace(names);
       return true;
     }
-    if (!enabled(approve)) { renderProgress({...job, message: '等待授权按钮可用。'}); return true; }
+    if (!enabled(approve)) {
+      if (chooser && !names.length) {
+        await pause('授权页需要选择团队，但这次接入没有团队名称，请在网页手动选择后点击插件中的继续。', 'manual_step');
+        return true;
+      }
+      // A row click usually moves straight on; a chooser that stays put needs a person.
+      if (chooser && pickedOn === location.pathname && clock() - pickedAt > 20000) {
+        await pause('已点选团队，但页面 20 秒没有前进，请在网页手动选择该团队后点击插件中的继续。', 'manual_step');
+        return true;
+      }
+      renderProgress({...job, message: chooser && pickedOn === location.pathname ? '已选择团队，等待页面进入授权确认。' : '等待授权按钮可用。'});
+      return true;
+    }
     if (job.mode === 'review') {
       renderProgress({...job, message: '已选择团队，请核对后点击网页的继续按钮完成授权。'});
       return true;
@@ -1796,6 +1846,7 @@
       if (clock() - unknownSince > 25000) await pause('未识别当前授权页面，请手动继续；拿到回调后插件会自动提交。', 'unknown_page');
       return;
     }
+    if (!managed && ['signup', 'unknown'].includes(stage) && await signupWorkspace(text, path)) return;
     if (managed && location.hostname === 'chatgpt.com' && ['home', 'unknown'].includes(stage)) {
       // Yield all page interaction to the host for invitation/workspace handling.
       unknownSince = clock();

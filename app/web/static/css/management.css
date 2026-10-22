@@ -569,6 +569,52 @@ button.management-badge:hover {
 .management-health-details .management-bar {
   height: 6px;
 }
+/* 异常原因：放在面板最上面，左侧细线 + 符号文字，不铺底 */
+.management-health-alert {
+  display: grid;
+  gap: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--warning-text);
+}
+.management-health-alert p {
+  margin: 0;
+  line-height: 1.6;
+}
+.management-health-reasons {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+}
+.management-status-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--text-secondary);
+}
+.management-status-line time {
+  font-variant-numeric: tabular-nums;
+}
+.management-status-sep {
+  color: var(--muted);
+}
+.management-downstream {
+  display: grid;
+  gap: 6px;
+}
+.management-downstream h3 {
+  margin: 0;
+  font-size: var(--text-meta);
+  font-weight: 500;
+  color: var(--muted);
+}
+.management-downstream p {
+  margin: 0;
+}
+.management-downstream>.button {
+  justify-self: start;
+}
 .management-advanced {
   border-top: 1px solid var(--border);
   padding-top: 16px;
@@ -1343,7 +1389,7 @@ button.management-badge:hover {
   border-top: 1px solid var(--border);
   padding-top: 14px;
 }
-.team-information>summary, .team-danger-zone>summary, .team-expiry-details>summary {
+.team-information>summary, .team-danger-zone>summary, .team-expiry-details>summary, .team-purchase-details>summary {
   cursor: pointer;
   font-size: var(--text-body);
   font-weight: 600;
@@ -1369,14 +1415,14 @@ button.management-badge:hover {
 .team-info-actions {
   margin: 12px 0;
 }
-.team-expiry-details {
+.team-expiry-details, .team-purchase-details {
   margin-top: 12px;
 }
-.team-expiry-details>summary {
+.team-expiry-details>summary, .team-purchase-details>summary {
   font-weight: 400;
   color: var(--text-secondary);
 }
-.team-information .workspace-expiry-editor {
+.team-information .workspace-expiry-editor, .team-information .workspace-purchase-editor {
   border: 0;
   border-radius: 0;
   padding: 12px 0;

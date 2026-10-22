@@ -19,7 +19,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口）、模板、静态资源；`static/fonts/` 是自托管的 Anthropic Sans / Mono |
 | `DESIGN.md` | 界面设计规范（配色、字号、组件、状态写法），改界面前先读 |
 | `extensions/chatgpt-signup/` | 自用注册插件；`content.js` 也被服务端托管注册复用；`runner.mjs` 是服务器模式 |
-| `scripts/` | 本机工具：插件打包、单席位补位、浏览器冒烟、HubStudio 观察 |
+| `scripts/` | 本机工具：插件打包、单席位补位、浏览器冒烟、HubStudio 观察、Excel 购买台账一次性导入 |
 | `tests/` | Python / Node / Playwright 回归；`preview_app.py` 本地示例数据预览 |
 | `deploy/` | Dockerfile、compose、Nginx 配置 |
 
@@ -51,6 +51,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `sub2api_usage_sync` | 5 分钟 | 计费用量：5h / 今日 / 自然 7 天 / 全程（`lifetime`，自绑定起最多 90 天，`/accounts/{id}/stats?days=N`） |
 | `auto_reauth_scan` | 30 分钟 | 自动重授权（默认关闭） |
 | `codex_rs_refill_scan` | 5 分钟 | codex-rs 自动补号 `codex_refill.run_once`（开关关闭时不访问 codex-rs） |
+| `codex_rs_health_scan` | 60 秒 | rs 状态同步 `codex_status.refresh`，再尝试串行邮箱恢复 `codex_reauth.run_once`；恢复开关默认关 |
 
 ### 手动轮转（`application/manual_rotation.py`）
 
@@ -84,6 +85,14 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - 查询：`totals()`（累计、本月、按团队）、`entries()`；接口 `GET /api/workspaces/{id}/revenue`，看板 `portfolio` 每组带 `revenue`，总览 summary 带 `revenue_total` / `revenue_month`。
 - 每日收入（`application/revenue_daily.py`）：`record_day` 取较大值 upsert 到 `sub2api_revenue_daily`；写入来源 `sync`（`sub2api_usage` 的 `today` 窗口同步成功后）、`settle`（`settle_binding` 复用全程读取的 `summary.today`，读不到用当天 `today` 快照）、`backfill`（`main.py` 启动补录最近 7 天离队号，读 `/accounts/{id}/stats` 的 `history[]`，并对比 Sub2API `server_timezone` 与 `TIMEZONE`，不一致时打 warning 并写进 `note`）。
 - 总览 `overview_totals(db, groups)` → `portfolio.revenue_overview` → summary 的 `revenue_running` / `revenue_today` / `revenue_seven_day`（`{user_cost, synced, total, stale, note}`）：在跑 = 各组 `lifetime` 快照之和；今日 / 近 7 天 = 在绑定号的快照 ＋ 离队号的每日记录，按远端号去重。
+
+### 团队购买信息（`application/workspace_purchase.py`）
+
+- `purchase_record(workspace)` 进团队 payload 的 `purchase` 块：`payment_card`、`cost`（字符串，未填为 null）、`currency`、`note`、`totp_state`（stored / missing）、`updated_at`；不含 2FA 明文。
+- `update_workspace_purchase(db, id, fields)` 只改传入的键，null 清空；校验在 `normalize_*`（schema `WorkspacePurchasePatch` 与导入脚本共用）。存了费用没给币种时记 USD。2FA 用 `encrypt_secret` 加密。
+- 接口：`PATCH /api/workspaces/{id}/purchase`；`POST /api/workspaces/{id}/purchase/totp` 返回明文供复制（POST + `no-store`，不打日志）。
+- 前端 `static/js/workspace-purchase.js`（`Team48Purchase.costLine / editor / summary`）：团队卡成本行、团队抽屉"团队信息 → 购买信息"编辑器。
+- `scripts/import_purchase.py`：一次性从 Excel 购买台账导入（本机 `extract` → 容器内 `apply`，默认干跑，`--commit` 写入，`--assign 行号=团队ID` 手动指定）。
 
 ### 备用号池（`application/standby_pool.py`、`pool_join.py`）
 
@@ -126,6 +135,14 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - 离队停用接入点：`rotate.kick_to_standby`（离队记账后，返回 `codex_rs_disable`）、`workspace_sync.py`（离队记账循环）。
 - 接口：`GET /api/codex-rs/options`、`POST /api/accounts/codex-rs/import`（部分失败也是 200，看 `ok` / `results`）、`POST /api/settings/probe` 的 `codex_rs` 目标；账号行字段 `codex_rs`（`queries/identity.py`）。前端设置卡片 `static/js/codex-rs-settings.js`（`window.Team48CodexRs`）。
 
+### codex-rs 状态与重授权（`application/codex_status.py`、`codex_reauth.py`）
+
+- 状态保存在 `system_settings.codex_rs_health`，按本地账号关联绑定目标和远端 ID；保存安全原因码，不保存任意远端错误原文。页面只读缓存，账号卡 `codex_rs.health` 与官方额度分开。自动恢复开关 `codex_rs_auto_reauth` 在 `SettingsPatch.codex_rs.auto_reauth` 保存，默认关闭。
+- `POST /api/codex-rs/status/refresh` 只读刷新 rs（45 秒合并重复请求）；`POST /api/accounts/{id}/codex-rs/reauth` 创建 `codex_reauth` 任务。均要求管理端登录。任务使用团队锁、全局浏览器槽、`command_runner` 和独立 OAuth purpose `codex_reauth`；不修改通用自动重授权的刷新权门禁。
+- 每次任务冻结绑定身份与本地凭据版本，登录前、换票前、写凭据前、推送前重新核对；邮箱验证码登录复用 `InvitedBrowserSession`，`login_only=True`、`allow_signup=False`、`allow_sms=False`、空密码。`FrozenProxyClient` 确保换票沿用浏览器代理；校验 OAuth state 和令牌邮箱 / 用户 / 原 workspace 后才保存。
+- 推送复用 `codex_publish.import_account(reenable=False, expected_remote_id=...)`，只更新凭据，不传首次导入参数或恢复调度。`authorized` 步骤持久化后失败只能重推；活动恢复任务会阻止通用手动 OAuth 与 AT 读回。回推结果未知时通过同身份、有效相同 / 更新 AT 和远端持有 RT 的读回证据对账。
+- 重启恢复 `codex_reauth` 为待人工；失败最多 3 次，限次和退避复用账号 `reauth_fail_count / next_reauth_at`。手机验证、身份冲突、取消或结果未知不自动重试。
+
 ### codex-rs 自动补号（`application/codex_refill.py`）
 
 - 设置键 `codex_rs_refill`（`{enabled, target, daily_limit, workspace_ids}`，随设置 `codex_rs.refill` 整块保存；开关由关变开时 `clear_pause`）、运行状态键 `codex_rs_refill_state`（计数、`not_working`、防抖 `suspects`、`disabled_by_refill` 最近 20 条、暂停、`last_operation_id`、`today`、`blocked_reason`），只由本模块读写。
@@ -143,7 +160,7 @@ SQLite `data/team48.db`（WAL；需 SQLite ≥ 3.25）。表由 `bootstrap.py` �
 
 | 分组 | 主要表 |
 |---|---|
-| 身份 | `accounts`、`workspaces`、`workspace_memberships`、`workspace_official_member_snapshots`、`external_bindings` |
+| 身份 | `accounts`、`workspaces`（含手动到期 `manual_expires_on`；购买信息列 `purchase_payment_card`、`purchase_cost`、`purchase_currency`、`purchase_note`、`owner_totp_secret_encrypted`、`purchase_updated_at`，一个团队只记一笔）、`workspace_memberships`、`workspace_official_member_snapshots`、`external_bindings` |
 | 任务 | `operations`、`operation_steps` |
 | 额度 | `quota_snapshots`、`quota_probe_states`、`quota_dispatch_lease`、`credential_leases` |
 | Sub2API | `sub2api_sync_observations`、`sub2api_refresh_authorities`、`sub2api_refresh_handoffs`、`sub2api_account_status`、`sub2api_usage_snapshots`、`sub2api_proxy_bindings`、`sub2api_revenue_entries`（收入账本，无外键，存邮箱和团队名快照，唯一键 团队 + 远端账号 ID）、`sub2api_revenue_daily`（每日收入，每个远端号每天一行存当天累计 U，只增不减，无外键，不随团队 / 账号 / 绑定删除） |

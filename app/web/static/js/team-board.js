@@ -102,15 +102,16 @@
     }
     const neutral = (value, suffix, prefix = "") => { const n = el("span", "board-chip", prefix); n.append(el("strong", "", value), suffix); return n; };
     if (group.occupied_seats != null && group.seat_limit) meta.append(neutral(`${group.occupied_seats}/${group.seat_limit}`, " 席"));
-    meta.append(neutral(`${c.inSub}/${all.length}`, "", "在 Sub2API "));
+    // Sub2API 在卡头只汇总一次；有子号不在时整块变成警示，逐个状态看下面的子号表。
+    if (c.out) meta.append(el("span", "board-flag is-warning", `Sub2API ${c.inSub}/${all.length} · ${c.out} 个不在`));
+    else meta.append(neutral(`${c.inSub}/${all.length}`, "", "Sub2API "));
     if (expiry?.date) {
       const alert = { error: "is-danger", warning: "is-warning" }[expiry.tone];
       const node = el("span", alert ? `board-flag ${alert}` : "board-chip", `到期 ${expiry.label}`); node.title = `到期日 ${expiry.date}（手动记录）`;
       meta.append(node);
     }
-    if (c.out) meta.append(el("span", "board-flag is-warning", `${c.out} 个不在 Sub2API`));
-    const revenue = window.Team48Revenue?.line?.(group);
-    if (revenue) { const node = el("span", "board-revenue", revenue.text); node.title = revenue.title; meta.append(node); }
+    const cost = window.Team48Purchase?.costLine?.(group);
+    if (cost) { const node = el("span", "board-revenue", cost.text); node.title = cost.title; meta.append(node); }
     const manage = el("a", "button compact", "管理团队"); manage.href = `/accounts?view=teams&workspace=${encodeURIComponent(group.id)}`;
     head.append(el("div", "", null), manage); head.firstChild.append(title, meta);
     const table = el("table", "board-table");

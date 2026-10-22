@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
   <link rel="stylesheet" href="{{ static_url('css/task-progress.css') }}">
   <link rel="stylesheet" href="{{ static_url('css/management.css') }}">
+  <link rel="stylesheet" href="{{ static_url('css/workspace-purchase.css') }}">
   {% if page == 'overview' %}<link rel="stylesheet" href="{{ static_url('css/runtime.css') }}">{% endif %}
   {% if page == 'settings' %}<link rel="stylesheet" href="{{ static_url('css/settings.css') }}">{% endif %}
   {% if page == 'pool' %}<link rel="stylesheet" href="{{ static_url('css/pool.css') }}">{% endif %}
@@ -424,6 +425,12 @@
                     <p id="codex-rs-proxy-status" class="hint">可用代理读取中…</p>
                     <p id="codex-rs-options-status" class="hint" role="status">读取分组中…</p>
                   </section>
+                  <section class="sub2api-push-defaults stack" aria-labelledby="codex-rs-reauth-title">
+                    <strong id="codex-rs-reauth-title">掉登录恢复</strong>
+                    <label class="setting-row"><span><strong>开启邮箱自动重授权</strong><span class="hint">仅恢复明确掉登录的 rs 账号</span></span><input type="checkbox" name="codex_rs_auto_reauth"></label>
+                    <p class="hint">每分钟同步 rs 状态，和自动补号独立。一次处理一个原账号，沿用账号代理（未配置时用团队母号代理），成功后更新原 rs 绑定；不踢人、不改席位、不启用已停用的账号。</p>
+                    <p class="hint">默认关闭。只处理凭据过期或失效；遇手机验证、人机验证或身份不一致停下待人工。普通失败退避重试，最多 3 次；推送未确认时保留新凭据，人工重试只推送。</p>
+                  </section>
                   <section class="sub2api-push-defaults codex-rs-refill stack" id="codex-rs-refill" aria-labelledby="codex-rs-refill-title">
                     <div class="panel-header">
                       <strong id="codex-rs-refill-title">自动补号</strong>
@@ -798,6 +805,7 @@
   </dialog>
   <script src="{{ static_url('js/formatters.js') }}"></script>
   <script src="{{ static_url('js/workspace-expiry.js') }}"></script>
+  <script src="{{ static_url('js/workspace-purchase.js') }}"></script>
   <script src="{{ static_url('js/workspace-switch-count.js') }}"></script>
   <script src="{{ static_url('js/polling.js') }}"></script>
   <script src="{{ static_url('js/runtime-store.js') }}"></script>

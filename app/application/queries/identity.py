@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.presenters import AUTH_NEED_STATES, build_auth_status, membership_status_label
 from app.application.workspace_expiry import expiry_record
+from app.application.workspace_purchase import purchase_record
 from app.application.workspace_switch_count import switch_count_record
 from app.core.proxy import mask_proxy_url
 from app.core.time import as_utc, isoformat
@@ -472,6 +473,7 @@ async def workspaces_query(db: AsyncSession) -> dict[str, Any]:
                 "former_members": former_members,
                 "subscription_plan": workspace.subscription_plan,
                 "expiry": expiry_record(workspace),
+                "purchase": purchase_record(workspace),
                 "switch_count": switch_count_record(workspace),
                 "subscription": {"plan_family": workspace.subscription_plan if workspace.subscription_plan in {"business", "team"} else "unknown",
                                  "seat_tier": "unknown", "status": "unverified", "observed_at": None},
@@ -556,6 +558,8 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
     from app.persistence.models.codex import CodexBinding
 
     codex_by_account = {row.account_id: row for row in (await db.scalars(select(CodexBinding))).all()}
+    from app.application import codex_status
+    codex_snapshot = await codex_status.load_snapshot(db)
 
     items = []
     for account in accounts:
@@ -665,7 +669,9 @@ async def accounts_query(db: AsyncSession, purpose: str = "all", include_archive
                     "state": primary_binding.binding_state if primary_binding else None,
                     "last_error": primary_binding.last_error if primary_binding else None,
                 },
-                "codex_rs": _codex_rs_row(codex_by_account.get(account.id), account),
+                "codex_rs": ({**_codex_rs_row(codex_by_account[account.id], account),
+                              "health": codex_status.present(codex_snapshot, codex_by_account[account.id])}
+                             if account.id in codex_by_account else None),
             }
         )
     return {"items": items, "next_cursor": None}

@@ -1,0 +1,127 @@
+/* 团队购买信息编辑器（团队抽屉 → 团队信息）。外观与到期日期编辑器保持一致：细线框、直角、不铺底。 */
+.workspace-purchase-editor {
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.workspace-purchase-editor p {
+  margin: 0;
+  line-height: 1.6;
+}
+.workspace-purchase-heading, .workspace-purchase-actions, .workspace-purchase-totp-head, .workspace-purchase-totp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.workspace-purchase-heading {
+  justify-content: space-between;
+}
+.workspace-purchase-editor .workspace-purchase-heading h3 {
+  color: var(--text);
+  font-size: var(--text-body);
+}
+.workspace-purchase-source {
+  font-size: var(--text-meta);
+  padding: 2px 8px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+}
+.workspace-purchase-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 12px;
+}
+.workspace-purchase-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+}
+.workspace-purchase-field.is-wide {
+  grid-column: 1 / -1;
+}
+.workspace-purchase-field input, .workspace-purchase-field select, .workspace-purchase-field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  box-sizing: border-box;
+  font-size: var(--text-body);
+}
+.workspace-purchase-field textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+.workspace-purchase-field input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+.workspace-purchase-totp {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.workspace-purchase-totp-label {
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+}
+.workspace-purchase-totp-state {
+  font-size: var(--text-meta);
+  color: var(--text-secondary);
+}
+.workspace-purchase-totp-state.is-stored {
+  color: var(--success-text);
+}
+.workspace-purchase-totp-actions {
+  margin-left: auto;
+}
+.workspace-purchase-clear.is-armed {
+  color: var(--danger-text);
+}
+.workspace-purchase-clear.is-armed::before {
+  content: "▲ ";
+}
+.workspace-purchase-actions {
+  padding-top: 4px;
+}
+.workspace-purchase-message {
+  color: var(--success-text);
+  font-size: var(--text-meta);
+}
+/* 保存失败：危险色文字 + 符号，不铺底 */
+.workspace-purchase-editor>.workspace-purchase-error {
+  color: var(--danger-text);
+  font-size: var(--text-meta);
+  overflow-wrap: anywhere;
+}
+.workspace-purchase-editor>.workspace-purchase-error:not(:empty)::before {
+  content: "✕ ";
+}
+.workspace-purchase-message:empty, .workspace-purchase-updated:empty {
+  display: none;
+}
+
+@media (pointer:coarse) {
+  .workspace-purchase-actions .button, .workspace-purchase-totp-actions .button {
+    min-height: 44px;
+  }
+}
+
+@media (max-width:720px) {
+  .workspace-purchase-editor {
+    padding: 14px;
+  }
+  .workspace-purchase-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .workspace-purchase-grid > .workspace-purchase-field:first-child {
+    grid-column: 1 / -1;
+  }
+  .workspace-purchase-totp-actions {
+    margin-left: 0;
+  }
+}

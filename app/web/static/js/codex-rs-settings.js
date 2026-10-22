@@ -21,6 +21,7 @@
       ...(concurrency ? {concurrency_limit: Number(concurrency)} : {concurrency_inherit: true}),
       weight: Number(field("codex_rs_weight").value),
       enabled: field("codex_rs_enabled").checked,
+      auto_reauth: field("codex_rs_auto_reauth").checked,
       refill: {
         enabled: field("codex_rs_refill_enabled").checked,
         target: Number(field("codex_rs_refill_target").value),
@@ -76,6 +77,7 @@
     field("codex_rs_concurrency").value = settings.concurrency_limit ?? "";
     field("codex_rs_weight").value = settings.weight ?? 1;
     field("codex_rs_enabled").checked = settings.enabled !== false;
+    field("codex_rs_auto_reauth").checked = settings.auto_reauth === true;
     renderGroups((settings.group_ids || []).map(String));
     const refill = {...REFILL_DEFAULTS, ...(settings.refill || {})};
     workspaces = Array.isArray(rotationWorkspaces) ? rotationWorkspaces : [];

@@ -398,6 +398,16 @@
     return text;
   }
 
+  // 详情里的时间：相对时间，悬停显示完整北京时间。
+  function timeValue(value) {
+    if (!value || Number.isNaN(new Date(value).getTime())) return value || "—";
+    const node = document.createElement("time");
+    node.dateTime = value;
+    node.textContent = relativeTime(value);
+    node.title = `${new Date(value).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}（北京时间）`;
+    return node;
+  }
+
   function countdownLabel(resetAt, usedPercent) {
     if (usedPercent === 0 && !resetAt) return "现在";
     if (!resetAt) return "—";
@@ -1519,7 +1529,8 @@ function hmeRow(item) {
       const dt = document.createElement("dt");
       dt.textContent = label;
       const dd = document.createElement("dd");
-      dd.textContent = value == null || value === "" ? "—" : String(value);
+      if (value instanceof Node) dd.append(value);
+      else dd.textContent = value == null || value === "" ? "—" : String(value);
       dl.append(dt, dd);
     });
     if (title) {
@@ -1540,19 +1551,21 @@ function hmeRow(item) {
     if (kind === "account") {
       title.textContent = item.email;
       subtitle.textContent = [labelOf(purposeLabels, item.purpose), item.workspace].filter(Boolean).join(" · ");
+      // 账号页会把下面这些分段收进「排查信息」：授权看顶部徽章、额度看额度条，所以这两项不再重复。
+      const slim = document.body.dataset.page === "accounts";
       body.append(
         kvSection("运行摘要", [
-          ["授权", labelOf(statusLabels, item.auth)],
+          ...(slim ? [] : [["授权", labelOf(statusLabels, item.auth)]]),
           ["运行状态", labelOf(stateLabels, item.state)],
           ["官方计划", item.official_plan],
           ["官方角色", roleLabel(item.official_role)],
           ["成员状态", labelOf(statusLabels, item.membership_state)],
         ]),
-        kvSection("官方额度", [
+        ...(slim ? [] : [kvSection("官方额度", [
           ["5h", item.quota?.five_hour_used_percent == null ? "—" : `${item.quota.five_hour_used_percent}%`],
           ["7d", item.quota?.seven_day_used_percent == null ? "—" : `${item.quota.seven_day_used_percent}%`],
-          ["查询时间", item.quota?.queried_at || "—"],
-        ]),
+          ["查询时间", timeValue(item.quota?.queried_at)],
+        ])]),
         kvSection("Sub2API 绑定", [
           ["状态", labelOf(statusLabels, item.sub2api)],
           ["远端 ID", item.binding?.remote_id],
@@ -1563,7 +1576,7 @@ function hmeRow(item) {
           ["账号许可", item.auto_reauth_opt_in ? "已允许" : "未允许"],
           ["邮箱", `${item.mailbox?.provider || "未绑定"} · ${item.mailbox?.read_state || "未验证"}`],
           ["读信方式", item.mailbox?.method],
-          ["邮箱检测", item.mailbox?.checked_at],
+          ["邮箱检测", timeValue(item.mailbox?.checked_at)],
           ["代理来源", item.proxy_source],
           ["凭证版本", item.credential_revision],
         ]),
@@ -1661,7 +1674,8 @@ function hmeRow(item) {
     }
     if (kind === "account" && document.body.dataset.page === "accounts") window.Team48Accounts.decorateDetails(item, body, trigger);
     openOverlay("entity", { returnFocus: trigger, context: { kind, item }, initialFocus: "[data-close-sheet]" });
-    if (kind === "account") window.Team48Sub2ApiState?.mount(body, item, {get: fetchEntity, post: postAction, kvSection, confirm: confirmDanger});
+    // Sub2API 远端状态面板在账号页放进「排查信息」折叠里，其他页面仍接在详情末尾。
+    if (kind === "account") window.Team48Sub2ApiState?.mount(body.querySelector(":scope > .management-advanced") || body, item, {get: fetchEntity, post: postAction, kvSection, confirm: confirmDanger});
   }
 
   function closeSheet() {
@@ -2967,7 +2981,16 @@ function hmeRow(item) {
         const expiry = document.createElement("details"); expiry.className = "team-expiry-details";
         const expiryLabel = document.createElement("summary"), expiryInfo = window.Team48Expiry.summary(workspace.expiry);
         expiryLabel.textContent = expiryInfo.date ? `到期 ${expiryInfo.date} · ${expiryInfo.label} · 修改` : "到期未填 · 填写";
-        expiry.append(expiryLabel,workspaceExpiryEditor(workspace)); info.append(expiry); body.append(info);
+        expiry.append(expiryLabel,workspaceExpiryEditor(workspace)); info.append(expiry);
+        const purchaseEditor = window.Team48Purchase?.editor?.(workspace, {onSaved: (purchase) => {
+          workspace.purchase = purchase;
+          purchaseLabel.textContent = window.Team48Purchase.summary(purchase);
+        }});
+        const purchase = document.createElement("details"); purchase.className = "team-purchase-details";
+        const purchaseLabel = document.createElement("summary");
+        purchaseLabel.textContent = window.Team48Purchase?.summary?.(workspace.purchase) || "购买信息";
+        if (purchaseEditor) { purchase.append(purchaseLabel, purchaseEditor); info.append(purchase); }
+        body.append(info);
         const danger = document.createElement("details"); danger.className = "team-detail-disclosure team-danger-zone";
         const dangerTitle = document.createElement("summary"); dangerTitle.textContent = "危险操作";
         const warning = document.createElement("p"); warning.className = "hint"; warning.textContent = "只移除本地团队记录，不影响官方团队；本地账号与共享关系按现有安全规则处理。";
@@ -3706,6 +3729,7 @@ function hmeRow(item) {
         sub2api_proxy_mode: [mode, push.proxy_id, push.proxy_group_id],
         codex_rs_push_target: codex.push_target, codex_rs_group_ids: codex.group_ids,
         codex_rs_concurrency: codex.concurrency_limit ?? null, codex_rs_weight: codex.weight, codex_rs_enabled: codex.enabled,
+        codex_rs_auto_reauth: codex.auto_reauth,
         codex_rs_refill_enabled: codex.refill?.enabled, codex_rs_refill_target: codex.refill?.target,
         codex_rs_refill_daily_limit: codex.refill?.daily_limit, codex_rs_refill_workspace_ids: codex.refill?.workspace_ids };
     };

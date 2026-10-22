@@ -78,7 +78,9 @@ def check(base, output):
         page.goto(base + "/accounts")
         page.wait_for_selector(".management-table tbody tr")
         assert page.locator(".management-table-scroll").first.evaluate("n => getComputedStyle(n).backgroundColor") == "rgb(20, 21, 20)"
-        page.locator(".workspace-expiry-trigger").first.click()
+        # 账号页团队头不再有到期按钮；从第一个团队的菜单「修改到期日期」打开。
+        page.locator('[data-focus-key^="team-menu:"]').first.click()
+        page.locator("#action-menu").get_by_role("menuitem", name="修改到期日期", exact=True).click()
         expect(page.locator(".workspace-expiry-editor")).to_be_visible()
         assert page.locator(".workspace-expiry-editor").evaluate("n => getComputedStyle(n).backgroundColor") == "rgba(0, 0, 0, 0)"
         assert page.locator('#entity-sheet .sheet-panel').evaluate('n => getComputedStyle(n).backgroundColor') == 'rgb(0, 0, 0)'

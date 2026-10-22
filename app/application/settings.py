@@ -101,6 +101,7 @@ async def load_codex_rs_settings(db: AsyncSession) -> dict[str, Any]:
         "push_target": await load_auth_push_target(db),
         **(await load_codex_rs_import_defaults(db)),
         "refill": await codex_refill.load_config(db),
+        "auto_reauth": await get_setting_value(db, "codex_rs_auto_reauth", "false") == "true",
     }
 
 
@@ -127,6 +128,8 @@ async def save_codex_rs_settings(db: AsyncSession, patch) -> None:
         changed = True
     if changed:
         await upsert_setting(db, CODEX_RS_DEFAULTS_KEY, json.dumps(current), "codex-rs 首次导入默认值")
+    if patch.auto_reauth is not None:
+        await upsert_setting(db, "codex_rs_auto_reauth", "true" if patch.auto_reauth else "false", "codex-rs 邮箱自动重授权")
     if patch.refill is not None:
         from app.application import codex_refill
 

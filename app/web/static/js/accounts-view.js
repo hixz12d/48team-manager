@@ -126,7 +126,7 @@
     quota: account => Math.max(...contexts(account).map(context =>
       numeric((context.last_success_quota || context.quota || {}).seven_day_used_percent))),
     cost: account => numeric(fmt.usageWindow(account?.usage)?.user_cost),
-    checked: account => numeric(Date.parse(account?.latest_check?.checked_at)),
+    checked: account => numeric(Date.parse(account?.codex_rs?.health?.checked_at || account?.latest_check?.checked_at)),
   };
   function sortAccounts(items, params) {
     const raw = (params || query()).get("sort") || "";
@@ -142,6 +142,12 @@
     return sorted;
   }
   function status(account, compact = false) {
+      const rs = account.codex_rs?.health;
+      if (rs && account.official_health) {
+        const badge = el("span", `management-badge tone-${rs.severity}`, `rs · ${rs.label}${rs.stale ? " · 待核对" : ""}`);
+        badge.title = [rs.read_error, rs.last_known_label ? `上次：${rs.last_known_label}` : "", `官方额度检查：${account.official_health.label}`].filter(Boolean).join("；");
+        return badge;
+      }
       const h = account.health || { label: kindLabels[account.kind] || "尚未检测", severity: "muted" };
       const actual401 = account.latest_check?.http_status === 401 && account.latest_check?.current_credential !== false;
       const short = actual401 ? "401" : ({healthy: "正常", auth_required: "需 OAuth", credential_error: "缺凭据", pending: "待验证", quota_exhausted: "额度用尽", temporary_failure: "暂时失败", rate_limited: "限流", forbidden: "访问被拒", parse_error: "解析失败", partial: "需处理"}[h.code] || (h.needs_auth ? "需授权" : h.label));
@@ -199,12 +205,17 @@
       wrap.append(badge);
       if (state.remote_id) wrap.append(el("small", "muted", `远端 #${state.remote_id}${state.schedulable === false ? " · 不调度" : ""}`));
       if (state.last_known_label && state.checked_at) wrap.append(el("small", "text-warning", `上次：${state.last_known_label}`));
-      if (state.checked_at) wrap.append(el("small", state.stale ? "text-warning" : "muted", `${state.stale ? "旧状态 · " : ""}${api.relativeTime(state.checked_at)}核对`));
+      if (state.checked_at) { const checked = el("small", state.stale ? "text-warning" : "muted", `${state.stale ? "旧状态 · " : ""}${api.relativeTime(state.checked_at)}核对`); checked.title = exactTime(state.checked_at); wrap.append(checked); }
       else if (state.state !== "unbound") wrap.append(el("small", "muted", state.message || "等待核对"));
     }
     return wrap;
   }
   async function refreshRemote(force = false) {
+    if (payload?.codex_rs_status?.bindings) {
+      const rs = await api.postAction("codex-rs-status", "/api/codex-rs/status/refresh", {});
+      await poller?.refresh();
+      if (!payload?.sub2api_status?.bindings) return rs;
+    }
     if (!payload?.sub2api_status?.configured || !payload.sub2api_status.bindings) return {ok: true, skipped: true};
     const result = await api.postAction(`sub2api-status:${force ? "manual" : "auto"}`, `/api/sub2api/status/refresh${force ? "?force=true" : ""}`, {});
     await poller?.refresh();
@@ -232,7 +243,7 @@
       const resetText = Number.isFinite(reset.getTime()) ? `${new Intl.DateTimeFormat("zh-CN", {weekday: "short"}).format(reset)}重置` : "";
       const facts = compact ? [resetText, stale ? "旧快照" : ""] : [resetText, data.queried_at ? `${stale ? "旧快照" : "成功"} · ${api.relativeTime(data.queried_at)}` : "无成功快照"];
       if (facts.some(Boolean)) wrap.append(el("small", stale ? "text-warning" : "muted", facts.filter(Boolean).join(" · ")));
-      wrap.title = [data.queried_at ? `快照：${new Date(data.queried_at).toLocaleString("zh-CN")}` : "无成功快照", resetText ? `7d 重置：${reset.toLocaleString("zh-CN")}` : "7d 重置时间未知"].join("；");
+      wrap.title = [data.queried_at ? `快照：${exactTime(data.queried_at)}` : "无成功快照", resetText ? `7d 重置：${exactTime(reset)}` : "7d 重置时间未知"].join("；");
       return wrap;
     }
   function openAccount(account, trigger, group) {
@@ -286,12 +297,20 @@
       if (checkFailed && first.last_known_label) money.append(el("small", "text-warning", `上次：${first.last_known_label}`));
       else if (usage) money.append(el("small", "muted", fmt.formatCost(usage.user_cost)));
       money.title = [...remote.map(s => [s.label, s.remote_id ? `远端 #${s.remote_id}` : "", s.stale ? "旧状态，待核对" : "", s.message].filter(Boolean).join(" · ")), usage ? `${usage.label} · 用户计费 ${fmt.formatCost(usage.user_cost)} · 成本 ${fmt.formatCost(usage.account_cost)}${usage.stale ? " · 旧计费快照" : ""}` : "无计费快照"].join("；");
+      const rs = account.codex_rs?.health;
+      if (rs) {
+        money.replaceChildren(el("span", "muted", "codex-rs"));
+        money.append(el("small", "muted", "续期由 rs 负责"));
+        money.title = "显示 rs 运行状态，不以 Sub2API 是否绑定判断";
+      }
       const time = el("td", "management-check-time");
-      time.append(el("span", "", account.latest_check?.checked_at ? api.relativeTime(account.latest_check.checked_at) : "未检查"));
-      time.title = account.next_check_at ? `下次检查：${new Date(account.next_check_at).toLocaleString("zh-CN")}` : "尚无下次检查计划";
+      const checkedAt = rs ? rs.checked_at : account.latest_check?.checked_at;
+      time.append(el("span", "", checkedAt ? api.relativeTime(checkedAt) : "未检查"));
+      time.title = rs ? "rs 状态每分钟核对；官方额度时间请看详情" : account.next_check_at ? `下次检查：${new Date(account.next_check_at).toLocaleString("zh-CN")}` : "尚无下次检查计划";
       const actionCell = el("td", "management-action-cell"); const actions = el("div", "management-actions");
       if (canOpen) {
-        const primary = button(account.health?.needs_auth ? "授权" : "详情", b => {
+        const primary = button(rs?.can_reauth ? "邮箱重授权" : account.health?.needs_auth ? "授权" : "详情", b => {
+          if (rs?.can_reauth) return recoverRs(account, b);
           if (account.health?.needs_auth) return api.entityActions.account.find(a => a.id === "account.reauth")?.run(account, b);
           return openAccount(account, b, group);
         }, `button${account.health?.needs_auth ? " primary" : ""}`, `primary:${id}`);
@@ -308,7 +327,7 @@
         else actions.append(button("管理成员", b => api.openWorkspaceDetails(b, group), "button", `remote:${id}`));
       }
       actionCell.append(actions); row.append(selectCell, identity, health, quotaCell);
-      if (payload?.sub2api_status?.configured !== false) row.append(money);
+      if (payload?.sub2api_status?.configured !== false || payload?.codex_rs_status?.bindings) row.append(money);
       row.append(time, actionCell);
       return row;
     }
@@ -317,7 +336,7 @@
     scroll.dataset.scrollKey = group ? `team-${group.id}` : "all";
     const table = el("table", "management-table");
     const colgroup = el("colgroup");
-    const hasRemote = payload?.sub2api_status?.configured !== false;
+    const hasRemote = payload?.sub2api_status?.configured !== false || payload?.codex_rs_status?.bindings;
     (hasRemote ? [36, 230, 115, 180, 125, 94, 180] : [36, 270, 125, 220, 115, 180]).forEach(width => { const col = el("col"); col.style.width = `${width}px`; colgroup.append(col); });
     const head = el("thead"); const tr = el("tr");
     const selectable = items.filter(canSelect);
@@ -335,7 +354,7 @@
     tr.append(selectHead);
     const sortRaw = query().get("sort") || "";
     [["账号 / 本地用途", "email"], ["授权与检测", "health"], ["官方额度 · 已用", "quota"],
-      ["Sub2API", "cost"], ["最近检查", "checked"], ["操作", ""]].forEach(([text, key], i) => {
+      [payload?.codex_rs_status?.bindings ? "下游" : "Sub2API", "cost"], ["最近检查", "checked"], ["操作", ""]].forEach(([text, key], i) => {
       if (key === "cost" && !hasRemote) return;
       const th = el("th", i === 5 ? "num management-action-cell" : i === 3 ? "num" : ""); th.scope = "col";
       if (!key) { th.textContent = text; tr.append(th); return; }
@@ -382,15 +401,8 @@
       const seats = official.occupied_seats != null && official.seat_limit != null ? `${official.occupied_seats}/${official.seat_limit} 席` : counts.joined_people != null ? `已加入 ${counts.joined_people} 人` : "席位未同步";
       metadata.append(el("span", "muted", seats));
       if (counts.invited) metadata.append(el("span", "muted", `${counts.invited} 待接受邀请`));
-      const revenue = revenueLine(group);
-      const revenueNode = el("span", "workspace-revenue tabular", revenue.text); revenueNode.title = revenue.title;
-      metadata.append(revenueNode);
-      const expiry = window.Team48Expiry.trigger(group, b => api.openWorkspaceExpiry(b, group));
-      const expiryInfo = window.Team48Expiry.summary(group.expiry);
-      expiry.replaceChildren(document.createTextNode(expiryInfo.date ? `到期 ${expiryInfo.date} · ${expiryInfo.label}` : "到期未填"));
-      metadata.append(expiry);
-      const count = window.Team48SwitchCount.widget(group, {readOnly:true});
-      metadata.append(count); title.append(metadata);
+      // 收入、到期、今日切换只在总览团队卡上显示；到期在团队菜单「修改到期日期」里改。
+      title.append(metadata);
       const task = el("section"); task.dataset.teamTask = String(group.id); title.append(task);
       window.Team48TaskProgress?.mount(task, {workspaceId: group.id, density: "compact", metadata});
       const op = group.sync_operation || group.last_sync_operation;
@@ -505,15 +517,16 @@
     const remoteInfo = data.sub2api_status;
     const remoteLine = document.getElementById("management-remote-status");
     const remoteSetup = document.getElementById("management-remote-setup");
-    if (remoteSetup) remoteSetup.hidden = remoteInfo?.configured !== false;
+    if (remoteSetup) remoteSetup.hidden = remoteInfo?.configured !== false || Boolean(data.codex_rs_status?.bindings);
     const moreCount = ["team", "remote"].filter(key => params.get(key) && params.get(key) !== "all").length;
     const moreLabel = document.getElementById("accounts-more-label");
     if (moreLabel) moreLabel.textContent = `更多筛选${moreCount ? `（${moreCount}）` : ""}`;
     if (remoteLine && remoteInfo) remoteLine.textContent = !remoteInfo.configured ? "未配置 Sub2API，暂时无法核对"
       : `远端状态每 15 秒核对 · ${remoteInfo.bindings} 个绑定${remoteInfo.missing ? ` · ${remoteInfo.missing} 个远端已不存在` : ""}${remoteInfo.stale ? " · 有状态待更新" : ""}`;
     const remoteRefresh = document.getElementById("refresh-remote-status");
-    if (remoteRefresh) remoteRefresh.disabled = !remoteInfo?.configured || !remoteInfo.bindings;
-    if (remoteLine && remoteInfo?.configured && !remoteInfo.bindings) remoteLine.textContent = "尚无远端绑定，暂时无需核对";
+    if (remoteRefresh) remoteRefresh.disabled = !data.codex_rs_status?.bindings && (!remoteInfo?.configured || !remoteInfo.bindings);
+    if (remoteLine && remoteInfo?.configured && !remoteInfo.bindings) remoteLine.textContent = "尚无 Sub2API 绑定";
+    if (remoteLine && data.codex_rs_status?.bindings) remoteLine.textContent = `codex-rs 状态每分钟核对 · ${data.codex_rs_status.bindings} 个绑定 · 官方额度与 rs 状态分别记录`;
     document.querySelector("[data-filter='purpose']").value = params.get("purpose") || "all";
     renderActiveFilters(params);
     let savedSize;
@@ -549,18 +562,107 @@
     updateSelectionBar();
     refreshDetails();
   }
-  function healthDetails(account) {
-    const fragment = el("div", "management-health-details"); fragment.append(status(account));
-    if (account.latest_check?.current_credential === false) fragment.append(el("p", "text-warning", "上次检查属于旧凭证，新凭证尚待验证"));
-    fragment.append(quota(account));
+  // 详情面板时间：相对时间 + 悬停完整北京时间，不显示 +00:00 这类原始格式。
+  const exactTime = value => new Date(value).toLocaleString("zh-CN", {timeZone: "Asia/Shanghai", hour12: false}) + "（北京时间）";
+  function timeNode(value, empty = "—", prefix = "") {
+    if (!value || !Number.isFinite(Date.parse(value))) return el("span", "muted", empty);
+    const node = el("time", "", prefix + api.relativeTime(value));
+    node.dateTime = value; node.title = exactTime(value);
+    return node;
+  }
+  function kvList(rows) {
     const dl = el("dl", "kv");
-    for (const [label, value] of [["最近检查", account.latest_check?.checked_at], ["最近成功", account.last_success_quota?.queried_at],
+    for (const [label, value, cls] of rows) {
+      const dd = el("dd", cls || "");
+      if (value instanceof Node) dd.append(value); else dd.textContent = value == null || value === "" ? "—" : String(value);
+      dl.append(el("dt", "", label), dd);
+    }
+    return dl;
+  }
+  // 异常原因放在面板最上面；正常账号不出现这一块。身份审计的 reasons 只在冲突 / 可疑时才算原因。
+  const healthAbnormal = account => ["warning", "error"].includes(account.health?.severity) || Boolean(account.health?.needs_auth);
+  function healthAlert(account) {
+    const h = account.health || {};
+    const abnormal = healthAbnormal(account);
+    const identityIssue = ["conflict", "suspicious"].includes(account.identity);
+    const staleCheck = account.latest_check?.current_credential === false;
+    if (!abnormal && !identityIssue && !staleCheck) return null;
+    const box = el("section", "management-health-alert");
+    if (abnormal) {
+      box.append(el("p", "management-badge tone-" + (h.severity === "error" ? "error" : "warning"), h.label || "需要处理"));
+      const check = account.latest_check;
+      if (check?.message && check.state !== "healthy" && !String(h.label || "").includes(check.message)) box.append(el("p", "", "最近结果：" + check.message));
+    }
+    if (identityIssue) {
+      box.append(el("p", "management-badge tone-" + (account.identity === "conflict" ? "error" : "warning"), account.identity === "conflict" ? "身份冲突" : "身份待核对"));
+      const reasons = (account.reasons || []).filter(Boolean);
+      if (reasons.length) { const list = el("ul", "management-health-reasons"); reasons.forEach(text => list.append(el("li", "", text))); box.append(list); }
+    }
+    if (staleCheck) box.append(el("p", "text-warning", "上次检查属于旧凭证，新凭证尚待验证"));
+    return box;
+  }
+  // 状态行：● 检测正常 · 57 分钟前 · 下次 1 小时后（· 最近成功 3 小时前）；异常时徽章已在上面，这里只写时间。
+  function statusLine(account) {
+    const line = el("p", "management-status-line");
+    const part = node => { if (line.childNodes.length) line.append(el("span", "management-status-sep", "·")); line.append(node); };
+    const abnormal = healthAbnormal(account);
+    if (!abnormal) part(status(account));
+    const checked = account.latest_check?.checked_at, success = account.last_success_quota?.queried_at, next = account.next_check_at;
+    part(checked ? timeNode(checked, "", abnormal ? "最近检查 " : "") : el("span", "muted", "尚未检查"));
+    if (next && Date.parse(next) > Date.now()) part(timeNode(next, "", "下次 "));
+    else if (next) part(el("span", "muted", "即将检查"));
+    if (success && (!checked || Math.abs(Date.parse(success) - Date.parse(checked)) > 1000)) part(timeNode(success, "", "最近成功 "));
+    return line;
+  }
+  const RS_STATES = {synced: ["已同步", "success"], pushing: ["推送中", "info"], uncertain: ["结果不明", "warning"], pending: ["待处理", "muted"]};
+  // 下游二选一：codex-rs 账号看 rs，其余看 Sub2API；排查字段在「排查信息」里。
+  function downstream(account) {
+    const section = el("section", "management-downstream");
+    const info = account.codex_rs;
+    if (info) {
+      section.append(el("h3", "", "下游 · codex-rs"));
+      const [label, tone] = RS_STATES[info.state] || [info.state || "未知", "muted"];
+      const row = el("div", "management-remote-status");
+      row.append(el("span", "management-badge tone-" + (info.stale ? "warning" : tone), label + (info.stale ? " · 待核对" : "")));
+      const health = info.health;
+      if (health) {
+        row.append(el("span", "management-badge tone-" + health.severity, "运行状态：" + health.label + (health.stale ? " · 待核对" : "")));
+        if (health.checked_at) row.append(timeNode(health.checked_at, "", "核对于 "));
+      }
+      section.append(row);
+      if (info.last_error) section.append(el("p", "text-warning", "错误码：" + info.last_error));
+      if (health?.read_error) section.append(el("p", "text-warning", health.read_error));
+      if (health?.last_known_label) section.append(el("p", "hint", "上次：" + health.last_known_label));
+      if (health?.can_reauth) section.append(button("邮箱重授权", b => recoverRs(account, b), "button", `rs-reauth:${account.id}`));
+      return section;
+    }
+    section.append(el("h3", "", "下游 · Sub2API"), remoteStatus(account));
+    const lifetime = account.usage?.windows?.lifetime, usage = fmt.usageWindow(account.usage);
+    const cost = lifetime?.last_success_at ? "本号累计 " + fmt.formatCost(lifetime.user_cost)
+      : usage ? `本号${usage.label} ${fmt.formatCost(usage.user_cost)}` : "本号暂无计费快照";
+    const line = el("p", "management-downstream-cost tabular", cost);
+    line.title = "U 是 Sub2API 扣费，不等于实收";
+    section.append(line);
+    return section;
+  }
+  function healthDetails(account) {
+    const fragment = el("div", "management-health-details");
+    const alert = healthAlert(account);
+    if (alert) fragment.append(alert);
+    fragment.append(statusLine(account));
+    if (account.official_health) fragment.append(el("p", "hint", `官方额度检查：${account.official_health.label}（与 rs 运行状态分开）`));
+    fragment.append(quota(account), downstream(account));
+    return fragment;
+  }
+  // 排查信息：默认收起，状态行已显示的时间不再重复。
+  function healthDiagnostics(account) {
+    const section = el("section", "sheet-section");
+    section.append(el("h3", "", "检查记录"), kvList([
       ["HTTP 状态", account.latest_check?.http_status], ["检查来源", account.latest_check?.source],
       ["最近结果", account.latest_check?.message], ["凭证版本", account.credential_revision],
-      ["下次检查", account.next_check_at], ["任务", account.queued ? "排队 / 运行中" : "无待执行任务"]]) {
-      dl.append(el("dt", "", label), el("dd", "", value ?? "—"));
-    }
-    fragment.append(dl, el("h3", "", "Sub2API 远端状态"), remoteStatus(account)); return fragment;
+      ["任务", account.queued ? "排队 / 运行中" : "无待执行任务"],
+    ]));
+    return section;
   }
   function refreshDetails() {
     const box = document.getElementById("account-health-content"); if (!box || !payload) return;
@@ -568,41 +670,56 @@
     if (!account) return;
     const current = contexts(account).find(c => String(c.workspace_id || "") === box.dataset.workspace) || account;
     box.replaceChildren(healthDetails(current));
+    document.getElementById("account-health-diagnostics")?.replaceChildren(healthDiagnostics(current));
   }
   // codex-rs binding: state uses symbol + text (management-badge tone), never colour alone.
+  async function recoverRs(account, trigger) {
+    if (!await api.openConfirm({title: "邮箱重授权并更新 rs", subtitle: account.email,
+      message: "将使用代理浏览器读取邮箱验证码，授权原 Team 并更新原 rs 账号。不踢人、不换号，不改分组、代理和并发设置。",
+      hint: "一次处理一个账号；遇手机或人机验证暂停。", confirmLabel: "开始恢复"}, trigger)) return;
+    trigger.disabled = true;
+    try {
+      const result = await api.postAction(`codex-rs-reauth:${account.id}`, `/api/accounts/${account.id}/codex-rs/reauth`, {});
+      api.startCurrentOperation(`codex-rs-reauth:${account.id}`, result, {entityType: "account", entityId: account.id});
+      await api.openOperationById(result.operation_id, trigger);
+    } finally { trigger.disabled = false; }
+  }
+  // codex-rs 排查字段；状态徽章、运行状态和重授权按钮在默认可见的「下游」里。
   function codexRsSection(info) {
     const section = el("section", "sheet-section codex-rs-detail"); section.append(el("h3", "", "codex-rs"));
-    const states = {synced: ["已同步", "success"], pushing: ["推送中", "info"], uncertain: ["结果不明", "warning"], pending: ["待处理", "muted"]};
-    const [label, tone] = states[info.state] || [info.state || "未知", "muted"];
-    const badge = el("span", `management-badge tone-${info.stale ? "warning" : tone}`, `${label}${info.stale ? " · 待核对" : ""}`);
-    const time = value => value ? `${new Date(value).toLocaleString("zh-CN")}（${api.relativeTime(value)}）` : "—";
-    const dl = el("dl", "kv");
-    for (const [name, value] of [["远端 ID", info.remote_account_id || "—"],
+    section.append(kvList([["远端 ID", info.remote_account_id || "—", "mono"],
       ["远端启用", info.remote_enabled === true ? "启用" : info.remote_enabled === false ? "已停用" : "未知"],
-      ["最近导入", time(info.synced_at)], ["最近读回 AT", time(info.last_pulled_at)],
-      ["错误码", info.last_error || "—"], ["当前刷新方", "codex-rs"]]) {
-      const dd = el("dd", name === "远端 ID" ? "mono" : name === "错误码" && info.last_error ? "text-warning" : "", value);
-      dl.append(el("dt", "", name), dd);
-    }
-    section.append(badge, dl);
+      ["最近导入", timeNode(info.synced_at)], ["最近读回 AT", timeNode(info.last_pulled_at)],
+      ["当前刷新方", "codex-rs"]]));
     return section;
   }
   function decorateDetails(account, body, trigger) {
-    const advanced = el("details", "management-advanced"); advanced.append(el("summary", "", "身份、凭证与 Sub2API 详情"));
-    while (body.firstChild) advanced.append(body.firstChild);
-    if (account.codex_rs) body.append(codexRsSection(account.codex_rs));
-    if (account.subscription) {
-      const section = el("section", "sheet-section"); section.append(el("h3", "", "订阅与席位"));
-      const info = account.subscription;
-      const facts = el("dl", "kv");
-      for (const [label, value] of [["档位", subscriptionLabel(account) || "未识别"], ["来源", info.source || "未知"], ["观察时间", info.observed_at ? api.relativeTime(info.observed_at) : "尚未验证"], ["Sub2API 计划", account.plan_sync?.status === "success" ? "已同步" : "未验证，未写入"]]) {
-        facts.append(el("dt", "", label), el("dd", "", value));
-      }
-      section.append(facts); body.append(section);
+    // 默认只看：异常原因、状态行、额度、下游、操作；其余收进「排查信息」。app.js 先写进 body 的分段整体挪进折叠。
+    const advanced = el("details", "management-advanced"); advanced.append(el("summary", "", "排查信息"));
+    const legacy = [...body.childNodes];
+    const diagnostics = el("div"); diagnostics.id = "account-health-diagnostics"; diagnostics.append(healthDiagnostics(account));
+    advanced.append(diagnostics);
+    if (account.codex_rs) advanced.append(codexRsSection(account.codex_rs));
+    const usage = fmt.usageWindow(account.usage);
+    if (usage) {
+      const section = el("section", "sheet-section"); section.append(el("h3", "", `Sub2API 计费 · ${usage.label}`));
+      section.append(kvList([["用户计费", "user_cost"], ["账号成本", "account_cost"], ["标准计费", "standard_cost"], ["计费毛差", "billing_margin"]]
+        .map(([label, key]) => [label, `${fmt.formatCost(usage[key])} · 原值 ${usage[key] ?? "未知"}`, "tabular"])));
+      advanced.append(section);
     }
+    advanced.append(...legacy);
     const block = el("section"); block.id = "account-health-content";
     block.dataset.account = account.id; block.dataset.workspace = account.workspace_id || ""; block.append(healthDetails(account));
     body.append(block);
+    // 订阅与席位：计划已写入或档位已识别才显示，否则整段不渲染（不再显示一串“未识别 / 未验证”）。
+    const tier = account.subscription?.seat_tier;
+    if (account.subscription && (account.plan_sync?.status === "success" || ["standard", "premium"].includes(tier))) {
+      const section = el("section", "sheet-section"); section.append(el("h3", "", "订阅与席位"));
+      const info = account.subscription;
+      section.append(kvList([["档位", subscriptionLabel(account) || "未识别"], ["来源", info.source || "未知"],
+        ["观察时间", timeNode(info.observed_at, "尚未验证")], ["Sub2API 计划", account.plan_sync?.status === "success" ? "已同步" : "未验证，未写入"]]));
+      body.append(section);
+    }
     if (account.interrupted_operation_id) {
       const recovery = el("section", "sheet-section");
       recovery.append(el("h3", "", "入组中断"), el("p", "hint", "先核对任务与官方成员状态。继续时沿用此邮箱；不会自动领取新号或撤回已发出的邀请。"));
@@ -621,15 +738,6 @@
       const section = el("section", "sheet-section"); section.append(el("h3", "", "团队检测状态"));
       account.contexts.forEach(c => section.append(button(`${c.workspace_name || c.workspace_id} · ${c.health.label}`, b => openAccount(c, b), "button management-context")));
       body.append(section);
-    }
-    const usage = fmt.usageWindow(account.usage);
-    if (usage) {
-      const section = el("section", "sheet-section"); section.append(el("h3", "", `Sub2API · ${usage.label}`));
-      const dl = el("dl", "kv");
-      for (const [label, key] of [["用户计费", "user_cost"], ["账号成本", "account_cost"], ["标准计费", "standard_cost"], ["计费毛差", "billing_margin"]]) {
-        dl.append(el("dt", "", label), el("dd", "tabular", `${fmt.formatCost(usage[key])} · 原值 ${usage[key] ?? "未知"}`));
-      }
-      section.append(dl); body.append(section);
     }
     const actions = el("div", "management-detail-actions");
     for (const id of ["account.reauth", "account.quota"]) {
@@ -812,7 +920,7 @@
       onData: () => {},
       onError: () => {
         const node = document.getElementById("management-remote-status");
-        if (node) node.textContent = "Sub2API 核对失败，将自动重试；显示的是上次状态";
+        if (node) node.textContent = "下游状态核对失败，将自动重试；显示的是上次状态";
       },
       delay: result => result.refreshing ? 2000 : 15000,
     });

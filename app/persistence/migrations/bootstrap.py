@@ -66,6 +66,12 @@ WORKSPACE_COLUMNS = (
     ("official_name_payload_source", "VARCHAR(80)"),
     ("occupied_seats", "INTEGER"),
     ("last_official_sync_state", "VARCHAR(20)"),
+    ("purchase_payment_card", "VARCHAR(100)"),
+    ("purchase_cost", "NUMERIC(12, 2)"),
+    ("purchase_currency", "VARCHAR(3)"),
+    ("purchase_note", "TEXT"),
+    ("owner_totp_secret_encrypted", "TEXT"),
+    ("purchase_updated_at", "DATETIME"),
 )
 
 QUOTA_COLUMNS = (

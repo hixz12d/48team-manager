@@ -95,6 +95,16 @@ async def _revenue_counts(db: AsyncSession) -> dict[int, int]:
 def _account_card(item: dict[str, Any], *, kind: str, last_authorized: dict[int, Any] | None = None) -> dict[str, Any]:
     quota = item.get("quota") or {}
     auth_status = build_auth_status(item)
+    rs = (item.get("codex_rs") or {}).get("health")
+    if rs and kind not in {"history", "mother"}:
+        item = dict(item)
+        item["official_health"] = item.get("health")
+        code = "auth_required" if rs["needs_auth"] else {"normal": "healthy", "quota_exhausted": "quota_exhausted",
+            "rate_limited": "rate_limited", "disabled": "disabled"}.get(rs["state"], "temporary_failure")
+        if rs["stale"]:
+            code = "temporary_failure"
+        item["health"] = {"code": code, "label": f"rs · {rs['label']}" + (" · 待核对" if rs["stale"] else ""),
+                          "severity": rs["severity"], "needs_auth": rs["needs_auth"], "action": "details"}
     return {
         **item,
         "last_authorized_at": isoformat((last_authorized or {}).get(item.get("id"))),
@@ -416,5 +426,6 @@ async def portfolio_query(db: AsyncSession) -> dict[str, Any]:
         "revenue_overview": revenue_overview,
         "usage_available": any(item.get("available") for item in usage_by_context.values()),
         "sub2api_status": remote_summary,
+        "codex_rs_status": {"bindings": sum(bool(item.get("codex_rs")) for item in account_items)},
         "usage_note": "Sub2API 用量仅来自后台同步的本地快照；缺失和失败不会显示为 0。",
     }

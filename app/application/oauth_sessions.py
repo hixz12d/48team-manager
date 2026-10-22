@@ -81,6 +81,11 @@ class OAuthSessionStore:
             await db.execute(update(Account).where(Account.id == account_id).values(
                 credential_revision=Account.credential_revision, updated_at=Account.updated_at,
             ).execution_options(synchronize_session=False))
+            from app.persistence.models.operations import Operation
+            from app.domain.automation import ACTIVE_STATES
+            if await db.scalar(select(Operation.id).where(Operation.account_id == account_id,
+                    Operation.op_type == "codex_reauth", Operation.state.in_(ACTIVE_STATES)).limit(1)):
+                raise OAuthSessionError("rs 邮箱重授权正在进行，请先完成或取消该任务", error_code="oauth_busy")
             from app.application.refresh_ownership import refresh_owner_kind
             owner_kind = await refresh_owner_kind(db, account_id) if memory_session.get("mode") == "auto" else None
             if owner_kind == "sub2api":

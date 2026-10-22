@@ -49,8 +49,9 @@ from app.web.schemas.resources import (
 )
 from app.web.schemas.settings import ConnectionProbeRequest, RunnerSelfcheckRequest, SettingsPatch
 from app.web.schemas.workspaces import CompleteAccountOAuthRequest, CompleteWorkspaceOAuthRequest, StartWorkspaceOAuthRequest
-from app.web.schemas.workspaces import WorkspaceExpiryPatch
+from app.web.schemas.workspaces import WorkspaceExpiryPatch, WorkspacePurchasePatch
 from app.application.workspace_expiry import update_workspace_expiry
+from app.application.workspace_purchase import reveal_owner_totp, update_workspace_purchase
 from app.application.workspace_switch_count import increment_workspace_switch_count
 
 
@@ -88,6 +89,20 @@ def build_api_router(get_db) -> APIRouter:
     async def codex_rs_options(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
         from app.application.codex_publish import options
         return JSONResponse(await options(db), headers={"Cache-Control": "no-store"})
+
+    @router.post("/codex-rs/status/refresh")
+    async def codex_rs_health_refresh(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application import codex_status
+        result = await codex_status.refresh(db)
+        return {"ok": result.get("ok", False), "checked_at": result.get("checked_at"), "message": result.get("error")}
+
+    @router.post("/accounts/{account_id}/codex-rs/reauth", status_code=202)
+    async def codex_rs_account_reauth(account_id: int, _: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+        from app.application import codex_reauth
+        result = await codex_reauth.start(db, account_id)
+        if not result.get("ok"):
+            raise HTTPException(status_code=409, detail=_error_detail(result, "无法启动 rs 重授权"))
+        return result
 
     @router.get("/codex-rs/refill")
     async def codex_rs_refill_status(_: dict = Depends(require_admin), db: AsyncSession = Depends(get_db)):
@@ -374,6 +389,31 @@ def build_api_router(get_db) -> APIRouter:
         if not result["ok"]:
             raise HTTPException(status_code=404, detail=result["error"])
         return result
+
+    @router.patch("/workspaces/{workspace_id}/purchase")
+    async def patch_workspace_purchase(
+        workspace_id: int,
+        payload: WorkspacePurchasePatch,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        result = await update_workspace_purchase(db, workspace_id, payload.changed_fields())
+        if not result["ok"]:
+            code = 404 if result["error_code"] == "not_found" else 422
+            raise HTTPException(status_code=code, detail=result["error"])
+        return result
+
+    @router.post("/workspaces/{workspace_id}/purchase/totp")
+    async def reveal_workspace_owner_totp(
+        workspace_id: int,
+        _: dict = Depends(require_admin),
+        db: AsyncSession = Depends(get_db),
+    ) -> JSONResponse:
+        # POST + no-store: the secret must not sit in browser cache or access-log query strings.
+        result = await reveal_owner_totp(db, workspace_id)
+        if not result["ok"]:
+            raise HTTPException(status_code=404, detail=result["error"])
+        return JSONResponse({"secret": result["secret"]}, headers={"Cache-Control": "no-store"})
 
     @router.post("/workspaces/{workspace_id}/switch-count/increment")
     async def increment_workspace_switch_count_route(

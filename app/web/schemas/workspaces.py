@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from typing import Literal
 from datetime import date
+from decimal import Decimal
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.application.workspace_purchase import (
+    normalize_cost,
+    normalize_currency,
+    normalize_note,
+    normalize_payment_card,
+    normalize_totp_secret,
+)
 
 
 class ProxySelection(BaseModel):
@@ -107,3 +116,42 @@ class WorkspaceExpiryPatch(BaseModel):
             return date.fromisoformat(value)
         except ValueError as exc:
             raise ValueError("请选择有效的日历日期") from exc
+
+
+class WorkspacePurchasePatch(BaseModel):
+    """Every key optional: omitted keeps the saved value, null clears it (see model_fields_set)."""
+    model_config = ConfigDict(extra="forbid")
+
+    payment_card: str | None = None
+    cost: Decimal | None = None
+    currency: Literal["USD", "CNY"] | None = None
+    note: str | None = None
+    totp_secret: str | None = None
+
+    @field_validator("payment_card", mode="before")
+    @classmethod
+    def validate_payment_card(cls, value):
+        return normalize_payment_card(value)
+
+    @field_validator("cost", mode="before")
+    @classmethod
+    def validate_cost(cls, value):
+        return normalize_cost(value)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def validate_currency(cls, value):
+        return normalize_currency(value)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def validate_note(cls, value):
+        return normalize_note(value)
+
+    @field_validator("totp_secret", mode="before")
+    @classmethod
+    def validate_totp_secret(cls, value):
+        return normalize_totp_secret(value)
+
+    def changed_fields(self) -> dict:
+        return {key: getattr(self, key) for key in self.model_fields_set}

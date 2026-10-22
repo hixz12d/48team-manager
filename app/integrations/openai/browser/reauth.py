@@ -80,6 +80,7 @@ def run_browser_oauth_reauth(
     hme_account_id: str = "",
     allow_signup: bool = False,
     login_only: bool = False,
+    allow_join: bool = True,
     allow_sms: bool = True,
     max_sms_submissions: int = 7,
     max_sms_code_submissions: int = 2,
@@ -231,14 +232,26 @@ def run_browser_oauth_reauth(
                     _click_first(page, ['button:has-text("Continue")'])
                     page.wait_for_timeout(2000)
                     continue
-                if _pick_workspace(page, team_name):
+                if not allow_join:
+                    if "accept-invite" in url or any(_visible(page, selector) for selector in (
+                        'button:has-text("Accept invite")', 'button:has-text("Join workspace")',
+                        'button:has-text("接受邀请")', 'button:has-text("加入工作空间")',
+                    )):
+                        result.update(error="账号需要接受邀请，重授权不会自动入组，请人工核对", error_code="membership_changed")
+                        break
+                    if team_name and _click_exact(page, [team_name]):
+                        _click_exact(page, ["Continue", "Confirm", "继续", "确认"])
+                        report("workspace", "已选择原工作空间")
+                        page.wait_for_timeout(1500)
+                        continue
+                if allow_join and _pick_workspace(page, team_name):
                     report("workspace", "已选择工作空间")
                     page.wait_for_timeout(1500)
                     continue
                 on_phone = any(bit in url for bit in ("add-phone", "phone-verification")) or _visible(page, 'input[type="tel"]')
                 if on_phone:
                     if not allow_sms:
-                        result["error"] = "本次注册禁止接短信，页面要求手机验证，已停止"
+                        result["error"] = "本次流程不自动接短信，页面要求手机验证，已停止"
                         result["error_code"] = "phone_verification_required"
                         report("manual_required", result["error"])
                         break
