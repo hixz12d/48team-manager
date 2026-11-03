@@ -51,7 +51,7 @@ def remote_config():
 
 
 TEAM48_URL = "https://48team.xiaozhudf2026.foo"
-HME_URL = "https://icloud.xiaozhudf2026.foo"
+HME_URL = "https://hme.xiaozhudf2026.foo"
 
 
 def embedded(source, name):

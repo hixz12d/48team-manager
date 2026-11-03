@@ -1,5 +1,5 @@
 // Reads registration mail from icloud-hme GET /api/inbox (IMAP via the account's app-specific password).
-export const HME_ORIGIN = 'https://icloud.xiaozhudf2026.foo';
+export const HME_ORIGIN = 'https://hme.xiaozhudf2026.foo';
 
 // iCloud relays rewrite the sender to <local>_at_<domain with _>_<random>@icloud.com.
 const openAIRelay = from => /^[^@\s]*_at_(?:[a-z0-9-]+_)*openai_com_[^@\s]*@icloud\.com$/i.test(from);
