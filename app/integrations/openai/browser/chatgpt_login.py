@@ -166,6 +166,13 @@ _ONBOARDING_BUTTON_EXACT = [
     "接受邀请",
     "加入工作空间",
     "继续",
+    # Optional onboarding steps (e.g. "Download the desktop app") are skipped, never accepted.
+    "Skip for now",
+    "Skip",
+    "Not now",
+    "Maybe later",
+    "暂时跳过",
+    "跳过",
 ]
 _ONBOARDING_BUTTON_SELECTORS = [
     'button:has-text("Get started")',
@@ -604,14 +611,12 @@ def complete_chatgpt_onboarding(
 
         human_pause(page, 2.0, 3.0)
 
-    if not looks_like_chatgpt_onboarding(page):
-        return _verify_session_and_finish()
-
-    return {
-        "ok": False,
-        "error_code": "onboarding_stuck",
-        "error": "卡在 ChatGPT 入组欢迎页，未能自动进入工作空间",
-    }
+    if looks_like_chatgpt_onboarding(page):
+        # Leftover onboarding steps do not block Codex authorization; the token's
+        # workspace / plan check afterwards still catches a missing Team membership.
+        logger.info("chatgpt onboarding pages left at %s; continuing to authorization",
+                    urlparse(page.url or "").path)
+    return _verify_session_and_finish()
 
 
 def wait_chatgpt_session(
