@@ -9,12 +9,18 @@ from urllib.parse import urlparse
 
 from app.core.jwt import jwt_parser
 from app.domain.reauth import looks_like_deactivated
-from app.integrations.openai.browser.humanize import human_click, human_pause
+from app.integrations.openai.browser.humanize import (
+    human_click,
+    human_pause,
+    human_type_text,
+    signup_identity_for_email,
+)
 from app.integrations.openai.browser.onboard import (
     ABOUT_YOU_STUCK_LIMIT,
     EMAIL_INPUT_SELECTOR,
     LOGIN_START_URL,
     NOT_REGISTERED_ERROR,
+    PROFILE_ROOT,
     _PASSWORD_ERRORS,
     _accept_terms,
     _click_exact,
@@ -261,10 +267,15 @@ _ONBOARDING_WORKSPACE_PICKER_JS = """(params) => {
     if (candidates.some((c) => c === el || c.contains(el) || el.contains(c))) continue;
     candidates.push(el);
   }
+  // The team profile form ("Introduce yourself": name / handle / role dropdown) is not a
+  // workspace chooser; its avatar button, role trigger and role options are never teams.
+  if (/introduce yourself|your role|profile handle/.test(rootLow) && !isChooser) return { kind: "none" };
   const explicitChoices = candidates.length > 0;
 
   let maxLen = 180;
   if (!explicitChoices) {
+    // Generic buttons only count as workspace options on a real chooser page.
+    if (!isChooser) return { kind: "none" };
     maxLen = 100;
     const raw = Array.from(root.querySelectorAll('button, [role="listitem"], [role="button"]')).filter((el) => (
       vis(el) && !inChrome(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true"
@@ -389,6 +400,81 @@ def _pick_onboarding_workspace(page, *, team_name: str = "", pick_single_team: b
     return "none"
 
 
+_TEAM_PROFILE_ROLE_TRIGGER = '[aria-haspopup][aria-labelledby*="role-label"]'
+
+_TEAM_PROFILE_ROLE_OPTION_JS = """() => {
+  const vis = (el) => {
+    const st = window.getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden") return false;
+    const b = el.getBoundingClientRect();
+    return b.width > 4 && b.height > 4;
+  };
+  for (const old of document.querySelectorAll("[data-team48-role-pick]")) old.removeAttribute("data-team48-role-pick");
+  const pops = Array.from(document.querySelectorAll(
+    '[role="dialog"], [role="listbox"], [role="menu"], [data-radix-popper-content-wrapper]'
+  )).filter(vis);
+  const seen = new Set();
+  const options = [];
+  for (const pop of pops) {
+    for (const el of pop.querySelectorAll('[role="option"], [role="menuitemradio"], [role="menuitem"], [role="radio"], button, li')) {
+      if (seen.has(el) || !vis(el)) continue;
+      seen.add(el);
+      const text = String(el.innerText || el.getAttribute("aria-label") || "").replace(/\\s+/g, " ").trim();
+      if (!text || text.length > 40 || /choose|close|cancel/i.test(text)) continue;
+      if (options.some((o) => o.el.contains(el) || el.contains(o.el))) continue;
+      options.push({ el, text });
+    }
+  }
+  if (!options.length) return "";
+  const preferred = options.filter((o) => !/^other$/i.test(o.text));
+  const pool = preferred.length ? preferred : options;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  pick.el.setAttribute("data-team48-role-pick", "1");
+  return pick.text;
+}"""
+
+
+def _looks_like_team_profile(page) -> bool:
+    """ChatGPT Team "Introduce yourself" form (name / profile handle / role) shown after joining."""
+    if _visible(page, _TEAM_PROFILE_ROLE_TRIGGER) or _visible(page, 'label:has-text("Your role")'):
+        return True
+    return "introduce yourself" in _page_text(page).lower()
+
+
+def _fill_team_profile(page, *, email: str = "") -> bool:
+    """Best effort: keep the prefilled name (type the saved one if empty), pick a role, Continue.
+
+    Membership is already in place on this page, so failing here never blocks authorization.
+    """
+    try:
+        name_box = page.get_by_label("Your name", exact=True)
+        if name_box.count() > 0 and name_box.first.is_visible() and not (name_box.first.input_value() or "").strip():
+            human_type_text(page, name_box.first, signup_identity_for_email(PROFILE_ROOT, email)["name"])
+            human_pause(page, 0.4, 0.9)
+    except Exception:  # noqa: BLE001
+        pass
+    picked = ""
+    try:
+        trigger = page.locator(_TEAM_PROFILE_ROLE_TRIGGER).first
+        if trigger.count() > 0 and trigger.is_visible() and trigger.get_attribute("data-selected") != "true":
+            human_pause(page, 0.6, 1.3)
+            if human_click(page, trigger, timeout=2500):
+                human_pause(page, 0.6, 1.2)
+                picked = str(page.evaluate(_TEAM_PROFILE_ROLE_OPTION_JS) or "")
+                option = page.locator('[data-team48-role-pick="1"]').first
+                if picked and option.count() > 0:
+                    human_click(page, option, timeout=2500)
+                    human_pause(page, 0.5, 1.1)
+                else:
+                    page.keyboard.press("Escape")
+    except Exception:  # noqa: BLE001
+        pass
+    human_pause(page, 0.6, 1.4)
+    clicked = _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
+    logger.info("chatgpt team profile form: role_picked=%s continue_clicked=%s", bool(picked), bool(clicked))
+    return bool(clicked)
+
+
 def _click_onboarding_action(page) -> bool:
     return (
         _click_exact(page, _ONBOARDING_BUTTON_EXACT)
@@ -419,6 +505,7 @@ def complete_chatgpt_onboarding(
     """Handle chatgpt.com /onboarding & workspace invite cards after login/signup."""
     wanted = str(target_email or "").strip().lower()
     acted = False
+    profile_tried = False
 
     # Ensure we are actually on chatgpt.com (not still mid-redirect from auth.openai.com).
     url = page.url or ""
@@ -460,6 +547,19 @@ def complete_chatgpt_onboarding(
             if _home_composer_visible(page) or round_idx >= 1:
                 return _verify_session_and_finish()
             human_pause(page, 1.4, 2.2)
+            continue
+
+        if _looks_like_team_profile(page):
+            if profile_tried:
+                # Already a member here; the profile form is optional for authorization.
+                logger.info("chatgpt team profile form still shown; continuing to authorization")
+                return _verify_session_and_finish()
+            profile_tried = True
+            if report:
+                report("onboarding", "正在填写团队资料卡")
+            if _fill_team_profile(page, email=wanted):
+                acted = True
+            human_pause(page, 2.0, 3.0)
             continue
 
         ws_outcome = _pick_onboarding_workspace(

@@ -1,6 +1,6 @@
 # Part 2：生产容器冒烟与 2 个全新 HME 邮箱实测
 
-**状态**：待开始
+**状态**：进行中（2026-11-21）
 **依赖**：part-0、part-1 已完成，并已用 `/flow-ship` 构建镜像部署到生产
 **所属计划**：[README](./README.md)
 
@@ -58,3 +58,9 @@
 ## 完成记录
 
 <!-- 执行者填写：改了什么、偏离计划的地方、上线时要注意的事、需要写进 docs 的内容。 -->
+
+**上线时已完成的前置（2026-11-21，/flow-ship，提交 `e44c8ca`）**
+- 生产已部署 `e44c8ca`，`/opt/team48/.env` 已设 `BROWSER_ENGINE=camoufox`，容器 healthy。实际生效配置：`headless=False`、停留 15～30 秒。
+- 步骤 1～2 已做：容器内 `browser_environment_smoke.py --engine camoufox --headed` 输出 `ok: true`、`same_profile_stable: true`，两个档案的 GPU 指纹不同；临时脚本已删除，没有留下档案。
+- 实测前已按用户要求在设置页关闭"rs 掉登录自动重新授权"（`codex_rs.recovery_enabled=false`）。自动轮转、自动补号、自动重授权本来就是关的。实测通过后提醒用户重新打开。
+- 剩余：步骤 3～6（可选的 `house-reducer-0y@` 和 2 个全新 HME 邮箱实测）。
