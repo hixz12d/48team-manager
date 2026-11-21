@@ -47,7 +47,14 @@ EXCHANGE_ID = "codex_rs_onboard"
 MAX_BATCH_EMAILS = 50
 MAX_SETTINGS_BYTES = 4096
 BROWSER_POLL_SECONDS = 20
-TEAM_PLAN_TYPES = {"team", "business", "enterprise", "edu"}
+# Workspace (non-personal) plan claims, same list codex-rs maps to Business / Enterprise / Edu,
+# e.g. "Business Premium" is self_serve_business_prolite. Personal plans: free / go / plus / pro*.
+TEAM_PLAN_TYPES = {
+    "team", "business", "enterprise", "edu", "education", "edu_plus", "edu_pro", "ent26", "hc",
+    "self_serve_business_usage_based", "self_serve_business_prolite",
+    "enterprise_cbp_usage_based", "enterprise_cbp_automation",
+}
+TEAM_PLAN_PREFIXES = ("self_serve_business", "enterprise")
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 MANUAL_CODES = {
@@ -698,9 +705,12 @@ async def _process_one(session_factory, batch_id: str, email: str, raw_settings:
             access_token = refresh_token = ""
             id_token = None
             raise _Stop("identity_mismatch")
-        if not identity.get("account_id") or plan_type not in TEAM_PLAN_TYPES:
+        if not identity.get("account_id") or not (
+            plan_type in TEAM_PLAN_TYPES or plan_type.startswith(TEAM_PLAN_PREFIXES)
+        ):
             access_token = refresh_token = ""
             id_token = None
+            logger.info("codex-rs onboard email=%s rejected plan_type=%s", _mask_email(email), plan_type or "-")
             raise _Stop("not_team_workspace")
 
         # 7. Import into codex-rs with caller settings + chosen proxy, then verify by reading back.
