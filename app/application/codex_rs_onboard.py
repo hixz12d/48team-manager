@@ -16,6 +16,7 @@ import random
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from app.application.codex_export import CodexTransferError
 from app.application.codex_publish import _token_identity, _verify_remote
@@ -79,12 +80,20 @@ REASONS = {
     "onboard_failed": "处理异常中断",
     "import_failed": "导入 rs 失败",
     "import_mismatch": "导入 rs 后读回核对不一致",
+    "desktop_session_missing": "授权页未识别已登录会话，请重试",
+    "oauth_invalid_state": "授权状态失效（409 invalid_state），请重试",
+    "proxy_geo_failed": "经代理查询出口时区失败，请重试",
+    "registration_home_not_ready": "登录后 ChatGPT 会话未就绪，请重试",
 }
 
 STAGE_MESSAGES = {
     "browser_open": "正在打开登录页",
+    "chatgpt_login": "正在登录 ChatGPT",
+    "chatgpt_session": "正在确认 ChatGPT 登录态",
     "fill_email": "正在登录",
     "email_otp": "等待邮箱验证码",
+    "about_you": "正在填写账号资料",
+    "account_pick": "正在选择对应账号",
     "workspace": "正在选择 Team 工作空间",
 }
 
@@ -604,7 +613,7 @@ async def _process_one(session_factory, batch_id: str, email: str, raw_settings:
         # 5. Browser email-OTP login + unique Team selection + OAuth code exchange.
         await _set_running_message(session_factory, batch_id, email, "正在登录")
         auth = chatgpt_client.create_oauth_authorize_url(
-            oauth_sessions.CLIENT_ID, oauth_sessions.REDIRECT_URI, login_hint=email
+            oauth_sessions.CLIENT_ID, oauth_sessions.REDIRECT_URI, login_hint=email, entry="desktop"
         )
         ticket = oauth_sessions.create_session(
             team_id=0, email=email, authorize=auth, mode="auto", proxy=proxy
@@ -625,6 +634,7 @@ async def _process_one(session_factory, batch_id: str, email: str, raw_settings:
                 proxy=proxy,
                 login_only=True,
                 allow_signup=False,
+                allow_profile_setup=True,
                 allow_join=False,
                 allow_sms=False,
                 team_name="",
@@ -637,6 +647,12 @@ async def _process_one(session_factory, batch_id: str, email: str, raw_settings:
             )
         if not result.get("ok"):
             err_code = str(result.get("error_code") or "browser_failed")
+            debug_dir = Path(str(result.get("debug_dir") or "")).name
+            if debug_dir:
+                logger.info(
+                    "codex-rs onboard email=%s stage=browser_debug dir=%s code=%s",
+                    _mask_email(email), debug_dir, err_code,
+                )
             result.clear()
             raise _Stop(err_code)
 

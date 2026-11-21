@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -69,7 +70,11 @@ REASONS = {
     "about_you_stuck": "卡在年龄/生日页",
     "oauth_callback_missing": "没拿到授权回调",
     "oauth_callback_invalid": "授权回调无效",
+    "oauth_invalid_state": "授权状态失效（409 invalid_state）",
     "oauth_exchange_failed": "换取令牌失败",
+    "desktop_session_missing": "授权页未识别已登录会话",
+    "registration_home_not_ready": "登录后 ChatGPT 会话未就绪",
+    "proxy_geo_failed": "经代理查询出口时区失败",
     "browser_failed": "浏览器出错",
     "browser_timeout": "浏览器超时",
     "browser_worker_exited": "浏览器进程异常退出",
@@ -513,8 +518,9 @@ async def _authorize(db, browser, remote_id, email, proxy, team_name, hme, hme_a
     from app.application.codex_publish import _token_identity
     from app.application.codex_reauth import FrozenProxyClient
 
-    auth = chatgpt_client.create_oauth_authorize_url(oauth_sessions.CLIENT_ID, oauth_sessions.REDIRECT_URI,
-                                                     login_hint=email)
+    auth = chatgpt_client.create_oauth_authorize_url(
+        oauth_sessions.CLIENT_ID, oauth_sessions.REDIRECT_URI, login_hint=email, entry="desktop"
+    )
     # In-memory session only: there is no local account to attach an OAuthSession row to.
     ticket = oauth_sessions.create_session(team_id=0, email=email, authorize=auth, mode="auto", proxy=proxy)["ticket"]
     exchanger = FrozenProxyClient(proxy)
@@ -527,7 +533,15 @@ async def _authorize(db, browser, remote_id, email, proxy, team_name, hme, hme_a
                                        team_name=team_name, use_cloudflare=False, hme_base_url=hme.base_url,
                                        hme_service_token=hme.service_token, hme_account_id=hme_account_id)
         if not result.get("ok"):
-            raise _Stop(str(result.get("error_code") or "browser_failed"))
+            err_code = str(result.get("error_code") or "browser_failed")
+            debug_dir = Path(str(result.get("debug_dir") or "")).name
+            if debug_dir:
+                logger.info(
+                    "codex-rs recovery remote=...%s stage=browser_debug dir=%s code=%s",
+                    _tail(remote_id), debug_dir, err_code,
+                )
+            result.clear()
+            raise _Stop(err_code)
         session = oauth_sessions.get_session(ticket) or {}
         parsed = oauth_sessions.parse_oauth_callback(result.get("callback_url") or "")
         result.clear()

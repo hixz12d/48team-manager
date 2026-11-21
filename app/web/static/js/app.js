@@ -2381,7 +2381,7 @@ function hmeRow(item) {
       return;
     }
     if (!callbackUrl) {
-      setReauthStatus("请把跳转到 localhost:1455 的整段回调地址贴回来。", "error");
+      setReauthStatus("请把跳转到 127.0.0.1:1455 的整段回调地址贴回来。", "error");
       return;
     }
     if (button) button.disabled = true;
@@ -3275,7 +3275,7 @@ function hmeRow(item) {
       callbackLabel.textContent = "回调地址";
       const callback = document.createElement("textarea");
       callback.rows = 4;
-      callback.placeholder = "http://localhost:1455/auth/callback?code=...&state=...";
+      callback.placeholder = "http://127.0.0.1:1455/auth/callback?code=...&state=...";
       callbackLabel.append(callback);
       const status = document.createElement("p");
       status.className = "muted";

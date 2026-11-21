@@ -157,7 +157,7 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
 | `codexResult` | `"unknown"` / `"no_phone"` / `"phone_required"` / `"failed"` | |
 | `diagnostics` | object 或 `null` | 仅在 `status` 为 `done` / `stopped` / 最终暂停时附带 `diagnosticReport(job, VERSION)`；其他时候 `null` |
 
-服务器模式的人工类暂停（`pauseFinal` 必为 `true`，插件原地停住不自动恢复）：`phone`、`phone_pool_empty`、`phone_limit`、`phone_back_missing`、`phone_relay_error`、`captcha`、`rate_limit`、`manual_step`、`email_mismatch`、`email_unverified`、`session_error`、`debugger_detached`；`unknown_page` 在自动重试次数用完后也为最终。
+服务器模式的人工类暂停（`pauseFinal` 必为 `true`，插件原地停住不自动恢复）：`phone`、`phone_pool_empty`、`phone_limit`、`phone_back_missing`、`phone_relay_error`、`captcha`、`rate_limit`、`manual_step`、`email_mismatch`、`email_unverified`、`identity_mismatch`、`desktop_session_missing`、`session_error`、`debugger_detached`；`unknown_page` 在自动重试次数用完后也为最终。
 
 手机页：`phonePool:true` 时插件遇手机页先走接码中转（`POST /phone`），只有中转失败才以 `phone_pool_empty` / `phone_limit` / `phone_back_missing` / `phone_relay_error` 暂停；`phonePool:false` 时照旧以 `phone` 暂停。
 
@@ -167,17 +167,17 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
 
 ```json
 {"ok": true, "command": "none"}
-{"ok": true, "command": "authorize", "authorizeUrl": "https://auth.openai.com/oauth/authorize?..."}
+{"ok": true, "command": "authorize", "authorizeUrl": "https://chatgpt.com/codex/desktop-auth?authorize_url=https%3A%2F%2Fauth.openai.com%2Foauth%2Fauthorize%3F...&codex_streamlined_login=true&no_universal_links=1"}
 {"ok": true, "command": "stop"}
 ```
 
-- `authorize`：服务端从下发起每次都返回同一个 `authorizeUrl`，直到收到 `phase:"oauth"` 的事件。插件已在 OAuth 阶段时忽略重复的 `authorize`。插件只接受 origin 为 `https://auth.openai.com` 的链接，否则当作 `stop`。
+- `authorize`：服务端从下发起每次都返回同一个 `authorizeUrl`，直到收到 `phase:"oauth"` 的事件。插件已在 OAuth 阶段时忽略重复的 `authorize`。插件只接受 `https://auth.openai.com/oauth/authorize...`，或 `https://chatgpt.com/codex/desktop-auth?...` 且其 `authorize_url` 参数解出为 `https://auth.openai.com/oauth/authorize...` 的链接，否则当作 `stop`。
 - `stop`：一旦下发，之后每次都返回 `stop`。插件执行与弹窗"停止"相同的逻辑，上报一次 `status:"stopped"`（附诊断，失败不重试），然后不再请求。
 - 网络错误 / 5xx：不单独重试，下一次心跳照常发。
 
 ### POST `/callback`
 
-请求：`{"callbackUrl": "http://localhost:1455/auth/callback?code=...&state=..."}`，必须通过 `shared.mjs` `oauthCallback()` 校验（`localhost` 或 `127.0.0.1`、端口 1455、路径 `/auth/callback`、有 `state` 且有 `code` 或 `error`）。
+请求：`{"callbackUrl": "http://127.0.0.1:1455/auth/callback?code=...&state=..."}`，必须通过 `shared.mjs` `oauthCallback()` 校验（`localhost` 或 `127.0.0.1`、端口 1455、路径 `/auth/callback`、有 `state` 且有 `code` 或 `error`）。
 
 响应：
 
@@ -248,8 +248,8 @@ export const RUNNER = Object.freeze({"baseUrl": "http://127.0.0.1:8008", "runId"
 3. 服务端收到 `phase:"signup", status:"done"` → 核对官方成员（最多 8 次、间隔 5 秒；角色 `official_roles_equivalent`、席位 `existing_invite_seat_error`）：
    - 确认入组：`ensure_membership(... joined)`，生成授权链接（`purpose="account_reauth"`），此后事件回复 `command:"authorize"`。
    - 未入组 → `not_joined`；角色 / 席位不符 → `membership_mismatch`；两者都下发 `stop`。
-4. 插件收到 `authorize` → 同一标签页打开链接，`phase:"oauth"`，按现有 OAuth 逻辑登录（邮箱验证码仍走 `MAILBOX`）、按 `workspaceNames` 选团队、同意。
-5. 拦截到 `localhost:1455/auth/callback` → `POST /callback` → 上报 `status:"done", phase:"oauth"`，插件任务结束（之后仍可收到 `stop`，也可以不再请求）。
+4. 插件收到 `authorize` → 同一标签页打开链接，`phase:"oauth"`，桌面版链接按邮箱选账号、按 `workspaceNames` 选团队、同意（旧版链接按原有 OAuth 逻辑登录，邮箱验证码仍走 `MAILBOX`）。
+5. 拦截到 `127.0.0.1:1455/auth/callback`（兼容 `localhost:1455/auth/callback`） → `POST /callback` → 上报 `status:"done", phase:"oauth"`，插件任务结束（之后仍可收到 `stop`，也可以不再请求）。
 6. 服务端换票（`begin_exchange` → revision 核对 → `exchange_oauth_code` → token 邮箱核对 → `apply_tokens`、`auth_state="healthy"`），结束运行：给插件下发 `stop`、关浏览器、删运行目录。
 
 ### 暂停

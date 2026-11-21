@@ -68,6 +68,31 @@ export function oauthCallback(value) {
   } catch { return false; }
 }
 
+const AUTH_ORIGIN = 'https://auth.openai.com';
+const CHATGPT_ORIGIN = 'https://chatgpt.com';
+const isDirectAuthorizeUrl = url =>
+  url.origin === AUTH_ORIGIN && url.pathname === '/oauth/authorize' && !url.username && !url.password;
+const isDesktopAuthPath = pathname =>
+  pathname === '/codex/desktop-auth' || pathname.startsWith('/codex/desktop-auth/');
+
+export function isDesktopAuthorizeUrl(value) {
+  if (typeof value !== 'string' || !value) return false;
+  try {
+    const url = new URL(value);
+    if (url.origin !== CHATGPT_ORIGIN || !isDesktopAuthPath(url.pathname) || url.username || url.password) return false;
+    const inner = url.searchParams.get('authorize_url');
+    return !!inner && isDirectAuthorizeUrl(new URL(inner));
+  } catch { return false; }
+}
+
+export function validAuthorizeUrl(value) {
+  if (typeof value !== 'string' || !value) return false;
+  try {
+    const url = new URL(value);
+    return isDirectAuthorizeUrl(url) || isDesktopAuthorizeUrl(url.href);
+  } catch { return false; }
+}
+
 
 export const MODES = new Set(['auto', 'review', 'submit', 'manual']);
 // phone: the "add phone number" form; phone_otp: the SMS code form (never an email code).
@@ -79,7 +104,7 @@ const EVENTS = new Set(['started', 'page', 'filled', 'submit_attempt', 'form_sub
   'phone_acquired', 'phone_submitted', 'sms_received', 'phone_rejected']);
 // Phone relay results reported to the server (docs/contracts/phone-relay.md section 4).
 export const PHONE_OUTCOMES = new Set(['success', 'invalid', 'recently_used', 'risk', 'no_sms', 'wrong_code', 'cancelled']);
-const PAGES = new Set(['chatgpt', 'signup', 'password', 'email_verification', 'profile', 'phone', 'consent', 'auth_other', 'unknown']);
+const PAGES = new Set(['chatgpt', 'desktop_auth', 'signup', 'password', 'email_verification', 'profile', 'phone', 'consent', 'auth_other', 'unknown']);
 const CLICK_OUTCOMES = new Set(['submitted', 'loading', 'advanced', 'validation', 'timeout']);
 const CONTROL_OUTCOMES = new Set(['waiting', 'ready', 'timeout']);
 // Geometry only. Never copy text, selectors, attributes or input values into diagnostics.
@@ -98,7 +123,8 @@ function controlGeometry(value) {
 // Why a run paused. Fixed codes only, never page text, so diagnostics show the cause directly.
 export const PAUSE_REASONS = new Set(['user', 'submit_timeout', 'click_timeout', 'claim_timeout', 'otp_submit_timeout',
   'otp_wait', 'attempt_limit', 'retry_limit', 'profile_timeout', 'button_unavailable', 'no_submit_button', 'validation',
-  'form_changed', 'fill_incomplete', 'user_edit', 'email_mismatch', 'email_unverified', 'session_error', 'home_unconfirmed',
+  'form_changed', 'fill_incomplete', 'user_edit', 'email_mismatch', 'email_unverified', 'identity_mismatch', 'desktop_session_missing',
+  'session_error', 'home_unconfirmed',
   'entry_missing', 'unknown_page', 'manual_step', 'captcha', 'phone', 'rate_limit', 'redraw', 'reload_failed',
   'debugger_detached', 'error', 'other', 'phone_pool_empty', 'phone_limit', 'phone_back_missing', 'phone_relay_error']);
 // A pause for these reasons only means "the page did not move in time": once the page reaches
@@ -134,7 +160,7 @@ export function checkedProfile(value) {
 export function pageKind(value) {
   try {
     const {hostname, pathname} = new URL(value);
-    if (hostname === 'chatgpt.com') return 'chatgpt';
+    if (hostname === 'chatgpt.com') return isDesktopAuthPath(pathname) ? 'desktop_auth' : 'chatgpt';
     if (!AUTH_HOSTS.has(hostname)) return 'unknown';
     if (/add-phone|phone-verification|verify-phone/.test(pathname)) return 'phone';
     if (/consent/.test(pathname)) return 'consent';

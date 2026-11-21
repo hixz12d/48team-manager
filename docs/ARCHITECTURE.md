@@ -53,6 +53,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `codex_rs_refill_scan` | 5 分钟 | codex-rs 自动补号 `codex_refill.run_once`（开关关闭时不访问 codex-rs） |
 | `codex_rs_health_scan` | 60 秒 | rs 状态同步 `codex_status.refresh`，再尝试串行邮箱恢复 `codex_reauth.run_once`；恢复开关默认关 |
 | `codex_rs_recovery_scan` | 60 秒 | rs 全部账号掉登录恢复 `codex_rs_recovery.run_once`（默认关；单次可跑十几分钟，`max_instances=1`） |
+| `codex_desktop_version_sync` | 30 分钟（启动即跑） | `integrations/openai/desktop_version.refresh`：读 rs `GET /api/admin/dashboard/summary` 的 `wireProfiles[provider=openai].release.latestVersion` 存内存，供桌面版授权链接的 `codex_app_version`；失败沿用上次值，从未读到用 `CODEX_DESKTOP_APP_VERSION` |
 
 ### 手动轮转（`application/manual_rotation.py`）
 
@@ -115,7 +116,10 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 
 ### 浏览器与注册（`integrations/openai/browser/`）
 
-- `environment.py`：注册、入组、OAuth、重授权共用一个启动配置（`launch_persistent_context`，沿用代理和 SOCKS5 认证桥）。档案目录 `data/chrome-profiles/<email>/`，Chromix 在 `data/chrome-profiles/chromix/<email>/`；`.team48-browser.json` 固定种子、语言、时区、窗口，损坏即停止不重新随机。
+- `environment.py`：注册、入组、OAuth、重授权共用一个启动配置（`launch_persistent_context`，沿用代理和 SOCKS5 认证桥）。档案目录 `data/chrome-profiles/<email>/`，Chromix 在 `data/chrome-profiles/chromix/<email>/`；`.team48-browser.json` 固定种子、语言、窗口，损坏即停止不重新随机。时区：`BROWSER_TIMEZONE` 显式配置优先，否则每次启动经代理 `proxy/geo.lookup_exit` 查出口（不缓存，SOCKS 桥端口每次不同），查不到抛 `ProxyGeoError`（`proxy_geo_failed`），不退回容器时区；Chromix 档案里的时区被出口时区覆盖。两种引擎都加 `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`；`harden_context` 给 Playwright Chromium 抹 `navigator.webdriver`。
+- 授权链接（`integrations/openai/chatgpt.py`）：`create_oauth_authorize_url(..., entry=None)`，`desktop`（默认，`CODEX_OAUTH_ENTRY`）照抄 codex-rs 的桌面版入口——外层 `chatgpt.com/codex/desktop-auth?authorize_url=...&codex_streamlined_login=true&no_universal_links=1`，内层无 `prompt` / `login_hint`，带 `originator=Codex Desktop`、`codex_app_version`、按邮箱派生的稳定 ID，scope 含 `api.connectors.read/invoke`；`legacy` 为旧 CLI 链接（`prompt=login`）。回调常量 `oauth_sessions.REDIRECT_URI = http://127.0.0.1:1455/auth/callback`；`application/oauth_sessions.parse_strict_callback` 把 `localhost` / `127.0.0.1` 视为同一回环主机。`is_desktop_authorize_url` 供浏览器层判断。
+- `chatgpt_login.py`：chatgpt.com 登录 / 注册循环 `run_chatgpt_login_loop`（`run_browser_onboard` 也用它）、`ensure_chatgpt_login`（桌面版前置登录：已登目标邮箱跳过，登着别人停 `identity_mismatch`）、`wait_chatgpt_session`（轮询 `/api/auth/session` 最多 30 秒，超时 `registration_home_not_ready`）。`allow_profile_setup` 控制 `login` 模式遇 about-you 是填写（随机英文名 + 成年生日）还是返回 `account_not_registered`。
+- `reauth.run_browser_oauth_reauth`：桌面版链接先 `ensure_chatgpt_login` 再开链接；`_ACCOUNT_PICKER_JS` 按邮箱点账号卡；桌面版落到授权页登录表单返回 `desktop_session_missing`；409 响应或页面 `invalid_state` 返回 `oauth_invalid_state`；不点 "Use another / Use a different"。验证码一律 `onboard._wait_and_fallback_submit_otp`（等 3 秒自动提交，仍在原页且按钮可点才补点）。失败都存 `data/debug/<时间>/` 并在结果带 `debug_dir`。
 - 注册流程 `BROWSER_SIGNUP_FLOW`：`legacy`（默认，需邀请链接）或 `extension`（先由官方 API 确认邀请，再从首页注册）。extension 失败不回退 legacy。
 - extension 托管桥：`signup.py`、`signup_state.py`、`signup_readiness.py`、`signup_input.py`、`signup_bridge.js`。在隔离环境注入插件 `content.js`，输入走 CDP `Input.dispatch*` / `insertText`（真实事件），验证码在 Python 侧读取。主页可操作并两次确认登录邮箱才算完成；主页 30 秒仍未稳定时，若目标邮箱登录态已间隔确认两次，就带登录态交给官方入组 / 角色席位核对后再同页授权（截图存 `data/debug/<时间>/home-not-ready.png`，`signup_diagnostics.home_not_ready` 记各就绪条件），否则返回 `registration_home_not_ready`。
 - 注册、入组确认、OAuth 共用同一进程、页面和代理（`InvitedBrowserSession`），全程占用全局浏览器槽。
@@ -156,9 +160,9 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 
 - 只给 rs 调用的内部接口 `/api/internal/codex-rs/onboard`：`GET`（当前批次）、`POST`（`{emails, settings}` 提交，≤ 50 个）、`POST /stop`、`POST /retry`（`{email}`）。`CODEX_RS_ONBOARD_TOKEN` 做 Bearer 鉴权，少于 24 位时全部 404（`code=not_found`），不接受管理员会话；错误体 `{code, message}`。rs 侧是 fork 的 `fork_team48` 配置段，管理接口 `/api/admin/accounts/email-auth*` 原样转发。
 - 批次只保留当前 / 最近一批，存 `system_settings.codex_rs_onboard_batch`（Batch JSON + 提交的 `settings`，不存令牌、验证码、代理、回调）；模块级 `asyncio.Lock` 串行化读写，worker 是进程内 `asyncio.Task`。worker 不在而批次仍 `running` / `stopping` 时（进程重启），读取即自愈：在跑的号 `failed`（`interrupted`，可重试），排队的号 `stopped`。
-- 单号流程：再查 rs 是否已有同邮箱（有则 `skipped`）→ `codex_rs_recovery._find_mailbox` 找 HME 别名 → 挑代理（`enabled`、最近测试通过、已挂 ≥ 1 个号、挂号最少并列随机；rs 代理都带认证，列表没有完整地址，用 `list_proxy_accounts` 取一个已绑定账号再 `export_proxy_url`）→ 等全局浏览器槽（`browser_lock` / `operations` 浏览器任务 / `try_reserve`，每 20 秒重试，不算失败）→ `run_browser_oauth_reauth(login_only=True, allow_join=False, allow_sms=False, pick_single_team=True)` → `FrozenProxyClient` 换票 → 核对邮箱、RT、`account_id`、`chatgpt_plan_type ∈ {team, business, enterprise, edu}` → `import_accounts(raw_settings=<rs 前端设置原样>, proxy_id=<所选代理>)` → `detail` + `_verify_remote` 读回。不建本地账号和 `codex_bindings`，导入后掉登录归上一节的全量恢复。
+- 单号流程：再查 rs 是否已有同邮箱（有则 `skipped`）→ `codex_rs_recovery._find_mailbox` 找 HME 别名 → 挑代理（`enabled`、最近测试通过、已挂 ≥ 1 个号、挂号最少并列随机；rs 代理都带认证，列表没有完整地址，用 `list_proxy_accounts` 取一个已绑定账号再 `export_proxy_url`）→ 等全局浏览器槽（`browser_lock` / `operations` 浏览器任务 / `try_reserve`，每 20 秒重试，不算失败）→ 桌面版链接（`entry="desktop"`）+ `run_browser_oauth_reauth(login_only=True, allow_profile_setup=True, allow_join=False, allow_sms=False, pick_single_team=True)` → `FrozenProxyClient` 换票 → 核对邮箱、RT、`account_id`、`chatgpt_plan_type ∈ {team, business, enterprise, edu}` → `import_accounts(raw_settings=<rs 前端设置原样>, proxy_id=<所选代理>)` → `detail` + `_verify_remote` 读回。不建本地账号和 `codex_bindings`，导入后掉登录归上一节的全量恢复。
 - `pick_single_team`（`browser/reauth.py`）：只在 `allow_join=False` 且未指定团队名时生效；页面内 JS 收集工作空间选项，去掉含 personal / 个人 的，唯一 Team 才点并点继续，多个返回 `workspace_ambiguous`，只剩个人返回 `team_missing`，识别不到选项时放行、由套餐核对兜底。
-- 需人工（不可重试）的错误码：手机 / 人机验证、封号、未注册、身份不符、找不到邮箱、`workspace_ambiguous`、`team_missing`、`not_team_workspace`、`import_mismatch`；其余可重试。日志只写邮箱前 3 位、阶段、错误码。
+- 需人工（不可重试）的错误码：手机 / 人机验证、封号、未注册、身份不符、找不到邮箱、`workspace_ambiguous`、`team_missing`、`not_team_workspace`、`import_mismatch`；其余（含 `desktop_session_missing`、`oauth_invalid_state`、`proxy_geo_failed`、`registration_home_not_ready`）可重试。日志只写邮箱前 3 位、阶段、错误码；浏览器失败另记一条 `stage=browser_debug dir=<截图目录名>`。rs 掉登录恢复、codex 单号邮箱重授权同样固定 `entry="desktop"`，但不开 `allow_profile_setup`。
 
 ### codex-rs 自动补号（`application/codex_refill.py`）
 
@@ -223,7 +227,9 @@ for f in app/web/static/js/*.js extensions/chatgpt-signup/*.js extensions/chatgp
 | `BROWSER_HEADLESS` / `BROWSER_CHANNEL` / `BROWSER_EXECUTABLE` | 浏览器启动 |
 | `BROWSER_ENGINE` | `chromium`（默认）/ `chromix`（需同时设 `BROWSER_EXECUTABLE`） |
 | `BROWSER_SIGNUP_FLOW` | `legacy`（默认）/ `extension` |
-| `BROWSER_LOCALE` / `BROWSER_TIMEZONE` | 新建档案的语言 / 时区 |
+| `BROWSER_LOCALE` / `BROWSER_TIMEZONE` | 浏览器语言 / 固定时区；时区留空时每次启动跟随代理出口 |
+| `CODEX_OAUTH_ENTRY` | 授权入口：`desktop`（默认，桌面版快捷入口）/ `legacy`（旧入口，退路）；rs 方向三个流程固定 desktop |
+| `CODEX_DESKTOP_APP_VERSION` | 桌面版 `codex_app_version` 兜底值（从未从 rs 读到时用） |
 | `ROTATION_SIGNUP_RUNNER` | 轮转注册方式：`playwright`（默认）/ `extension`（扩展运行器） |
 | `RUNNER_BROWSER_EXECUTABLE` | Chromix 153 启动脚本 `chromix`（不是 `chrome`），extension 模式必填 |
 | `RUNNER_FINGERPRINT_PLATFORM` / `RUNNER_GPU_MODE` | 新建运行器档案的伪装平台 `linux`/`windows`、显卡 `native`/`preset`；已有档案不变 |

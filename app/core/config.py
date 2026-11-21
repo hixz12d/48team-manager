@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     browser_timezone: str = ""
     openai_ca_bundle: str = ""
 
+    # Codex OAuth entry: "desktop" = chatgpt.com/codex/desktop-auth streamlined login
+    # (same as codex-rs, reuses the chatgpt.com session); "legacy" = old CLI authorize
+    # URL with prompt=login. Invalid values fall back to desktop.
+    codex_oauth_entry: str = "desktop"
+    # Fallback codex_app_version for the desktop entry; the live value is read from
+    # codex-rs every 30 minutes (app/integrations/openai/desktop_version.py).
+    codex_desktop_app_version: str = "26.1117.41037"
+
     # Rotation signup/OAuth runner: playwright (legacy path) or extension (Chromix
     # subprocess + the real signup extension). Only manual/automatic rotation use it.
     rotation_signup_runner: Literal["playwright", "extension"] = "playwright"

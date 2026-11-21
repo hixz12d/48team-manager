@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.8.9';
+  const VERSION = '0.9.0';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -1219,6 +1219,73 @@
   }
   const choiceText = node => (node.innerText || node.getAttribute('aria-label') || '').trim().toLowerCase();
   const CHOICES = '[role="radio"],[role="option"],[role="menuitemradio"],[role="button"],[role="link"],label,button,li,a';
+  const SWITCH_ACCOUNT = /use another account|switch account|another account|different account|log ?out|sign ?out|使用其他账[号户]|使用其他帐户|切换账[号户]|换一个账[号户]|退出登录|登出/i;
+  const EMAIL_PATTERN = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+  const desktopAuthPage = (path = location.pathname.toLowerCase()) =>
+    location.hostname === 'chatgpt.com' && (path === '/codex/desktop-auth' || path.startsWith('/codex/desktop-auth/'));
+  const accountChooserPage = (text, path) => desktopAuthPage(path) ||
+    /account-chooser|choose-account|select-account/.test(path) ||
+    /choose an account|select an account|pick an account|选择账[号户]|选择一个账[号户]/.test(text);
+  const extractEmails = value => [...new Set(String(value || '').toLowerCase().match(EMAIL_PATTERN) || [])];
+  let accountPickedOn = '', accountPickedAt = 0;
+  function accountCards() {
+    const own = node => !node.closest('#team48-signup-progress');
+    const controls = all(CHOICES).filter(node => own(node) && !SWITCH_ACCOUNT.test(choiceText(node)) &&
+      extractEmails(choiceText(node)).length > 0);
+    const cards = controls.filter(node => !controls.some(other => other !== node && node.contains(other)));
+    if (cards.length) return {cards, fallback: false};
+    const nodes = all('span,div,p,strong,h2,h3').filter(node => own(node) && !node.closest('input,textarea,script,style') &&
+      !SWITCH_ACCOUNT.test(choiceText(node)) && extractEmails(choiceText(node)).length === 1);
+    return {cards: nodes.filter(node => !nodes.some(other => other !== node && node.contains(other))), fallback: true};
+  }
+  async function pickDesktopAccount(text, approve) {
+    const {cards, fallback} = accountCards();
+    const targetEmail = String(job.email || '').trim().toLowerCase();
+    const cardEmails = cards.flatMap(node => extractEmails(choiceText(node)));
+    const target = cards.find(node => {
+      const emails = extractEmails(choiceText(node));
+      return emails.length === 1 && emails[0] === targetEmail;
+    });
+    if (!fallback && cards.length && !target) {
+      unknownSince = clock();
+      currentStage = 'consent';
+      await pause('授权页只看到其他邮箱账号，与本次任务不一致，已停止，请检查浏览器登录状态。', 'identity_mismatch');
+      return 'handled';
+    }
+    const visibleEmails = cardEmails.length ? cardEmails : extractEmails(text);
+    if (visibleEmails.length && !visibleEmails.includes(targetEmail)) {
+      unknownSince = clock();
+      currentStage = 'consent';
+      await pause('授权页显示的账号邮箱与本次任务不一致，已停止，请检查浏览器登录状态。', 'identity_mismatch');
+      return 'handled';
+    }
+    // Plain-text email alongside a Continue button: let the normal approve flow click Continue.
+    if (!target || (fallback && approve)) return 'continue';
+    unknownSince = clock();
+    currentStage = 'consent';
+    if (!autoFill()) {
+      renderProgress({...job, message: '请在网页选择目标账号、团队并确认授权；拿到回调后插件会自动提交 Team48。'});
+      return 'handled';
+    }
+    if (job.mode === 'review' && target === approve) {
+      renderProgress({...job, message: '已确认目标账号，请核对后点击网页的继续按钮完成授权。'});
+      return 'handled';
+    }
+    if (accountPickedOn !== location.pathname) {
+      renderProgress({...job, message: '正在选择目标账号。'});
+      if (!enabled(target)) return 'handled';
+      if (await clickControl(target)) { accountPickedOn = location.pathname; accountPickedAt = clock(); }
+      await rest(600, 1000);
+      return 'handled';
+    }
+    if (approve && approve !== target && enabled(approve)) return 'continue';
+    if (clock() - accountPickedAt > 20000) {
+      await pause('已点选目标账号，但页面 20 秒没有前进，请检查网页后点击插件中的继续。', 'manual_step');
+      return 'handled';
+    }
+    renderProgress({...job, message: '已选择目标账号，等待页面进入下一步。'});
+    return 'handled';
+  }
   // The team's row: a control whose text is the name, or one of whose lines is (rows also carry avatar
   // initials and chevrons). Rows built from plain divs fall back to the text element itself.
   function workspaceChoice(names) {
@@ -1267,11 +1334,19 @@
   async function oauthPage(text, path) {
     const names = workspaceNames();
     const approve = button(/^(continue|allow|authorize|accept|confirm|继续|允许|授权|确认)$/i);
-    const approval = /consent|authorize|workspace|organization/.test(path) || /codex/.test(text);
+    const approval = /consent|authorize|workspace|organization/.test(path) || /codex/.test(text) || desktopAuthPage(path);
     const chooser = chooserPage(text, path);
+    if (!chooser && accountChooserPage(text, path)) {
+      if (await pickDesktopAccount(text, approve) === 'handled') return true;
+    }
     if ((!approve || !approval) && !chooser) {
       const login = button(/^(log in|continue with password|使用密码继续|登录)$/i);
       if (autoFill() && job.mode === 'auto' && login && enabled(login) && location.hostname !== 'chatgpt.com') {
+        if (job.desktopAuth) {
+          unknownSince = clock();
+          await pause('桌面版授权未识别到 ChatGPT 登录会话，请在网页手动完成登录授权；拿到回调后插件会自动提交。', 'desktop_session_missing');
+          return true;
+        }
         unknownSince = clock();
         if (await claim('signup', true)) await clickControl(login, 'signup');
         return true;
@@ -1720,7 +1795,7 @@
     const signup = button(/^(sign up( for free)?|create account|get started|免费注册|注册|创建账户|创建帐户)$/i);
     // Once the signup forms were seen, any form-free chatgpt.com page is checked through the
     // session API; the logged-in UI changes too often to depend on one element id.
-    const home = location.hostname === 'chatgpt.com' && !signup &&
+    const home = location.hostname === 'chatgpt.com' && !desktopAuthPage(path) && !signup &&
       (!!first('#prompt-textarea,[data-testid="profile-button"],[data-testid="accounts-profile-button"],[data-testid="composer-plus-btn"],[data-testid="create-new-chat-button"]') ||
        (!!job.entryFormSeen && !oauthPhase()));
     const stage = otp || boxes.length === 6 ? 'otp' : /about-you/.test(path) || profile ? 'profile' :
@@ -1769,6 +1844,7 @@
       submittedForms = new WeakMap(); userEditing = false; pendingClick = null; stallReleases = new Map();
       resumeCount = job.resumeCount || 0;
       entryWaitSince = 0; homeSince = 0; sessionErrors = 0;
+      accountPickedOn = ''; accountPickedAt = 0;
       backSince = 0; backClickedAt = 0; phoneWaitSince = 0; codeWaitSince = 0; phoneReloadAt = 0;
     }
     renderProgress(job);
@@ -1888,13 +1964,34 @@
         }
       } else if (!(await typeValue(otp, code))) return pause('验证码输入未完成，请检查网页后继续。', 'fill_incomplete');
       await trace('filled');
-      await submit(anchor, 'otp'); return;
+      // Wait up to 3 s for the OTP page to auto-submit; only click Continue if it stays on the OTP step and the button is clickable.
+      const otpPath = location.pathname;
+      const otpDeadline = clock() + 3000;
+      while (clock() < otpDeadline) {
+        if (!(await send('state')).active || userEditing) return;
+        const current = resolveAnchor();
+        if (!current || location.pathname !== otpPath || detectStage().stage !== 'otp') return;
+        await sleep(200);
+      }
+      const currentOtp = resolveAnchor();
+      if (!currentOtp || location.pathname !== otpPath || detectStage().stage !== 'otp') return;
+      const otpForm = currentOtp.closest('form');
+      if (otpForm && await waitForSubmission(otpForm)) return;
+      if (job.mode === 'review') { await submit(currentOtp, 'otp'); return; }
+      const otpScope = currentOtp.closest('[role="dialog"],dialog[open],[aria-modal="true"]') || otpForm || document;
+      const otpTarget = continueButton(otpScope) || [...otpScope.querySelectorAll('button[type="submit"]')].find(visible);
+      if (otpTarget && enabled(otpTarget) && !loadingNow(otpScope, otpTarget)) await submit(currentOtp, 'otp');
+      return;
     }
     if (stage === 'profile') {
       unknownSince = clock();
       if (profile && await manualStage(profile, 'profile')) return;
       if (!autoFill()) return;
       await fillProfile(); return;
+    }
+    if (oauthPhase() && job.desktopAuth && ['auth.openai.com', 'auth0.openai.com'].includes(location.hostname) && (password || email)) {
+      unknownSince = clock();
+      return pause('桌面版授权未识别到 ChatGPT 登录会话，请在网页手动完成登录授权；拿到回调后插件会自动提交。', 'desktop_session_missing');
     }
     if (password) {
       unknownSince = clock();

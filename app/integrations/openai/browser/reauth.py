@@ -3,10 +3,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 from app.core.config import load_settings
-from app.integrations.openai.browser.environment import BrowserEnvironmentError, environment_summary
+from app.integrations.openai.browser.chatgpt_login import ensure_chatgpt_login
+from app.integrations.openai.browser.environment import (
+    BrowserEnvironmentError,
+    environment_summary,
+    harden_context,
+)
 from app.integrations.openai.browser.onboard import (
     ABOUT_YOU_STUCK_LIMIT,
     NOT_REGISTERED_ERROR,
@@ -19,16 +26,19 @@ from app.integrations.openai.browser.onboard import (
     _submit_phone_sms,
     _find_otp,
     _mail_kwargs,
+    _otp_boxes,
     _page_text,
     _pick_workspace,
     _save_debug,
     _snapshot_mailbox_codes,
     _visible,
+    _wait_and_fallback_submit_otp,
     chromium_context_kwargs,
     goto_with_retries,
     looks_like_about_you,
     looks_like_registration,
     looks_like_session_ended,
+    page_is_cloudflare,
     page_phone_rejection,
     phone_page_outcome,
     record_pool_phone,
@@ -38,6 +48,7 @@ from app.integrations.openai.browser.onboard import (
     wait_cloudflare,
     wait_email_otp_with_resend,
 )
+from app.integrations.openai.chatgpt import is_desktop_authorize_url
 from app.domain.reauth import is_oauth_callback, looks_like_deactivated
 from app.integrations.proxy.socks_bridge import chrome_proxy_launch
 from app.integrations.sms.client import require_proxy, sms_client
@@ -161,6 +172,185 @@ def _pick_single_team_workspace(page) -> str:
     return "picked"
 
 
+_ACCOUNT_PICKER_JS = """(targetEmail) => {
+  const wanted = String(targetEmail || "").trim().toLowerCase();
+  if (!wanted) return { kind: "none" };
+  const vis = (el) => {
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) return false;
+    const box = el.getBoundingClientRect();
+    return box.width > 8 && box.height > 8;
+  };
+  const formInputs = document.querySelectorAll(
+    'input[type="email"], input[name="email"], input[name="username"], ' +
+    'input[type="password"], input[type="tel"], input[name="phone"], ' +
+    'input[autocomplete="one-time-code"], input[name="code"], input[name="otp"], input[name="pin"], input[maxlength="1"]'
+  );
+  for (const inp of formInputs) {
+    if (vis(inp)) return { kind: "none" };
+  }
+  for (const old of document.querySelectorAll("[data-team48-account-pick]")) {
+    old.removeAttribute("data-team48-account-pick");
+  }
+  const path = String(location.pathname || "").toLowerCase();
+  const body = String((document.body && document.body.innerText) || "");
+  const bodyLow = body.toLowerCase();
+  const isWorkspaceChooser = /workspace|organization/.test(path) ||
+    /choose a workspace|select a workspace|choose an organization|select an organization|选择工作空间|选择一个工作空间|选择组织/.test(bodyLow);
+  if (isWorkspaceChooser) return { kind: "none" };
+
+  const norm = (el) => String(el.innerText || el.getAttribute("aria-label") || el.value || "").replace(/\\s+/g, " ").trim();
+  const emailRe = /[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}/gi;
+  const extractEmails = (text) => Array.from(new Set((String(text || "").toLowerCase().match(emailRe) || [])));
+  const forbidden = [
+    "use another", "use a different", "switch account", "change account",
+    "log out", "logout", "sign out", "signout", "not you",
+    "使用其他账号", "切换账号", "换个账号", "退出登录", "退出"
+  ];
+  const isForbidden = (text) => {
+    const low = text.toLowerCase();
+    return forbidden.some((sub) => low.includes(sub));
+  };
+
+  const raw = Array.from(document.querySelectorAll(
+    'button, a, [role="button"], [role="option"], [role="radio"], [role="listitem"], [role="menuitem"], [role="menuitemradio"], label'
+  )).filter((el) =>
+    vis(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true" &&
+    !el.closest("nav, footer") && el.getAttribute("aria-haspopup") !== "menu"
+  );
+  const withEmail = raw.filter((el) => {
+    const text = norm(el);
+    return text && text.length <= 240 && !isForbidden(text) && extractEmails(text).length > 0;
+  });
+  const candidates = withEmail.filter((el) => !withEmail.some((other) => other !== el && el.contains(other)));
+
+  let targetEl = null;
+  const otherEmails = new Set();
+  for (const el of candidates) {
+    const emails = extractEmails(norm(el));
+    if (emails.includes(wanted)) {
+      if (!targetEl) targetEl = el;
+    } else {
+      for (const em of emails) {
+        if (!em.endsWith("@openai.com")) otherEmails.add(em);
+      }
+    }
+  }
+  if (targetEl) {
+    targetEl.setAttribute("data-team48-account-pick", "1");
+    return { kind: "pick" };
+  }
+  if (otherEmails.size > 0) {
+    return { kind: "identity_mismatch" };
+  }
+  const isAccountPage = /desktop-auth|select-account|choose-account|account-selection|accounts/.test(path) ||
+    /choose an account|select an account|pick an account|continue as|sign in as|选择账号|选择一个账号|以此账号继续/.test(bodyLow);
+  if (isAccountPage) {
+    const pageEmails = extractEmails(body).filter((em) => !em.endsWith("@openai.com"));
+    if (pageEmails.length > 0 && !pageEmails.includes(wanted)) {
+      return { kind: "identity_mismatch" };
+    }
+  }
+  return { kind: "none" };
+}"""
+
+_INVALID_STATE_409_RE = re.compile(
+    r"(?:\b(?:http|status|error|code)\s*[:#]?\s*409\b|\b409\s*(?:conflict|error)\b|\(\s*409\s*\))",
+    re.IGNORECASE,
+)
+_AUTH_LOGIN_HOSTS = frozenset({"auth.openai.com", "auth0.openai.com"})
+
+
+def _pick_account_card(page, email: str) -> str:
+    """Select the account card matching ``email``; returns 'picked', 'identity_mismatch', or 'none'."""
+    try:
+        outcome = page.evaluate(_ACCOUNT_PICKER_JS, email) or {}
+    except Exception:  # noqa: BLE001
+        return "none"
+    kind = str(outcome.get("kind") or "none")
+    if kind != "pick":
+        return kind
+    started_url = (page.url or "").split("#", 1)[0]
+    try:
+        target = page.locator('[data-team48-account-pick="1"]').first
+        if target.count() == 0 or not target.is_visible():
+            return "none"
+        target.click(timeout=2500)
+    except Exception:  # noqa: BLE001
+        return "none"
+    page.wait_for_timeout(800)
+    try:
+        current_url = (page.url or "").split("#", 1)[0]
+        if current_url == started_url and target.count() > 0 and target.is_visible():
+            _click_exact(page, ["Continue", "Confirm", "Allow", "Authorize", "继续", "确认", "允许", "授权"])
+    except Exception:  # noqa: BLE001
+        pass
+    return "picked"
+
+
+def looks_like_invalid_state(*, title: str = "", body: str = "", url: str = "", email: str = "") -> bool:
+    blob = f"{title}\n{body}\n{url}".lower()
+    if email:
+        blob = blob.replace(email.strip().lower(), "")
+    if "invalid_state" in blob or "invalid state" in blob:
+        return True
+    if _INVALID_STATE_409_RE.search(blob):
+        return True
+    if re.search(r"\b409\b", blob) and any(
+        token in blob
+        for token in ("something went wrong", "oops", "conflict", "try again", "unable to", "出错", "错误", "失败", "invalid")
+    ):
+        return True
+    return False
+
+
+def _has_visible_input(page, selector: str) -> bool:
+    try:
+        loc = page.locator(selector)
+        for index in range(loc.count()):
+            el = loc.nth(index)
+            if el.is_visible() and (el.get_attribute("type") or "").lower() != "hidden":
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+def _looks_like_auth_login_prompt(
+    page,
+    *,
+    url: str,
+    title: str,
+    body: str,
+    password_boxes: list,
+    on_phone: bool,
+) -> bool:
+    """True when desktop-auth falls back to asking for email/password/OTP on auth.openai.com."""
+    if on_phone:
+        return False
+    url_low = (url or "").lower()
+    host = (urlparse(url or "").hostname or "").lower()
+    on_auth_host = host in _AUTH_LOGIN_HOSTS
+    on_chatgpt_login = host in {"chatgpt.com", "www.chatgpt.com"} and (
+        "/auth/login" in url_low or "/codex/desktop-auth" in url_low
+    )
+    if not (on_auth_host or on_chatgpt_login):
+        return False
+    if _has_visible_input(page, 'input[type="email"], input[name="email"], input[name="username"]'):
+        return True
+    if password_boxes:
+        return True
+    body_low = (body or "").lower()
+    if bool(_find_otp(page) or _otp_boxes(page)) or "email-verification" in url_low or "check your inbox" in body_low:
+        return True
+    if on_auth_host and looks_like_session_ended(title=title, body=body):
+        return True
+    if on_auth_host and _visible(page, 'button:has-text("Continue with email")'):
+        return True
+    return False
+
+
 def _visible_password_inputs(page) -> list:
     boxes = page.locator('input[type="password"]')
     visible = []
@@ -192,6 +382,7 @@ def run_browser_oauth_reauth(
     hme_account_id: str = "",
     allow_signup: bool = False,
     login_only: bool = False,
+    allow_profile_setup: bool = False,
     allow_join: bool = True,
     allow_sms: bool = True,
     max_sms_submissions: int = 7,
@@ -229,6 +420,8 @@ def run_browser_oauth_reauth(
 
     result: Dict[str, Any] = {"ok": False, "email": email, "callback_url": "", "phone": phone, "sms_url": sms_url}
     captured = {"url": ""}
+    observed_409 = {"seen": False, "invalid_state": False}
+    desktop_flow = is_desktop_authorize_url(authorize_url)
 
     def remember(url: str) -> None:
         if is_oauth_callback(url):
@@ -241,6 +434,26 @@ def run_browser_oauth_reauth(
             content_type="text/html; charset=utf-8",
             body="<html><body>ok</body></html>",
         )
+
+    def on_response(resp) -> None:
+        try:
+            if resp.status != 409:
+                return
+            resp_url = (resp.url or "").lower()
+            if (
+                "auth.openai.com" not in resp_url
+                and "auth0.openai.com" not in resp_url
+                and "chatgpt.com/codex/desktop-auth" not in resp_url
+            ):
+                return
+            observed_409["seen"] = True
+            try:
+                if "invalid_state" in (resp.text() or "").lower():
+                    observed_409["invalid_state"] = True
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
 
     from contextlib import ExitStack
 
@@ -257,6 +470,7 @@ def run_browser_oauth_reauth(
             profile_dir = Path(launch_kwargs.get("user_data_dir", profile_dir))
             report("browser_environment", environment_summary(launch_kwargs))
             browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
+            harden_context(browser)
             page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
 
@@ -265,6 +479,7 @@ def run_browser_oauth_reauth(
                 target.route("http://localhost:1455/**", fulfill_callback)
                 target.route("http://127.0.0.1:1455/**", fulfill_callback)
                 target.on("framenavigated", lambda frame: remember(frame.url or ""))
+                target.on("response", on_response)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -277,12 +492,50 @@ def run_browser_oauth_reauth(
             browser.on("page", attach)
             for existing in list(browser.pages):
                 attach(existing)
+
+            sms_code_submissions = 0
+            if desktop_flow:
+                login_res = ensure_chatgpt_login(
+                    page,
+                    email=email,
+                    password=password,
+                    pickup_url=pickup_url,
+                    proxy=proxy,
+                    use_cloudflare=use_cloudflare,
+                    cf_base_url=cf_base_url,
+                    cf_address=cf_address,
+                    cf_admin_password=cf_admin_password,
+                    hme_base_url=hme_base_url,
+                    hme_service_token=hme_service_token,
+                    hme_account_id=hme_account_id,
+                    allow_profile_setup=allow_profile_setup,
+                    allow_sms=allow_sms,
+                    phone=phone,
+                    sms_url=sms_url,
+                    phone_source=phone_source,
+                    on_stage=report,
+                )
+                phone = str(login_res.get("phone", phone) or "")
+                sms_url = str(login_res.get("sms_url", sms_url) or "")
+                sms_code_submissions += int(login_res.get("sms_code_submissions") or 0)
+                if not login_res.get("ok"):
+                    result["error"] = login_res.get("error") or "ChatGPT 登录未完成"
+                    result["error_code"] = login_res.get("error_code") or "browser_failed"
+                    result["final_url"] = page.url or ""
+                    result["debug_dir"] = _save_debug(page, profile_dir)
+                    return result
+
             report("browser_open", "正在打开 Codex 授权链接")
             goto_with_retries(page, authorize_url, report=report)
-            wait_cloudflare(page)
+            if not wait_cloudflare(page):
+                result["error"] = "遇到 Cloudflare 人机验证，未自动通过"
+                result["error_code"] = "cloudflare_challenge"
+                result["final_url"] = page.url or ""
+                result["debug_dir"] = _save_debug(page, profile_dir)
+                return result
             page.wait_for_timeout(1500)
             remember(page.url or "")
-            known_codes = _snapshot_mailbox_codes(
+            known_codes = set() if desktop_flow else _snapshot_mailbox_codes(
                 **_mail_kwargs(
                     email=email,
                     pickup_url=pickup_url,
@@ -299,33 +552,48 @@ def run_browser_oauth_reauth(
             otp_submits = 0
             phone_tries = 0
             sms_submissions = 0
-            sms_code_submissions = 0
             otp_resends = 0
             password_tried = False
             signup_clicked = False
             about_you_tries = 0
+            account_pick_url = ""
+            account_pick_count = 0
 
             for _ in range(36):
                 remember(page.url or "")
                 if captured["url"]:
                     break
 
+                if page_is_cloudflare(page) and not wait_cloudflare(page, timeout_sec=30):
+                    result["error"] = "遇到 Cloudflare 人机验证，未自动通过"
+                    result["error_code"] = "cloudflare_challenge"
+                    report("cloudflare_challenge", result["error"])
+                    break
+
                 url = (page.url or "").lower()
+                page_title = page.title() or ""
                 page_body = _page_text(page)
-                if looks_like_deactivated(title=page.title() or "", body=page_body, url=page.url or ""):
+                if looks_like_deactivated(title=page_title, body=page_body, url=page.url or ""):
                     result["error"] = "账号已被 deactivate，停止重授权"
                     result["error_code"] = "account_deactivated"
                     report("deactivated", result["error"])
                     break
-                if login_only and (
+                if observed_409["invalid_state"] or looks_like_invalid_state(
+                    title=page_title, body=page_body, url=page.url or "", email=email
+                ):
+                    result["error"] = "OpenAI 授权页返回 409 / invalid_state，已停止"
+                    result["error_code"] = "oauth_invalid_state"
+                    report("oauth_invalid_state", result["error"])
+                    break
+                if login_only and not allow_profile_setup and (
                     looks_like_registration(url=url, body=page_body)
-                    or looks_like_about_you(title=page.title() or "", body=page_body, url=url)
+                    or looks_like_about_you(title=page_title, body=page_body, url=url)
                 ):
                     result["error"] = NOT_REGISTERED_ERROR
                     result["error_code"] = "account_not_registered"
                     report("not_registered", result["error"])
                     break
-                if looks_like_about_you(title=page.title() or "", body=page_body, url=url):
+                if looks_like_about_you(title=page_title, body=page_body, url=url):
                     about_you_tries += 1
                     if about_you_tries > ABOUT_YOU_STUCK_LIMIT:
                         result["error"] = "卡在年龄/生日页，没有进入下一步"
@@ -335,12 +603,12 @@ def run_browser_oauth_reauth(
                     if not _fill_about_you(page):
                         page.wait_for_timeout(1500)
                     continue
-                if looks_like_session_ended(title=page.title() or "", body=_page_text(page)):
+                if not desktop_flow and looks_like_session_ended(title=page_title, body=page_body):
                     report("session_ended", "授权页会话结束，点 Log in")
                     _click_first(page, ['button:has-text("Log in")', 'a:has-text("Log in")'])
                     page.wait_for_timeout(2000)
                     continue
-                if "you're all set" in _page_text(page).lower() or "you’re all set" in _page_text(page).lower():
+                if "you're all set" in page_body.lower() or "you’re all set" in page_body.lower():
                     report("all_set", "注册完成页，点 Continue")
                     _click_first(page, ['button:has-text("Continue")'])
                     page.wait_for_timeout(2000)
@@ -391,24 +659,24 @@ def run_browser_oauth_reauth(
                         if phone_source:
                             record_pool_phone(phone_source, outcome, msg)
                             report("add_phone", f"换号原因：{msg}")
-                            number, url, error, code = take_pool_phone(phone_source, report)
+                            number, next_sms_url, error, code = take_pool_phone(phone_source, report)
                             if error:
                                 result["error"] = error
                                 result["error_code"] = code
                                 break
-                            phone, sms_url = number, url
+                            phone, sms_url = number, next_sms_url
                             continue
                         result["error"] = msg or page_phone_rejection(page) or "手机号不被 OpenAI 接受"
                         result["error_code"] = "sms_rejected"
                         break
                     if not phone or not sms_url:
                         if phone_source:
-                            number, url, error, code = take_pool_phone(phone_source, report)
+                            number, next_sms_url, error, code = take_pool_phone(phone_source, report)
                             if error:
                                 result["error"] = error
                                 result["error_code"] = code
                                 break
-                            phone, sms_url = number, url
+                            phone, sms_url = number, next_sms_url
                         elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
                             report("add_phone", "手机号页已跳过")
                             page.wait_for_timeout(1500)
@@ -434,12 +702,12 @@ def run_browser_oauth_reauth(
                             if phone_source:
                                 record_pool_phone(phone_source, "invalid", msg)
                                 report("add_phone", f"换号原因：{msg}")
-                                number, url, error, code = take_pool_phone(phone_source, report)
+                                number, next_sms_url, error, code = take_pool_phone(phone_source, report)
                                 if error:
                                     result["error"] = error
                                     result["error_code"] = code
                                     break
-                                phone, sms_url = number, url
+                                phone, sms_url = number, next_sms_url
                                 continue
                             result["error"] = msg
                             result["error_code"] = "sms_rejected"
@@ -452,12 +720,12 @@ def run_browser_oauth_reauth(
                             if phone_source:
                                 record_pool_phone(phone_source, outcome, msg)
                                 report("add_phone", f"换号原因：{msg}")
-                                number, url, error, code = take_pool_phone(phone_source, report)
+                                number, next_sms_url, error, code = take_pool_phone(phone_source, report)
                                 if error:
                                     result["error"] = error
                                     result["error_code"] = code
                                     break
-                                phone, sms_url = number, url
+                                phone, sms_url = number, next_sms_url
                                 continue
                             result["error"] = msg or page_phone_rejection(page)
                             result["error_code"] = "sms_rejected"
@@ -477,19 +745,25 @@ def run_browser_oauth_reauth(
                             if phone_source:
                                 record_pool_phone(phone_source, "no_sms", msg)
                                 report("add_phone", f"换号原因：{msg}")
-                                number, url, error, code = take_pool_phone(phone_source, report)
+                                number, next_sms_url, error, code = take_pool_phone(phone_source, report)
                                 if error:
                                     result["error"] = error
                                     result["error_code"] = code or "sms_failed"
                                     break
-                                phone, sms_url = number, url
+                                phone, sms_url = number, next_sms_url
                                 continue
                             result["error"] = msg
                             result["error_code"] = "sms_failed"
                             break
+                        started_url = page.url or ""
                         otp_el.fill(sms_code)
                         sms_code_submissions += 1
-                        _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
+                        _wait_and_fallback_submit_otp(
+                            page,
+                            started_url=started_url,
+                            exact_names=["Continue", "Verify"],
+                            selectors=['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'],
+                        )
                         page.wait_for_timeout(2500)
                         record_pool_phone(phone_source, "success")
                         result["sms_verified"] = not any(bit in (page.url or "").lower() for bit in ("add-phone", "phone-verification"))
@@ -500,6 +774,63 @@ def run_browser_oauth_reauth(
                     continue
 
                 password_boxes = _visible_password_inputs(page)
+
+                if desktop_flow:
+                    base_url = (page.url or "").split("#", 1)[0]
+                    if base_url != account_pick_url:
+                        account_pick_url = base_url
+                        account_pick_count = 0
+                    if account_pick_count < 2:
+                        acct_outcome = _pick_account_card(page, email)
+                        if acct_outcome == "identity_mismatch":
+                            result["error"] = "选账号页只出现其他邮箱，与目标账号不一致，已停止"
+                            result["error_code"] = "identity_mismatch"
+                            report("identity_mismatch", result["error"])
+                            break
+                        if acct_outcome == "picked":
+                            account_pick_count += 1
+                            report("account_pick", "已点选目标邮箱账号卡")
+                            page.wait_for_timeout(1500)
+                            continue
+                    if _looks_like_auth_login_prompt(
+                        page,
+                        url=page.url or "",
+                        title=page_title,
+                        body=page_body,
+                        password_boxes=password_boxes,
+                        on_phone=on_phone,
+                    ):
+                        result["error"] = "桌面版授权页未识别已登录会话，要求在授权页重新登录，已停止"
+                        result["error_code"] = "desktop_session_missing"
+                        report("desktop_session_missing", result["error"])
+                        break
+                    if _accept_terms(page):
+                        report("terms", "已勾选服务条款")
+                        page.wait_for_timeout(1500)
+                        continue
+                    if _click_exact(
+                        page,
+                        [
+                            "Allow",
+                            "Accept",
+                            "Authorize",
+                            "Continue",
+                            "Continue to Codex",
+                            "Authorize Codex",
+                            "I agree",
+                            "Okay",
+                            "Confirm",
+                            "继续",
+                            "允许",
+                            "授权",
+                            "确认",
+                            "同意",
+                        ],
+                    ):
+                        page.wait_for_timeout(1500)
+                        continue
+                    page.wait_for_timeout(1200)
+                    continue
 
                 if allow_signup and password_boxes and not signup_clicked and (
                     _click_exact(page, ["Sign up", "Create account", "Create an account"])
@@ -560,15 +891,22 @@ def run_browser_oauth_reauth(
                         break
                     if not code:
                         continue
+                    started_url = page.url or ""
                     otp_el.fill(code)
-                    _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'])
+                    _wait_and_fallback_submit_otp(
+                        page,
+                        started_url=started_url,
+                        exact_names=["Continue", "Verify"],
+                        selectors=['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'],
+                    )
                     known_codes.add(code)
                     otp_submits += 1
                     report("email_otp", f"已提交验证码（第 {otp_submits} 次）")
-                    page.wait_for_timeout(4000)
+                    if not captured["url"]:
+                        page.wait_for_timeout(2500)
                     continue
 
-                on_verify = "email-verification" in url or "check your inbox" in _page_text(page).lower()
+                on_verify = "email-verification" in url or "check your inbox" in page_body.lower()
                 if on_verify and not password_boxes:
                     report("email_otp", "验证码页还没出现输入框，继续等")
                     page.wait_for_timeout(1500)
@@ -578,7 +916,7 @@ def run_browser_oauth_reauth(
                     if allow_signup and password_tried:
                         page.wait_for_timeout(1500)
                         continue
-                    body = _page_text(page).lower()
+                    body = page_body.lower()
                     missing_password = not str(password or "").strip()
                     bad_password = password_tried or missing_password or any(
                         token in body for token in ("incorrect", "wrong password", "did not match")
@@ -631,8 +969,6 @@ def run_browser_oauth_reauth(
                         'button:has-text("Continue with email")',
                         'button:has-text("Log in")',
                         'a:has-text("Log in")',
-                        'button:has-text("Use a different")',
-                        'button:has-text("Use another")',
                     ],
                 ):
                     page.wait_for_timeout(1500)
@@ -669,6 +1005,15 @@ def run_browser_oauth_reauth(
                 "final_url": page.url or "",
             })
             if not callback:
+                if not result.get("error_code"):
+                    if observed_409["seen"] or looks_like_invalid_state(
+                        title=page.title() or "", body=_page_text(page), url=page.url or "", email=email
+                    ):
+                        result["error"] = "OpenAI 授权页返回 409 / invalid_state"
+                        result["error_code"] = "oauth_invalid_state"
+                    elif page_is_cloudflare(page):
+                        result["error"] = "遇到 Cloudflare 人机验证，未拿到 OAuth 回调"
+                        result["error_code"] = "cloudflare_challenge"
                 result["error"] = result.get("error") or "没有拿到 OAuth 回调"
                 result["error_code"] = result.get("error_code") or "oauth_callback_missing"
                 result["debug_dir"] = _save_debug(page, profile_dir)
@@ -676,6 +1021,10 @@ def run_browser_oauth_reauth(
             result["error"] = str(exc)
             result["error_code"] = result.get("error_code") or "browser_failed"
             result["ok"] = False
+            try:
+                result["debug_dir"] = _save_debug(page, profile_dir)
+            except Exception:  # noqa: BLE001
+                pass
         finally:
             result["phone"] = phone
             result["sms_url"] = sms_url

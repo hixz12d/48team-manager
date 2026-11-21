@@ -5,6 +5,8 @@ No SDK downloads, proxy discovery or synthetic OS/GPU/hardware pools are needed.
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -14,9 +16,10 @@ import secrets
 import sys
 import tempfile
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.core.config import Settings
+from app.core.config import Settings, load_settings
 
 PROFILE_FILE = ".team48-browser.json"
 # Ordinary window sizes that fit the existing 1280x900 Xvfb display.
@@ -27,6 +30,60 @@ class BrowserEnvironmentError(ValueError):
     """A configured environment must not silently fall back or change identity."""
 
     error_code = "browser_environment_invalid"
+
+
+class ProxyGeoError(BrowserEnvironmentError):
+    """Proxy exit timezone unknown; never fall back to the container timezone."""
+
+    error_code = "proxy_geo_failed"
+
+
+def _proxy_url(proxy_config: dict[str, str]) -> str:
+    server = str((proxy_config or {}).get("server") or "").strip()
+    username = (proxy_config or {}).get("username")
+    if server and username:
+        scheme, sep, rest = server.partition("://")
+        if sep:
+            password = (proxy_config or {}).get("password") or ""
+            return f"{scheme}://{quote(str(username), safe='')}:{quote(str(password), safe='')}@{rest}"
+    return server
+
+
+def exit_timezone(proxy_config: dict[str, str]) -> str:
+    """IANA timezone of the current proxy exit, looked up through that proxy.
+
+    Looked up on every launch (the local SOCKS bridge port is per-run, so it is not
+    a stable cache key). Raises ``ProxyGeoError`` when every provider fails.
+    """
+    from app.integrations.proxy.geo import GeoLookupError, lookup_exit
+
+    url = _proxy_url(proxy_config)
+    if not url:
+        raise ProxyGeoError("查询代理出口时区需要代理")
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            exit_info = asyncio.run(lookup_exit(url))
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                exit_info = pool.submit(asyncio.run, lookup_exit(url)).result()
+    except GeoLookupError:
+        raise ProxyGeoError("经代理查询出口时区失败，已停止（不会退回容器时区）") from None
+    timezone = str(exit_info.get("timezone") or "")
+    _region("en-US", timezone)
+    return timezone
+
+
+def harden_context(context: Any, settings: Settings | None = None) -> None:
+    """Hide navigator.webdriver on Playwright Chromium; Chromix handles it natively."""
+    engine = (settings or load_settings()).browser_engine
+    if engine != "chromium":
+        return
+    context.add_init_script(
+        "Object.defineProperty(Navigator.prototype, 'webdriver', "
+        "{get: () => undefined, configurable: true});"
+    )
 
 
 def _region(locale: str, timezone: str) -> None:
@@ -136,8 +193,13 @@ def context_options(
         "args": [
             "--disable-features=Translate", "--disable-dev-shm-usage", "--no-sandbox",
             "--disable-blink-features=AutomationControlled",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ],
     }
+    # Explicit BROWSER_TIMEZONE wins; otherwise follow the proxy exit on every launch.
+    timezone = settings.browser_timezone
+    if not timezone and _proxy_url(proxy_config):
+        timezone = exit_timezone(proxy_config)
     if engine == "chromix":
         # Keep existing Chromium cookies intact and make switching back reversible.
         directory = directory.parent / "chromix" / directory.name
@@ -149,15 +211,16 @@ def context_options(
             "--disable-gpu-fingerprint",
             f"--fingerprint-locale={profile['locale']}",
             f"--lang={profile['locale']}",
-            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ]
-        if profile["timezone"]:
-            options["timezone_id"] = profile["timezone"]
-            options["args"].append(f"--fingerprint-timezone={profile['timezone']}")
+        # The profile keeps seed / locale / window; timezone follows the current exit.
+        zone = timezone or profile["timezone"]
+        if zone:
+            options["timezone_id"] = zone
+            options["args"].append(f"--fingerprint-timezone={zone}")
     else:
-        _region(settings.browser_locale, settings.browser_timezone)
-        if settings.browser_timezone:
-            options["timezone_id"] = settings.browser_timezone
+        _region(settings.browser_locale, timezone)
+        if timezone:
+            options["timezone_id"] = timezone
     if executable:
         options["executable_path"] = executable
     elif settings.browser_channel:

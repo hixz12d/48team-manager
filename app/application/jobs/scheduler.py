@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -61,6 +62,14 @@ async def scheduled_codex_health() -> None:
             except Exception:
                 logger.exception("codex-rs health scan failed")
                 await session.rollback()
+
+
+async def scheduled_codex_desktop_version() -> None:
+    from app.integrations.openai import desktop_version
+
+    if _session_factory is not None:
+        async with _session_factory() as session:
+            await desktop_version.refresh(session)
 
 
 async def scheduled_codex_refill() -> None:
@@ -178,6 +187,7 @@ def configure_jobs(settings: Settings) -> None:
         "codex_rs_refill_scan",
         "codex_rs_health_scan",
         "codex_rs_recovery_scan",
+        "codex_desktop_version_sync",
     )
     for job_id in job_ids:
         if scheduler.get_job(job_id):
@@ -193,6 +203,15 @@ def configure_jobs(settings: Settings) -> None:
     scheduler.add_job(scheduled_codex_refill, IntervalTrigger(minutes=5), id="codex_rs_refill_scan", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_codex_health, IntervalTrigger(seconds=60), id="codex_rs_health_scan", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_codex_rs_recovery, IntervalTrigger(seconds=60), id="codex_rs_recovery_scan", replace_existing=True, max_instances=1, coalesce=True)
+    scheduler.add_job(
+        scheduled_codex_desktop_version,
+        IntervalTrigger(minutes=30),
+        id="codex_desktop_version_sync",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc),
+    )
     scheduler.add_job(
         scheduled_sub2api_usage_sync,
         IntervalTrigger(minutes=5),

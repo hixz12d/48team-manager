@@ -2,13 +2,12 @@
 // that exports RUNNER. The worker then takes its task from the server, reports progress and
 // hands the OAuth callback back. Protocol: docs/contracts/extension-runner.md.
 // Without a valid RUNNER export nothing in this file runs and the extension behaves as before.
-import {STAGES, AUTO_RESUME_REASONS, autoRetryAllowed, diagnosticReport, oauthCallback, pauseReason} from './shared.mjs';
+import {STAGES, AUTO_RESUME_REASONS, autoRetryAllowed, diagnosticReport, oauthCallback, pauseReason, validAuthorizeUrl} from './shared.mjs';
 
 export const RUNNER_ALARM = 'runner-watchdog';
 const KEY = 'runner';
 const RUN_ID = /^[a-f0-9]{32}$/;
 const PROBE_NAME = /^[a-z0-9_-]{1,40}$/;
-const AUTH_ORIGIN = 'https://auth.openai.com';
 const REQUEST_TIMEOUT = 15000;
 const HEARTBEAT = 30000, AUTHORIZE_POLL = 5000;
 const JOB_RETRIES = 3, JOB_RETRY_DELAY = 3000;
@@ -20,7 +19,7 @@ const EVENT_LIMIT = 60 * 1024, SCREENSHOT_LIMIT = 4 * 1024 * 1024;
 const CODEX_RESULTS = new Set(['unknown', 'no_phone', 'phone_required', 'failed']);
 // Nobody resolves these on a server: report them as final and stay where the page stopped.
 export const RUNNER_MANUAL_REASONS = new Set(['phone', 'captcha', 'rate_limit', 'manual_step', 'email_mismatch',
-  'email_unverified', 'session_error', 'debugger_detached',
+  'email_unverified', 'identity_mismatch', 'desktop_session_missing', 'session_error', 'debugger_detached',
   'phone_pool_empty', 'phone_limit', 'phone_back_missing', 'phone_relay_error']);
 const CALLBACK_ERRORS = {
   callback_invalid: '服务器认为授权回调无效。',
@@ -203,7 +202,7 @@ export function createRunner(config, host) {
     if (data?.command !== 'authorize' || state.kind !== 'signup') return;
     let url = null;
     try { url = new URL(data.authorizeUrl); } catch { /* invalid link */ }
-    if (url?.origin !== AUTH_ORIGIN) { await stopCommand(); return; }
+    if (!url || !validAuthorizeUrl(url.href)) { await stopCommand(); return; }
     startAuthorize(url.href);
   }
   let authorizing = null;

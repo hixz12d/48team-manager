@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 
 from app.core.config import load_settings
 from app.integrations.openai.browser.environment import (
-    BrowserEnvironmentError, context_options, environment_summary,
+    BrowserEnvironmentError, context_options, environment_summary, harden_context,
 )
 from app.integrations.mail.otp import list_mailbox_codes, wait_for_mailbox_item
 from app.integrations.proxy.socks_bridge import chrome_proxy_launch
@@ -257,8 +258,8 @@ def about_you_birth_year(now=None) -> str:
 
 EMAIL_INPUT_SELECTOR = (
     'input#email, input[name="email"], input[type="email"], '
-    'input[autocomplete="email"], input[placeholder="Email address"], '
-    'input[aria-label="Email address"]'
+    'input[autocomplete="email"], input[name="username"], input[autocomplete="username"], '
+    'input[placeholder="Email address"], input[aria-label="Email address"]'
 )
 REGISTER_START_URL = "https://chatgpt.com/auth/login"
 LOGIN_START_URL = "https://chatgpt.com/auth/login"
@@ -605,6 +606,8 @@ def _fill_email(page, email: str) -> bool:
         'input[name="email"]',
         'input[type="email"]',
         'input[autocomplete="email"]',
+        'input[name="username"]',
+        'input[autocomplete="username"]',
         'input[placeholder="Email address"]',
         'input[aria-label="Email address"]',
     ]
@@ -677,6 +680,62 @@ def _fill_otp(page, code: str) -> bool:
     if otp_el:
         otp_el.fill(code)
         return True
+    return False
+
+
+def _button_clickable(loc) -> bool:
+    try:
+        if loc.count() == 0:
+            return False
+        btn = loc.first
+        if not btn.is_visible() or not btn.is_enabled():
+            return False
+        if (btn.get_attribute("aria-disabled") or "").strip().lower() == "true":
+            return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _wait_and_fallback_submit_otp(
+    page,
+    *,
+    started_url: str,
+    exact_names: list[str] | None = None,
+    selectors: list[str] | None = None,
+    wait_sec: float = 3.0,
+) -> bool:
+    """Wait up to wait_sec for OTP auto-submit; click submit once only if still on the OTP page."""
+    base_url = (started_url or "").split("#", 1)[0]
+    deadline = time.monotonic() + max(0.0, float(wait_sec))
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(250)
+        current_url = (page.url or "").split("#", 1)[0]
+        if current_url and base_url and current_url != base_url:
+            return False
+        if not _find_otp(page) and not _otp_boxes(page):
+            return False
+    current_url = (page.url or "").split("#", 1)[0]
+    if current_url and base_url and current_url != base_url:
+        return False
+    if not _find_otp(page) and not _otp_boxes(page):
+        return False
+    for name in (exact_names or []):
+        try:
+            loc = page.get_by_role("button", name=name, exact=True)
+            if _button_clickable(loc):
+                loc.first.click(timeout=2500)
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    for selector in (selectors or []):
+        try:
+            loc = page.locator(selector)
+            if _button_clickable(loc):
+                loc.first.click(timeout=2500)
+                return True
+        except Exception:  # noqa: BLE001
+            continue
     return False
 
 
@@ -768,7 +827,9 @@ def _session_failure(page, session: dict[str, Any]) -> str:
 
 
 def _save_debug(page, profile_dir: Path) -> str:
-    dest = Path(profile_dir).resolve().parent.parent / "debug" / time.strftime("%Y%m%d-%H%M%S")
+    resolved = Path(profile_dir).resolve()
+    base = resolved.parent.parent.parent if resolved.parent.name == "chromix" else resolved.parent.parent
+    dest = base / "debug" / time.strftime("%Y%m%d-%H%M%S")
     dest.mkdir(parents=True, exist_ok=True)
     try:
         page.screenshot(path=str(dest / "page.png"), full_page=True)
@@ -1073,16 +1134,118 @@ def _choose_select_label(page, names: list[str], label: str) -> bool:
     return False
 
 
-def _fill_birthday_selects(page) -> bool:
-    year = about_you_birth_year()
+_FIRST_NAMES = (
+    "James", "Oliver", "Henry", "Daniel", "Lucas", "Ethan",
+    "Emma", "Amelia", "Grace", "Sophie", "Chloe", "Hannah",
+)
+_LAST_NAMES = (
+    "Smith", "Taylor", "Wilson", "Clark", "Walker", "Green",
+    "Carter", "Bennett", "Morgan", "Cooper", "Reed", "Parker",
+)
+_MONTH_NAMES = (
+    ("January", "Jan"), ("February", "Feb"), ("March", "Mar"), ("April", "Apr"),
+    ("May", "May"), ("June", "Jun"), ("July", "Jul"), ("August", "Aug"),
+    ("September", "Sep"), ("October", "Oct"), ("November", "Nov"), ("December", "Dec"),
+)
+
+
+def _random_about_you_profile() -> dict[str, Any]:
+    today = date.today()
+    age = 22 + secrets.randbelow(24)
+    month = 1 + secrets.randbelow(12)
+    day = 1 + secrets.randbelow(28)
+    year = today.year - age - ((month, day) > (today.month, today.day))
+    return {
+        "name": f"{secrets.choice(_FIRST_NAMES)} {secrets.choice(_LAST_NAMES)}",
+        "age": age,
+        "year": year,
+        "month": month,
+        "day": day,
+        "birthday": f"{year:04d}-{month:02d}-{day:02d}",
+    }
+
+
+def _fill_birthday_selects(
+    page,
+    *,
+    month: int = 1,
+    day: int = 15,
+    year: int | str | None = None,
+) -> bool:
+    year_str = str(year) if year is not None else about_you_birth_year()
+    month_idx = max(1, min(12, int(month)))
+    full_month, abbr_month = _MONTH_NAMES[month_idx - 1]
     month_ok = (
-        _select_named_option(page, ["bday-month", "month"], "January")
-        or _select_named_option(page, ["bday-month", "month"], "Jan")
-        or _select_named_option(page, ["bday-month", "month"], "1")
+        _select_named_option(page, ["bday-month", "month"], full_month)
+        or _select_named_option(page, ["bday-month", "month"], abbr_month)
+        or _select_named_option(page, ["bday-month", "month"], f"{month_idx:02d}")
+        or _select_named_option(page, ["bday-month", "month"], str(month_idx))
     )
-    day_ok = _select_named_option(page, ["bday-day", "day"], "15")
-    year_ok = _select_named_option(page, ["bday-year", "year"], year)
+    day_int = max(1, min(28, int(day)))
+    day_ok = (
+        _select_named_option(page, ["bday-day", "day"], str(day_int))
+        or _select_named_option(page, ["bday-day", "day"], f"{day_int:02d}")
+    )
+    year_ok = _select_named_option(page, ["bday-year", "year"], year_str)
     return bool(year_ok and month_ok and day_ok)
+
+
+def _fill_spinbutton(page, selectors: list[str], value: str) -> bool:
+    for selector in selectors:
+        try:
+            loc = page.locator(selector)
+            if loc.count() == 0 or not loc.first.is_visible():
+                continue
+            loc.first.click(timeout=2500)
+            page.keyboard.type(value, delay=40)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _fill_birthday_inputs(page, *, month: int, day: int, year: int, birthday: str) -> bool:
+    if _set_input(page, ['input[type="date"]'], birthday):
+        return True
+    month_ok = _set_input(
+        page,
+        ['input[name="month"]', 'input[autocomplete="bday-month"]', 'input[aria-label*="Month" i]', 'input[placeholder*="MM" i]'],
+        f"{month:02d}",
+    )
+    day_ok = _set_input(
+        page,
+        ['input[name="day"]', 'input[autocomplete="bday-day"]', 'input[aria-label*="Day" i]', 'input[placeholder*="DD" i]'],
+        f"{day:02d}",
+    )
+    year_ok = _set_input(
+        page,
+        ['input[name="year"]', 'input[autocomplete="bday-year"]', 'input[aria-label*="Year" i]', 'input[placeholder*="YYYY" i]'],
+        f"{year:04d}",
+    )
+    if month_ok and day_ok and year_ok:
+        return True
+    spin_month = _fill_spinbutton(
+        page,
+        ['[role="spinbutton"][data-type="month"]', '[role="spinbutton"][aria-label*="month" i]'],
+        f"{month:02d}",
+    )
+    spin_day = _fill_spinbutton(
+        page,
+        ['[role="spinbutton"][data-type="day"]', '[role="spinbutton"][aria-label*="day" i]'],
+        f"{day:02d}",
+    )
+    spin_year = _fill_spinbutton(
+        page,
+        ['[role="spinbutton"][data-type="year"]', '[role="spinbutton"][aria-label*="year" i]'],
+        f"{year:04d}",
+    )
+    if spin_month and spin_day and spin_year:
+        return True
+    return _set_input(
+        page,
+        ['input[autocomplete="bday"]', 'input[name="birthdate"]', 'input[name="birthday"]'],
+        f"{month:02d}/{day:02d}/{year:04d}",
+    )
 
 
 def _wait_about_you_leave(page, started_url: str) -> bool:
@@ -1099,6 +1262,7 @@ def _wait_about_you_leave(page, started_url: str) -> bool:
 
 def _fill_about_you(page) -> bool:
     started_url = page.url or ""
+    profile = _random_about_you_profile()
     name_ok = _set_input(
         page,
         [
@@ -1108,28 +1272,39 @@ def _fill_about_you(page) -> bool:
             'input[placeholder="Full name"]',
             'input[placeholder*="Full name" i]',
         ],
-        "James Smith",
+        profile["name"],
     )
+    birthday_ok = _fill_birthday_selects(
+        page,
+        month=profile["month"],
+        day=profile["day"],
+        year=profile["year"],
+    )
+    if not birthday_ok:
+        birthday_ok = _fill_birthday_inputs(
+            page,
+            month=profile["month"],
+            day=profile["day"],
+            year=profile["year"],
+            birthday=profile["birthday"],
+        )
     age_ok = _set_input(
         page,
         [
             'input[name="age"]',
-            'input[type="number"]',
             'input[placeholder="Age"]',
             'input[placeholder*="Age" i]',
-            'input[autocomplete="bday"]',
-            'input[name="birthdate"]',
-            'input[name="birthday"]',
         ],
-        "28",
+        str(profile["age"]),
     )
-    birthday_ok = _fill_birthday_selects(page)
+    if not birthday_ok and not age_ok:
+        age_ok = _set_input(page, ['input[type="number"]'], str(profile["age"]))
     filled = bool(name_ok or age_ok or birthday_ok)
     if not filled:
         return False
     clicked = (
-        _click_exact(page, ["Finish creating account", "Continue"])
-        or _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")'])
+        _click_exact(page, ["Finish creating account", "Continue", "Agree", "完成注册", "继续"])
+        or _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Finish")'])
     )
     if not clicked:
         return False
@@ -1215,11 +1390,7 @@ def run_browser_onboard(
         profile_dir = Path(launch_kwargs.get("user_data_dir", profile_dir))
         report("browser_environment", environment_summary(launch_kwargs))
         browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
-        if settings.browser_engine == "chromium":
-            try:
-                browser.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            except Exception:  # noqa: BLE001
-                pass
+        harden_context(browser, settings=settings)
         page = browser.pages[0] if browser.pages else browser.new_page()
         page.set_default_timeout(60000)
         try:
@@ -1244,22 +1415,19 @@ def run_browser_onboard(
                 if result.get("ok") and continue_in_browser is not None:
                     continue_in_browser(result, browser, page)
                 return result
-            report("browser_open", "正在打开邀请注册页" if invite_entry else "正在打开注册/登录页")
-            goto_with_retries(page, target, report=report)
-            if not wait_cloudflare(page):
-                result["error"] = _session_failure(page, {"status": "cloudflare"})
-                result["error_code"] = "cloudflare_challenge"
-                result["debug_dir"] = _save_debug(page, profile_dir)
-                return result
-            page.wait_for_timeout(1500)
-            try:
-                page.wait_for_selector(EMAIL_INPUT_SELECTOR, timeout=15000)
-            except Exception:  # noqa: BLE001
-                pass
-            mail_kw = _mail_kwargs(
+            from app.integrations.openai.browser.chatgpt_login import run_chatgpt_login_loop
+
+            outcome = run_chatgpt_login_loop(
+                page,
                 email=email,
+                password=password,
                 pickup_url=pickup_url,
+                phone=phone,
+                sms_url=sms_url,
                 proxy=proxy,
+                start_url=target,
+                mode=mode,
+                team_name=team_name,
                 use_cloudflare=use_cloudflare,
                 cf_base_url=cf_base_url,
                 cf_address=cf_address,
@@ -1267,358 +1435,19 @@ def run_browser_onboard(
                 hme_base_url=hme_base_url,
                 hme_service_token=hme_service_token,
                 hme_account_id=hme_account_id,
+                profile_dir=profile_dir,
+                phone_source=phone_source,
+                allow_sms=allow_sms,
+                allow_profile_setup=(mode != "login"),
+                invite_entry=invite_entry,
+                require_session_match=False,
+                initial_goto=True,
+                report=report,
             )
-            known_codes = _snapshot_mailbox_codes(**mail_kw)
-            report("fill_email", f"页面已打开：{page.title() or page.url}")
-            if _email_input_visible(page):
-                if not _fill_email(page, email):
-                    report("fill_email", "邮箱框在，但没填进去，后面会再试")
-                else:
-                    _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
-                    page.wait_for_timeout(2500)
-            wait_cloudflare(page, timeout_sec=20)
-
-            if mode == "register" and _click_exact(page, ["Create account", "Sign up"]):
-                report("create_account", "正在进入创建账号")
-                page.wait_for_timeout(1500)
-
-            session: dict[str, Any] = {}
-            last_url = ""
-            password_tried = False
-            otp_sent = False
-            otp_submits = 0
-            otp_resends = 0
-            email_submits = 0
-            about_you_tries = 0
-            invite_reopened = False
-            has_mail = bool(pickup_url or use_cloudflare or hme_service_token)
-            debug_log = Path(profile_dir).resolve().parent.parent / "debug" / "onboard.log"
-            debug_log.parent.mkdir(parents=True, exist_ok=True)
-            for _ in range(36):
-                wait_cloudflare(page, timeout_sec=15)
-                url = (page.url or "").lower()
-                if url != last_url:
-                    last_url = url
-                    logger.info("onboard page %s", page.url)
-                    report("wait_page", f"当前页面 {page.title() or page.url}")
-                    try:
-                        debug_log.open("a", encoding="utf-8").write(f"{time.strftime('%H:%M:%S')} {page.url} | {page.title()}\n")
-                    except Exception:  # noqa: BLE001
-                        pass
-
-                if page_rate_limited(page):
-                    result["error"] = "OpenAI 限流：验证码试太多次，等几分钟再点重新注册"
-                    result["error_code"] = "openai_rate_limited"
-                    break
-
-                page_text = _page_text(page)
-                if mode == "login" and (
-                    looks_like_registration(url=url, body=page_text)
-                    or "about-you" in url
-                    or ("auth.openai.com" in url and (
-                        looks_like_about_you(title=page.title() or "", body=page_text, url=url)
-                        or _visible(page, 'input[name="age"], input[placeholder*="Age" i], select[name="year"], select[autocomplete="bday-year"]')
-                        or _visible(page, 'input[name="name"], input[name="fullName"], input[name="firstName"]')
-                    ))
-                ):
-                    result["error"] = NOT_REGISTERED_ERROR
-                    result["error_code"] = "account_not_registered"
-                    break
-                if mode == "login" and looks_like_session_ended(title=page.title() or "", body=page_text):
-                    report("session_ended", "OpenAI 会话已结束，改走登录页")
-                    if not _click_exact(page, ["Log in", "Continue"]):
-                        page.goto(LOGIN_START_URL, wait_until="load")
-                    page.wait_for_timeout(2000)
-                    continue
-                if looks_like_session_ended(title=page.title() or "", body=page_text):
-                    report("session_ended", "OpenAI 会话已结束，改走登录/注册页")
-                    if not _click_exact(page, ["Log in", "Sign up", "Continue"]):
-                        page.goto(LOGIN_START_URL, wait_until="load")
-                    page.wait_for_timeout(2000)
-                    continue
-                if (
-                    _email_input_visible(page)
-                    and not _visible(page, 'input[type="password"], input[name="current-password"]')
-                    and not _find_otp(page)
-                    and not _otp_boxes(page)
-                ):
-                    if email_submits >= 5:
-                        result["error"] = "卡在 ChatGPT 邮箱页，没有进入 OpenAI 注册"
-                        result["error_code"] = "email_gate_stuck"
-                        break
-                    report("fill_email", f"正在提交邮箱（第 {email_submits + 1} 次）")
-                    if not _fill_email(page, email):
-                        result["error"] = "登录页找不到可用的邮箱输入框"
-                        result["error_code"] = "email_input_missing"
-                        break
-                    _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
-                    email_submits += 1
-                    page.wait_for_timeout(3000)
-                    continue
-                if looks_like_about_you(title=page.title() or "", body=page_text, url=url) or _visible(page, 'input[name="age"], input[placeholder*="Age" i], select[name="year"], select[autocomplete="bday-year"]'):
-                    about_you_tries += 1
-                    if about_you_tries > ABOUT_YOU_STUCK_LIMIT:
-                        result["error"] = "卡在年龄/生日页，没有进入下一步"
-                        result["error_code"] = "about_you_stuck"
-                        break
-                    report("about_you", f"验证码已过，正在填写年龄（第 {about_you_tries} 次）")
-                    if not _fill_about_you(page):
-                        page.wait_for_timeout(1500)
-                    continue
-                on_verify = "email-verification" in url or "check your inbox" in _page_text(page).lower()
-                otp_ready = bool(_find_otp(page) or _otp_boxes(page))
-                if otp_ready and (on_verify or not _visible(page, 'input[type="password"], input[name="current-password"]')):
-                    if otp_submits >= 2:
-                        result["error"] = "邮箱验证码提交后仍未通过，没有继续连交"
-                        result["error_code"] = "mail_otp_rejected"
-                        break
-                    report("email_otp", "等待新的邮箱验证码" if otp_submits or otp_resends else "等待邮箱验证码")
-                    code, otp_resends, otp_error = wait_email_otp_with_resend(
-                        page,
-                        email=email,
-                        pickup_url=pickup_url,
-                        proxy=proxy,
-                        use_cloudflare=use_cloudflare,
-                        cf_base_url=cf_base_url,
-                        cf_address=cf_address,
-                        cf_admin_password=cf_admin_password,
-                        hme_base_url=hme_base_url,
-                        hme_service_token=hme_service_token,
-                        hme_account_id=hme_account_id,
-                        ignore=known_codes,
-                        resends=otp_resends,
-                        report=report,
-                    )
-                    if otp_error:
-                        result["error"] = otp_error
-                        result["error_code"] = "mail_otp_timeout"
-                        break
-                    if not code:
-                        continue
-                    if not _fill_otp(page, code):
-                        if _page_past_otp(page):
-                            report("email_otp", "验证码输入框已消失，页面已过验证")
-                            continue
-                        result["error"] = "email OTP input not found"
-                        result["error_code"] = "mail_otp_timeout"
-                        break
-                    _click_exact(page, ["Continue", "Verify"]) or _click_first(page, ['button[type="submit"]'])
-                    known_codes.add(code)
-                    otp_submits += 1
-                    report("email_otp", f"已提交验证码（第 {otp_submits} 次）")
-                    page.wait_for_timeout(4000)
-                    continue
-                if on_verify:
-                    report("email_otp", "验证码页还没出现输入框，继续等")
-                    page.wait_for_timeout(1500)
-                    continue
-
-                if _visible(page, 'input[type="password"], input[name="current-password"]'):
-                    if has_mail and not otp_sent and _click_exact(page, [
-                        "Log in with a one-time code",
-                        "Email me a code",
-                        "Send a code",
-                        "Use a one-time code",
-                    ]):
-                        otp_sent = True
-                        report("email_otp", "密码页改走邮箱一次性验证码")
-                        page.wait_for_timeout(2500)
-                        continue
-                    body = _page_text(page).lower()
-                    if password and not password_tried:
-                        report("password", "正在填写密码")
-                        _fill_first(
-                            page,
-                            ['input[name="current-password"]', 'input[type="password"]', 'input[name="password"]'],
-                            password,
-                        )
-                        _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
-                        password_tried = True
-                        page.wait_for_timeout(2500)
-                        continue
-                    password_bad = (not password) or any(token in body for token in _PASSWORD_ERRORS)
-                    if not password:
-                        result["error"] = "登录页要密码，但子号没有保存密码，也没有邮箱验证码入口"
-                        result["error_code"] = "password_missing"
-                        break
-                    page.wait_for_timeout(1200)
-                    continue
-
-                if _visible(page, 'input[type="tel"]') or "add-phone" in url:
-                    if not allow_sms:
-                        result["error"] = "邀请注册要求手机验证，请人工处理后继续同一邮箱"
-                        result["error_code"] = "phone_verification_required"
-                        break
-                    report("add_phone", "页面要求添加手机号")
-                    outcome, msg = phone_page_outcome(page, allow_risk=False)
-                    if outcome in {"invalid", "recently_used", "risk"}:
-                        if phone_source:
-                            record_pool_phone(phone_source, outcome, msg)
-                            report("add_phone", f"换号原因：{msg}")
-                            number, url, error, code = take_pool_phone(phone_source, report)
-                            if error:
-                                result["error"] = error
-                                result["error_code"] = code
-                                break
-                            phone, sms_url = number, url
-                            continue
-                        result["error"] = msg or "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
-                        result["error_code"] = "sms_rejected"
-                        break
-                    if not phone or not sms_url:
-                        if phone_source:
-                            number, url, error, code = take_pool_phone(phone_source, report)
-                            if error:
-                                result["error"] = error
-                                result["error_code"] = code
-                                break
-                            phone, sms_url = number, url
-                        elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
-                            report("add_phone", "注册页出现手机号，已跳过")
-                            page.wait_for_timeout(1500)
-                            continue
-                        else:
-                            result["error"] = "注册页要手机号。正常邀请注册通常不需要，Codex 授权时才接码"
-                            result["error_code"] = "sms_missing"
-                            break
-                    if not phone or not sms_url:
-                        break
-                    _fill_phone_number(page, phone)
-                    _submit_phone_sms(page)
-                    page.wait_for_timeout(2500)
-                    outcome, msg = phone_page_outcome(page)
-                    if outcome in {"invalid", "recently_used", "risk"}:
-                        if phone_source:
-                            record_pool_phone(phone_source, outcome, msg)
-                            report("add_phone", f"换号原因：{msg}")
-                            number, url, error, code = take_pool_phone(phone_source, report)
-                            if error:
-                                result["error"] = error
-                                result["error_code"] = code
-                                break
-                            phone, sms_url = number, url
-                            continue
-                        result["error"] = msg or "手机号不被 OpenAI 接受。Codex 授权通常不吃 +86，要换能过的接码号"
-                        result["error_code"] = "sms_rejected"
-                        break
-                    report("sms_otp", "等待短信验证码")
-                    try:
-                        sms_code = sms_client.wait_for_code(sms_url, proxy=proxy, timeout_sec=90)
-                    except TimeoutError as exc:
-                        msg = str(exc) or "接码超时或空号"
-                        if phone_source:
-                            record_pool_phone(phone_source, "no_sms", msg)
-                            report("add_phone", f"换号原因：{msg}")
-                            number, url, error, code = take_pool_phone(phone_source, report)
-                            if error:
-                                result["error"] = error
-                                result["error_code"] = code or "sms_failed"
-                                break
-                            phone, sms_url = number, url
-                            continue
-                        result["error"] = msg
-                        result["error_code"] = "sms_failed"
-                        break
-                    otp_el = _find_otp(page)
-                    if otp_el:
-                        otp_el.fill(sms_code)
-                    _click_exact(page, ["Continue", "Verify"]) or _click_first(page, ['button[type="submit"]'])
-                    page.wait_for_timeout(2500)
-                    record_pool_phone(phone_source, "success")
-                    result["phone"] = phone
-                    result["sms_url"] = sms_url
-                    continue
-
-                if _visible(page, 'input[name="name"], input[name="fullName"], input[name="firstName"]'):
-                    report("profile", "正在填写资料")
-                    _fill_about_you(page)
-                    page.wait_for_timeout(2500)
-                    continue
-
-                if _accept_terms(page):
-                    report("terms", "已勾选服务条款")
-                    page.wait_for_timeout(1500)
-                    continue
-
-                if invite_entry and _pick_workspace(page, team_name):
-                    report("workspace", "正在接受邀请并选择目标工作空间")
-                    page.wait_for_timeout(1500)
-                    continue
-                peeked = _peek_session(page)
-                if session_access_token(peeked):
-                    if invite_entry and not invite_reopened:
-                        if str(session_user(peeked).get("email") or "").strip().lower() != email.strip().lower():
-                            return {"ok": False, "error_code": "token_identity_mismatch", "error": "登录态邮箱与邀请不一致"}
-                        invite_reopened = True
-                        goto_with_retries(page, start_url, report=report)
-                        page.wait_for_timeout(1500)
-                        continue
-                    session = peeked
-                    break
-                polled = {} if invite_entry else _poll_session(page)
-                if session_access_token(polled):
-                    session = polled
-                    break
-                title = (page.title() or "").lower()
-                if "chat, work, create" in title or "where should we begin" in page_text.lower():
-                    if mode == "register" and (
-                        _click_exact(page, ["Sign up for free", "Sign up"])
-                        or _click_first(page, ['a:has-text("Sign up")', 'button:has-text("Sign up")'])
-                    ):
-                        report("signup", "未登录首页，点 Sign up")
-                        page.wait_for_timeout(2000)
-                        continue
-                    if _click_exact(page, ["Log in"]):
-                        report("login", "未登录首页，点 Log in 回去")
-                    page.wait_for_timeout(2000)
-                    continue
-                if "auth.openai.com" in url and (
-                    _visible(page, 'input[type="password"], input[name="current-password"]')
-                    or bool(_find_otp(page) or _otp_boxes(page))
-                    or "email-verification" in url
-                    or looks_like_about_you(title=page.title() or "", body=page_text, url=url)
-                ):
-                    page.wait_for_timeout(1200)
-                    continue
-                if _pick_workspace(page, team_name):
-                    report("workspace", "已选择工作空间")
-                    page.wait_for_timeout(1500)
-                    continue
-                if _click_exact(page, ["Accept", "I agree", "Okay", "Next"]):
-                    page.wait_for_timeout(1500)
-                    continue
-                page.wait_for_timeout(1200)
-
-            result["debug_dir"] = _save_debug(page, profile_dir)
-            if result.get("error_code") and not session_access_token(session):
-                result["final_url"] = page.url or ""
-                return result
-            report("session", f"正在读取登录态 {page.url or ''}")
-            if not session_access_token(session):
-                session = _extract_session(page)
-            access_token = session_access_token(session)
-            js = session.get("json") if isinstance(session.get("json"), dict) else {}
-            session_token = str((js or {}).get("sessionToken") or "").strip()
-            user = session_user(session)
-            if invite_entry and str(user.get("email") or "").strip().lower() != email.strip().lower():
-                return {"ok": False, "error_code": "token_identity_mismatch", "error": "邀请注册登录态邮箱不匹配"}
-            result.update({
-                "ok": bool(access_token),
-                "access_token": access_token,
-                "session_token": session_token,
-                "account_id": str((user or {}).get("id") or ""),
-                "final_url": page.url or "",
-            })
-            if not access_token:
-                result["debug_dir"] = _save_debug(page, profile_dir)
-                if looks_like_email_gate(title=page.title() or "", body=_page_text(page), url=page.url or "") or _email_input_visible(page):
-                    result["error"] = result.get("error") or "卡在 ChatGPT 邮箱页，没有进入 OpenAI 注册"
-                    result["error_code"] = result.get("error_code") or "email_gate_stuck"
-                else:
-                    result["error"] = result.get("error") or _session_failure(page, session)
-                    result["error_code"] = result.get("error_code") or (
-                        "cloudflare_challenge" if page_is_cloudflare(page) else "session_missing"
-                    )
+            outcome.pop("sms_code_submissions", None)
+            phone = str(outcome.get("phone", phone) or "")
+            sms_url = str(outcome.get("sms_url", sms_url) or "")
+            result.update(outcome)
             if result.get("ok") and continue_in_browser is not None:
                 continue_in_browser(result, browser, page)
         except Exception as exc:  # noqa: BLE001

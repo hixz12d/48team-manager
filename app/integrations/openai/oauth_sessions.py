@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from app.core.proxy import mask_proxy_url, normalize_proxy_url
 from app.core.time import utcnow
 
-REDIRECT_URI = "http://localhost:1455/auth/callback"
+REDIRECT_URI = "http://127.0.0.1:1455/auth/callback"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 TTL = timedelta(minutes=20)
 

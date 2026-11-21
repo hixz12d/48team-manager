@@ -91,6 +91,9 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 | 交回刷新权卡住 / 部分完成 | 远端有在途刷新 / 清理 ack 失败 | "继续交回 Team" / "确认交接收尾"；不要删票据或归属行 |
 | `/api/ext` 返回 404 / 401 | 令牌未配置或不足 24 位 / 两端令牌不一致 | 改 `/opt/team48/.env` 的 `EXTENSION_API_TOKEN` 后重建，本机重新打包插件 |
 | `phone_verification_required` / `registration_home_not_ready` | 注册或 OAuth 需要手机 / 主页未就绪 | 保留同一账号续接，不要重新注册或领新别名 |
+| `desktop_session_missing` / `oauth_invalid_state` | 桌面版授权页没认 chatgpt.com 的登录、又要求输邮箱密码 / 授权页返回 409 `invalid_state` | 看日志 `stage=browser_debug dir=…` 对应的 `data/debug/<目录>/page.png`；可重试一次。反复出现说明 OpenAI 页面变了，查 `browser/reauth.py` 的选账号 / 登录判断；通用流程临时可在 `.env` 设 `CODEX_OAUTH_ENTRY=legacy` 后重建 |
+| `proxy_geo_failed` | 经代理查不到出口 IP 所在时区（ipinfo / ipapi 都失败） | 先在 codex-rs 或设置页测这条代理；确需临时绕过时在 `.env` 设固定 `BROWSER_TIMEZONE` 后重建 |
+| `identity_mismatch`（浏览器阶段） | 该邮箱的浏览器档案里登着别的 ChatGPT 账号，或选账号页只有别的邮箱 | 不会自动退出；确认档案后人工处理，不要删别人的档案 |
 | Codex 导出被拒 | 某账号缺 AT、将过期或待授权 | 先刷新或授权该账号 |
 | 团队卡"在跑"显示 — / 收入记录标"估算""未取到" | 用量同步还没跑出全程窗口 / 离队时读 Sub2API 失败 | 等下一次用量同步（5 分钟）；账本不支持手改，"估算"会在删旧远端前再读一次时更新 |
 | 总览今日 / 近 7 天收入悬停提示 Sub2API 日边界不同，日志有 `revenue daily ... day boundary ... differs from TIMEZONE` | Sub2API 的 `TZ` 与本项目 `TIMEZONE` 不一致 | 改本项目 `/opt/team48/.env` 的 `TIMEZONE` 对齐后重建；不动 Sub2API |

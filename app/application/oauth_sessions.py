@@ -26,6 +26,15 @@ def _state_hash(state: str) -> str:
     return hashlib.sha256(str(state or "").encode("utf-8")).hexdigest()
 
 
+# Loopback names that the OAuth server may redirect to for the same local listener.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
+
+
+def _callback_host(hostname: str | None) -> str:
+    host = (hostname or "").lower()
+    return "loopback" if host in _LOOPBACK_HOSTS else host
+
+
 def parse_strict_callback(callback_url: str, *, redirect_uri: str, expected_state_hash: str) -> dict[str, str]:
     text = str(callback_url or "").strip()
     if "://" not in text:
@@ -38,7 +47,7 @@ def parse_strict_callback(callback_url: str, *, redirect_uri: str, expected_stat
     expected_port = expected.port or (443 if expected.scheme == "https" else 80)
     if (
         callback.scheme != expected.scheme
-        or (callback.hostname or "").lower() != (expected.hostname or "").lower()
+        or _callback_host(callback.hostname) != _callback_host(expected.hostname)
         or callback_port != expected_port
         or callback.path != expected.path
     ):

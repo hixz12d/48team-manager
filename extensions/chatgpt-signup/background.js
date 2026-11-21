@@ -1,4 +1,4 @@
-import {ACTIVE, MODES, STAGES, AUTO_RESUME_REASONS, AUTO_RETRY_LIMIT, AUTO_RETRY_DELAY, PHONE_OUTCOMES, autoRetryAllowed, defaultProfile, checkedProfile, newPassword, contentAllowed, publicJob, pageKind, recordEvent, diagnosticReport, oauthCallback, laterStage, pauseReason} from './shared.mjs';
+import {ACTIVE, MODES, STAGES, AUTO_RESUME_REASONS, AUTO_RETRY_LIMIT, AUTO_RETRY_DELAY, PHONE_OUTCOMES, autoRetryAllowed, defaultProfile, checkedProfile, newPassword, contentAllowed, publicJob, pageKind, recordEvent, diagnosticReport, oauthCallback, validAuthorizeUrl, isDesktopAuthorizeUrl, laterStage, pauseReason} from './shared.mjs';
 import {MAILBOX} from './private-config.mjs';
 import * as PRIVATE_CONFIG from './private-config.mjs';
 import {RUN_TTL, startMailbox, pollMailbox} from './cloudflare.mjs';
@@ -529,9 +529,9 @@ function applyHandoff(job, result) {
     handoff.proxyPolicy = result.proxy_policy;
     let url;
     try { url = new URL(result.authorize_url); } catch { url = null; }
-    if (url?.origin !== 'https://auth.openai.com') return failHandoff(job, 'Team48 返回的授权链接无效。');
+    if (!url || !validAuthorizeUrl(url.href)) return failHandoff(job, 'Team48 返回的授权链接无效。');
     Object.assign(handoff, {status: 'opening', accountId: Number(result.account_id), ticket: String(result.ticket),
-      authorizeUrl: url.href, message: '已绑定团队母号代理，正在打开授权页面',
+      authorizeUrl: url.href, desktopAuth: isDesktopAuthorizeUrl(url.href), message: '已绑定团队母号代理，正在打开授权页面',
       workspaceNames: (result.workspace?.names || [handoff.workspaceName]).map(String).filter(Boolean).slice(0, 5)});
     if (result.workspace?.name) handoff.workspaceName = String(result.workspace.name).slice(0, 120);
     return;
@@ -900,7 +900,8 @@ async function contentMessage(message, sender) {
     const state = {active: job.status === 'running', id: job.id, email: job.email,
       status: job.status, message: job.message, stage: job.stage, mode: job.mode || 'auto', resumeCount: job.resumeCount || 0,
       hidePanel: job.hidePanel === true, entryFallbackUsed: !!job.entryFallbackUsed, entryFormSeen: !!job.entryFormSeen,
-      phase: job.phase === 'oauth' ? 'oauth' : 'signup', passwordSet: !!job.passwordSet,
+      phase: job.phase === 'oauth' ? 'oauth' : 'signup', desktopAuth: job.phase === 'oauth' && !!job.handoff?.desktopAuth,
+      passwordSet: !!job.passwordSet,
       // Signup may also end on the workspace chooser: the chosen or recognised team (server mode: its task).
       workspaceNames: job.phase === 'oauth' ? job.handoff?.workspaceNames || [] :
         job.runner ? job.runner.workspaceNames || [] : [job.autoHandoff?.workspaceName].filter(Boolean),
@@ -1108,7 +1109,7 @@ async function contentMessage(message, sender) {
       if (message.event === 'phone' && job.phase === 'oauth') job.codexResult = 'phone_required';
       // The SMS code was accepted: the page moved on to a later step (profile, consent, home).
       if (message.event === 'page' && pageKind(sender.url) !== 'phone' && !['phone', 'phone_otp'].includes(message.stage) &&
-          (message.stage !== 'unknown' || ['consent', 'profile', 'chatgpt'].includes(pageKind(sender.url)))) phoneSucceeded(job);
+          (message.stage !== 'unknown' || ['consent', 'profile', 'chatgpt', 'desktop_auth'].includes(pageKind(sender.url)))) phoneSucceeded(job);
       const key = `${message.stage}:${new URL(sender.url).pathname}`;
       if (message.event === 'click_response' && ['submitted', 'loading', 'advanced', 'validation'].includes(message.outcome) && job.continueClicks?.[key]) {
         job.continueClicks[key].blocked = true;
@@ -1129,7 +1130,7 @@ async function contentMessage(message, sender) {
     return {active: false};
   }
   if (message.type === 'complete') {
-    if (new URL(sender.url).hostname !== 'chatgpt.com' || job.phase === 'oauth') return {active: false};
+    if (pageKind(sender.url) !== 'chatgpt' || job.phase === 'oauth') return {active: false};
     if (String(message.email || '').toLowerCase() !== job.email) {
       recordEvent(job, 'email_mismatch');
       pauseJob(job, '当前登录邮箱不匹配，请关闭全部无痕窗口后重新开始。', 'email_mismatch', {stage: 'home'});
@@ -1336,7 +1337,8 @@ if (RUNNER) {
         if (!job?.runner) return null;
         if (url && !job.handoff && job.status === 'done' && job.phase !== 'oauth') {
           const names = job.runner.workspaceNames || [];
-          job.handoff = {status: 'opening', authorizeUrl: url, workspaceNames: names, workspaceName: String(names[0] || '').slice(0, 120),
+          job.handoff = {status: 'opening', authorizeUrl: url, desktopAuth: isDesktopAuthorizeUrl(url),
+            workspaceNames: names, workspaceName: String(names[0] || '').slice(0, 120),
             startedAt: Date.now(), message: '已收到授权链接，正在打开授权页面'};
           await saveJob(job);
         }

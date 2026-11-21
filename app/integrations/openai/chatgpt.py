@@ -32,6 +32,85 @@ from app.persistence.models.identity import Account
 
 logger = logging.getLogger(__name__)
 
+# Codex Desktop streamlined OAuth entry, mirrored from codex-rs
+# (providers/openai/src/credential/oauth.rs authorization_url / derive_surface_stable_id).
+DESKTOP_AUTH_ENDPOINT = "https://chatgpt.com/codex/desktop-auth"
+OAUTH_AUTHORIZE_ENDPOINT = "https://auth.openai.com/oauth/authorize"
+DESKTOP_OAUTH_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+DESKTOP_ORIGINATOR = "Codex Desktop"
+_SURFACE_STABLE_ID_DOMAIN = b"openai/codex-desktop/surface-stable-id/v1\0"
+_INSTALLATION_ID_DOMAIN = b"team48/codex-installation/v1\0"
+_OAUTH_ENTRIES = ("desktop", "legacy")
+
+
+def _resolve_oauth_entry(entry: str | None) -> str:
+    value = (entry if entry is not None else load_settings().codex_oauth_entry) or ""
+    value = value.strip().lower()
+    if value in _OAUTH_ENTRIES:
+        return value
+    logger.warning("unknown CODEX_OAUTH_ENTRY %r, using desktop", value)
+    return "desktop"
+
+
+def _desktop_app_version() -> str:
+    from app.integrations.openai import desktop_version
+
+    version = desktop_version.current()
+    if not version or version != version.strip() or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in version):
+        raise ValueError("CODEX_DESKTOP_APP_VERSION is empty or contains whitespace/control characters")
+    return version
+
+
+def _installation_uuid(email: str) -> uuid.UUID:
+    normalized = (email or "").strip().lower()
+    if not normalized:
+        return uuid.uuid4()
+    digest = hashlib.sha256(_INSTALLATION_ID_DOMAIN + normalized.encode("utf-8")).digest()
+    return uuid.UUID(bytes=digest[:16], version=4)
+
+
+def _surface_stable_id(installation: uuid.UUID) -> str:
+    raw = bytearray(hashlib.sha256(_SURFACE_STABLE_ID_DOMAIN + installation.bytes).digest()[:16])
+    raw[6] = (raw[6] & 0x0F) | 0x40
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+
+def _desktop_authorize_url(*, client_id: str, redirect_uri: str, challenge: str, state: str, email: str) -> str:
+    stable_id = _surface_stable_id(_installation_uuid(email))
+    inner = [
+        ("response_type", "code"),
+        ("client_id", client_id),
+        ("redirect_uri", redirect_uri),
+        ("code_challenge", challenge),
+        ("code_challenge_method", "S256"),
+        ("state", state),
+        ("scope", DESKTOP_OAUTH_SCOPE),
+        ("id_token_add_organizations", "true"),
+        ("codex_cli_simplified_flow", "true"),
+        ("originator", DESKTOP_ORIGINATOR),
+        ("codex_app_version", _desktop_app_version()),
+        ("source_surface_stable_id", stable_id),
+        ("codex_origin_stable_id", stable_id),
+        ("codex_streamlined_login", "true"),
+    ]
+    inner_url = f"{OAUTH_AUTHORIZE_ENDPOINT}?{urlencode(inner)}"
+    outer = [
+        ("authorize_url", inner_url),
+        ("codex_streamlined_login", "true"),
+        ("no_universal_links", "1"),
+    ]
+    return f"{DESKTOP_AUTH_ENDPOINT}?{urlencode(outer)}"
+
+
+def is_desktop_authorize_url(url: str) -> bool:
+    """True for a chatgpt.com/codex/desktop-auth entry URL."""
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and parsed.hostname == "chatgpt.com" and parsed.path.startswith("/codex/desktop-auth")
+
 
 class ChatGPTClient:
     BASE_URL = "https://chatgpt.com/backend-api"
@@ -483,10 +562,31 @@ class ChatGPTClient:
         redirect_uri: str,
         scope: str = "openid email profile offline_access",
         login_hint: str = "",
+        entry: str | None = None,
     ) -> dict[str, str]:
+        """Build a Codex OAuth authorize URL.
+
+        entry="desktop" mirrors codex-rs: chatgpt.com/codex/desktop-auth wrapping the
+        authorize URL, reusing the chatgpt.com session (no prompt=login / login_hint;
+        login_hint only seeds the stable installation id). entry="legacy" keeps the
+        old CLI URL byte for byte. None follows CODEX_OAUTH_ENTRY.
+        """
         verifier = secrets.token_urlsafe(64)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("utf-8")).digest()).decode("utf-8").rstrip("=")
         state = secrets.token_urlsafe(24)
+        if _resolve_oauth_entry(entry) == "desktop":
+            return {
+                "authorize_url": _desktop_authorize_url(
+                    client_id=client_id,
+                    redirect_uri=redirect_uri,
+                    challenge=challenge,
+                    state=state,
+                    email=login_hint,
+                ),
+                "code_verifier": verifier,
+                "state": state,
+                "client_id": client_id,
+            }
         query = {
             "client_id": client_id,
             "code_challenge": challenge,

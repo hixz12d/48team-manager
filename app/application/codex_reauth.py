@@ -28,6 +28,15 @@ _LOCK = asyncio.Lock()
 MAX_ATTEMPTS = 3
 MANUAL_CODES = {"phone_verification_required", "cloudflare_challenge", "account_deactivated",
                 "account_not_registered", "password_missing", "password_rejected", "identity_mismatch"}
+RETRYABLE_CODES = {
+    "browser_failed",
+    "mail_otp_timeout",
+    "browser_timeout",
+    "desktop_session_missing",
+    "oauth_invalid_state",
+    "proxy_geo_failed",
+    "registration_home_not_ready",
+}
 
 
 class RecoveryStopped(ValueError):
@@ -215,8 +224,10 @@ async def _run(db, public_id):
             if not proxy or not execution["mailbox"]["effective_ready"]:
                 raise RecoveryStopped("mail_proxy_missing", "缺少代理或可读取的邮箱")
             cf, hme = await load_cf_config(db), await load_hme_config(db)
-            auth = chatgpt_client.create_oauth_authorize_url(oauth_sessions.CLIENT_ID, oauth_sessions.REDIRECT_URI,
-                                                          login_hint=account.email)
+            auth = chatgpt_client.create_oauth_authorize_url(
+                oauth_sessions.CLIENT_ID, oauth_sessions.REDIRECT_URI,
+                login_hint=account.email, entry="desktop",
+            )
             public = oauth_sessions.create_session(team_id=0, email=account.email, authorize=auth,
                                                    mode="auto", proxy=proxy)
             ticket = public["ticket"]
@@ -301,7 +312,7 @@ async def _run(db, public_id):
             account.next_reauth_at = utcnow() + timedelta(minutes=15 * min(account.reauth_fail_count, 4))
             await db.commit()
         result = fail(code, str(exc) if not isinstance(exc, TimeoutError) else "浏览器超时，已关闭窗口",
-                      manual=code in MANUAL_CODES or code not in {"browser_failed", "mail_otp_timeout", "browser_timeout"}
+                      manual=code in MANUAL_CODES or code not in RETRYABLE_CODES
                       or account is None or account.reauth_fail_count >= MAX_ATTEMPTS)
         if code == "cancelled":
             result["status"] = "cancelled"
