@@ -87,6 +87,7 @@ class CodexRsSettings(BaseModel):
     enabled: bool | None = None
     refill: CodexRsRefillSettings | None = None
     auto_reauth: bool | None = None
+    recovery_enabled: bool | None = None
 
 
 class SettingsPatch(BaseModel):

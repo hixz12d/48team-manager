@@ -77,6 +77,20 @@ async def scheduled_codex_refill() -> None:
             await session.rollback()
 
 
+async def scheduled_codex_rs_recovery() -> None:
+    from app.application import codex_rs_recovery
+
+    factory = _session_factory
+    if factory is None:
+        return
+    async with factory() as session:
+        try:
+            await codex_rs_recovery.run_once(session)
+        except Exception:
+            logger.exception("codex-rs auto recovery scan failed")
+            await session.rollback()
+
+
 async def scheduled_auto_rotate() -> None:
     import json
     from app.application.rotate import rotate_service
@@ -163,6 +177,7 @@ def configure_jobs(settings: Settings) -> None:
         "sub2api_status_sync",
         "codex_rs_refill_scan",
         "codex_rs_health_scan",
+        "codex_rs_recovery_scan",
     )
     for job_id in job_ids:
         if scheduler.get_job(job_id):
@@ -177,6 +192,7 @@ def configure_jobs(settings: Settings) -> None:
     scheduler.add_job(scheduled_auto_rotate, IntervalTrigger(minutes=1), id="auto_rotate_scan", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_codex_refill, IntervalTrigger(minutes=5), id="codex_rs_refill_scan", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(scheduled_codex_health, IntervalTrigger(seconds=60), id="codex_rs_health_scan", replace_existing=True, max_instances=1, coalesce=True)
+    scheduler.add_job(scheduled_codex_rs_recovery, IntervalTrigger(seconds=60), id="codex_rs_recovery_scan", replace_existing=True, max_instances=1, coalesce=True)
     scheduler.add_job(
         scheduled_sub2api_usage_sync,
         IntervalTrigger(minutes=5),

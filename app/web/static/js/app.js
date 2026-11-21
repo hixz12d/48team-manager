@@ -3729,7 +3729,7 @@ function hmeRow(item) {
         sub2api_proxy_mode: [mode, push.proxy_id, push.proxy_group_id],
         codex_rs_push_target: codex.push_target, codex_rs_group_ids: codex.group_ids,
         codex_rs_concurrency: codex.concurrency_limit ?? null, codex_rs_weight: codex.weight, codex_rs_enabled: codex.enabled,
-        codex_rs_auto_reauth: codex.auto_reauth,
+        codex_rs_auto_reauth: codex.auto_reauth, codex_rs_recovery_enabled: codex.recovery_enabled,
         codex_rs_refill_enabled: codex.refill?.enabled, codex_rs_refill_target: codex.refill?.target,
         codex_rs_refill_daily_limit: codex.refill?.daily_limit, codex_rs_refill_workspace_ids: codex.refill?.workspace_ids };
     };

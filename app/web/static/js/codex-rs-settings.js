@@ -3,6 +3,8 @@
   let form, read, catalog = {groups: [], proxies: null}, workspaces = [];
   const REFILL_DEFAULTS = {enabled: false, target: 6, daily_limit: 6, workspace_ids: []};
   const NOT_WORKING_TEXT = {error: "出错", disabled: "已停用", weekly_exhausted: "7 天额度用完"};
+  const RECOVERY_STATE_TEXT = {running: "处理中", retry_wait: "等待重试", manual_required: "需人工", succeeded: "已恢复"};
+  const RECOVERY_STATE_TONE = {manual_required: "text-warn", succeeded: "text-ok"};
   const field = name => form.elements.namedItem(name);
   const node = (tag, text) => { const n = document.createElement(tag); if (text) n.textContent = text; return n; };
   const hint = (text, tone = "") => { const n = node("p", text); n.className = `hint ${tone}`.trim(); return n; };
@@ -22,6 +24,7 @@
       weight: Number(field("codex_rs_weight").value),
       enabled: field("codex_rs_enabled").checked,
       auto_reauth: field("codex_rs_auto_reauth").checked,
+      recovery_enabled: field("codex_rs_recovery_enabled").checked,
       refill: {
         enabled: field("codex_rs_refill_enabled").checked,
         target: Number(field("codex_rs_refill_target").value),
@@ -78,6 +81,7 @@
     field("codex_rs_weight").value = settings.weight ?? 1;
     field("codex_rs_enabled").checked = settings.enabled !== false;
     field("codex_rs_auto_reauth").checked = settings.auto_reauth === true;
+    field("codex_rs_recovery_enabled").checked = settings.recovery_enabled === true;
     renderGroups((settings.group_ids || []).map(String));
     const refill = {...REFILL_DEFAULTS, ...(settings.refill || {})};
     workspaces = Array.isArray(rotationWorkspaces) ? rotationWorkspaces : [];
@@ -150,6 +154,41 @@
       box.replaceChildren(hint("暂时无法读取自动补号状态，请重试。", "error"));
     } finally { if (button) button.disabled = false; }
   }
+  // Read-only status block from GET /api/codex-rs/recovery (rs-wide auto reauthorization).
+  function renderRecovery(data) {
+    const box = document.getElementById("codex-rs-recovery-status");
+    if (!box) return;
+    box.replaceChildren();
+    box.append(hint(`上次检查 ${when(data.last_scan_at)}`));
+    if (data.enabled === false) box.append(hint("○ rs 全部账号自动重新授权未开启"));
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    if (!accounts.length) { box.append(hint("暂无需要处理的账号")); return; }
+    const list = node("ul"); list.className = "codex-rs-refill-list";
+    for (const item of accounts) {
+      const li = node("li", `${item.email || item.remote_id || "—"} · `);
+      const state = node("span", RECOVERY_STATE_TEXT[item.state] || item.label || item.state || "—");
+      if (RECOVERY_STATE_TONE[item.state]) state.className = RECOVERY_STATE_TONE[item.state];
+      li.append(state, `${item.last_code ? ` · ${item.last_code}` : ""} · ${when(item.updated_at)}`);
+      list.append(li);
+    }
+    box.append(list);
+  }
+  async function refreshRecovery() {
+    const box = document.getElementById("codex-rs-recovery-status"), button = document.getElementById("codex-rs-recovery-refresh");
+    if (!box || button?.disabled) return;
+    if (button) button.disabled = true;
+    try {
+      renderRecovery(await read("codex-rs-recovery", "/api/codex-rs/recovery"));
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      box.replaceChildren(hint("暂时无法读取掉登录恢复状态，请重试。", "error"));
+    } finally { if (button) button.disabled = false; }
+  }
+  // app.js refreshes both status blocks through refreshRefill on page open and after save.
+  function refreshStatuses() {
+    void refreshRecovery();
+    return refreshRefill();
+  }
   async function resume(button) {
     button.disabled = true;
     try {
@@ -183,6 +222,7 @@
     form.dataset.codexRsBound = "true";
     document.getElementById("codex-rs-options-refresh")?.addEventListener("click", refresh);
     document.getElementById("codex-rs-refill-refresh")?.addEventListener("click", refreshRefill);
+    document.getElementById("codex-rs-recovery-refresh")?.addEventListener("click", refreshRecovery);
     for (const [id, checked] of [["codex-rs-refill-select-all", true], ["codex-rs-refill-clear", false]]) {
       document.getElementById(id)?.addEventListener("click", () => {
         form.querySelectorAll('[name="codex_rs_refill_workspace"]').forEach(input => { input.checked = checked; });
@@ -190,5 +230,5 @@
       });
     }
   }
-  window.Team48CodexRs = {init, fill, value, refresh, refreshRefill};
+  window.Team48CodexRs = {init, fill, value, refresh, refreshRefill: refreshStatuses, refreshRecovery};
 })();

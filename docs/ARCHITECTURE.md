@@ -52,6 +52,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `auto_reauth_scan` | 30 分钟 | 自动重授权（默认关闭） |
 | `codex_rs_refill_scan` | 5 分钟 | codex-rs 自动补号 `codex_refill.run_once`（开关关闭时不访问 codex-rs） |
 | `codex_rs_health_scan` | 60 秒 | rs 状态同步 `codex_status.refresh`，再尝试串行邮箱恢复 `codex_reauth.run_once`；恢复开关默认关 |
+| `codex_rs_recovery_scan` | 60 秒 | rs 全部账号掉登录恢复 `codex_rs_recovery.run_once`（默认关；单次可跑十几分钟，`max_instances=1`） |
 
 ### 手动轮转（`application/manual_rotation.py`）
 
@@ -142,6 +143,14 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - 每次任务冻结绑定身份与本地凭据版本，登录前、换票前、写凭据前、推送前重新核对；邮箱验证码登录复用 `InvitedBrowserSession`，`login_only=True`、`allow_signup=False`、`allow_sms=False`、空密码。`FrozenProxyClient` 确保换票沿用浏览器代理；校验 OAuth state 和令牌邮箱 / 用户 / 原 workspace 后才保存。
 - 推送复用 `codex_publish.import_account(reenable=False, expected_remote_id=...)`，只更新凭据，不传首次导入参数或恢复调度。`authorized` 步骤持久化后失败只能重推；活动恢复任务会阻止通用手动 OAuth 与 AT 读回。回推结果未知时通过同身份、有效相同 / 更新 AT 和远端持有 RT 的读回证据对账。
 - 重启恢复 `codex_reauth` 为待人工；失败最多 3 次，限次和退避复用账号 `reauth_fail_count / next_reauth_at`。手机验证、身份冲突、取消或结果未知不自动重试。
+
+### rs 全部账号掉登录恢复（`application/codex_rs_recovery.py`）
+
+- 不依赖本地账号 / 绑定，以 rs 列表为准；有 `codex_bindings` 的远端 ID 跳过。开关 `codex_rs_recovery_enabled`（`SettingsPatch.codex_rs.recovery_enabled`），状态 `system_settings.codex_rs_recovery_state`（每号 `state` / `fail_count` / `next_at` / `last_code` / `marked` / `succeeded_at`，不存令牌、代理和上游原文）。
+- 入口：定时 `run_once`（每轮最多一个号，开关关、浏览器槽或 `operations` 浏览器任务占用时直接返回）；`recover_account(db, remote_id, force=)` 供扫描和命令行 `scripts/codex_rs_recovery_once.py --account <rs 账号 ID> [--dry-run]` 共用；`status` 给 `GET /api/codex-rs/recovery`。
+- rs 接口（`integrations/codex/client.py`）：`refresh`（40001 / 50201 才开浏览器，其余本轮跳过 5 分钟）、`export_proxy_url`（敏感导出里取带凭据的代理，只在内存用）、`import_accounts`（不带 settings / 代理，按身份覆盖）、`update_account` / `update_notes`（`/accounts/update` 必填字段从详情回填）。不用 rs 的 `oauth/start|complete`：它不核对身份就写入。
+- 浏览器复用 `InvitedBrowserSession` + `run_browser_oauth_reauth`（`login_only=True`、`allow_join=False`、`allow_sms=False`、空密码），OAuth 会话只在内存（无本地账号可挂 `OAuthSession`）；换票用 `codex_reauth.FrozenProxyClient`。日志只写远端 ID 尾号、阶段、错误码。
+- 命令行脚本与服务是两个进程，进程内浏览器锁不共享，手动跑脚本时保持开关关闭。
 
 ### codex-rs 自动补号（`application/codex_refill.py`）
 

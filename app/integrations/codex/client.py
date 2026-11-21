@@ -59,6 +59,26 @@ def _text(value) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def account_group_ids(account: dict) -> list[str]:
+    """Group IDs of an account view: ``groupIds`` when present, else the ``groups[].id`` refs."""
+    ids = account.get("groupIds")
+    if not isinstance(ids, list):
+        ids = [item.get("id") for item in account.get("groups") or [] if isinstance(item, dict)]
+    return [str(item) for item in ids if isinstance(item, str) and item]
+
+
+# Fields ``update_account`` may change; everything else is copied from the current detail.
+UPDATE_FIELDS = {"notes", "groupIds", "concurrencyLimit", "weight", "outboundProxyId", "outboundProxyUrl"}
+
+
+class CodexRemoteError(CodexTransferError):
+    """A failed codex-rs call that also carries codex-rs's business code from the response body."""
+
+    def __init__(self, code: str, message: str, remote_code: int | None = None, status: int = 502):
+        super().__init__(code, message, status)
+        self.remote_code = remote_code
+
+
 class CodexClient:
     def __init__(self, base_url: str, api_key: str, *, transport=None):
         if not base_url or not api_key:
@@ -152,8 +172,8 @@ class CodexClient:
             raise CodexTransferError("codex_response_uncertain", "codex-rs 导入响应无法确认", 502)
         return ids
 
-    async def export_tokens(self, remote_id: str) -> dict:
-        """Read the current AT / ID token. The refresh token in the export is dropped here."""
+    async def _export_entry(self, remote_id: str) -> dict:
+        """One account's sensitive export entry. Holds every token: callers keep it in memory only."""
         data = await self._object("GET", "/api/admin/accounts/export", params={
             "accountIds": remote_id, "confirm": "export_sensitive_accounts"})
         documents = data.get("documents")
@@ -165,11 +185,77 @@ class CodexClient:
         if not isinstance(entries, list):
             raise CodexTransferError("codex_invalid_export", "codex-rs 导出响应不完整", 502)
         entry = next((item for item in entries if isinstance(item, dict) and item.get("id") == remote_id), None)
-        if entry is None or not _text(entry.get("accessToken")):
+        if entry is None:
+            raise CodexTransferError("codex_invalid_export", "codex-rs 导出响应不完整", 502)
+        return entry
+
+    async def export_tokens(self, remote_id: str) -> dict:
+        """Read the current AT / ID token. The refresh token in the export is dropped here."""
+        entry = await self._export_entry(remote_id)
+        if not _text(entry.get("accessToken")):
             raise CodexTransferError("codex_invalid_export", "codex-rs 导出缺少访问令牌", 502)
         return {"id": remote_id, "access_token": entry["accessToken"], "id_token": _text(entry.get("idToken")),
                 "expires_at": _text(entry.get("accessTokenExpiresAt")), "email": _text(entry.get("email")),
                 "account_id": _text(entry.get("accountId")), "user_id": _text(entry.get("userId"))}
+
+    async def export_proxy_url(self, remote_id: str) -> str | None:
+        """The account's full outbound proxy URL (with credentials), or None when it has none.
+
+        Only for in-memory use: never log it, store it or put it into an error message.
+        """
+        return _text((await self._export_entry(remote_id)).get("outboundProxyUrl"))
+
+    async def refresh(self, remote_id: str) -> dict:
+        """Ask codex-rs to refresh with its stored RT; returns the refreshed account.
+
+        Failures raise ``CodexRemoteError`` whose ``remote_code`` is codex-rs's business code
+        (40001 RT invalid / banned, 40901 busy, 50201 upstream failed, 50202 unknown, 50301 unavailable),
+        or None when no answer could be read (network error, timeout, malformed body).
+        """
+        try:
+            # The upstream refresh goes through the account's proxy and may take longer than admin reads.
+            async with httpx.AsyncClient(transport=self.transport, timeout=60, follow_redirects=False,
+                                         trust_env=False) as client:
+                response = await client.post(self.base_url + "/api/admin/accounts/refresh",
+                    headers={"x-api-key": self.api_key, "Accept": "application/json"}, json={"accountId": remote_id})
+        except httpx.HTTPError:
+            raise CodexRemoteError("codex_response_uncertain", "codex-rs 刷新请求失败或超时，结果未知") from None
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        code = body.get("code") if isinstance(body, dict) else None
+        remote_code = code if type(code) is int else int(code) if isinstance(code, str) and code.isdigit() else None
+        if 200 <= response.status_code < 300 and remote_code == 200 and isinstance(body.get("data"), dict):
+            account = body["data"].get("account")
+            return account if isinstance(account, dict) else body["data"]
+        if response.status_code in {401, 403}:
+            raise CodexRemoteError("codex_auth_failed", f"codex-rs 拒绝了管理员 API Key（HTTP {response.status_code}）",
+                                   remote_code)
+        raise CodexRemoteError("codex_refresh_failed",
+                               f"codex-rs 刷新失败（HTTP {response.status_code}，错误码 {remote_code or '未知'}）",
+                               remote_code)
+
+    async def update_account(self, remote_id: str, current: dict, **changes) -> None:
+        """POST /accounts/update. Required fields are copied from ``current`` (a fresh detail) so
+        only ``changes`` take effect; ``groupIds`` replaces the whole list there. Proxy, model access
+        and name are left out unless passed, which keeps them unchanged.
+        """
+        unknown = set(changes) - UPDATE_FIELDS
+        if unknown:
+            raise ValueError(f"unsupported update fields: {sorted(unknown)}")
+        if current.get("id") != remote_id or type(current.get("weight")) is not int \
+                or not isinstance(current.get("enabled"), bool):
+            raise CodexTransferError("codex_invalid_detail", "codex-rs 账号详情不完整，未修改", 502)
+        limit = current.get("concurrencyLimit")
+        body = {"accountId": remote_id, "enabled": current["enabled"],
+                "concurrencyLimit": limit if type(limit) is int else None,
+                "weight": current["weight"], "groupIds": account_group_ids(current), **changes}
+        await self._object("POST", "/api/admin/accounts/update", json=body)
+
+    async def update_notes(self, remote_id: str, notes: str, current_detail: dict) -> None:
+        """Replace the notes (empty string clears them); every other setting stays as in ``current_detail``."""
+        await self.update_account(remote_id, current_detail, notes=notes)
 
     async def set_enabled(self, remote_id: str, enabled: bool) -> None:
         if enabled:

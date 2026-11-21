@@ -4,7 +4,7 @@
 
 | 环境 | 地址 | 服务器上的目录 | 访问方式 | 凭据在哪 |
 |---|---|---|---|---|
-| 生产 | `https://48team.xiaozhudf2026.foo`（Nginx → `127.0.0.1:8018` → 容器 8008） | 代码 `/opt/team48`（root 所有的 git 工作副本），数据 `/opt/team48/data` | `ssh -i ~/.ssh/sub2api-baseline/ops_ed25519 -o IdentitiesOnly=yes ops@148.163.73.236`（天理云美西 8H16G；`ops` 免密 sudo、在 docker 组；root 和密码登录已关闭） | SSH 私钥：本机 `C:\Users\Lovewell\.ssh\sub2api-baseline\ops_ed25519`；整机运维资料见 `C:/Projects/VPS/天理云-美西国际大宽带-8H16G/docs/RUNBOOK.md`；应用配置：VPS `/opt/team48/.env` |
+| 生产 | `https://48team.xiaozhudf2026.foo`（Nginx → `127.0.0.1:8018` → 容器 8008） | 代码 `/opt/team48`（root 所有的 git 工作副本），数据 `/opt/team48/data` | `ssh tln`（天理云美西 8H16G `108.186.180.34`，`ops` 用户密钥登录；`ops` 免密 sudo、在 docker 组；root 和密码登录已关闭） | SSH 别名在本机 `~/.ssh/config`；整机运维资料见 `C:/Projects/VPS/天理云-美西国际大宽带-8H16G/docs/RUNBOOK.md`；应用配置：VPS `/opt/team48/.env` |
 | 本地 | `http://127.0.0.1:8008` | 仓库根，数据 `data/` | 见 [ARCHITECTURE.md](ARCHITECTURE.md#本地运行) | 本地 `.env` |
 
 - Compose 项目 `team48`、容器 `team48-manager`；网络 `team48_net`（external，和 icloud-hme 共用）、`sub2api_sub2api-network`（容器内访问 Sub2API 用 `http://sub2api-canary:8080`）、`codex-proxy-rs_default`（`http://codex-proxy-rs:8080`）。
@@ -118,6 +118,7 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 - **切换轮转注册方式**：`/opt/team48/.env` 改 `ROTATION_SIGNUP_RUNNER=extension`（回退改 `playwright`）后重建。前提：自检通过；设置里 Cloudflare 邮箱地址必须是插件内置的 `https://apimail.xiaozhudf2026.foo`，否则报 `runner_mailbox_invalid`。运行目录 `data/runner-runs/` 结束即删；容器重启会丢失进行中的运行，任务停在待人工，按"继续轮转"处理。
 - **接入 codex-rs**：在 codex-rs 后台「系统设置 → 安全与访问」生成管理员 API Key（只显示一次），Team48 设置页 codex-rs 卡片填地址 `http://host.docker.internal:8180` 和 Key，点检测。第一次真实导入用不重要的号，导入后在 codex-rs 后台确认有账号、有 RT、代理已绑定。
 - **启用 codex-rs 自动补号**：先往备用号池导入一批已注册的 HME 邮箱，在设置页 codex-rs 卡片勾选有空位的目标团队（线上团队大多没记录席位上限，系统判断不了满员），再打开开关保存。第一次盯一轮：任务页的"号池拉入（自动补号）"走完，codex-rs 后台出现新号且已启用。
+- **rs 掉登录自动重新授权**：对单个 rs 账号手动跑一次（不看开关，会忽略退避和“需人工”状态），先只检查再执行：`sudo docker exec -e DISPLAY=:99 team48-manager python scripts/codex_rs_recovery_once.py --account <rs 账号 ID> --dry-run`，去掉 `--dry-run` 即正式执行。`DISPLAY` 只在容器主进程里设置，`docker exec` 必须显式带；跑脚本时设置页的新开关保持关闭（两个进程不共享浏览器锁）。停下的原因看 rs 账号备注 `[自动重授权] 需人工：…` 或设置页状态区，处理后删掉那行备注即重新排队。
 - **启用插件接口**：`python -c "import secrets; print(secrets.token_urlsafe(32))"` 生成令牌 → 写 `/opt/team48/.env` 的 `EXTENSION_API_TOKEN` → 重建 → 本机重新打包插件。
 - **打包插件（本机）**：`python scripts/build_signup_extension.py --local-config --unpack`（只用本机 `private-config.mjs`）；首次不带 `--local-config` 会经 SSH 只读 VPS 上的 Cloudflare 配置。`--team48-token <令牌>` / `--no-team48` 写入 / 移除令牌（带令牌才会接码）；`--hme-token <ICLOUD_HME_SERVICE_TOKEN> --hme-account acc_...` / `--no-hme` 让本机包改从 iCloud（经 icloud-hme）读邮件验证码 / 改回 Cloudflare。产物在 `dist/`（gitignore），重新加载后确认插件版本号。安装说明见 `extensions/chatgpt-signup/README.md`。
 - **单席位补位（本机）**：`python -m scripts.signup_one --workspace-id N --role member` 只显示预检，加 `--confirm` 才执行；短信用 `--sms-stdin` 从标准输入传，不写在命令参数里。

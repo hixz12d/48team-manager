@@ -426,10 +426,24 @@
                     <p id="codex-rs-options-status" class="hint" role="status">读取分组中…</p>
                   </section>
                   <section class="sub2api-push-defaults stack" aria-labelledby="codex-rs-reauth-title">
-                    <strong id="codex-rs-reauth-title">掉登录恢复</strong>
-                    <label class="setting-row"><span><strong>开启邮箱自动重授权</strong><span class="hint">仅恢复明确掉登录的 rs 账号</span></span><input type="checkbox" name="codex_rs_auto_reauth"></label>
+                    <div class="panel-header">
+                      <strong id="codex-rs-reauth-title">掉登录恢复</strong>
+                      <button type="button" class="button compact" id="codex-rs-recovery-refresh">刷新状态</button>
+                    </div>
+                    <label class="setting-row"><span><strong>48team 导入的号：邮箱自动重授权</strong><span class="hint">仅恢复明确掉登录、由 48team 导入的 rs 账号</span></span><input type="checkbox" name="codex_rs_auto_reauth"></label>
                     <p class="hint">每分钟同步 rs 状态，和自动补号独立。一次处理一个原账号，沿用账号代理（未配置时用团队母号代理），成功后更新原 rs 绑定；不踢人、不改席位、不启用已停用的账号。</p>
                     <p class="hint">默认关闭。只处理凭据过期或失效；遇手机验证、人机验证或身份不一致停下待人工。普通失败退避重试，最多 3 次；推送未确认时保留新凭据，人工重试只推送。</p>
+                    <label class="setting-row">
+                      <span>
+                        <strong>rs 全部账号：掉登录自动重新授权</strong>
+                        <span class="hint">按 rs 账号列表处理所有启用中、凭据过期或失效的号（不论是否由 48team 导入）。先试刷新令牌，不行再用邮箱验证码重新登录，沿用账号在 rs 里的代理，账号 ID、分组、并发不变。</span>
+                        <span class="hint">遇到手机验证、人机验证、号被封或身份不一致就停下，原因写进 rs 账号备注；删掉那行备注即可重新尝试。默认关闭。</span>
+                      </span>
+                      <input type="checkbox" name="codex_rs_recovery_enabled">
+                    </label>
+                    <div id="codex-rs-recovery-status" class="codex-rs-refill-status stack" role="status" aria-live="polite">
+                      <p class="hint">状态读取中…</p>
+                    </div>
                   </section>
                   <section class="sub2api-push-defaults codex-rs-refill stack" id="codex-rs-refill" aria-labelledby="codex-rs-refill-title">
                     <div class="panel-header">
