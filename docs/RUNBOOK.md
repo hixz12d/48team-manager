@@ -94,7 +94,6 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 | `desktop_session_missing` / `oauth_invalid_state` | 桌面版授权页没认 chatgpt.com 的登录、又要求输邮箱密码 / 授权页返回 409 `invalid_state` | 看日志 `stage=browser_debug dir=…` 对应的 `data/debug/<目录>/page.png`；可重试一次。反复出现说明 OpenAI 页面变了，查 `browser/reauth.py` 的选账号 / 登录判断；通用流程临时可在 `.env` 设 `CODEX_OAUTH_ENTRY=legacy` 后重建 |
 | `proxy_geo_failed` | 经代理查不到出口 IP 所在时区（ipinfo / ipapi 都失败） | 先在 codex-rs 或设置页测这条代理；确需临时绕过时在 `.env` 设固定 `BROWSER_TIMEZONE` 后重建 |
 | `camoufox_not_installed` | `BROWSER_ENGINE=camoufox` 但镜像里缺内核 / 指纹模型 / 地理库（没带 `--build` 或构建期下载失败） | 带 `--build` 重建；急用先改回 `BROWSER_ENGINE=chromium` 重建 |
-| `onboarding_stuck` | 登录后停在 chatgpt.com 入组欢迎页，按钮没认出来 | 看 `data/debug/<目录>/page.png`，可重试一次；反复出现说明欢迎页文案变了，查 `browser/chatgpt_login.py` 的 `complete_chatgpt_onboarding` |
 | `identity_mismatch`（浏览器阶段） | 该邮箱的浏览器档案里登着别的 ChatGPT 账号，或选账号页只有别的邮箱 | 不会自动退出；确认档案后人工处理，不要删别人的档案 |
 | Codex 导出被拒 | 某账号缺 AT、将过期或待授权 | 先刷新或授权该账号 |
 | 团队卡"在跑"显示 — / 收入记录标"估算""未取到" | 用量同步还没跑出全程窗口 / 离队时读 Sub2API 失败 | 等下一次用量同步（5 分钟）；账本不支持手改，"估算"会在删旧远端前再读一次时更新 |

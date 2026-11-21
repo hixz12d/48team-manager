@@ -64,3 +64,12 @@
 - 步骤 1～2 已做：容器内 `browser_environment_smoke.py --engine camoufox --headed` 输出 `ok: true`、`same_profile_stable: true`，两个档案的 GPU 指纹不同；临时脚本已删除，没有留下档案。
 - 实测前已按用户要求在设置页关闭"rs 掉登录自动重新授权"（`codex_rs.recovery_enabled=false`）。自动轮转、自动补号、自动重授权本来就是关的。实测通过后提醒用户重新打开。
 - 剩余：步骤 3～6（可选的 `house-reducer-0y@` 和 2 个全新 HME 邮箱实测）。
+
+**新号 1：`wink.minis_6o@`（全新，用户提供，已发 Team 邀请；rs 代理出口 oxylabs 住宅 SOCKS5）**
+- 第 1 轮（22:23，`e44c8ca`）：Camoufox 启动 → 邮箱验证码 → 拟人填 about-you（Noah Hall）→ 注册成功，整个注册过程**没有出现手机验证**。之后到 `chatgpt.com/onboarding` 的 Team 资料卡 "Introduce yourself"（姓名 / 头像名称 / 必选的 Your role 下拉框），入组选择脚本把表单按钮误判为多个 Team，报 `workspace_ambiguous`。
+- 修复 `ec38bbb`：识别资料卡，选职位后继续，只试一次；表单按钮不再算 Team。
+- 第 2 轮（22:29，已有登录态）：停在下一张引导页 "Download the desktop app"，报 `onboarding_stuck`。
+- 修复 `415a686`：可选步骤点 `Skip for now`；引导页走不完不再报错，直接继续授权，由令牌工作区核对兜底（按用户意见：这些页面不点也能直接覆盖授权链接）。
+- 第 3 轮（22:32）：入组引导通过 → 桌面版授权 → 选账号卡 → 跳到 `auth.openai.com/add-phone`（"Phone number required"），报 `phone_verification_required`。截图在 `data/debug/20261121-223247/`。
+- 结论（单号）：Camoufox + 拟人化输入的服务器注册仍会在 Codex 授权时被要求绑手机。授权距注册约 8 分钟，远长于 15～30 秒的停留，所以"注册后立即授权"不是原因。还没排除的变量是注册时的出口 IP（服务器走 rs 代理 oxylabs 住宅；之前不撞手机的手工注册号用的是本机网络）。
+- 文档已同步：ARCHITECTURE、PRODUCT 改为"引导页顺手点掉、点不掉也继续授权"；RUNBOOK 删掉 `onboarding_stuck` 这一行（代码不再产生这个错误码）。
