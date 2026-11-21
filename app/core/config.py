@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     # Bearer token for the personal signup extension's narrow /api/ext endpoints.
     # Empty (or shorter than 24 characters) disables those endpoints entirely.
     extension_api_token: str = ""
+    # Bearer token for internal /api/internal/codex-rs/onboard endpoints called by codex-rs.
+    # Empty (or shorter than 24 characters) disables those endpoints entirely.
+    codex_rs_onboard_token: str = ""
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

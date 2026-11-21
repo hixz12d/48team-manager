@@ -49,6 +49,118 @@ logger = logging.getLogger(__name__)
 StageCallback = Optional[Callable[[str, str], None]]
 
 
+_SINGLE_TEAM_PICKER_JS = """() => {
+  const vis = (el) => {
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) return false;
+    const box = el.getBoundingClientRect();
+    return box.width > 8 && box.height > 8;
+  };
+  const formInputs = document.querySelectorAll(
+    'input[type="email"], input[name="email"], input[name="username"], ' +
+    'input[type="password"], input[type="tel"], input[name="phone"], ' +
+    'input[autocomplete="one-time-code"], input[name="code"], input[name="otp"], input[name="pin"], input[maxlength="1"]'
+  );
+  for (const inp of formInputs) {
+    if (vis(inp)) return { kind: "none" };
+  }
+  for (const old of document.querySelectorAll("[data-team48-ws-pick]")) {
+    old.removeAttribute("data-team48-ws-pick");
+  }
+  const path = String(location.pathname || "").toLowerCase();
+  const body = String((document.body && document.body.innerText) || "");
+  const bodyLow = body.toLowerCase();
+  const isChooser = /workspace|organization/.test(path) ||
+    /choose a workspace|select a workspace|choose an organization|select an organization|选择工作空间|选择一个工作空间|选择组织/.test(bodyLow);
+  const maybeWorkspacePage = isChooser || path.includes("consent") || bodyLow.includes("workspace") || body.includes("工作空间");
+  if (!maybeWorkspacePage) return { kind: "none" };
+
+  const norm = (el) => String(el.innerText || el.getAttribute("aria-label") || el.value || "").replace(/\\s+/g, " ").trim();
+  const skipExact = new Set([
+    "continue", "confirm", "allow", "authorize", "accept", "next", "ok", "okay", "submit",
+    "join", "join workspace", "accept invite", "cancel", "deny", "decline", "back", "go back", "close",
+    "log in", "login", "sign in", "sign up", "log out", "logout", "sign out",
+    "switch account", "use another account", "use a different account",
+    "sign in with another account", "log in with another account",
+    "try again", "learn more", "help", "terms of use", "privacy policy",
+    "继续", "确认", "允许", "授权", "接受", "下一步", "取消", "拒绝", "返回", "登录", "退出", "退出登录", "切换账号", "使用其他账号"
+  ]);
+  const skipSub = [
+    "continue with ", "sign in with ", "log in with ", "use another", "use a different",
+    "switch account", "log out", "sign out", "create a workspace", "create workspace", "new workspace",
+    "privacy policy", "terms of use"
+  ];
+  const isActionOrChrome = (text) => {
+    const low = text.toLowerCase();
+    if (!low || low.includes("@")) return true;
+    if (skipExact.has(low)) return true;
+    return skipSub.some((sub) => low.includes(sub));
+  };
+  const isPersonal = (text) => text.toLowerCase().includes("personal") || text.includes("个人");
+
+  let candidates = [];
+  for (const r of document.querySelectorAll('input[type="radio"]')) {
+    const target = r.closest("label") || r.closest('[role="radio"]') || (vis(r) ? r : null);
+    if (target && vis(target) && !candidates.includes(target)) candidates.push(target);
+  }
+  for (const el of document.querySelectorAll('[role="radio"], [role="option"], [role="menuitemradio"]')) {
+    if (!vis(el)) continue;
+    if (candidates.some((c) => c === el || c.contains(el) || el.contains(c))) continue;
+    candidates.push(el);
+  }
+  let maxLen = 160;
+  if (candidates.length === 0) {
+    maxLen = 80;
+    const raw = Array.from(document.querySelectorAll('button, [role="listitem"], [role="button"]')).filter(
+      (el) => vis(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true"
+    );
+    candidates = raw.filter((el) => !raw.some((other) =>
+      other !== el && (el.tagName === "BUTTON" ? other.tagName === "BUTTON" && el.contains(other)
+                       : (el.contains(other) || (other.tagName === "BUTTON" && other.contains(el))))
+    ));
+  }
+
+  const valid = [];
+  for (const el of candidates) {
+    const text = norm(el);
+    if (!text || text.length > maxLen || isActionOrChrome(text)) continue;
+    valid.push({ el, personal: isPersonal(text) });
+  }
+  if (valid.length === 0) return { kind: isChooser ? "wait" : "none" };
+  const teams = valid.filter((item) => !item.personal);
+  if (teams.length === 0) return { kind: "team_missing" };
+  if (teams.length > 1) return { kind: "workspace_ambiguous" };
+  teams[0].el.setAttribute("data-team48-ws-pick", "1");
+  return { kind: "pick" };
+}"""
+
+
+def _pick_single_team_workspace(page) -> str:
+    """Inspect a workspace chooser / consent page and select the unique non-personal Team."""
+    try:
+        outcome = page.evaluate(_SINGLE_TEAM_PICKER_JS) or {}
+    except Exception:  # noqa: BLE001
+        return "none"
+    kind = str(outcome.get("kind") or "none")
+    if kind != "pick":
+        return kind
+    try:
+        target = page.locator('[data-team48-ws-pick="1"]').first
+        if target.count() == 0 or not target.is_visible():
+            return "none"
+        target.click(timeout=2500)
+    except Exception:  # noqa: BLE001
+        return "none"
+    page.wait_for_timeout(500)
+    if not _click_exact(page, ["Continue", "Confirm", "Allow", "Authorize", "Accept", "继续", "确认", "允许", "授权"]):
+        _click_first(page, [
+            'button:has-text("Continue")', 'button:has-text("Confirm")', 'button:has-text("Allow")',
+            'button:has-text("继续")', 'button:has-text("确认")', 'button:has-text("允许")',
+        ])
+    return "picked"
+
+
 def _visible_password_inputs(page) -> list:
     boxes = page.locator('input[type="password"]')
     visible = []
@@ -85,6 +197,7 @@ def run_browser_oauth_reauth(
     max_sms_submissions: int = 7,
     max_sms_code_submissions: int = 2,
     team_name: str = "",
+    pick_single_team: bool = False,
     executable_path: str = "",
     on_stage: StageCallback = None,
     phone_source=None,
@@ -244,6 +357,23 @@ def run_browser_oauth_reauth(
                         report("workspace", "已选择原工作空间")
                         page.wait_for_timeout(1500)
                         continue
+                    if pick_single_team and not team_name:
+                        ws_outcome = _pick_single_team_workspace(page)
+                        if ws_outcome == "picked":
+                            report("workspace", "已自动选择唯一 Team 工作空间")
+                            page.wait_for_timeout(2000)
+                            continue
+                        if ws_outcome == "wait":
+                            page.wait_for_timeout(1500)
+                            continue
+                        if ws_outcome == "workspace_ambiguous":
+                            result.update(error="有多个 Team，未自动选择", error_code="workspace_ambiguous")
+                            report("workspace", result["error"])
+                            break
+                        if ws_outcome == "team_missing":
+                            result.update(error="只有个人空间，没有 Team", error_code="team_missing")
+                            report("workspace", result["error"])
+                            break
                 if allow_join and _pick_workspace(page, team_name):
                     report("workspace", "已选择工作空间")
                     page.wait_for_timeout(1500)

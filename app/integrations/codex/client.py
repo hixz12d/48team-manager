@@ -154,14 +154,19 @@ class CodexClient:
         return account
 
     async def import_accounts(self, document: dict, *, settings: dict | None = None,
+                              raw_settings: dict | None = None,
                               proxy_id: str | None = None) -> list[str]:
         """Import (or upsert by token identity) one account document; returns codex-rs account IDs.
 
-        ``settings`` / ``proxy_id`` overwrite an existing account's settings, so callers only
-        pass them on the first import.
+        ``settings`` / ``raw_settings`` / ``proxy_id`` overwrite an existing account's settings, so
+        callers only pass them on the first import. ``raw_settings`` is already in codex-rs format.
         """
+        if settings is not None and raw_settings is not None:
+            raise ValueError("settings and raw_settings are mutually exclusive")
         body: dict = {"provider": "openai", "data": {"accounts": [document]}}
-        if settings is not None:
+        if raw_settings is not None:
+            body["settings"] = raw_settings
+        elif settings is not None:
             body["settings"] = _import_settings(settings)
         if proxy_id:
             body["outboundProxyId"] = proxy_id
@@ -274,6 +279,15 @@ class CodexClient:
 
     async def list_proxies(self) -> list[dict]:
         return await self._pages("/api/admin/proxies")
+
+    async def list_proxy_accounts(self, proxy_id: str, *, page: int = 1, page_size: int = 1) -> list[dict]:
+        """Accounts bound to ``proxy_id`` (one page, used to sample an account for full proxy export)."""
+        data = await self._object("GET", "/api/admin/proxies/accounts",
+                                  params={"proxyId": proxy_id, "page": page, "pageSize": page_size})
+        items = data.get("items")
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise CodexTransferError("codex_invalid_list", "codex-rs 代理关联账号响应不完整", 502)
+        return items
 
     async def list_groups(self) -> list[dict]:
         return await self._pages("/api/admin/account-groups")

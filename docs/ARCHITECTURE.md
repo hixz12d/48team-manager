@@ -16,7 +16,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `app/application/resources/` | HME 领号（`hme.py`）、手机号池、插件接码中转（`phone_relay.py`）、代理 |
 | `app/integrations/` | 外部客户端：`openai`（官方 API + `browser/` 浏览器自动化）、`sub2api`、`codex`、`mail`、`sms`、`proxy` |
 | `app/persistence/` | 表模型、仓储、`migrations/bootstrap.py`（启动时幂等建表 / 补列 / 补索引） |
-| `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口）、模板、静态资源；`static/fonts/` 是自托管的 Anthropic Sans / Mono |
+| `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口、`codex_rs_onboard.py` rs 内部接口）、模板、静态资源；`static/fonts/` 是自托管的 Anthropic Sans / Mono |
 | `DESIGN.md` | 界面设计规范（配色、字号、组件、状态写法），改界面前先读 |
 | `extensions/chatgpt-signup/` | 自用注册插件；`content.js` 也被服务端托管注册复用；`runner.mjs` 是服务器模式 |
 | `scripts/` | 本机工具：插件打包、单席位补位、浏览器冒烟、HubStudio 观察、Excel 购买台账一次性导入 |
@@ -152,6 +152,14 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - 浏览器复用 `InvitedBrowserSession` + `run_browser_oauth_reauth`（`login_only=True`、`allow_join=False`、`allow_sms=False`、空密码），OAuth 会话只在内存（无本地账号可挂 `OAuthSession`）；换票用 `codex_reauth.FrozenProxyClient`。日志只写远端 ID 尾号、阶段、错误码。
 - 命令行脚本与服务是两个进程，进程内浏览器锁不共享，手动跑脚本时保持开关关闭。
 
+### rs 邮箱自动授权新号（`application/codex_rs_onboard.py`、`web/routes/codex_rs_onboard.py`）
+
+- 只给 rs 调用的内部接口 `/api/internal/codex-rs/onboard`：`GET`（当前批次）、`POST`（`{emails, settings}` 提交，≤ 50 个）、`POST /stop`、`POST /retry`（`{email}`）。`CODEX_RS_ONBOARD_TOKEN` 做 Bearer 鉴权，少于 24 位时全部 404（`code=not_found`），不接受管理员会话；错误体 `{code, message}`。rs 侧是 fork 的 `fork_team48` 配置段，管理接口 `/api/admin/accounts/email-auth*` 原样转发。
+- 批次只保留当前 / 最近一批，存 `system_settings.codex_rs_onboard_batch`（Batch JSON + 提交的 `settings`，不存令牌、验证码、代理、回调）；模块级 `asyncio.Lock` 串行化读写，worker 是进程内 `asyncio.Task`。worker 不在而批次仍 `running` / `stopping` 时（进程重启），读取即自愈：在跑的号 `failed`（`interrupted`，可重试），排队的号 `stopped`。
+- 单号流程：再查 rs 是否已有同邮箱（有则 `skipped`）→ `codex_rs_recovery._find_mailbox` 找 HME 别名 → 挑代理（`enabled`、最近测试通过、已挂 ≥ 1 个号、挂号最少并列随机；rs 代理都带认证，列表没有完整地址，用 `list_proxy_accounts` 取一个已绑定账号再 `export_proxy_url`）→ 等全局浏览器槽（`browser_lock` / `operations` 浏览器任务 / `try_reserve`，每 20 秒重试，不算失败）→ `run_browser_oauth_reauth(login_only=True, allow_join=False, allow_sms=False, pick_single_team=True)` → `FrozenProxyClient` 换票 → 核对邮箱、RT、`account_id`、`chatgpt_plan_type ∈ {team, business, enterprise, edu}` → `import_accounts(raw_settings=<rs 前端设置原样>, proxy_id=<所选代理>)` → `detail` + `_verify_remote` 读回。不建本地账号和 `codex_bindings`，导入后掉登录归上一节的全量恢复。
+- `pick_single_team`（`browser/reauth.py`）：只在 `allow_join=False` 且未指定团队名时生效；页面内 JS 收集工作空间选项，去掉含 personal / 个人 的，唯一 Team 才点并点继续，多个返回 `workspace_ambiguous`，只剩个人返回 `team_missing`，识别不到选项时放行、由套餐核对兜底。
+- 需人工（不可重试）的错误码：手机 / 人机验证、封号、未注册、身份不符、找不到邮箱、`workspace_ambiguous`、`team_missing`、`not_team_workspace`、`import_mismatch`；其余可重试。日志只写邮箱前 3 位、阶段、错误码。
+
 ### codex-rs 自动补号（`application/codex_refill.py`）
 
 - 设置键 `codex_rs_refill`（`{enabled, target, daily_limit, workspace_ids}`，随设置 `codex_rs.refill` 整块保存；开关由关变开时 `clear_pause`）、运行状态键 `codex_rs_refill_state`（计数、`not_working`、防抖 `suspects`、`disabled_by_refill` 最近 20 条、暂停、`last_operation_id`、`today`、`blocked_reason`），只由本模块读写。
@@ -211,6 +219,7 @@ for f in app/web/static/js/*.js extensions/chatgpt-signup/*.js extensions/chatgp
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 管理员登录；代码默认密码很弱，生产必须覆盖 |
 | `SESSION_COOKIE_SECURE` | 生产为 True |
 | `EXTENSION_API_TOKEN` | 插件接口令牌，≥ 24 位才启用 |
+| `CODEX_RS_ONBOARD_TOKEN` | rs 邮箱自动授权内部接口密钥，≥ 24 位才启用；与 rs `fork_team48.api_key` 相同 |
 | `BROWSER_HEADLESS` / `BROWSER_CHANNEL` / `BROWSER_EXECUTABLE` | 浏览器启动 |
 | `BROWSER_ENGINE` | `chromium`（默认）/ `chromix`（需同时设 `BROWSER_EXECUTABLE`） |
 | `BROWSER_SIGNUP_FLOW` | `legacy`（默认）/ `extension` |
