@@ -895,6 +895,23 @@ def run_chatgpt_login_loop(
             human_pause(page, 2.2, 3.5)
             continue
 
+        # Login of an account that has a Team and a personal space stops on
+        # auth.openai.com/workspace ("Choose a workspace"); only pick when told which.
+        if (
+            (team_name or pick_single_team)
+            and "auth.openai.com" in url
+            and "/workspace" in (urlparse(url).path or "").lower()
+        ):
+            ws_outcome = _pick_onboarding_workspace(page, team_name=team_name, pick_single_team=pick_single_team)
+            if ws_outcome == "workspace_ambiguous":
+                result["error"] = "有多个 Team，未自动选择"
+                result["error_code"] = "workspace_ambiguous"
+                break
+            if ws_outcome == "picked":
+                emit("workspace", "登录时选择 Team 工作空间")
+                human_pause(page, 2.0, 3.0)
+                continue
+
         if looks_like_about_you(title=page_title, body=page_text, url=url) or _visible(
             page,
             'input[name="age"], input[placeholder*="Age" i], select[name="year"], select[autocomplete="bday-year"]',
@@ -914,6 +931,18 @@ def run_chatgpt_login_loop(
         on_verify = "email-verification" in url or "check your inbox" in page_text.lower()
         otp_ready = bool(_find_otp(page) or _otp_boxes(page))
         if otp_ready and (on_verify or not _visible(page, 'input[type="password"], input[name="current-password"]')):
+            if otp_submits:
+                # A just-submitted code may still be navigating away; only wait for a
+                # new mail when the verification page is really still there.
+                moved = False
+                for _ in range(8):
+                    if not (_find_otp(page) or _otp_boxes(page)) or _page_past_otp(page):
+                        moved = True
+                        break
+                    page.wait_for_timeout(1000)
+                if moved:
+                    human_pause(page, 0.6, 1.2)
+                    continue
             if otp_submits >= 2:
                 result["error"] = "邮箱验证码提交后仍未通过，没有继续连交"
                 result["error_code"] = "mail_otp_rejected"
