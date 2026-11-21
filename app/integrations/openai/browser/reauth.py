@@ -4,15 +4,25 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from app.core.config import load_settings
-from app.integrations.openai.browser.chatgpt_login import ensure_chatgpt_login
-from app.integrations.openai.browser.environment import (
-    BrowserEnvironmentError,
-    environment_summary,
-    harden_context,
+from app.integrations.openai.browser import environment as browser_env
+from app.integrations.openai.browser.chatgpt_login import (
+    complete_chatgpt_onboarding,
+    ensure_chatgpt_login,
+    looks_like_chatgpt_onboarding,
+)
+from app.integrations.openai.browser.environment import BrowserEnvironmentError
+from app.integrations.openai.browser.humanize import (
+    human_click,
+    human_nudge_mouse,
+    human_pause,
+    human_type_otp,
+    human_type_text,
+    uniform_float,
 )
 from app.integrations.openai.browser.onboard import (
     ABOUT_YOU_STUCK_LIMIT,
@@ -33,7 +43,6 @@ from app.integrations.openai.browser.onboard import (
     _snapshot_mailbox_codes,
     _visible,
     _wait_and_fallback_submit_otp,
-    chromium_context_kwargs,
     goto_with_retries,
     looks_like_about_you,
     looks_like_registration,
@@ -160,10 +169,12 @@ def _pick_single_team_workspace(page) -> str:
         target = page.locator('[data-team48-ws-pick="1"]').first
         if target.count() == 0 or not target.is_visible():
             return "none"
-        target.click(timeout=2500)
+        human_pause(page, 0.8, 1.8)
+        if not human_click(page, target, timeout=2500):
+            return "none"
     except Exception:  # noqa: BLE001
         return "none"
-    page.wait_for_timeout(500)
+    human_pause(page, 0.6, 1.2)
     if not _click_exact(page, ["Continue", "Confirm", "Allow", "Authorize", "Accept", "继续", "确认", "允许", "授权"]):
         _click_first(page, [
             'button:has-text("Continue")', 'button:has-text("Confirm")', 'button:has-text("Allow")',
@@ -276,14 +287,16 @@ def _pick_account_card(page, email: str) -> str:
         target = page.locator('[data-team48-account-pick="1"]').first
         if target.count() == 0 or not target.is_visible():
             return "none"
-        target.click(timeout=2500)
+        human_pause(page, 0.8, 1.8)
+        if not human_click(page, target, timeout=2500):
+            return "none"
     except Exception:  # noqa: BLE001
         return "none"
-    page.wait_for_timeout(800)
+    human_pause(page, 0.8, 1.4)
     try:
         current_url = (page.url or "").split("#", 1)[0]
         if current_url == started_url and target.count() > 0 and target.is_visible():
-            _click_exact(page, ["Continue", "Confirm", "Allow", "Authorize", "继续", "确认", "允许", "授权"])
+            _click_exact(page, ["Continue", "Confirm", "Allow", "Authorize", "继续", "确认", "允许", "授权"], pre_pause=(0.5, 1.1))
     except Exception:  # noqa: BLE001
         pass
     return "picked"
@@ -364,6 +377,22 @@ def _visible_password_inputs(page) -> list:
     return visible
 
 
+def _signup_dwell_bounds() -> tuple[float, float]:
+    raw_min = getattr(settings, "signup_oauth_dwell_min_sec", 15)
+    raw_max = getattr(settings, "signup_oauth_dwell_max_sec", 30)
+    try:
+        lo = max(0.0, float(raw_min))
+    except (TypeError, ValueError):
+        lo = 15.0
+    try:
+        hi = max(0.0, float(raw_max))
+    except (TypeError, ValueError):
+        hi = 30.0
+    if hi < lo:
+        hi = lo
+    return lo, hi
+
+
 def run_browser_oauth_reauth(
     *,
     email: str,
@@ -384,6 +413,7 @@ def run_browser_oauth_reauth(
     login_only: bool = False,
     allow_profile_setup: bool = False,
     allow_join: bool = True,
+    allow_onboarding: bool | None = None,
     allow_sms: bool = True,
     max_sms_submissions: int = 7,
     max_sms_code_submissions: int = 2,
@@ -401,7 +431,7 @@ def run_browser_oauth_reauth(
     if not authorize_url:
         return {"ok": False, "error": "缺少授权链接", "error_code": "oauth_url_missing"}
 
-    from playwright.sync_api import sync_playwright
+    effective_onboarding = bool(allow_join) if allow_onboarding is None else bool(allow_onboarding)
 
     def report(stage: str, message: str) -> None:
         if on_stage:
@@ -462,16 +492,20 @@ def run_browser_oauth_reauth(
             browser, page = existing_browser, existing_page
         else:
             proxy_config = stack.enter_context(chrome_proxy_launch(proxy))
-            playwright = stack.enter_context(sync_playwright())
             try:
-                launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config, executable_path=executable_path)
+                browser, page, actual_profile_dir, summary = stack.enter_context(
+                    browser_env.launch_browser_context(
+                        profile_dir,
+                        proxy_config,
+                        settings=settings,
+                        executable_path=executable_path,
+                    )
+                )
             except BrowserEnvironmentError as exc:
+                release_pool_phone(phone_source)
                 return {**result, "error_code": exc.error_code, "error": str(exc)}
-            profile_dir = Path(launch_kwargs.get("user_data_dir", profile_dir))
-            report("browser_environment", environment_summary(launch_kwargs))
-            browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
-            harden_context(browser)
-            page = browser.pages[0] if browser.pages else browser.new_page()
+            profile_dir = Path(actual_profile_dir)
+            report("browser_environment", summary)
         page.set_default_timeout(60000)
 
         def attach(target) -> None:
@@ -509,6 +543,9 @@ def run_browser_oauth_reauth(
                     hme_service_token=hme_service_token,
                     hme_account_id=hme_account_id,
                     allow_profile_setup=allow_profile_setup,
+                    allow_onboarding=effective_onboarding,
+                    team_name=team_name,
+                    pick_single_team=pick_single_team,
                     allow_sms=allow_sms,
                     phone=phone,
                     sms_url=sms_url,
@@ -525,6 +562,41 @@ def run_browser_oauth_reauth(
                     result["debug_dir"] = _save_debug(page, profile_dir)
                     return result
 
+                if login_res.get("created_account"):
+                    dwell_min, dwell_max = _signup_dwell_bounds()
+                    dwell_sec = uniform_float(dwell_min, dwell_max)
+                    if dwell_sec > 0:
+                        report("post_signup_dwell", f"已进入团队主页，停留 {int(round(dwell_sec))} 秒后发起授权")
+                        deadline = time.monotonic() + dwell_sec
+                        target_nudges = 1 if dwell_sec < 8.0 else (1 if uniform_float(0.0, 1.0) < 0.5 else 2)
+                        nudges_done = 0
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            chunk = min(remaining, uniform_float(3.0, 5.0))
+                            page.wait_for_timeout(int(round(chunk * 1000.0)))
+                            if effective_onboarding and looks_like_chatgpt_onboarding(page):
+                                ob = complete_chatgpt_onboarding(
+                                    page,
+                                    team_name=team_name,
+                                    pick_single_team=pick_single_team,
+                                    target_email=email,
+                                    report=report,
+                                    initial_wait=False,
+                                )
+                                if not ob.get("ok"):
+                                    result["error"] = ob.get("error") or "卡在 ChatGPT 入组欢迎页，未能自动进入工作空间"
+                                    result["error_code"] = ob.get("error_code") or "onboarding_stuck"
+                                    result["final_url"] = page.url or ""
+                                    result["debug_dir"] = _save_debug(page, profile_dir)
+                                    return result
+                            if nudges_done < target_nudges and (deadline - time.monotonic()) > 0.8:
+                                human_nudge_mouse(page)
+                                nudges_done += 1
+                else:
+                    human_pause(page, 1.8, 3.5)
+
             report("browser_open", "正在打开 Codex 授权链接")
             goto_with_retries(page, authorize_url, report=report)
             if not wait_cloudflare(page):
@@ -533,7 +605,7 @@ def run_browser_oauth_reauth(
                 result["final_url"] = page.url or ""
                 result["debug_dir"] = _save_debug(page, profile_dir)
                 return result
-            page.wait_for_timeout(1500)
+            human_pause(page, 1.2, 2.2)
             remember(page.url or "")
             known_codes = set() if desktop_flow else _snapshot_mailbox_codes(
                 **_mail_kwargs(
@@ -600,39 +672,62 @@ def run_browser_oauth_reauth(
                         result["error_code"] = "about_you_stuck"
                         break
                     report("about_you", f"验证码已过，正在填写年龄（第 {about_you_tries} 次）")
-                    if not _fill_about_you(page):
-                        page.wait_for_timeout(1500)
+                    if not _fill_about_you(page, email=email):
+                        human_pause(page, 1.2, 2.0)
                     continue
                 if not desktop_flow and looks_like_session_ended(title=page_title, body=page_body):
                     report("session_ended", "授权页会话结束，点 Log in")
-                    _click_first(page, ['button:has-text("Log in")', 'a:has-text("Log in")'])
-                    page.wait_for_timeout(2000)
+                    _click_first(page, ['button:has-text("Log in")', 'a:has-text("Log in")'], pre_pause=(0.6, 1.3))
+                    human_pause(page, 1.5, 2.5)
                     continue
                 if "you're all set" in page_body.lower() or "you’re all set" in page_body.lower():
                     report("all_set", "注册完成页，点 Continue")
-                    _click_first(page, ['button:has-text("Continue")'])
-                    page.wait_for_timeout(2000)
+                    _click_first(page, ['button:has-text("Continue")'], pre_pause=(0.8, 1.8))
+                    human_pause(page, 1.5, 2.5)
                     continue
                 if not allow_join:
-                    if "accept-invite" in url or any(_visible(page, selector) for selector in (
+                    on_invite_action = "accept-invite" in url or any(_visible(page, selector) for selector in (
                         'button:has-text("Accept invite")', 'button:has-text("Join workspace")',
                         'button:has-text("接受邀请")', 'button:has-text("加入工作空间")',
-                    )):
+                    ))
+                    if on_invite_action:
+                        if effective_onboarding:
+                            report("onboarding", "正在接受团队邀请进入工作空间")
+                            clicked_invite = (
+                                _click_exact(
+                                    page,
+                                    ["Accept invite", "Join workspace", "Accept", "接受邀请", "加入工作空间"],
+                                    pre_pause=(0.8, 1.8),
+                                )
+                                or _click_first(
+                                    page,
+                                    [
+                                        'button:has-text("Accept invite")',
+                                        'button:has-text("Join workspace")',
+                                        'button:has-text("接受邀请")',
+                                        'button:has-text("加入工作空间")',
+                                    ],
+                                    pre_pause=(0.8, 1.8),
+                                )
+                            )
+                            human_pause(page, 1.8, 2.8) if clicked_invite else human_pause(page, 1.2, 2.0)
+                            continue
                         result.update(error="账号需要接受邀请，重授权不会自动入组，请人工核对", error_code="membership_changed")
                         break
-                    if team_name and _click_exact(page, [team_name]):
+                    if team_name and _click_exact(page, [team_name], pre_pause=(0.8, 1.8)):
+                        human_pause(page, 0.5, 1.1)
                         _click_exact(page, ["Continue", "Confirm", "继续", "确认"])
                         report("workspace", "已选择原工作空间")
-                        page.wait_for_timeout(1500)
+                        human_pause(page, 1.4, 2.4)
                         continue
                     if pick_single_team and not team_name:
                         ws_outcome = _pick_single_team_workspace(page)
                         if ws_outcome == "picked":
                             report("workspace", "已自动选择唯一 Team 工作空间")
-                            page.wait_for_timeout(2000)
+                            human_pause(page, 1.6, 2.6)
                             continue
                         if ws_outcome == "wait":
-                            page.wait_for_timeout(1500)
+                            human_pause(page, 1.2, 2.0)
                             continue
                         if ws_outcome == "workspace_ambiguous":
                             result.update(error="有多个 Team，未自动选择", error_code="workspace_ambiguous")
@@ -644,7 +739,7 @@ def run_browser_oauth_reauth(
                             break
                 if allow_join and _pick_workspace(page, team_name):
                     report("workspace", "已选择工作空间")
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.4, 2.4)
                     continue
                 on_phone = any(bit in url for bit in ("add-phone", "phone-verification")) or _visible(page, 'input[type="tel"]')
                 if on_phone:
@@ -677,9 +772,9 @@ def run_browser_oauth_reauth(
                                 result["error_code"] = code
                                 break
                             phone, sms_url = number, next_sms_url
-                        elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
+                        elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"], pre_pause=(0.6, 1.3)):
                             report("add_phone", "手机号页已跳过")
-                            page.wait_for_timeout(1500)
+                            human_pause(page, 1.2, 2.0)
                             continue
                         else:
                             result["error"] = "需要接码，但未提供手机号"
@@ -714,7 +809,7 @@ def run_browser_oauth_reauth(
                             break
                         _submit_phone_sms(page)
                         sms_submissions += 1
-                        page.wait_for_timeout(2500)
+                        human_pause(page, 2.0, 3.0)
                         outcome, msg = phone_page_outcome(page)
                         if outcome in {"invalid", "recently_used", "risk"}:
                             if phone_source:
@@ -731,8 +826,9 @@ def run_browser_oauth_reauth(
                             result["error_code"] = "sms_rejected"
                             break
                         continue
+                    otp_boxes = _otp_boxes(page)
                     otp_el = _find_otp(page)
-                    if otp_el:
+                    if otp_boxes is not None or otp_el:
                         if sms_code_submissions >= max_sms_code_submissions:
                             result["error"] = "短信验证码未通过，未重复提交或换号"
                             result["error_code"] = "sms_code_rejected"
@@ -755,22 +851,23 @@ def run_browser_oauth_reauth(
                             result["error"] = msg
                             result["error_code"] = "sms_failed"
                             break
+                        human_pause(page, 0.8, 1.8)
                         started_url = page.url or ""
-                        otp_el.fill(sms_code)
-                        sms_code_submissions += 1
-                        _wait_and_fallback_submit_otp(
-                            page,
-                            started_url=started_url,
-                            exact_names=["Continue", "Verify"],
-                            selectors=['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'],
-                        )
-                        page.wait_for_timeout(2500)
+                        if human_type_otp(page, sms_code, single_input=otp_el, boxes=otp_boxes):
+                            sms_code_submissions += 1
+                            _wait_and_fallback_submit_otp(
+                                page,
+                                started_url=started_url,
+                                exact_names=["Continue", "Verify"],
+                                selectors=['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'],
+                            )
+                        human_pause(page, 2.0, 3.0)
                         record_pool_phone(phone_source, "success")
                         result["sms_verified"] = not any(bit in (page.url or "").lower() for bit in ("add-phone", "phone-verification"))
                         result["phone"] = phone
                         result["sms_url"] = sms_url
                     else:
-                        page.wait_for_timeout(1500)
+                        human_pause(page, 1.2, 2.0)
                     continue
 
                 password_boxes = _visible_password_inputs(page)
@@ -790,7 +887,7 @@ def run_browser_oauth_reauth(
                         if acct_outcome == "picked":
                             account_pick_count += 1
                             report("account_pick", "已点选目标邮箱账号卡")
-                            page.wait_for_timeout(1500)
+                            human_pause(page, 1.2, 2.2)
                             continue
                     if _looks_like_auth_login_prompt(
                         page,
@@ -806,7 +903,7 @@ def run_browser_oauth_reauth(
                         break
                     if _accept_terms(page):
                         report("terms", "已勾选服务条款")
-                        page.wait_for_timeout(1500)
+                        human_pause(page, 1.2, 2.0)
                         continue
                     if _click_exact(
                         page,
@@ -826,43 +923,47 @@ def run_browser_oauth_reauth(
                             "确认",
                             "同意",
                         ],
+                        pre_pause=(0.8, 1.8),
                     ):
-                        page.wait_for_timeout(1500)
+                        human_pause(page, 1.2, 2.2)
                         continue
-                    page.wait_for_timeout(1200)
+                    human_pause(page, 1.0, 1.6)
                     continue
 
                 if allow_signup and password_boxes and not signup_clicked and (
-                    _click_exact(page, ["Sign up", "Create account", "Create an account"])
-                    or _click_first(page, ['a:has-text("Sign up")', 'button:has-text("Sign up")'])
+                    _click_exact(page, ["Sign up", "Create account", "Create an account"], pre_pause=(0.6, 1.3))
+                    or _click_first(page, ['a:has-text("Sign up")', 'button:has-text("Sign up")'], pre_pause=(0.6, 1.3))
                 ):
                     signup_clicked = True
                     report("create_account", "密码页改走注册")
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.0)
                     continue
 
                 if allow_signup and not password_tried and (
-                    _click_exact(page, ["Continue with password", "Try again"])
-                    or _click_first(page, ['button:has-text("Continue with password")', 'button:has-text("Try again")'])
+                    _click_exact(page, ["Continue with password", "Try again"], pre_pause=(0.6, 1.3))
+                    or _click_first(page, ['button:has-text("Continue with password")', 'button:has-text("Try again")'], pre_pause=(0.6, 1.3))
                 ):
                     report("create_password", "授权注册需要密码，不走无密码验证码")
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.0)
                     password_boxes = _visible_password_inputs(page)
 
                 if allow_signup and password_boxes and not password_tried:
                     report("password", "正在设置注册密码")
+                    human_pause(page, 0.8, 1.6)
                     for box in password_boxes:
                         try:
-                            box.fill(password)
+                            human_type_text(page, box, password, clear=True)
                         except Exception:  # noqa: BLE001
                             continue
+                    human_pause(page, 0.5, 1.1)
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Create account")'])
                     password_tried = True
-                    page.wait_for_timeout(2500)
+                    human_pause(page, 2.0, 3.0)
                     continue
 
+                otp_boxes = _otp_boxes(page)
                 otp_el = _find_otp(page)
-                if otp_el:
+                if otp_boxes is not None or otp_el:
                     if otp_submits >= 2:
                         result["error"] = "邮箱验证码提交后仍未通过，没有继续连交"
                         result["error_code"] = "mail_otp_rejected"
@@ -891,30 +992,31 @@ def run_browser_oauth_reauth(
                         break
                     if not code:
                         continue
+                    human_pause(page, 1.0, 2.0)
                     started_url = page.url or ""
-                    otp_el.fill(code)
-                    _wait_and_fallback_submit_otp(
-                        page,
-                        started_url=started_url,
-                        exact_names=["Continue", "Verify"],
-                        selectors=['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'],
-                    )
+                    if human_type_otp(page, code, single_input=otp_el, boxes=otp_boxes):
+                        _wait_and_fallback_submit_otp(
+                            page,
+                            started_url=started_url,
+                            exact_names=["Continue", "Verify"],
+                            selectors=['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Verify")'],
+                        )
                     known_codes.add(code)
                     otp_submits += 1
                     report("email_otp", f"已提交验证码（第 {otp_submits} 次）")
                     if not captured["url"]:
-                        page.wait_for_timeout(2500)
+                        human_pause(page, 2.0, 3.0)
                     continue
 
                 on_verify = "email-verification" in url or "check your inbox" in page_body.lower()
                 if on_verify and not password_boxes:
                     report("email_otp", "验证码页还没出现输入框，继续等")
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.0)
                     continue
 
                 if password_boxes:
                     if allow_signup and password_tried:
-                        page.wait_for_timeout(1500)
+                        human_pause(page, 1.2, 2.0)
                         continue
                     body = page_body.lower()
                     missing_password = not str(password or "").strip()
@@ -922,11 +1024,19 @@ def run_browser_oauth_reauth(
                         token in body for token in ("incorrect", "wrong password", "did not match")
                     )
                     if (missing_password or bad_password) and (
-                        _click_exact(page, ["Log in with a one-time code", "Email me a code", "Send a code", "Use a one-time code"])
-                        or _click_first(page, ['button:has-text("one-time code")', 'button:has-text("Email me a code")'])
+                        _click_exact(
+                            page,
+                            ["Log in with a one-time code", "Email me a code", "Send a code", "Use a one-time code"],
+                            pre_pause=(1.0, 2.2),
+                        )
+                        or _click_first(
+                            page,
+                            ['button:has-text("one-time code")', 'button:has-text("Email me a code")'],
+                            pre_pause=(1.0, 2.2),
+                        )
                     ):
                         report("email_otp", "没有本地密码，改走一次性验证码" if missing_password else "密码不对，改走一次性验证码")
-                        page.wait_for_timeout(2500)
+                        human_pause(page, 2.0, 3.0)
                         continue
                     if missing_password:
                         result["error"] = "没有本地密码，也没有邮箱验证码入口"
@@ -937,30 +1047,34 @@ def run_browser_oauth_reauth(
                         result["error_code"] = "password_rejected"
                         break
                     report("password", "正在填写密码")
+                    human_pause(page, 0.8, 1.6)
                     for box in password_boxes:
                         try:
-                            box.fill(password)
+                            human_type_text(page, box, password, clear=True)
                         except Exception:  # noqa: BLE001
                             continue
+                    human_pause(page, 0.5, 1.1)
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Create account")'])
                     password_tried = True
-                    page.wait_for_timeout(2500)
+                    human_pause(page, 2.0, 3.0)
                     continue
 
                 if page.locator('input[type="email"], input[name="email"], input[name="username"]').count() > 0:
                     report("fill_email", "正在填写邮箱")
+                    human_pause(page, 0.8, 1.8)
                     _fill_first(
                         page,
                         ['input[name="email"]', 'input[type="email"]', 'input[name="username"]'],
                         email,
                     )
+                    human_pause(page, 0.5, 1.1)
                     _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Next")'])
-                    page.wait_for_timeout(2500)
+                    human_pause(page, 2.0, 3.0)
                     continue
 
                 if _accept_terms(page):
                     report("terms", "已勾选服务条款")
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.0)
                     continue
 
                 if _click_first(
@@ -970,8 +1084,9 @@ def run_browser_oauth_reauth(
                         'button:has-text("Log in")',
                         'a:has-text("Log in")',
                     ],
+                    pre_pause=(0.8, 1.6),
                 ):
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.0)
                     continue
 
                 if _click_first(
@@ -984,10 +1099,11 @@ def run_browser_oauth_reauth(
                         'button:has-text("I agree")',
                         'button:has-text("Okay")',
                     ],
+                    pre_pause=(0.8, 1.8),
                 ):
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.2)
                     continue
-                page.wait_for_timeout(1200)
+                human_pause(page, 1.0, 1.6)
 
             remember(page.url or "")
             if not captured["url"] and not result.get("error"):
@@ -1029,9 +1145,4 @@ def run_browser_oauth_reauth(
             result["phone"] = phone
             result["sms_url"] = sms_url
             release_pool_phone(phone_source)
-            try:
-                if existing_browser is None:
-                    browser.close()
-            except Exception:  # noqa: BLE001
-                pass
     return result

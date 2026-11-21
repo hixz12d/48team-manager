@@ -93,6 +93,8 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 | `phone_verification_required` / `registration_home_not_ready` | 注册或 OAuth 需要手机 / 主页未就绪 | 保留同一账号续接，不要重新注册或领新别名 |
 | `desktop_session_missing` / `oauth_invalid_state` | 桌面版授权页没认 chatgpt.com 的登录、又要求输邮箱密码 / 授权页返回 409 `invalid_state` | 看日志 `stage=browser_debug dir=…` 对应的 `data/debug/<目录>/page.png`；可重试一次。反复出现说明 OpenAI 页面变了，查 `browser/reauth.py` 的选账号 / 登录判断；通用流程临时可在 `.env` 设 `CODEX_OAUTH_ENTRY=legacy` 后重建 |
 | `proxy_geo_failed` | 经代理查不到出口 IP 所在时区（ipinfo / ipapi 都失败） | 先在 codex-rs 或设置页测这条代理；确需临时绕过时在 `.env` 设固定 `BROWSER_TIMEZONE` 后重建 |
+| `camoufox_not_installed` | `BROWSER_ENGINE=camoufox` 但镜像里缺内核 / 指纹模型 / 地理库（没带 `--build` 或构建期下载失败） | 带 `--build` 重建；急用先改回 `BROWSER_ENGINE=chromium` 重建 |
+| `onboarding_stuck` | 登录后停在 chatgpt.com 入组欢迎页，按钮没认出来 | 看 `data/debug/<目录>/page.png`，可重试一次；反复出现说明欢迎页文案变了，查 `browser/chatgpt_login.py` 的 `complete_chatgpt_onboarding` |
 | `identity_mismatch`（浏览器阶段） | 该邮箱的浏览器档案里登着别的 ChatGPT 账号，或选账号页只有别的邮箱 | 不会自动退出；确认档案后人工处理，不要删别人的档案 |
 | Codex 导出被拒 | 某账号缺 AT、将过期或待授权 | 先刷新或授权该账号 |
 | 团队卡"在跑"显示 — / 收入记录标"估算""未取到" | 用量同步还没跑出全程窗口 / 离队时读 Sub2API 失败 | 等下一次用量同步（5 分钟）；账本不支持手改，"估算"会在删旧远端前再读一次时更新 |
@@ -116,6 +118,7 @@ GitHub 仓库是公开的，不要提交密钥、`private-config.mjs` 和数据�
 - **首次启用自动轮转**：先保存 `关闭 + 仅选中团队 + 空列表`，核对后再选范围开启。
 - **切换注册流程**：`/opt/team48/.env` 改 `BROWSER_SIGNUP_FLOW=extension`（回退改 `legacy`）后重建。手动轮转不受影响，固定用 extension。
 - **启用 Chromix**：下载并按 SHA256 校验归档，解压到 `/app/data/browsers/chromix/`，设 `BROWSER_ENGINE=chromix` 和 `BROWSER_EXECUTABLE` 后重建。首次会新建档案，可能需重新登录；回退改回 `chromium` 即用旧档案。冒烟：`python -m scripts.browser_environment_smoke --engine chromix --browser-executable <path> --headed`。
+- **启用 Camoufox**：镜像已预置内核和地理库（首次 `--build` 构建期需能访问 GitHub，镜像大 1GB 以上）。`/opt/team48/.env` 设 `BROWSER_ENGINE=camoufox`（可选 `SIGNUP_OAUTH_DWELL_MIN_SEC` / `MAX_SEC`）后重建；回退改回 `chromium` 重建，原 Chromium 档案不受影响。Camoufox 首次会给每个邮箱新建档案，需重新登录。容器内冒烟（无浏览器任务时）：`sudo docker cp /opt/team48/scripts/browser_environment_smoke.py team48-manager:/tmp/` → `sudo docker exec -w /app -e DISPLAY=:99 -e PYTHONPATH=/app team48-manager python /tmp/browser_environment_smoke.py --engine camoufox --headed`，看到 `"ok": true`、`"same_profile_stable": true` 即正常，用完 `sudo docker exec team48-manager rm /tmp/browser_environment_smoke.py`。
 - **安装运行器用的 Chromix 153**：从 https://github.com/xiaozhou26/Chromix/releases 的 `v153.0.8010.36` 下载 `chromix-linux-x64.zip`（`lwhx/Chromix` 是 fork，没有发布包），SHA256 必须是 `8a9cdc3692a82e84ca62cbd04025b2e11b3aafd47d86fdfa9d13f48e497454ef`，解压到 `/opt/team48/data/browsers/chromix153/`（得到 `chromix/` 目录）。`.env` 设 `RUNNER_BROWSER_EXECUTABLE=/app/data/browsers/chromix153/chromix/chromix`（启动脚本，会加载包内字体；不要直接指 `chrome`），其余 `RUNNER_*` 见 `deploy.env.example`，重建生效。
 - **浏览器环境自检**：设置页"浏览器环境"卡片，选团队（取母号代理）和平台，点自检；不注册、不碰官方团队，占用全局浏览器槽。先按 linux / windows 各跑一次，按结果定 `RUNNER_FINGERPRINT_PLATFORM` / `RUNNER_GPU_MODE`（只影响新建档案）。服务器没有 GPU 时 Chromix 会强制显示真实软件渲染型号，`preset` 可能不生效（结果里 `gpu_preset_ignored`）。服务重启会把进行中的自检标失败（`runner_interrupted`），重新发起即可。
 - **切换轮转注册方式**：`/opt/team48/.env` 改 `ROTATION_SIGNUP_RUNNER=extension`（回退改 `playwright`）后重建。前提：自检通过；设置里 Cloudflare 邮箱地址必须是插件内置的 `https://apimail.xiaozhudf2026.foo`，否则报 `runner_mailbox_invalid`。运行目录 `data/runner-runs/` 结束即删；容器重启会丢失进行中的运行，任务停在待人工，按"继续轮转"处理。

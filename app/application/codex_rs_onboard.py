@@ -84,6 +84,8 @@ REASONS = {
     "oauth_invalid_state": "授权状态失效（409 invalid_state），请重试",
     "proxy_geo_failed": "经代理查询出口时区失败，请重试",
     "registration_home_not_ready": "登录后 ChatGPT 会话未就绪，请重试",
+    "onboarding_stuck": "入组欢迎页未完成，请重试",
+    "camoufox_not_installed": "服务器未安装 Camoufox 浏览器",
 }
 
 STAGE_MESSAGES = {
@@ -93,6 +95,8 @@ STAGE_MESSAGES = {
     "fill_email": "正在登录",
     "email_otp": "等待邮箱验证码",
     "about_you": "正在填写账号资料",
+    "onboarding": "正在接受团队邀请",
+    "post_signup_dwell": "已进入团队主页，稍候发起授权",
     "account_pick": "正在选择对应账号",
     "workspace": "正在选择 Team 工作空间",
 }
@@ -635,6 +639,7 @@ async def _process_one(session_factory, batch_id: str, email: str, raw_settings:
                 login_only=True,
                 allow_signup=False,
                 allow_profile_setup=True,
+                allow_onboarding=True,
                 allow_join=False,
                 allow_sms=False,
                 team_name="",

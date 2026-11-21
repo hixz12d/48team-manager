@@ -1,10 +1,9 @@
-"""Chrome CDP + Playwright 注册 / 复用登录。强制走子号 ISP。"""
+"""Playwright 注册 / 复用登录（Chromium / Chromix / Camoufox）。强制走子号 ISP。"""
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import datetime
 import os
-import secrets
 import shutil
 import socket
 import subprocess
@@ -14,8 +13,16 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from app.core.config import load_settings
+from app.integrations.openai.browser import environment as browser_env
 from app.integrations.openai.browser.environment import (
     BrowserEnvironmentError, context_options, environment_summary, harden_context,
+)
+from app.integrations.openai.browser.humanize import (
+    human_click,
+    human_pause,
+    human_type_otp,
+    human_type_text,
+    signup_identity_for_email,
 )
 from app.integrations.mail.otp import list_mailbox_codes, wait_for_mailbox_item
 from app.integrations.proxy.socks_bridge import chrome_proxy_launch
@@ -24,6 +31,8 @@ from app.integrations.sms.client import require_proxy, sms_client
 settings = load_settings()
 
 logger = logging.getLogger(__name__)
+
+PROFILE_ROOT = Path(__file__).resolve().parents[4] / "data" / "chrome-profiles"
 
 StageCallback = Optional[Callable[[str, str], None]]
 
@@ -57,7 +66,7 @@ def looks_like_cloudflare(title: str, body: str = "") -> bool:
 
 
 def ensure_virtual_display() -> None:
-    """有头 Chromium 需要 X 显示器。docker restart 会留下 stale Xvfb lock，这里自动拉起来。"""
+    """有头浏览器需要 X 显示器。docker restart 会留下 stale Xvfb lock，这里自动拉起来。"""
     if settings.browser_headless or os.name == "nt" or not shutil.which("Xvfb"):
         return
     display = os.environ.get("DISPLAY") or ":99"
@@ -91,7 +100,7 @@ def ensure_virtual_display() -> None:
     Path("/tmp/.X11-unix").mkdir(parents=True, exist_ok=True)
     log = open("/tmp/xvfb.log", "ab", buffering=0)
     subprocess.Popen(
-        ["Xvfb", display, "-screen", "0", "1280x900x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
+        ["Xvfb", display, "-screen", "0", "1920x1080x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
         stdout=log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -130,25 +139,29 @@ def can_peek_session(url: str) -> bool:
     return host in _PEEK_HOSTS
 
 
-def _click_first(page, selectors: list[str]) -> bool:
+def _click_first(page, selectors: list[str], *, pre_pause: tuple[float, float] | None = None) -> bool:
     for selector in selectors:
         try:
             loc = page.locator(selector)
             if loc.count() > 0 and loc.first.is_visible():
-                loc.first.click(timeout=2500)
-                return True
+                if pre_pause:
+                    human_pause(page, pre_pause[0], pre_pause[1])
+                if human_click(page, loc.first, timeout=2500):
+                    return True
         except Exception:  # noqa: BLE001
             continue
     return False
 
 
-def _click_exact(page, names: list[str]) -> bool:
+def _click_exact(page, names: list[str], *, pre_pause: tuple[float, float] | None = None) -> bool:
     for name in names:
         try:
             loc = page.get_by_role("button", name=name, exact=True)
             if loc.count() > 0 and loc.first.is_visible():
-                loc.first.click(timeout=2500)
-                return True
+                if pre_pause:
+                    human_pause(page, pre_pause[0], pre_pause[1])
+                if human_click(page, loc.first, timeout=2500):
+                    return True
         except Exception:  # noqa: BLE001
             continue
     return False
@@ -159,10 +172,8 @@ def _fill_first(page, selectors: list[str], value: str) -> bool:
         try:
             loc = page.locator(selector)
             if loc.count() > 0 and loc.first.is_visible():
-                loc.first.click()
-                loc.first.fill("")
-                loc.first.type(value, delay=30)
-                return True
+                if human_type_text(page, loc.first, value, clear=True):
+                    return True
         except Exception:  # noqa: BLE001
             continue
     return False
@@ -503,31 +514,32 @@ def _select_phone_country(page, country: str) -> bool:
         try:
             loc = page.get_by_role("button", name=name)
             if loc.count() > 0 and loc.first.is_visible():
-                loc.first.click(timeout=2500)
-                opened = True
-                break
+                if human_click(page, loc.first, timeout=2500):
+                    opened = True
+                    break
         except Exception:  # noqa: BLE001
             continue
     if not opened:
         return False
-    page.wait_for_timeout(400)
+    human_pause(page, 0.35, 0.65)
     try:
         search = page.locator('input[type="search"], input[placeholder*="Search" i]')
         if search.count() > 0 and search.first.is_visible():
-            search.first.fill(country)
-            page.wait_for_timeout(500)
+            human_type_text(page, search.first, country, clear=True)
+            human_pause(page, 0.4, 0.7)
     except Exception:  # noqa: BLE001
         pass
     labels = ["China (+86)", "China (Mainland)", "Mainland China", "China"] if wanted == "china" else [country]
     for label in labels:
         try:
-            page.get_by_text(label, exact=False).first.click(timeout=2500)
-            page.wait_for_timeout(400)
-            current = _phone_country_label(page)
-            if wanted == "china" and "china" in current.lower():
-                return True
-            if wanted and wanted in current.lower():
-                return True
+            opt = page.get_by_text(label, exact=False).first
+            if human_click(page, opt, timeout=2500):
+                human_pause(page, 0.35, 0.65)
+                current = _phone_country_label(page)
+                if wanted == "china" and "china" in current.lower():
+                    return True
+                if wanted and wanted in current.lower():
+                    return True
         except Exception:  # noqa: BLE001
             continue
     current = _phone_country_label(page)
@@ -563,7 +575,7 @@ def _choose_sms_channel(page) -> bool:
 
 def _submit_phone_sms(page) -> None:
     _choose_sms_channel(page)
-    page.wait_for_timeout(400)
+    human_pause(page, 0.35, 0.75)
     _click_first(page, [
         'button[type="submit"]',
         'button:has-text("Send")',
@@ -611,8 +623,13 @@ def _fill_email(page, email: str) -> bool:
         'input[placeholder="Email address"]',
         'input[aria-label="Email address"]',
     ]
-    if _fill_first(page, selectors, email) and _current_email_value(page).lower() == email.lower():
-        return True
+    for attempt in range(2):
+        if _fill_first(page, selectors, email) and _current_email_value(page).lower() == email.lower():
+            return True
+        if attempt == 0:
+            human_pause(page, 0.25, 0.55)
+    if _current_email_value(page):
+        return _current_email_value(page).lower() == email.lower()
     try:
         ok = page.evaluate(
             """([sel, val]) => {
@@ -673,13 +690,10 @@ def _otp_boxes(page):
 def _fill_otp(page, code: str) -> bool:
     boxes = _otp_boxes(page)
     if boxes is not None:
-        for index, char in enumerate(code[: boxes.count()]):
-            boxes.nth(index).fill(char)
-        return True
+        return human_type_otp(page, code, boxes=boxes)
     otp_el = _find_otp(page)
     if otp_el:
-        otp_el.fill(code)
-        return True
+        return human_type_otp(page, code, single_input=otp_el)
     return False
 
 
@@ -723,16 +737,14 @@ def _wait_and_fallback_submit_otp(
     for name in (exact_names or []):
         try:
             loc = page.get_by_role("button", name=name, exact=True)
-            if _button_clickable(loc):
-                loc.first.click(timeout=2500)
+            if _button_clickable(loc) and human_click(page, loc.first, timeout=2500):
                 return True
         except Exception:  # noqa: BLE001
             continue
     for selector in (selectors or []):
         try:
             loc = page.locator(selector)
-            if _button_clickable(loc):
-                loc.first.click(timeout=2500)
+            if _button_clickable(loc) and human_click(page, loc.first, timeout=2500):
                 return True
         except Exception:  # noqa: BLE001
             continue
@@ -828,7 +840,11 @@ def _session_failure(page, session: dict[str, Any]) -> str:
 
 def _save_debug(page, profile_dir: Path) -> str:
     resolved = Path(profile_dir).resolve()
-    base = resolved.parent.parent.parent if resolved.parent.name == "chromix" else resolved.parent.parent
+    base = (
+        resolved.parent.parent.parent
+        if resolved.parent.name in {"chromix", "camoufox"}
+        else resolved.parent.parent
+    )
     dest = base / "debug" / time.strftime("%Y%m%d-%H%M%S")
     dest.mkdir(parents=True, exist_ok=True)
     try:
@@ -1037,12 +1053,26 @@ def _set_input(page, selectors: list[str], value: str) -> bool:
             loc = page.locator(selector)
             if loc.count() == 0 or not loc.first.is_visible():
                 continue
-            loc.first.click(timeout=2500)
-            loc.first.fill(value)
-            return True
+            if human_type_text(page, loc.first, value, clear=True):
+                return True
         except Exception:  # noqa: BLE001
             continue
     return False
+
+
+def _set_native_date_input(page, birthday: str) -> bool:
+    """Fallback only for native <input type='date'>, which cannot be typed uniformly across locales."""
+    try:
+        loc = page.locator('input[type="date"]')
+        if loc.count() == 0 or not loc.first.is_visible():
+            return False
+        human_click(page, loc.first, timeout=2500)
+        human_pause(page, 0.15, 0.32)
+        loc.first.fill(birthday)
+        human_pause(page, 0.15, 0.30)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _option_labels(locator) -> list[str]:
@@ -1134,14 +1164,6 @@ def _choose_select_label(page, names: list[str], label: str) -> bool:
     return False
 
 
-_FIRST_NAMES = (
-    "James", "Oliver", "Henry", "Daniel", "Lucas", "Ethan",
-    "Emma", "Amelia", "Grace", "Sophie", "Chloe", "Hannah",
-)
-_LAST_NAMES = (
-    "Smith", "Taylor", "Wilson", "Clark", "Walker", "Green",
-    "Carter", "Bennett", "Morgan", "Cooper", "Reed", "Parker",
-)
 _MONTH_NAMES = (
     ("January", "Jan"), ("February", "Feb"), ("March", "Mar"), ("April", "Apr"),
     ("May", "May"), ("June", "Jun"), ("July", "Jul"), ("August", "Aug"),
@@ -1149,20 +1171,8 @@ _MONTH_NAMES = (
 )
 
 
-def _random_about_you_profile() -> dict[str, Any]:
-    today = date.today()
-    age = 22 + secrets.randbelow(24)
-    month = 1 + secrets.randbelow(12)
-    day = 1 + secrets.randbelow(28)
-    year = today.year - age - ((month, day) > (today.month, today.day))
-    return {
-        "name": f"{secrets.choice(_FIRST_NAMES)} {secrets.choice(_LAST_NAMES)}",
-        "age": age,
-        "year": year,
-        "month": month,
-        "day": day,
-        "birthday": f"{year:04d}-{month:02d}-{day:02d}",
-    }
+def _random_about_you_profile(email: str = "") -> dict[str, Any]:
+    return signup_identity_for_email(PROFILE_ROOT, email)
 
 
 def _fill_birthday_selects(
@@ -1181,23 +1191,38 @@ def _fill_birthday_selects(
         or _select_named_option(page, ["bday-month", "month"], f"{month_idx:02d}")
         or _select_named_option(page, ["bday-month", "month"], str(month_idx))
     )
+    if month_ok:
+        human_pause(page, 0.25, 0.55)
     day_int = max(1, min(28, int(day)))
     day_ok = (
         _select_named_option(page, ["bday-day", "day"], str(day_int))
         or _select_named_option(page, ["bday-day", "day"], f"{day_int:02d}")
     )
+    if day_ok:
+        human_pause(page, 0.25, 0.55)
     year_ok = _select_named_option(page, ["bday-year", "year"], year_str)
+    if year_ok:
+        human_pause(page, 0.2, 0.45)
     return bool(year_ok and month_ok and day_ok)
 
 
 def _fill_spinbutton(page, selectors: list[str], value: str) -> bool:
+    digits = str(value or "").strip()
+    if not digits:
+        return False
     for selector in selectors:
         try:
             loc = page.locator(selector)
             if loc.count() == 0 or not loc.first.is_visible():
                 continue
-            loc.first.click(timeout=2500)
-            page.keyboard.type(value, delay=40)
+            if not human_click(page, loc.first, timeout=2500):
+                continue
+            human_pause(page, 0.10, 0.24)
+            for idx, ch in enumerate(digits):
+                page.keyboard.type(ch)
+                if idx < len(digits) - 1:
+                    human_pause(page, 0.07, 0.18)
+            human_pause(page, 0.12, 0.25)
             return True
         except Exception:  # noqa: BLE001
             continue
@@ -1205,35 +1230,20 @@ def _fill_spinbutton(page, selectors: list[str], value: str) -> bool:
 
 
 def _fill_birthday_inputs(page, *, month: int, day: int, year: int, birthday: str) -> bool:
-    if _set_input(page, ['input[type="date"]'], birthday):
-        return True
-    month_ok = _set_input(
-        page,
-        ['input[name="month"]', 'input[autocomplete="bday-month"]', 'input[aria-label*="Month" i]', 'input[placeholder*="MM" i]'],
-        f"{month:02d}",
-    )
-    day_ok = _set_input(
-        page,
-        ['input[name="day"]', 'input[autocomplete="bday-day"]', 'input[aria-label*="Day" i]', 'input[placeholder*="DD" i]'],
-        f"{day:02d}",
-    )
-    year_ok = _set_input(
-        page,
-        ['input[name="year"]', 'input[autocomplete="bday-year"]', 'input[aria-label*="Year" i]', 'input[placeholder*="YYYY" i]'],
-        f"{year:04d}",
-    )
-    if month_ok and day_ok and year_ok:
-        return True
     spin_month = _fill_spinbutton(
         page,
         ['[role="spinbutton"][data-type="month"]', '[role="spinbutton"][aria-label*="month" i]'],
         f"{month:02d}",
     )
+    if spin_month:
+        human_pause(page, 0.22, 0.52)
     spin_day = _fill_spinbutton(
         page,
         ['[role="spinbutton"][data-type="day"]', '[role="spinbutton"][aria-label*="day" i]'],
         f"{day:02d}",
     )
+    if spin_day:
+        human_pause(page, 0.22, 0.52)
     spin_year = _fill_spinbutton(
         page,
         ['[role="spinbutton"][data-type="year"]', '[role="spinbutton"][aria-label*="year" i]'],
@@ -1241,11 +1251,37 @@ def _fill_birthday_inputs(page, *, month: int, day: int, year: int, birthday: st
     )
     if spin_month and spin_day and spin_year:
         return True
-    return _set_input(
+
+    month_ok = _set_input(
+        page,
+        ['input[name="month"]', 'input[autocomplete="bday-month"]', 'input[aria-label*="Month" i]', 'input[placeholder*="MM" i]'],
+        f"{month:02d}",
+    )
+    if month_ok:
+        human_pause(page, 0.22, 0.52)
+    day_ok = _set_input(
+        page,
+        ['input[name="day"]', 'input[autocomplete="bday-day"]', 'input[aria-label*="Day" i]', 'input[placeholder*="DD" i]'],
+        f"{day:02d}",
+    )
+    if day_ok:
+        human_pause(page, 0.22, 0.52)
+    year_ok = _set_input(
+        page,
+        ['input[name="year"]', 'input[autocomplete="bday-year"]', 'input[aria-label*="Year" i]', 'input[placeholder*="YYYY" i]'],
+        f"{year:04d}",
+    )
+    if month_ok and day_ok and year_ok:
+        return True
+
+    if _set_input(
         page,
         ['input[autocomplete="bday"]', 'input[name="birthdate"]', 'input[name="birthday"]'],
         f"{month:02d}/{day:02d}/{year:04d}",
-    )
+    ):
+        return True
+
+    return _set_native_date_input(page, birthday)
 
 
 def _wait_about_you_leave(page, started_url: str) -> bool:
@@ -1260,10 +1296,11 @@ def _wait_about_you_leave(page, started_url: str) -> bool:
     return False
 
 
-def _fill_about_you(page) -> bool:
+def _fill_about_you(page, *, email: str = "") -> bool:
     started_url = page.url or ""
-    profile = _random_about_you_profile()
-    name_ok = _set_input(
+    human_pause(page, 1.2, 2.6)
+    profile = signup_identity_for_email(PROFILE_ROOT, email)
+    name_ok = _fill_first(
         page,
         [
             'input[name="name"]',
@@ -1274,6 +1311,8 @@ def _fill_about_you(page) -> bool:
         ],
         profile["name"],
     )
+    if name_ok:
+        human_pause(page, 0.5, 1.1)
     birthday_ok = _fill_birthday_selects(
         page,
         month=profile["month"],
@@ -1288,20 +1327,23 @@ def _fill_about_you(page) -> bool:
             year=profile["year"],
             birthday=profile["birthday"],
         )
-    age_ok = _set_input(
-        page,
-        [
-            'input[name="age"]',
-            'input[placeholder="Age"]',
-            'input[placeholder*="Age" i]',
-        ],
-        str(profile["age"]),
-    )
-    if not birthday_ok and not age_ok:
-        age_ok = _set_input(page, ['input[type="number"]'], str(profile["age"]))
+    age_ok = False
+    if not birthday_ok:
+        age_ok = _fill_first(
+            page,
+            [
+                'input[name="age"]',
+                'input[placeholder="Age"]',
+                'input[placeholder*="Age" i]',
+            ],
+            str(profile["age"]),
+        )
+        if not age_ok:
+            age_ok = _fill_first(page, ['input[type="number"]'], str(profile["age"]))
     filled = bool(name_ok or age_ok or birthday_ok)
     if not filled:
         return False
+    human_pause(page, 0.8, 1.8)
     clicked = (
         _click_exact(page, ["Finish creating account", "Continue", "Agree", "完成注册", "继续"])
         or _click_first(page, ['button[type="submit"]', 'button:has-text("Continue")', 'button:has-text("Finish")'])
@@ -1318,10 +1360,12 @@ def _pick_workspace(page, team_name: str = "") -> bool:
     if not any(token in f"{body}\n{url}" for token in ("workspace", "工作空间", "organization", "accept-invite", "consent")):
         return False
     want = str(team_name or "").strip()
-    if want and _click_exact(page, [want]):
+    if want and _click_exact(page, [want], pre_pause=(0.8, 1.8)):
+        human_pause(page, 0.45, 0.95)
         _click_exact(page, ["Continue", "Join", "Confirm", "Accept"])
         return True
-    return _click_exact(page, ["Accept invite", "Join workspace", "Join", "Accept"])
+    return _click_exact(page, ["Accept invite", "Join workspace", "Join", "Accept"], pre_pause=(0.8, 1.8))
+
 
 def _accept_terms(page) -> bool:
     if not _visible(page, "input[type='checkbox']"):
@@ -1329,10 +1373,14 @@ def _accept_terms(page) -> bool:
     try:
         box = page.locator("input[type='checkbox']").first
         if not box.is_checked():
-            box.check(timeout=2500)
+            if not human_click(page, box, timeout=2500):
+                box.check(timeout=2500)
+            human_pause(page, 0.35, 0.75)
     except Exception:  # noqa: BLE001
         _click_first(page, ["input[type='checkbox']"])
-    return _click_exact(page, ["Continue", "I agree", "Accept"]) or _click_first(page, ['button[type="submit"]'])
+    return _click_exact(page, ["Continue", "I agree", "Accept"], pre_pause=(0.4, 0.9)) or _click_first(
+        page, ['button[type="submit"]'], pre_pause=(0.4, 0.9)
+    )
 
 
 def run_browser_onboard(
@@ -1369,7 +1417,6 @@ def run_browser_onboard(
         from app.integrations.mail.otp import extract_invite_url
         if not start_url or extract_invite_url(start_url) != start_url:
             return {"ok": False, "error_code": "invite_link_missing", "error": "有效邀请链接缺失"}
-    from playwright.sync_api import sync_playwright
 
     def report(stage: str, message: str) -> None:
         if on_stage:
@@ -1378,92 +1425,99 @@ def run_browser_onboard(
             except Exception:  # noqa: BLE001
                 logger.debug("on_stage failed", exc_info=True)
 
-    profile_dir = Path(__file__).resolve().parents[4] / "data" / "chrome-profiles" / email.replace("@", "_at_")
+    profile_dir = PROFILE_ROOT / email.replace("@", "_at_")
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     result: Dict[str, Any] = {"ok": False, "email": email, "password": password, "mode": mode, "phone": phone, "sms_url": sms_url}
-    with chrome_proxy_launch(proxy) as proxy_config, sync_playwright() as playwright:
-        try:
-            launch_kwargs = chromium_context_kwargs(profile_dir, proxy_config, executable_path=executable_path)
-        except BrowserEnvironmentError as exc:
-            return {**result, "error_code": exc.error_code, "error": str(exc)}
-        profile_dir = Path(launch_kwargs.get("user_data_dir", profile_dir))
-        report("browser_environment", environment_summary(launch_kwargs))
-        browser = playwright.chromium.launch_persistent_context(**launch_kwargs)
-        harden_context(browser, settings=settings)
-        page = browser.pages[0] if browser.pages else browser.new_page()
-        page.set_default_timeout(60000)
-        try:
-            target = start_url or (REGISTER_START_URL if mode == "register" else LOGIN_START_URL)
-            if (signup_flow or settings.browser_signup_flow) == "extension" and mode == "register":
-                target = start_url or "https://chatgpt.com/"
-                from app.integrations.openai.browser.signup import run_managed_signup
+    engine = str(getattr(settings, "browser_engine", "chromium") or "chromium").strip().lower()
+    use_extension_signup = (
+        (signup_flow or settings.browser_signup_flow) == "extension"
+        and mode == "register"
+        and engine != "camoufox"
+    )
 
-                # Exactly one UI driver; a failed new runner never retries via legacy.
-                phone, sms_url = "", ""
-                outcome = run_managed_signup(
-                    browser=browser, page=page, email=email, password=password,
-                    profile_dir=profile_dir, start_url=target, invite_entry=invite_entry,
-                    team_name=team_name, report=report,
-                    mail_kwargs=_mail_kwargs(email=email, pickup_url=pickup_url, proxy=proxy,
-                        use_cloudflare=use_cloudflare, cf_base_url=cf_base_url,
-                        cf_address=cf_address, cf_admin_password=cf_admin_password,
-                        hme_base_url=hme_base_url, hme_service_token=hme_service_token,
-                        hme_account_id=hme_account_id),
-                )
-                result.update(outcome)
-                if result.get("ok") and continue_in_browser is not None:
-                    continue_in_browser(result, browser, page)
-                return result
-            from app.integrations.openai.browser.chatgpt_login import run_chatgpt_login_loop
+    try:
+        with chrome_proxy_launch(proxy) as proxy_config:
+            try:
+                with browser_env.launch_browser_context(
+                    profile_dir,
+                    proxy_config,
+                    settings=settings,
+                    executable_path=executable_path,
+                ) as (browser, page, actual_profile_dir, summary):
+                    profile_dir = Path(actual_profile_dir)
+                    report("browser_environment", summary)
+                    page.set_default_timeout(60000)
+                    try:
+                        target = start_url or (REGISTER_START_URL if mode == "register" else LOGIN_START_URL)
+                        if use_extension_signup:
+                            target = start_url or "https://chatgpt.com/"
+                            from app.integrations.openai.browser.signup import run_managed_signup
 
-            outcome = run_chatgpt_login_loop(
-                page,
-                email=email,
-                password=password,
-                pickup_url=pickup_url,
-                phone=phone,
-                sms_url=sms_url,
-                proxy=proxy,
-                start_url=target,
-                mode=mode,
-                team_name=team_name,
-                use_cloudflare=use_cloudflare,
-                cf_base_url=cf_base_url,
-                cf_address=cf_address,
-                cf_admin_password=cf_admin_password,
-                hme_base_url=hme_base_url,
-                hme_service_token=hme_service_token,
-                hme_account_id=hme_account_id,
-                profile_dir=profile_dir,
-                phone_source=phone_source,
-                allow_sms=allow_sms,
-                allow_profile_setup=(mode != "login"),
-                invite_entry=invite_entry,
-                require_session_match=False,
-                initial_goto=True,
-                report=report,
-            )
-            outcome.pop("sms_code_submissions", None)
-            phone = str(outcome.get("phone", phone) or "")
-            sms_url = str(outcome.get("sms_url", sms_url) or "")
-            result.update(outcome)
-            if result.get("ok") and continue_in_browser is not None:
-                continue_in_browser(result, browser, page)
-        except Exception as exc:  # noqa: BLE001
-            result["error"] = str(exc)
-            result["error_code"] = result.get("error_code") or "browser_failed"
-            result["ok"] = False
-            try:
-                result["debug_dir"] = _save_debug(page, profile_dir)
-            except Exception:  # noqa: BLE001
-                pass
-        finally:
-            result["phone"] = phone
-            result["sms_url"] = sms_url
-            release_pool_phone(phone_source)
-            try:
-                browser.close()
-            except Exception:  # noqa: BLE001
-                pass
+                            # Exactly one UI driver; a failed new runner never retries via legacy.
+                            phone, sms_url = "", ""
+                            outcome = run_managed_signup(
+                                browser=browser, page=page, email=email, password=password,
+                                profile_dir=profile_dir, start_url=target, invite_entry=invite_entry,
+                                team_name=team_name, report=report,
+                                mail_kwargs=_mail_kwargs(email=email, pickup_url=pickup_url, proxy=proxy,
+                                    use_cloudflare=use_cloudflare, cf_base_url=cf_base_url,
+                                    cf_address=cf_address, cf_admin_password=cf_admin_password,
+                                    hme_base_url=hme_base_url, hme_service_token=hme_service_token,
+                                    hme_account_id=hme_account_id),
+                            )
+                            result.update(outcome)
+                            if result.get("ok") and continue_in_browser is not None:
+                                continue_in_browser(result, browser, page)
+                            return result
+
+                        from app.integrations.openai.browser.chatgpt_login import run_chatgpt_login_loop
+
+                        outcome = run_chatgpt_login_loop(
+                            page,
+                            email=email,
+                            password=password,
+                            pickup_url=pickup_url,
+                            phone=phone,
+                            sms_url=sms_url,
+                            proxy=proxy,
+                            start_url=target,
+                            mode=mode,
+                            team_name=team_name,
+                            use_cloudflare=use_cloudflare,
+                            cf_base_url=cf_base_url,
+                            cf_address=cf_address,
+                            cf_admin_password=cf_admin_password,
+                            hme_base_url=hme_base_url,
+                            hme_service_token=hme_service_token,
+                            hme_account_id=hme_account_id,
+                            profile_dir=profile_dir,
+                            phone_source=phone_source,
+                            allow_sms=allow_sms,
+                            allow_profile_setup=(mode != "login"),
+                            invite_entry=invite_entry,
+                            require_session_match=False,
+                            initial_goto=True,
+                            report=report,
+                        )
+                        outcome.pop("sms_code_submissions", None)
+                        phone = str(outcome.get("phone", phone) or "")
+                        sms_url = str(outcome.get("sms_url", sms_url) or "")
+                        result.update(outcome)
+                        if result.get("ok") and continue_in_browser is not None:
+                            continue_in_browser(result, browser, page)
+                    except Exception as exc:  # noqa: BLE001
+                        result["error"] = str(exc)
+                        result["error_code"] = result.get("error_code") or "browser_failed"
+                        result["ok"] = False
+                        try:
+                            result["debug_dir"] = _save_debug(page, profile_dir)
+                        except Exception:  # noqa: BLE001
+                            pass
+            except BrowserEnvironmentError as exc:
+                return {**result, "error_code": exc.error_code, "error": str(exc)}
+    finally:
+        result["phone"] = phone
+        result["sms_url"] = sms_url
+        release_pool_phone(phone_source)
     return result

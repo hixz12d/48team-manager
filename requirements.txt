@@ -28,3 +28,4 @@ python-dotenv>=1.0.0
 pytz>=2023.3
 APScheduler>=3.10.4
 playwright>=1.40
+camoufox[geoip]==0.5.9

@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app import __version__
@@ -36,11 +37,15 @@ class Settings(BaseSettings):
     browser_headless: bool = False
     browser_channel: str = ""
     browser_executable: str = ""
-    browser_engine: Literal["chromium", "chromix"] = "chromium"
+    browser_engine: Literal["chromium", "chromix", "camoufox"] = "chromium"
     browser_signup_flow: Literal["legacy", "extension"] = "legacy"
     browser_locale: str = "en-US"
     browser_timezone: str = ""
     openai_ca_bundle: str = ""
+    # Seconds a freshly signed-up account idles on the ChatGPT home page before the
+    # Codex authorization starts (random in [min, max]); negatives count as 0, max < min uses min.
+    signup_oauth_dwell_min_sec: int = 15
+    signup_oauth_dwell_max_sec: int = 30
 
     # Codex OAuth entry: "desktop" = chatgpt.com/codex/desktop-auth streamlined login
     # (same as codex-rs, reuses the chatgpt.com session); "legacy" = old CLI authorize
@@ -80,6 +85,12 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _normalize_signup_dwell(self) -> "Settings":
+        self.signup_oauth_dwell_min_sec = max(0, self.signup_oauth_dwell_min_sec)
+        self.signup_oauth_dwell_max_sec = max(self.signup_oauth_dwell_min_sec, self.signup_oauth_dwell_max_sec)
+        return self
 
     @property
     def effective_session_secret_key(self) -> str:

@@ -86,6 +86,7 @@ async def run_invited_oauth_signup(
             cf_admin_password=cf_config["admin_password"],
             allow_signup=False,
             login_only=login_only,
+            allow_onboarding=True,
             allow_sms=bool(phone and sms_url),
             phone=phone,
             sms_url=sms_url,

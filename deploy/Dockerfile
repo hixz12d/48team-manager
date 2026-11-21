@@ -3,7 +3,8 @@ FROM python:3.11-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    XDG_CACHE_HOME=/ms-playwright/cache
 
 WORKDIR /app
 
@@ -29,11 +30,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxrandr2 \
         libpango-1.0-0 \
         libcairo2 \
+        libgtk-3-0 \
+        libdbus-glib-1-2 \
+        libdbus-1-3 \
+        libxt6 \
+        libx11-xcb1 \
+        libxtst6 \
+        libxcursor1 \
+        libxi6 \
+        libxrender1 \
+        libpci3 \
+        libegl1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
-    && python -m playwright install --with-deps chromium
+    && python -m playwright install --with-deps chromium \
+    && python -m playwright install-deps firefox
+
+# Camoufox (BROWSER_ENGINE=camoufox): kernel, GeoIP .mmdb and fpgen model are baked
+# into the image under $XDG_CACHE_HOME/camoufox; runtime launches never download.
+RUN python -m camoufox fetch \
+    && python -c "from camoufox.fpgen_model import is_pinned, load_fpgen; load_fpgen(); assert is_pinned(); from camoufox.pkgman import camoufox_path, launch_path; print(launch_path(camoufox_path(download_if_missing=False)))" \
+    && python -c "from camoufox.geolocation import get_mmdb_path; assert get_mmdb_path('ipv4').exists()"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb \

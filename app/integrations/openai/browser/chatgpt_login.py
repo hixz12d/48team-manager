@@ -5,9 +5,11 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 from app.core.jwt import jwt_parser
 from app.domain.reauth import looks_like_deactivated
+from app.integrations.openai.browser.humanize import human_click, human_pause
 from app.integrations.openai.browser.onboard import (
     ABOUT_YOU_STUCK_LIMIT,
     EMAIL_INPUT_SELECTOR,
@@ -129,6 +131,389 @@ def _click_one_time_code(page) -> bool:
     )
 
 
+_ONBOARDING_URL_PARTS = ("/onboarding", "/workspace", "/accept-invite")
+_ONBOARDING_TEXT_MARKERS = (
+    "you've been added to a new workspace",
+    "you’ve been added to a new workspace",
+    "added you to a new workspace",
+    "welcome to your new workspace",
+    "invited you",
+    "choose a workspace",
+    "select a workspace",
+    "choose an organization",
+    "select an organization",
+    "选择工作空间",
+    "选择一个工作空间",
+    "接受邀请",
+    "加入工作空间",
+    "你已被添加到",
+)
+_ONBOARDING_BUTTON_EXACT = [
+    "Get started",
+    "Accept invite",
+    "Join workspace",
+    "Accept",
+    "Continue",
+    "Okay, let's go",
+    "Okay, let’s go",
+    "开始使用",
+    "接受邀请",
+    "加入工作空间",
+    "继续",
+]
+_ONBOARDING_BUTTON_SELECTORS = [
+    'button:has-text("Get started")',
+    'button:has-text("Accept invite")',
+    'button:has-text("Join workspace")',
+    'button:has-text("Okay, let\'s go")',
+    'button:has-text("Okay, let’s go")',
+    'button:has-text("开始使用")',
+    'button:has-text("接受邀请")',
+    'button:has-text("加入工作空间")',
+]
+_ONBOARDING_INVITE_BUTTON_SELECTORS = (
+    'button:has-text("Accept invite")',
+    'button:has-text("Join workspace")',
+    'button:has-text("接受邀请")',
+    'button:has-text("加入工作空间")',
+)
+_HOME_COMPOSER_SELECTORS = (
+    "#prompt-textarea",
+    'textarea[name="prompt-textarea"]',
+    '[data-testid="send-button"]',
+    '[data-testid="composer-speech-button"]',
+)
+
+_ONBOARDING_WORKSPACE_PICKER_JS = """(params) => {
+  const wantedTeam = String((params && params.teamName) || "").trim().toLowerCase();
+  const pickSingle = Boolean(params && params.pickSingleTeam);
+
+  const vis = (el) => {
+    if (!el) return false;
+    const st = window.getComputedStyle(el);
+    if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) return false;
+    const box = el.getBoundingClientRect();
+    return box.width > 8 && box.height > 8;
+  };
+
+  for (const old of document.querySelectorAll("[data-team48-onboard-ws]")) {
+    old.removeAttribute("data-team48-onboard-ws");
+  }
+
+  const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(vis);
+  const root = dialogs[dialogs.length - 1] || document.querySelector("main") || document.body;
+  if (!root) return { kind: "none" };
+
+  const inChrome = (el) => !dialogs.length && Boolean(el.closest("nav, aside, header, footer"));
+  const norm = (el) => String(el.innerText || el.getAttribute("aria-label") || el.value || "").replace(/\\s+/g, " ").trim();
+
+  const skipExact = new Set([
+    "get started", "accept invite", "accept invitation", "join workspace", "join", "accept",
+    "continue", "confirm", "allow", "authorize", "next", "ok", "okay",
+    "okay, let's go", "okay, let’s go", "done", "skip", "cancel", "close", "back", "go back",
+    "decline", "deny", "log in", "login", "sign in", "sign up", "log out", "logout", "sign out",
+    "help", "learn more", "terms of use", "privacy policy",
+    "开始使用", "接受邀请", "加入工作空间", "继续", "确认", "取消", "关闭", "返回", "跳过",
+    "登录", "退出", "退出登录", "完成"
+  ]);
+  const skipSub = [
+    "continue with ", "sign in with ", "log in with ", "use another", "use a different",
+    "switch account", "log out", "sign out", "create a workspace", "create workspace",
+    "new workspace", "privacy policy", "terms of use", "cookie"
+  ];
+  const isActionOrChrome = (text) => {
+    const low = text.toLowerCase();
+    if (!low || low.includes("@")) return true;
+    if (skipExact.has(low)) return true;
+    return skipSub.some((sub) => low.includes(sub));
+  };
+  const isPersonal = (text) => text.toLowerCase().includes("personal") || text.includes("个人");
+  const isSelected = (el) => (
+    el.getAttribute("aria-checked") === "true"
+    || el.getAttribute("aria-selected") === "true"
+    || el.getAttribute("data-state") === "checked"
+    || Boolean(el.querySelector('input[type="radio"]:checked'))
+  );
+
+  const rootText = norm(root);
+  const rootLow = rootText.toLowerCase();
+  const path = String(location.pathname || "").toLowerCase();
+  const isChooser = /workspace|organization/.test(path)
+    || /choose a workspace|select a workspace|choose an organization|select an organization|which workspace|选择工作空间|选择一个工作空间|选择组织/.test(rootLow);
+
+  const hasActionBtn = Array.from(root.querySelectorAll('button, [role="button"]')).some((el) => {
+    if (!vis(el) || inChrome(el)) return false;
+    const t = norm(el).toLowerCase();
+    return t === "get started" || t === "accept invite" || t === "join workspace"
+      || t === "okay, let's go" || t === "okay, let’s go"
+      || t === "开始使用" || t === "接受邀请" || t === "加入工作空间";
+  });
+
+  let candidates = [];
+  for (const r of root.querySelectorAll('input[type="radio"]')) {
+    const target = r.closest("label") || r.closest('[role="radio"]') || (vis(r) ? r : null);
+    if (target && vis(target) && !inChrome(target) && !candidates.includes(target)) {
+      candidates.push(target);
+    }
+  }
+  for (const el of root.querySelectorAll('[role="radio"], [role="option"], [role="menuitemradio"]')) {
+    if (!vis(el) || inChrome(el)) continue;
+    if (candidates.some((c) => c === el || c.contains(el) || el.contains(c))) continue;
+    candidates.push(el);
+  }
+  const explicitChoices = candidates.length > 0;
+
+  let maxLen = 180;
+  if (!explicitChoices) {
+    maxLen = 100;
+    const raw = Array.from(root.querySelectorAll('button, [role="listitem"], [role="button"]')).filter((el) => (
+      vis(el) && !inChrome(el) && !el.disabled && el.getAttribute("aria-disabled") !== "true"
+    ));
+    candidates = raw.filter((el) => {
+      if (raw.some((other) => other !== el && (
+        el.tagName === "BUTTON" ? other.tagName === "BUTTON" && el.contains(other)
+        : (el.contains(other) || (other.tagName === "BUTTON" && other.contains(el)))
+      ))) {
+        return false;
+      }
+      const childBtns = el.querySelectorAll("button");
+      for (const btn of childBtns) {
+        if (btn !== el && vis(btn) && skipExact.has(norm(btn).toLowerCase())) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+
+  const valid = [];
+  for (const el of candidates) {
+    const text = norm(el);
+    if (!text || text.length > maxLen || isActionOrChrome(text)) continue;
+    valid.push({ el, text, low: text.toLowerCase(), personal: isPersonal(text), selected: isSelected(el) });
+  }
+  if (valid.length === 0) return { kind: "none" };
+
+  if (wantedTeam) {
+    const match = valid.find((item) => item.low === wantedTeam)
+      || valid.find((item) => item.low.includes(wantedTeam));
+    if (match) {
+      if (match.selected) return { kind: "already_selected" };
+      match.el.setAttribute("data-team48-onboard-ws", "1");
+      return { kind: "pick" };
+    }
+  }
+
+  const teams = valid.filter((item) => !item.personal);
+  if (pickSingle && !wantedTeam) {
+    if (teams.length > 1) return { kind: "workspace_ambiguous" };
+    if (teams.length === 1 && (explicitChoices || isChooser || valid.some((item) => item.personal) || !hasActionBtn)) {
+      if (teams[0].selected) return { kind: "already_selected" };
+      teams[0].el.setAttribute("data-team48-onboard-ws", "1");
+      return { kind: "pick" };
+    }
+  }
+  return { kind: "none" };
+}"""
+
+
+def _visible_dialog_text(page) -> str:
+    try:
+        loc = page.locator('[role="dialog"]')
+        count = loc.count()
+        chunks: list[str] = []
+        for idx in range(count):
+            el = loc.nth(idx)
+            if el.is_visible():
+                chunks.append(el.inner_text(timeout=800) or "")
+        return "\n".join(chunks)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _home_composer_visible(page) -> bool:
+    return any(_visible(page, selector) for selector in _HOME_COMPOSER_SELECTORS)
+
+
+def looks_like_chatgpt_onboarding(page) -> bool:
+    """True when chatgpt.com is on /onboarding, a workspace chooser, or an invite welcome card."""
+    url = page.url or ""
+    if not can_peek_session(url):
+        return False
+    path = (urlparse(url).path or "").lower()
+    if any(part in path for part in _ONBOARDING_URL_PARTS):
+        return True
+    if any(_visible(page, selector) for selector in _ONBOARDING_INVITE_BUTTON_SELECTORS):
+        return True
+    dialog_text = _visible_dialog_text(page).lower()
+    if dialog_text and any(
+        token in dialog_text
+        for token in (
+            *_ONBOARDING_TEXT_MARKERS,
+            "get started",
+            "okay, let's go",
+            "okay, let’s go",
+            "workspace",
+            "开始使用",
+            "工作空间",
+        )
+    ):
+        return True
+    if not _home_composer_visible(page):
+        body_low = _page_text(page).lower()
+        if any(marker in body_low for marker in _ONBOARDING_TEXT_MARKERS):
+            return True
+    return False
+
+
+def _pick_onboarding_workspace(page, *, team_name: str = "", pick_single_team: bool = False) -> str:
+    try:
+        outcome = page.evaluate(
+            _ONBOARDING_WORKSPACE_PICKER_JS,
+            {"teamName": str(team_name or "").strip(), "pickSingleTeam": bool(pick_single_team)},
+        ) or {}
+    except Exception:  # noqa: BLE001
+        return "none"
+    kind = str(outcome.get("kind") or "none")
+    if kind != "pick":
+        return kind
+    try:
+        target = page.locator('[data-team48-onboard-ws="1"]').first
+        if target.count() == 0 or not target.is_visible():
+            return "none"
+        human_pause(page, 0.5, 1.1)
+        if human_click(page, target, timeout=2500):
+            return "picked"
+    except Exception:  # noqa: BLE001
+        return "none"
+    return "none"
+
+
+def _click_onboarding_action(page) -> bool:
+    return (
+        _click_exact(page, _ONBOARDING_BUTTON_EXACT)
+        or _click_first(page, _ONBOARDING_BUTTON_SELECTORS)
+    )
+
+
+def _has_onboarding_action(page) -> bool:
+    for name in _ONBOARDING_BUTTON_EXACT:
+        try:
+            loc = page.get_by_role("button", name=name, exact=True)
+            if loc.count() > 0 and loc.first.is_visible():
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return any(_visible(page, selector) for selector in _ONBOARDING_BUTTON_SELECTORS)
+
+
+def complete_chatgpt_onboarding(
+    page,
+    *,
+    team_name: str = "",
+    pick_single_team: bool = False,
+    target_email: str = "",
+    report: StageCallback = None,
+    initial_wait: bool = True,
+) -> dict[str, Any]:
+    """Handle chatgpt.com /onboarding & workspace invite cards after login/signup."""
+    wanted = str(target_email or "").strip().lower()
+    acted = False
+
+    # Ensure we are actually on chatgpt.com (not still mid-redirect from auth.openai.com).
+    url = page.url or ""
+    path = (urlparse(url).path or "").lower()
+    if not can_peek_session(url) or "/auth/" in path:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            page.wait_for_timeout(500)
+            url = page.url or ""
+            path = (urlparse(url).path or "").lower()
+            if can_peek_session(url) and "/auth/" not in path:
+                break
+        if not can_peek_session(url) or "/auth/" in path:
+            goto_with_retries(page, CHATGPT_HOME_URL, report=report)
+            wait_cloudflare(page, timeout_sec=20)
+
+    if initial_wait:
+        human_pause(page, 2.0, 3.2)
+
+    def _verify_session_and_finish() -> dict[str, Any]:
+        sess = peek_chatgpt_session(page)
+        if session_access_token(sess):
+            actual = session_email(sess)
+            if wanted and actual and actual != wanted:
+                return {
+                    "ok": False,
+                    "error_code": "identity_mismatch",
+                    "error": "ChatGPT 登录态邮箱与目标邮箱不一致，未自动退出",
+                }
+            return {"ok": True, "onboarding_completed": acted, "session": sess}
+        return {"ok": True, "onboarding_completed": acted, "session": {}}
+
+    for round_idx in range(6):
+        if page_is_cloudflare(page):
+            wait_cloudflare(page, timeout_sec=15)
+
+        on_onboarding = looks_like_chatgpt_onboarding(page)
+        if not on_onboarding:
+            if _home_composer_visible(page) or round_idx >= 1:
+                return _verify_session_and_finish()
+            human_pause(page, 1.4, 2.2)
+            continue
+
+        ws_outcome = _pick_onboarding_workspace(
+            page,
+            team_name=team_name,
+            pick_single_team=pick_single_team,
+        )
+        if ws_outcome == "workspace_ambiguous":
+            return {
+                "ok": False,
+                "error_code": "workspace_ambiguous",
+                "error": "有多个 Team，未自动选择",
+            }
+        if ws_outcome == "picked":
+            acted = True
+            if report:
+                report("onboarding", "正在接受团队邀请进入工作空间")
+            human_pause(page, 0.8, 1.5)
+            if not looks_like_chatgpt_onboarding(page):
+                continue
+
+        if _visible(page, 'input[type="checkbox"]'):
+            try:
+                box = page.locator('input[type="checkbox"]').first
+                if not box.is_checked():
+                    if report:
+                        report("onboarding", "正在接受团队邀请进入工作空间")
+                    human_click(page, box, timeout=2500)
+                    acted = True
+                    human_pause(page, 0.4, 0.9)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if _has_onboarding_action(page):
+            if report:
+                report("onboarding", "正在接受团队邀请进入工作空间")
+            human_pause(page, 0.6, 1.3)
+            if _click_onboarding_action(page):
+                acted = True
+                human_pause(page, 2.0, 3.0)
+                continue
+
+        human_pause(page, 2.0, 3.0)
+
+    if not looks_like_chatgpt_onboarding(page):
+        return _verify_session_and_finish()
+
+    return {
+        "ok": False,
+        "error_code": "onboarding_stuck",
+        "error": "卡在 ChatGPT 入组欢迎页，未能自动进入工作空间",
+    }
+
+
 def wait_chatgpt_session(
     page,
     target_email: str,
@@ -213,6 +598,8 @@ def run_chatgpt_login_loop(
     phone_source=None,
     allow_sms: bool = True,
     allow_profile_setup: bool | None = None,
+    allow_onboarding: bool = False,
+    pick_single_team: bool = False,
     invite_entry: bool = False,
     require_session_match: bool = False,
     initial_goto: bool = True,
@@ -229,6 +616,7 @@ def run_chatgpt_login_loop(
 
     wanted_email = str(email or "").strip().lower()
     profile_setup_allowed = (mode != "login") if allow_profile_setup is None else bool(allow_profile_setup)
+    created_account = False
     result: dict[str, Any] = {
         "ok": False,
         "email": email,
@@ -237,6 +625,7 @@ def run_chatgpt_login_loop(
         "phone": phone,
         "sms_url": sms_url,
         "sms_code_submissions": 0,
+        "created_account": False,
     }
 
     if initial_goto:
@@ -249,7 +638,7 @@ def run_chatgpt_login_loop(
             if profile_dir is not None:
                 result["debug_dir"] = _save_debug(page, profile_dir)
             return result
-        page.wait_for_timeout(1500)
+        human_pause(page, 1.2, 2.2)
         try:
             page.wait_for_selector(EMAIL_INPUT_SELECTOR, timeout=15000)
         except Exception:  # noqa: BLE001
@@ -271,23 +660,28 @@ def run_chatgpt_login_loop(
     if initial_goto:
         emit("fill_email", f"页面已打开：{page.title() or page.url}")
     if _email_input_visible(page):
+        human_pause(page, 1.0, 2.4)
         if not _fill_email(page, email):
             emit("fill_email", "邮箱框在，但没填进去，后面会再试")
         else:
+            human_pause(page, 0.5, 1.2)
             _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
-            page.wait_for_timeout(2500)
+            human_pause(page, 2.0, 3.2)
     elif require_session_match and can_peek_session(page.url or ""):
         emit("chatgpt_login", "未检测到已登录会话，正在打开 ChatGPT 登录")
+        human_pause(page, 0.8, 1.6)
         if _click_login_entry(page):
-            page.wait_for_timeout(2500)
+            human_pause(page, 2.0, 3.0)
         else:
             goto_with_retries(page, LOGIN_START_URL, report=report)
-            page.wait_for_timeout(1500)
+            human_pause(page, 1.2, 2.2)
     wait_cloudflare(page, timeout_sec=20)
 
-    if mode == "register" and _click_exact(page, ["Create account", "Sign up"]):
+    if mode == "register" and _click_exact(page, ["Create account", "Sign up"], pre_pause=(0.8, 1.6)):
+        created_account = True
+        result["created_account"] = True
         emit("create_account", "正在进入创建账号")
-        page.wait_for_timeout(1500)
+        human_pause(page, 1.2, 2.2)
 
     session: dict[str, Any] = {}
     last_url = ""
@@ -303,7 +697,7 @@ def run_chatgpt_login_loop(
     debug_log = None
     if profile_dir is not None and not require_session_match:
         base = profile_dir.resolve().parent.parent
-        if profile_dir.resolve().parent.name == "chromix":
+        if profile_dir.resolve().parent.name in {"chromix", "camoufox"}:
             base = base.parent
         debug_log = base / "debug" / "onboard.log"
         debug_log.parent.mkdir(parents=True, exist_ok=True)
@@ -351,23 +745,27 @@ def run_chatgpt_login_loop(
             result["error_code"] = "account_not_registered"
             break
 
+        if profile_setup_allowed and looks_like_registration(url=url, body=page_text):
+            created_account = True
+            result["created_account"] = True
+
         if mode == "login" and looks_like_session_ended(title=page_title, body=page_text):
             emit("session_ended", "OpenAI 会话已结束，改走登录页")
-            if not _click_exact(page, ["Log in", "Continue"]):
+            if not _click_exact(page, ["Log in", "Continue"], pre_pause=(0.6, 1.3)):
                 page.goto(LOGIN_START_URL, wait_until="load")
-            page.wait_for_timeout(2000)
+            human_pause(page, 1.5, 2.5)
             continue
         if looks_like_session_ended(title=page_title, body=page_text):
             emit("session_ended", "OpenAI 会话已结束，改走登录/注册页")
-            if not _click_exact(page, ["Log in", "Sign up", "Continue"]):
+            if not _click_exact(page, ["Log in", "Sign up", "Continue"], pre_pause=(0.6, 1.3)):
                 page.goto(LOGIN_START_URL, wait_until="load")
-            page.wait_for_timeout(2000)
+            human_pause(page, 1.5, 2.5)
             continue
 
         if "you're all set" in page_text.lower() or "you’re all set" in page_text.lower():
             emit("all_set", "资料完成页，点 Continue")
-            _click_first(page, ['button:has-text("Continue")'])
-            page.wait_for_timeout(2000)
+            _click_first(page, ['button:has-text("Continue")'], pre_pause=(0.8, 1.6))
+            human_pause(page, 1.5, 2.5)
             continue
 
         if (
@@ -381,13 +779,15 @@ def run_chatgpt_login_loop(
                 result["error_code"] = "email_gate_stuck"
                 break
             emit("fill_email", f"正在提交邮箱（第 {email_submits + 1} 次）")
+            human_pause(page, 1.0, 2.4)
             if not _fill_email(page, email):
                 result["error"] = "登录页找不到可用的邮箱输入框"
                 result["error_code"] = "email_input_missing"
                 break
+            human_pause(page, 0.5, 1.2)
             _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
             email_submits += 1
-            page.wait_for_timeout(3000)
+            human_pause(page, 2.2, 3.5)
             continue
 
         if looks_like_about_you(title=page_title, body=page_text, url=url) or _visible(
@@ -399,9 +799,11 @@ def run_chatgpt_login_loop(
                 result["error"] = "卡在年龄/生日页，没有进入下一步"
                 result["error_code"] = "about_you_stuck"
                 break
+            created_account = True
+            result["created_account"] = True
             emit("about_you", f"验证码已过，正在填写资料（第 {about_you_tries} 次）")
-            if not _fill_about_you(page):
-                page.wait_for_timeout(1500)
+            if not _fill_about_you(page, email=email):
+                human_pause(page, 1.2, 2.0)
             continue
 
         on_verify = "email-verification" in url or "check your inbox" in page_text.lower()
@@ -434,6 +836,7 @@ def run_chatgpt_login_loop(
                 break
             if not code:
                 continue
+            human_pause(page, 1.0, 2.4)
             started_url = page.url or ""
             if not _fill_otp(page, code):
                 if _page_past_otp(page):
@@ -451,30 +854,34 @@ def run_chatgpt_login_loop(
             known_codes.add(code)
             otp_submits += 1
             emit("email_otp", f"已提交验证码（第 {otp_submits} 次）")
-            page.wait_for_timeout(2000)
+            human_pause(page, 1.6, 2.6)
             continue
         if on_verify:
             emit("email_otp", "验证码页还没出现输入框，继续等")
-            page.wait_for_timeout(1500)
+            human_pause(page, 1.2, 2.0)
             continue
 
         if _visible(page, 'input[type="password"], input[name="current-password"]'):
-            if has_mail and not otp_sent and _click_one_time_code(page):
-                otp_sent = True
-                emit("email_otp", "密码页改走邮箱一次性验证码")
-                page.wait_for_timeout(2500)
-                continue
+            if has_mail and not otp_sent:
+                human_pause(page, 1.0, 2.4)
+                if _click_one_time_code(page):
+                    otp_sent = True
+                    emit("email_otp", "密码页改走邮箱一次性验证码")
+                    human_pause(page, 2.0, 3.2)
+                    continue
             body = page_text.lower()
             if password and not password_tried:
                 emit("password", "正在填写密码")
+                human_pause(page, 0.8, 1.6)
                 _fill_first(
                     page,
                     ['input[name="current-password"]', 'input[type="password"]', 'input[name="password"]'],
                     password,
                 )
+                human_pause(page, 0.5, 1.1)
                 _click_exact(page, ["Continue"]) or _click_first(page, ['button[type="submit"]'])
                 password_tried = True
-                page.wait_for_timeout(2500)
+                human_pause(page, 2.0, 3.0)
                 continue
             if not password:
                 result["error"] = "登录页要密码，但子号没有保存密码，也没有邮箱验证码入口"
@@ -484,7 +891,7 @@ def run_chatgpt_login_loop(
                 result["error"] = "密码不对，也没有邮箱验证码入口"
                 result["error_code"] = "password_rejected"
                 break
-            page.wait_for_timeout(1200)
+            human_pause(page, 1.0, 1.6)
             continue
 
         if _visible(page, 'input[type="tel"]') or "add-phone" in url or "phone-verification" in url:
@@ -520,9 +927,9 @@ def run_chatgpt_login_loop(
                         result["error_code"] = code
                         break
                     phone, sms_url = number, next_sms_url
-                elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"]):
+                elif _click_exact(page, ["Skip", "Not now", "Maybe later", "Skip for now", "I'll do this later"], pre_pause=(0.6, 1.2)):
                     emit("add_phone", "注册页出现手机号，已跳过")
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.0)
                     continue
                 else:
                     result["error"] = "注册页要手机号。正常邀请注册通常不需要，Codex 授权时才接码"
@@ -532,7 +939,7 @@ def run_chatgpt_login_loop(
                 break
             _fill_phone_number(page, phone)
             _submit_phone_sms(page)
-            page.wait_for_timeout(2500)
+            human_pause(page, 2.0, 3.0)
             outcome, msg = phone_page_outcome(page)
             if outcome in {"invalid", "recently_used", "risk"}:
                 if phone_source:
@@ -566,20 +973,20 @@ def run_chatgpt_login_loop(
                 result["error"] = msg
                 result["error_code"] = "sms_failed"
                 break
-            otp_el = _find_otp(page)
-            if otp_el:
+            if _find_otp(page) or _otp_boxes(page):
+                human_pause(page, 1.0, 2.0)
                 started_url = page.url or ""
-                otp_el.fill(sms_code)
-                result["sms_code_submissions"] = int(result["sms_code_submissions"]) + 1
-                _wait_and_fallback_submit_otp(
-                    page,
-                    started_url=started_url,
-                    exact_names=["Continue", "Verify"],
-                    selectors=['button[type="submit"]'],
-                )
+                if _fill_otp(page, sms_code):
+                    result["sms_code_submissions"] = int(result["sms_code_submissions"]) + 1
+                    _wait_and_fallback_submit_otp(
+                        page,
+                        started_url=started_url,
+                        exact_names=["Continue", "Verify"],
+                        selectors=['button[type="submit"]'],
+                    )
             else:
-                _click_exact(page, ["Continue", "Verify"]) or _click_first(page, ['button[type="submit"]'])
-            page.wait_for_timeout(2500)
+                _click_exact(page, ["Continue", "Verify"], pre_pause=(0.6, 1.2)) or _click_first(page, ['button[type="submit"]'])
+            human_pause(page, 2.0, 3.0)
             record_pool_phone(phone_source, "success")
             result["phone"] = phone
             result["sms_url"] = sms_url
@@ -591,19 +998,21 @@ def run_chatgpt_login_loop(
                 result["error"] = "卡在年龄/生日页，没有进入下一步"
                 result["error_code"] = "about_you_stuck"
                 break
+            created_account = True
+            result["created_account"] = True
             emit("profile", "正在填写资料")
-            _fill_about_you(page)
-            page.wait_for_timeout(2500)
+            _fill_about_you(page, email=email)
+            human_pause(page, 2.0, 3.0)
             continue
 
         if _accept_terms(page):
             emit("terms", "已勾选服务条款")
-            page.wait_for_timeout(1500)
+            human_pause(page, 1.2, 2.0)
             continue
 
         if invite_entry and _pick_workspace(page, team_name):
             emit("workspace", "正在接受邀请并选择目标工作空间")
-            page.wait_for_timeout(1500)
+            human_pause(page, 1.2, 2.0)
             continue
 
         peeked = _peek_session(page)
@@ -625,12 +1034,13 @@ def run_chatgpt_login_loop(
                             "ok": False,
                             "phone": phone,
                             "sms_url": sms_url,
+                            "created_account": created_account,
                             "error_code": "token_identity_mismatch",
                             "error": "登录态邮箱与邀请不一致",
                         }
                     invite_reopened = True
                     goto_with_retries(page, start_url, report=report)
-                    page.wait_for_timeout(1500)
+                    human_pause(page, 1.2, 2.2)
                     continue
                 session = peeked
                 break
@@ -674,24 +1084,26 @@ def run_chatgpt_login_loop(
             if login_clicks < 2 and _click_login_entry(page):
                 login_clicks += 1
                 emit("chatgpt_login", "未登录首页，点 Log in")
-                page.wait_for_timeout(2000)
+                human_pause(page, 1.6, 2.6)
                 continue
             if "/auth/login" not in url:
                 login_clicks += 1
                 goto_with_retries(page, LOGIN_START_URL, report=report)
-                page.wait_for_timeout(2000)
+                human_pause(page, 1.6, 2.6)
                 continue
         elif "chat, work, create" in title or "where should we begin" in page_text.lower():
             if mode == "register" and (
-                _click_exact(page, ["Sign up for free", "Sign up"])
-                or _click_first(page, ['a:has-text("Sign up")', 'button:has-text("Sign up")'])
+                _click_exact(page, ["Sign up for free", "Sign up"], pre_pause=(0.6, 1.3))
+                or _click_first(page, ['a:has-text("Sign up")', 'button:has-text("Sign up")'], pre_pause=(0.6, 1.3))
             ):
+                created_account = True
+                result["created_account"] = True
                 emit("signup", "未登录首页，点 Sign up")
-                page.wait_for_timeout(2000)
+                human_pause(page, 1.6, 2.6)
                 continue
-            if _click_exact(page, ["Log in"]):
+            if _click_exact(page, ["Log in"], pre_pause=(0.6, 1.3)):
                 emit("login", "未登录首页，点 Log in 回去")
-            page.wait_for_timeout(2000)
+            human_pause(page, 1.6, 2.6)
             continue
 
         if "auth.openai.com" in url and (
@@ -700,21 +1112,22 @@ def run_chatgpt_login_loop(
             or "email-verification" in url
             or looks_like_about_you(title=page_title, body=page_text, url=url)
         ):
-            page.wait_for_timeout(1200)
+            human_pause(page, 1.0, 1.6)
             continue
 
         if not require_session_match:
             if _pick_workspace(page, team_name):
                 emit("workspace", "已选择工作空间")
-                page.wait_for_timeout(1500)
+                human_pause(page, 1.2, 2.0)
                 continue
-            if _click_exact(page, ["Accept", "I agree", "Okay", "Next"]):
-                page.wait_for_timeout(1500)
+            if _click_exact(page, ["Accept", "I agree", "Okay", "Next"], pre_pause=(0.6, 1.2)):
+                human_pause(page, 1.2, 2.0)
                 continue
-        page.wait_for_timeout(1200)
+        human_pause(page, 1.0, 1.6)
 
     result["phone"] = phone
     result["sms_url"] = sms_url
+    result["created_account"] = created_account
     if require_session_match:
         if result.get("error_code") and not session_access_token(session):
             result["final_url"] = page.url or ""
@@ -734,11 +1147,30 @@ def run_chatgpt_login_loop(
             result["error_code"] = "identity_mismatch"
             result["final_url"] = page.url or ""
             return result
+        onboarding_completed = False
+        if allow_onboarding:
+            ob = complete_chatgpt_onboarding(
+                page,
+                team_name=team_name,
+                pick_single_team=pick_single_team,
+                target_email=wanted_email,
+                report=report,
+            )
+            if not ob.get("ok"):
+                result["error"] = ob.get("error") or "卡在 ChatGPT 入组欢迎页，未能自动进入工作空间"
+                result["error_code"] = ob.get("error_code") or "onboarding_stuck"
+                result["final_url"] = page.url or ""
+                return result
+            onboarding_completed = bool(ob.get("onboarding_completed"))
+            if session_access_token(ob.get("session")):
+                session = ob["session"]
         js = session.get("json") if isinstance(session.get("json"), dict) else {}
         user = session_user(session)
         result.update({
             "ok": True,
             "skipped_login": False,
+            "created_account": created_account,
+            "onboarding_completed": onboarding_completed,
             "access_token": session_access_token(session),
             "session_token": str((js or {}).get("sessionToken") or "").strip(),
             "account_id": str((user or {}).get("id") or ""),
@@ -755,6 +1187,38 @@ def run_chatgpt_login_loop(
     if not session_access_token(session):
         session = _extract_session(page)
     access_token = session_access_token(session)
+    if invite_entry and access_token and session_email(session) != wanted_email:
+        return {
+            **result,
+            "ok": False,
+            "created_account": created_account,
+            "error_code": "token_identity_mismatch",
+            "error": "邀请注册登录态邮箱不匹配",
+        }
+    onboarding_completed = False
+    if access_token and (mode == "register" or invite_entry or allow_onboarding):
+        ob = complete_chatgpt_onboarding(
+            page,
+            team_name=team_name,
+            pick_single_team=pick_single_team,
+            target_email=wanted_email,
+            report=report,
+        )
+        if not ob.get("ok"):
+            if profile_dir is not None:
+                result["debug_dir"] = _save_debug(page, profile_dir)
+            result.update({
+                "ok": False,
+                "created_account": created_account,
+                "error_code": ob.get("error_code") or "onboarding_stuck",
+                "error": ob.get("error") or "卡在 ChatGPT 入组欢迎页，未能自动进入工作空间",
+                "final_url": page.url or "",
+            })
+            return result
+        onboarding_completed = bool(ob.get("onboarding_completed"))
+        if session_access_token(ob.get("session")):
+            session = ob["session"]
+            access_token = session_access_token(session)
     js = session.get("json") if isinstance(session.get("json"), dict) else {}
     session_token = str((js or {}).get("sessionToken") or "").strip()
     user = session_user(session)
@@ -762,11 +1226,14 @@ def run_chatgpt_login_loop(
         return {
             **result,
             "ok": False,
+            "created_account": created_account,
             "error_code": "token_identity_mismatch",
             "error": "邀请注册登录态邮箱不匹配",
         }
     result.update({
         "ok": bool(access_token),
+        "created_account": created_account,
+        "onboarding_completed": onboarding_completed,
         "access_token": access_token,
         "session_token": session_token,
         "account_id": str((user or {}).get("id") or ""),
@@ -801,6 +1268,9 @@ def ensure_chatgpt_login(
     hme_service_token: str = "",
     hme_account_id: str = "",
     allow_profile_setup: bool = False,
+    allow_onboarding: bool = False,
+    team_name: str = "",
+    pick_single_team: bool = False,
     allow_sms: bool = False,
     phone: str = "",
     sms_url: str = "",
@@ -811,9 +1281,10 @@ def ensure_chatgpt_login(
     """Ensure chatgpt.com has a live session for ``email`` before opening desktop-auth.
 
     1. Open https://chatgpt.com/ if not already on a chatgpt.com page; wait Cloudflare.
-    2. Check /api/auth/session: matching email -> skip login; other email -> identity_mismatch (never logout).
+    2. Check /api/auth/session: matching email -> skip login (still run onboarding if enabled);
+       other email -> identity_mismatch (never logout).
     3. Log in with email OTP (or password if provided and no OTP entry); optionally fill about-you when allowed.
-    4. Poll /api/auth/session (up to 30s) until accessToken + target email are confirmed.
+    4. Poll /api/auth/session (up to 30s) until accessToken + target email are confirmed, then complete onboarding if enabled.
     """
     wanted_email = str(email or "").strip().lower()
     if not can_peek_session(page.url or ""):
@@ -825,11 +1296,12 @@ def ensure_chatgpt_login(
             "ok": False,
             "error_code": "cloudflare_challenge",
             "error": _session_failure(page, {"status": "cloudflare"}),
+            "created_account": False,
             "phone": phone,
             "sms_url": sms_url,
             "sms_code_submissions": 0,
         }
-    page.wait_for_timeout(1200)
+    human_pause(page, 1.0, 1.8)
 
     existing = peek_chatgpt_session(page)
     if session_access_token(existing):
@@ -837,11 +1309,35 @@ def ensure_chatgpt_login(
         if actual == wanted_email:
             if on_stage:
                 on_stage("chatgpt_session", "ChatGPT 已登录目标邮箱，跳过登录")
+            onboarding_completed = False
+            if allow_onboarding:
+                ob = complete_chatgpt_onboarding(
+                    page,
+                    team_name=team_name,
+                    pick_single_team=pick_single_team,
+                    target_email=wanted_email,
+                    report=on_stage,
+                )
+                if not ob.get("ok"):
+                    return {
+                        "ok": False,
+                        "error_code": ob.get("error_code") or "onboarding_stuck",
+                        "error": ob.get("error") or "卡在 ChatGPT 入组欢迎页，未能自动进入工作空间",
+                        "created_account": False,
+                        "phone": phone,
+                        "sms_url": sms_url,
+                        "sms_code_submissions": 0,
+                    }
+                onboarding_completed = bool(ob.get("onboarding_completed"))
+                if session_access_token(ob.get("session")):
+                    existing = ob["session"]
             js = existing.get("json") if isinstance(existing.get("json"), dict) else {}
             user = session_user(existing)
             return {
                 "ok": True,
                 "skipped_login": True,
+                "created_account": False,
+                "onboarding_completed": onboarding_completed,
                 "access_token": session_access_token(existing),
                 "session_token": str((js or {}).get("sessionToken") or "").strip(),
                 "account_id": str((user or {}).get("id") or ""),
@@ -853,6 +1349,7 @@ def ensure_chatgpt_login(
             "ok": False,
             "error_code": "identity_mismatch",
             "error": "ChatGPT 当前已登录其他账号，与目标邮箱不一致，未自动退出",
+            "created_account": False,
             "phone": phone,
             "sms_url": sms_url,
             "sms_code_submissions": 0,
@@ -868,6 +1365,7 @@ def ensure_chatgpt_login(
         proxy=proxy,
         start_url=CHATGPT_HOME_URL,
         mode="login",
+        team_name=team_name,
         use_cloudflare=use_cloudflare,
         cf_base_url=cf_base_url,
         cf_address=cf_address,
@@ -878,6 +1376,8 @@ def ensure_chatgpt_login(
         phone_source=phone_source,
         allow_sms=allow_sms,
         allow_profile_setup=allow_profile_setup,
+        allow_onboarding=allow_onboarding,
+        pick_single_team=pick_single_team,
         invite_entry=False,
         require_session_match=True,
         initial_goto=False,

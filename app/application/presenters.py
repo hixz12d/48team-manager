@@ -120,6 +120,8 @@ BUSINESS_STEP_LABELS = {
     "browser_open": "打开邀请或授权页面",
     "email_otp": "等待邮箱验证码",
     "about_you": "填写注册资料",
+    "onboarding": "接受团队邀请",
+    "post_signup_dwell": "主页停留等待授权",
     "workspace": "选择工作空间",
     "add_phone": "手机验证",
     "sms_otp": "等待短信验证码",
@@ -149,7 +151,8 @@ BUSINESS_STEP_LABELS = {
 
 # Presentation only: these are workflow stages, not a percentage or proof of completion.
 _BROWSER_STAGES = ("browser", "signup_runner", "browser_environment", "runner_started", "runner_signup_done",
-                   "browser_open", "email_otp", "about_you", "workspace", "add_phone", "sms_otp", "oauth", "browser_failed")
+                   "browser_open", "email_otp", "about_you", "onboarding", "post_signup_dwell",
+                   "workspace", "add_phone", "sms_otp", "oauth", "browser_failed")
 _RUNNER_AUTH_STAGES = ("runner_authorizing", "runner_callback", "runner_authorized")
 _ONBOARD_PLAN = (
     ("checking", ("checking", "blocked")),
