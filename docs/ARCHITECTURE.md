@@ -147,7 +147,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 ### rs 全部账号掉登录恢复（`application/codex_rs_recovery.py`）
 
 - 不依赖本地账号 / 绑定，以 rs 列表为准；有 `codex_bindings` 的远端 ID 跳过。开关 `codex_rs_recovery_enabled`（`SettingsPatch.codex_rs.recovery_enabled`），状态 `system_settings.codex_rs_recovery_state`（每号 `state` / `fail_count` / `next_at` / `last_code` / `marked` / `succeeded_at`，不存令牌、代理和上游原文）。
-- 入口：定时 `run_once`（每轮最多一个号，开关关、浏览器槽或 `operations` 浏览器任务占用时直接返回）；`recover_account(db, remote_id, force=)` 供扫描和命令行 `scripts/codex_rs_recovery_once.py --account <rs 账号 ID> [--dry-run]` 共用；`status` 给 `GET /api/codex-rs/recovery`。
+- 入口：定时 `run_once`（每轮最多一个号，开关关、浏览器槽或 `operations` 浏览器任务占用时直接返回）；`recover_account(db, remote_id, force=)` 供扫描和命令行 `scripts/codex_rs_recovery_once.py --account <rs 账号 ID> [--dry-run]` 共用（镜像不含 `scripts/`，生产用法见 RUNBOOK）；`status` 给 `GET /api/codex-rs/recovery`。
 - rs 接口（`integrations/codex/client.py`）：`refresh`（40001 / 50201 才开浏览器，其余本轮跳过 5 分钟）、`export_proxy_url`（敏感导出里取带凭据的代理，只在内存用）、`import_accounts`（不带 settings / 代理，按身份覆盖）、`update_account` / `update_notes`（`/accounts/update` 必填字段从详情回填）。不用 rs 的 `oauth/start|complete`：它不核对身份就写入。
 - 浏览器复用 `InvitedBrowserSession` + `run_browser_oauth_reauth`（`login_only=True`、`allow_join=False`、`allow_sms=False`、空密码），OAuth 会话只在内存（无本地账号可挂 `OAuthSession`）；换票用 `codex_reauth.FrozenProxyClient`。日志只写远端 ID 尾号、阶段、错误码。
 - 命令行脚本与服务是两个进程，进程内浏览器锁不共享，手动跑脚本时保持开关关闭。
