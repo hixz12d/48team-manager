@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.11.0';
+  const VERSION = '0.11.1';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -1298,6 +1298,7 @@
   }
   let pickedOn = '', pickedAt = 0;
   let singleTeamPickedOn = '', singleTeamPickedAt = 0, teamMissingSince = 0, inviteClickedKey = '', inviteClicks = 0;
+  let inviteKeyClicks = 0, inviteClickedAt = 0;
   const workspaceNames = () => (job.workspaceNames || []).map(name => String(name).trim().toLowerCase()).filter(Boolean);
   // "Choose a workspace" lists clickable rows and has no Continue button of its own.
   const chooserPage = (text, path) => /workspace|organization/.test(path) ||
@@ -1428,19 +1429,39 @@
     return 'handled';
   }
   async function onboardingInviteStep() {
-    if (!autoFill() || job.mode !== 'auto' || inviteClicks >= 3) return false;
+    if (!autoFill() || job.mode !== 'auto') return false;
     const dialogs = all('[role="dialog"],dialog[open],[aria-modal="true"]').filter(node => !node.closest('#team48-signup-progress'));
     const scope = dialogs.at(-1) || document;
+    // "Get started" is also the logged-out signup entry: take it only on the workspace invite onboarding page.
+    const invitePage = location.hostname === 'chatgpt.com' && (/^\/onboarding/.test(location.pathname) ||
+      /added to a new workspace|invited you|加入.*工作空间|邀请你/i.test(document.body?.innerText || ''));
     const target = [...scope.querySelectorAll('button,a,[role="button"]')].find(el => {
       if (!visible(el) || !enabled(el) || el.closest('#team48-signup-progress')) return false;
       if (!dialogs.length && el.closest('nav,aside,header,footer')) return false;
       const label = (el.innerText || el.getAttribute('aria-label') || '').trim();
+      if (/^get started$/i.test(label)) return invitePage;
       return /^(accept invite|accept invitation|join workspace|okay, let['’]s go|接受邀请|加入工作空间|开始使用)$/i.test(label);
     });
     if (!target) return false;
     const key = `${location.pathname}:${(target.innerText || target.getAttribute('aria-label') || '').trim().toLowerCase()}`;
-    if (key === inviteClickedKey) return false;
     unknownSince = clock();
+    if (key === inviteClickedKey) {
+      // The page can ignore a click made while it is still loading: wait, then click the same button again.
+      if (clock() - inviteClickedAt < 8000) {
+        renderProgress({...job, message: '已点击团队邀请页按钮，等待网页进入工作空间。'});
+        return true;
+      }
+      if (inviteKeyClicks >= 3) {
+        await pause('团队邀请页按钮已点击 3 次，页面仍未前进，请在网页手动点击后继续。', 'manual_step');
+        return true;
+      }
+    } else {
+      if (inviteClicks >= 6) {
+        await pause('团队邀请页步骤过多，已停止自动点击，请在网页手动完成后继续。', 'manual_step');
+        return true;
+      }
+      inviteKeyClicks = 0;
+    }
     const checkbox = [...scope.querySelectorAll('input[type="checkbox"]')].find(box => visible(box) && enabled(box) && !box.checked);
     if (checkbox) {
       await clickControl(checkbox);
@@ -1448,8 +1469,8 @@
     }
     renderProgress({...job, message: '正在接受团队邀请进入工作空间。'});
     if (await clickControl(target)) {
-      inviteClickedKey = key;
-      inviteClicks++;
+      inviteClickedKey = key; inviteClickedAt = clock();
+      inviteKeyClicks++; inviteClicks++;
       await rest(1000, 1600);
     }
     return true;
@@ -2027,7 +2048,7 @@
       entryWaitSince = 0; homeSince = 0; sessionErrors = 0;
       accountPickedOn = ''; accountPickedAt = 0;
       pickedOn = ''; pickedAt = 0;
-      singleTeamPickedOn = ''; singleTeamPickedAt = 0; teamMissingSince = 0; inviteClickedKey = ''; inviteClicks = 0;
+      singleTeamPickedOn = ''; singleTeamPickedAt = 0; teamMissingSince = 0; inviteClickedKey = ''; inviteClicks = 0; inviteKeyClicks = 0; inviteClickedAt = 0;
       backSince = 0; backClickedAt = 0; phoneWaitSince = 0; codeWaitSince = 0; phoneReloadAt = 0;
     }
     renderProgress(job);
