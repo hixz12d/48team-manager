@@ -92,6 +92,15 @@ class ExtensionResolveRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
 
 
+class ExtensionRsStartRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class ExtensionRsCompleteRequest(BaseModel):
+    ticket: str = Field(min_length=8, max_length=200)
+    callback_url: str = Field(min_length=8, max_length=4000)
+
+
 class ExtensionHandoffCompleteRequest(BaseModel):
     account_id: int = Field(gt=0)
     workspace_id: int = Field(gt=0)

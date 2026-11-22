@@ -42,7 +42,7 @@ export function publicHandoff(handoff) {
   if (!handoff) return null;
   const step = value => value && typeof value === 'object' ?
     {ok: typeof value.ok === 'boolean' ? value.ok : null, message: String(value.message || '').slice(0, 200)} : null;
-  return {status: handoff.status, workspaceId: handoff.workspaceId, workspaceName: handoff.workspaceName || '',
+  return {rs: handoff.rs === true, status: handoff.status, workspaceId: handoff.workspaceId, workspaceName: handoff.workspaceName || '',
     message: handoff.message || '', followups: {sub2api: step(handoff.followups?.sub2api), codexRs: step(handoff.followups?.codex_rs), switchCount: step(handoff.followups?.switch_count)}};
 }
 
@@ -52,7 +52,7 @@ export function publicJob(job) {
     mode: job.mode || 'auto', codexResult: job.codexResult || 'unknown', password: job.password, tabId: job.tabId, expiresAt: job.expiresAt,
     phase: job.phase === 'oauth' ? 'oauth' : 'signup', handoff: publicHandoff(job.handoff), formSeen: !!job.entryFormSeen,
     reloading: job.status === 'paused' && !!job.reloadAt && Date.now() - job.reloadAt < 60000,
-    autoHandoff: job.autoHandoff ? {auto: job.autoHandoff.auto === true, workspaceId: job.autoHandoff.workspaceId,
+    autoHandoff: job.autoHandoff ? {rs: job.autoHandoff.rs === true, auto: job.autoHandoff.auto === true, workspaceId: job.autoHandoff.workspaceId,
       workspaceName: job.autoHandoff.workspaceName || '',
       resolve: job.autoHandoff.resolve ? {status: String(job.autoHandoff.resolve.status || ''),
         message: String(job.autoHandoff.resolve.message || '').slice(0, 200)} : null} : null};
@@ -124,6 +124,7 @@ function controlGeometry(value) {
 export const PAUSE_REASONS = new Set(['user', 'submit_timeout', 'click_timeout', 'claim_timeout', 'otp_submit_timeout',
   'otp_wait', 'attempt_limit', 'retry_limit', 'profile_timeout', 'button_unavailable', 'no_submit_button', 'validation',
   'form_changed', 'fill_incomplete', 'user_edit', 'email_mismatch', 'email_unverified', 'identity_mismatch', 'desktop_session_missing',
+  'workspace_ambiguous', 'team_missing',
   'session_error', 'home_unconfirmed',
   'entry_missing', 'unknown_page', 'manual_step', 'captcha', 'phone', 'rate_limit', 'redraw', 'reload_failed',
   'debugger_detached', 'error', 'other', 'phone_pool_empty', 'phone_limit', 'phone_back_missing', 'phone_relay_error']);
@@ -197,7 +198,7 @@ export function publicBatch(batch) {
     attentionAt: Number(batch.attentionAt) || null, attentionReason: batch.attentionReason ? pauseReason(batch.attentionReason) : null,
     currentIndex: Number.isInteger(batch.currentIndex) ? batch.currentIndex : -1,
     windowId: Number.isInteger(batch.windowId) ? batch.windowId : null, hidePanel: batch.hidePanel === true,
-    handoffMode: ['auto', 'workspace', 'none'].includes(batch.handoffMode) ? batch.handoffMode : 'none',
+    handoffMode: ['rs', 'auto', 'workspace', 'none'].includes(batch.handoffMode) ? batch.handoffMode : 'none',
     workspaceId: Number.isInteger(batch.workspaceId) && batch.workspaceId > 0 ? batch.workspaceId : null,
     workspaceName: String(batch.workspaceName || '').slice(0, 120), counts, items,
   };

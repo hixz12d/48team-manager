@@ -48,7 +48,8 @@ const PHONE_TRIES = 3, SMS_WAIT = 90000, SMS_POLL = 5000;
 const PHONE_REASONS = {invalid: '不被 OpenAI 接受', recently_used: '刚被用过', risk: '收不到短信或被切到 WhatsApp',
   no_sms: '90 秒内没收到短信', wrong_code: '短信验证码被拒', lease_lost: '已不在本任务名下', cancelled: '提交后页面没有反应'};
 let phoneCalls = 0; // relay requests in flight; a new number is only requested when none is
-const phoneRelayEnabled = job => !!job && !job.phoneRelayOff && ['auto', 'review'].includes(job.mode || 'auto') &&
+const isRsDirectJob = job => job?.autoHandoff?.rs === true || job?.handoff?.rs === true;
+const phoneRelayEnabled = job => !!job && !job.phoneRelayOff && !isRsDirectJob(job) && ['auto', 'review'].includes(job.mode || 'auto') &&
   (RUNNER && job.runner ? job.runner.phonePool === true : !RUNNER && !!TEAM48);
 const phoneContext = job => ({id: job.id, session: job.id.replace(/-/g, '').toLowerCase(), email: job.email,
   workspaceId: Number(job.autoHandoff?.workspaceId || job.handoff?.workspaceId) || 0, phase: job.phase === 'oauth' ? 'oauth' : 'signup'});
@@ -442,6 +443,10 @@ function beginHandoff(job, workspaceId, workspaceName) {
   job.handoff = {status: 'syncing', workspaceId, workspaceName: String(workspaceName || '').slice(0, 120),
     startedAt: Date.now(), message: '正在同步团队成员…'};
 }
+function beginRsHandoff(job) {
+  job.handoff = {rs: true, status: 'syncing', workspaceId: null, workspaceName: 'codex-rs',
+    startedAt: Date.now(), message: '正在向服务器申请 rs 授权链接…'};
+}
 // ---- Automatic team: Team48 checks every team's live members and invites for this email. ----
 // The lookup starts with the signup, so its few seconds per team are normally over by the end.
 const resolveTasks = new Map();
@@ -511,6 +516,19 @@ function ensureHandoff() {
 function applyHandoff(job, result) {
   const handoff = job.handoff;
   if (handoff?.status !== 'syncing') return;
+  if (handoff.rs === true) {
+    if (result?.ok && result.state === 'authorize' && result.ticket) {
+      let url;
+      try { url = new URL(result.authorize_url); } catch { url = null; }
+      if (!url || !validAuthorizeUrl(url.href)) return failHandoff(job, '服务器返回的 rs 授权链接无效。');
+      Object.assign(handoff, {status: 'opening', ticket: String(result.ticket), authorizeUrl: url.href,
+        desktopAuth: isDesktopAuthorizeUrl(url.href), workspaceNames: [],
+        message: result.existing ? 'rs 已有该邮箱账号，正在打开授权页更新凭据' : '已分配 rs 代理，正在打开授权页面'});
+      return;
+    }
+    failHandoff(job, result?.message || '无法生成 rs 授权链接。', result?.error_code);
+    return;
+  }
   if (result?.ok && result.state === 'syncing' && result.operation_id) {
     handoff.syncOperationId = String(result.operation_id); handoff.message = '正在同步团队成员…';
     return;
@@ -555,18 +573,23 @@ async function runHandoff() {
       continue;
     }
     if (Date.now() - handoff.startedAt > SYNC_LIMIT + JOIN_WAIT) {
-      await patchJob(job.id, current => failHandoff(current, '团队同步超时，请到控制台检查母号授权后重试。'));
+      await patchJob(job.id, current => failHandoff(current, handoff.rs ? '申请 rs 授权链接超时，请稍后重试。' : '团队同步超时，请到控制台检查母号授权后重试。'));
       continue;
     }
     let result;
     try {
       const capability = await team48('/api/ext/ping');
-      if (capability.proxy_policy !== 'workspace_owner') throw new Error('服务器尚不支持母号代理接入，请先更新 48team 服务。');
-      result = await team48('/api/ext/handoff', {email: job.email, workspace_id: handoff.workspaceId,
-        proxy_policy: 'workspace_owner',
-        ...(handoff.syncOperationId ? {sync_operation_id: handoff.syncOperationId} : {}),
-        // Lets Team48 store the number that passed OpenAI's phone check on this account.
-        ...(job.phoneSuccess ? {phone_session: phoneContext(job).session} : {})});
+      if (handoff.rs === true) {
+        if (capability.rs_direct !== true) throw new Error('服务器尚未启用「直接接入 rs」接口，请先更新 48team 服务。');
+        result = await team48('/api/ext/rs/start', {email: job.email});
+      } else {
+        if (capability.proxy_policy !== 'workspace_owner') throw new Error('服务器尚不支持母号代理接入，请先更新 48team 服务。');
+        result = await team48('/api/ext/handoff', {email: job.email, workspace_id: handoff.workspaceId,
+          proxy_policy: 'workspace_owner',
+          ...(handoff.syncOperationId ? {sync_operation_id: handoff.syncOperationId} : {}),
+          // Lets Team48 store the number that passed OpenAI's phone check on this account.
+          ...(job.phoneSuccess ? {phone_session: phoneContext(job).session} : {})});
+      }
     } catch (error) {
       await patchJob(job.id, current => { if (current.handoff?.status === 'syncing') failHandoff(current, error.message); });
       continue;
@@ -579,7 +602,7 @@ async function openAuthorization(id) {
   const job = await serial(loadJob);
   if (job?.id !== id || job.handoff?.status !== 'opening') return;
   const fail = message => patchJob(id, current => { if (current.handoff?.status === 'opening') failHandoff(current, message); });
-  if (!job.runner && job.handoff.proxyPolicy !== 'workspace_owner') return fail('这次接入由旧版插件创建，请停止旧任务后重新接入以绑定母号代理。');
+  if (!job.runner && !job.handoff.rs && job.handoff.proxyPolicy !== 'workspace_owner') return fail('这次接入由旧版插件创建，请停止旧任务后重新接入以绑定母号代理。');
   let baseline = null;
   if (['auto', 'review'].includes(job.mode)) {
     // Snapshot the inbox first so only a fresh login code is ever used.
@@ -621,7 +644,7 @@ async function openAuthorization(id) {
       expiresAt: Date.now() + (current.mode === 'auto' ? RUN_TTL : 30 * 60 * 1000)});
     delete current.retryClaim; delete current.pendingCode; delete current.codeWaitSince;
     current.handoff.status = 'authorizing';
-    current.handoff.message = '正在授权；拿到回调后自动提交 Team48';
+    current.handoff.message = current.handoff.rs ? '正在授权；拿到回调后直接导入 codex-rs' : '正在授权；拿到回调后自动提交 Team48';
     recordEvent(current, 'oauth_started');
   });
   if (ready?.handoff?.status !== 'authorizing') return;
@@ -638,7 +661,7 @@ async function completeAuthorization(id) {
   const job = await serial(loadJob);
   const handoff = job?.handoff;
   if (job?.id !== id || handoff?.status !== 'completing') return;
-  if (handoff.proxyPolicy !== 'workspace_owner') {
+  if (!handoff.rs && handoff.proxyPolicy !== 'workspace_owner') {
     await patchJob(id, current => failHandoff(current, '旧授权未绑定母号代理，请重新接入，未提交回调。'));
     return;
   }
@@ -648,8 +671,10 @@ async function completeAuthorization(id) {
   }
   let result;
   try {
-    result = await team48('/api/ext/handoff/complete', {account_id: handoff.accountId, workspace_id: handoff.workspaceId,
-      ticket: handoff.ticket, callback_url: handoff.callbackUrl, push_sub2api: true, count_switch: true});
+    result = handoff.rs === true
+      ? await team48('/api/ext/rs/complete', {ticket: handoff.ticket, callback_url: handoff.callbackUrl})
+      : await team48('/api/ext/handoff/complete', {account_id: handoff.accountId, workspace_id: handoff.workspaceId,
+          ticket: handoff.ticket, callback_url: handoff.callbackUrl, push_sub2api: true, count_switch: true});
   } catch (error) {
     await patchJob(id, current => {
       if (current.handoff?.status !== 'completing') return;
@@ -662,13 +687,13 @@ async function completeAuthorization(id) {
     if (current.handoff?.status !== 'completing') return;
     if (!result?.ok) {
       const consumed = result?.error_code === 'callback_consumed';
-      failHandoff(current, consumed ? '回调已提交过一次；请到控制台确认该账号的授权状态。' : result?.message || '授权失败。', result?.error_code);
+      failHandoff(current, consumed ? '回调已提交过一次；请确认该账号的授权状态。' : result?.message || '授权失败。', result?.error_code);
       return;
     }
     Object.assign(current.handoff, {status: 'done', message: String(result.message || '授权完成'), followups: result.followups || {}});
     delete current.handoff.ticket; delete current.handoff.authorizeUrl; delete current.handoff.callbackUrl;
     if (current.codexResult !== 'phone_required') current.codexResult = 'no_phone';
-    current.message = '已完成授权并提交 Team48。';
+    current.message = current.handoff.rs ? current.handoff.message : '已完成授权并提交 Team48。';
   });
 }
 function captureCallback(tabId, url) {
@@ -677,7 +702,7 @@ function captureCallback(tabId, url) {
     const job = await loadJob();
     if (!job || job.tabId !== tabId || job.phase !== 'oauth' || job.handoff?.status !== 'authorizing') return false;
     const server = !!RUNNER && !!job.runner;
-    const text = server ? '已拿到授权回调，正在提交服务器' : '已拿到授权回调，正在提交 Team48';
+    const text = server ? '已拿到授权回调，正在提交服务器' : job.handoff.rs ? '已拿到授权回调，正在导入 codex-rs' : '已拿到授权回调，正在提交 Team48';
     Object.assign(job.handoff, {status: 'completing', callbackUrl: url, message: text});
     job.status = 'done'; job.stage = 'consent'; job.message = text;
     delete job.baseline; delete job.pendingCode;
@@ -704,13 +729,14 @@ function finishSignup(job, verified, event) {
   job.emailVerified = typeof verified === 'boolean' ? verified : null;
   recordEvent(job, event, {verified: job.emailVerified});
   job.status = 'done';
-  job.message = event === 'manual_complete' ? '你已确认注册完成；Team48 授权时仍会核对登录邮箱。' :
+  job.message = event === 'manual_complete' ? '你已确认注册完成；授权时仍会核对登录邮箱。' :
     '已确认目标邮箱登录 ChatGPT；后续 Codex 验证要求需在授权时确认。';
   delete job.baseline; delete job.pendingCode; delete job.retryClaim;
   if (!phoneSucceeded(job)) releasePhone(job);
   const auto = job.autoHandoff;
   if (!auto || !TEAM48 || job.handoff) return;
-  if (!auto.auto || auto.resolve?.status === 'found') beginHandoff(job, auto.workspaceId, auto.workspaceName);
+  if (auto.rs === true) beginRsHandoff(job);
+  else if (!auto.auto || auto.resolve?.status === 'found') beginHandoff(job, auto.workspaceId, auto.workspaceName);
   else job.handoff = {status: 'resolving', startedAt: Date.now(), message: '正在识别邀请这个邮箱的团队…'};
 }
 
@@ -792,8 +818,8 @@ async function startJob({email: rawEmail, mode: rawMode, profile: rawProfile, hi
   if (job && ACTIVE.has(job.status)) throw new Error('已有任务，请先停止当前注册。');
   if (HANDOFF_ACTIVE.has(job?.handoff?.status)) throw new Error('上一个账号仍在接入 Team48，请等待完成。');
   if (job?.handoff?.status === 'callback_retry') throw new Error('上一个账号的授权回调尚未提交，请先重新提交或清除。');
-  const autoHandoff = server || !TEAM48 ? null : handoff?.auto === true ?
-    {auto: true, workspaceId: null, workspaceName: '', resolve: {status: 'resolving', message: '正在识别团队…'}} :
+  const autoHandoff = server || !TEAM48 ? null : handoff?.rs === true ? {rs: true} :
+    handoff?.auto === true ? {auto: true, workspaceId: null, workspaceName: '', resolve: {status: 'resolving', message: '正在识别团队…'}} :
     Number.isInteger(Number(handoff?.workspaceId)) && Number(handoff.workspaceId) > 0 ?
       {workspaceId: Number(handoff.workspaceId), workspaceName: String(handoff.workspaceName || '').slice(0, 120)} : null;
   const email = String(rawEmail || '').trim().toLowerCase();
@@ -872,10 +898,14 @@ async function popupMessage(message, sender) {
   if (message.type === 'handoff-start') {
     if (!TEAM48) throw new Error('插件未配置 Team48 地址和令牌。');
     if (HANDOFF_ACTIVE.has(job.handoff?.status) || ACTIVE.has(job.status)) throw new Error('授权进行中，请等待完成或先停止。');
-    if (job.status !== 'done' && job.phase !== 'oauth') throw new Error('请在注册完成后再接入 Team48。');
-    const workspaceId = Number(message.workspaceId);
-    if (!Number.isInteger(workspaceId) || workspaceId <= 0) throw new Error('请选择团队。');
-    beginHandoff(job, workspaceId, message.workspaceName);
+    if (job.status !== 'done' && job.phase !== 'oauth') throw new Error('请在注册完成后再接入。');
+    if (message.rs === true) {
+      beginRsHandoff(job);
+    } else {
+      const workspaceId = Number(message.workspaceId);
+      if (!Number.isInteger(workspaceId) || workspaceId <= 0) throw new Error('请选择接入方式。');
+      beginHandoff(job, workspaceId, message.workspaceName);
+    }
     await saveJob(job);
     ensureHandoff();
     return {};
@@ -955,6 +985,7 @@ async function contentMessage(message, sender) {
       workspaceNames: job.phase === 'oauth' ? job.handoff?.workspaceNames || [] :
         job.runner ? job.runner.workspaceNames || [] : [job.autoHandoff?.workspaceName].filter(Boolean),
       workspacePending: job.autoHandoff?.resolve?.status === 'resolving',
+      pickSingleTeam: isRsDirectJob(job),
       phoneRelay: phoneRelayEnabled(job),
       ...(job.status === 'paused' ? {pausedStage: job.pausedStage || job.stage, reloadAt: job.reloadAt || 0,
         autoResume: AUTO_RESUME_REASONS.has(job.pauseReason), autoRetry: autoRetryAllowed(job)} : {})};

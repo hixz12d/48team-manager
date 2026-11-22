@@ -127,11 +127,12 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 - extension 托管桥：`signup.py`、`signup_state.py`、`signup_readiness.py`、`signup_input.py`、`signup_bridge.js`。在隔离环境注入插件 `content.js`，输入走 CDP `Input.dispatch*` / `insertText`（真实事件），验证码在 Python 侧读取。主页可操作并两次确认登录邮箱才算完成；主页 30 秒仍未稳定时，若目标邮箱登录态已间隔确认两次，就带登录态交给官方入组 / 角色席位核对后再同页授权（截图存 `data/debug/<时间>/home-not-ready.png`，`signup_diagnostics.home_not_ready` 记各就绪条件），否则返回 `registration_home_not_ready`。
 - 注册、入组确认、OAuth 共用同一进程、页面和代理（`InvitedBrowserSession`），全程占用全局浏览器槽。
 
-### 插件接口（`web/routes/extension.py`、`application/member_handoff.py`）
+### 插件接口（`web/routes/extension.py`、`application/extension_rs.py`、`application/member_handoff.py`）
 
-- 本机插件通过 `/ping` 的 `proxy_policy=workspace_owner` 确认能力，`/handoff` 带同名策略并要求授权响应确认。`workspace_proxy.bind_workspace_proxy` 在写锁内检查绑定、刷新租约和未完成授权，复制所选团队母号代理到子号；`reauth` 换票使用 `OAuthSession` 代理快照并核对账号配置未变化。首次 rs 导入用 `/api/admin/proxies/probe` 检测 IPv4 后传 `outboundProxyUrl`，不再随机选代理；凭据提交同时检查代理字段未变化。
+- 默认直通 rs 路径（`extension_rs.py`，`/ping` 声明 `rs_direct=true`）：`POST /rs/start` 不查本地团队，若 `codex-rs` 已有唯一同邮箱账号则沿用其代理（无代理或新号则用 `codex_rs_onboard._pick_proxy` 挑启用、测试通过、挂号最少的 rs 代理），创建桌面版 `OAuthSession`（`purpose="extension_rs"`）；`POST /rs/complete` 用 `FrozenProxyClient` 经该代理换票，核对邮箱、RT 及 `TEAM_PLAN_TYPES` 套餐后直接写入 `codex-rs`（同邮箱旧号覆盖凭据并用 `_restore_settings` 保留原分组 / 代理 / 并发 / 权重，新号带 `load_codex_rs_import_defaults` + `proxy_id`），不建本地账号与 `codex_bindings`。插件侧 `pickSingleTeam=true` 在入组页与授权页排除个人空间后盲选唯一 Team，≥2 个 Team（`workspace_ambiguous`）或仅个人空间（`team_missing`）立即停止，且直通 rs 模式关闭号码池自动接码。
+- 备用查团队路径（`member_handoff.py`，`/ping` 声明 `proxy_policy=workspace_owner`）：`/handoff` 带同名策略并要求授权响应确认。`workspace_proxy.bind_workspace_proxy` 在写锁内检查绑定、刷新租约和未完成授权，复制所选团队母号代理到子号；`reauth` 换票使用 `OAuthSession` 代理快照并核对账号配置未变化。首次 rs 导入用 `/api/admin/proxies/probe` 检测 IPv4 后传 `outboundProxyUrl`；凭据提交同时检查代理字段未变化。
 
-`EXTENSION_API_TOKEN` 做 Bearer 鉴权，少于 24 位时 `/api/ext/*` 全部 404，不接受管理员会话。接口：`GET /ping`、`GET /workspaces`、`POST /resolve`（单团队 20 秒、总 60 秒）、`POST /phone`（接码，请求体 ≤ 4KB）、`POST /handoff`（可带 `phone_session`，接入时把成功的号码和接码链接写到账号）、`POST /handoff/complete`（推送去向读 `auth_push_target`，结果在 `followups.sub2api` 或 `followups.codex_rs`）。
+`EXTENSION_API_TOKEN` 做 Bearer 鉴权，少于 24 位时 `/api/ext/*` 全部 404，不接受管理员会话。接口：`GET /ping`、`POST /rs/start`、`POST /rs/complete`、`GET /workspaces`、`POST /resolve`（单团队 20 秒、总 60 秒）、`POST /phone`（接码，请求体 ≤ 4KB）、`POST /handoff`（可带 `phone_session`）、`POST /handoff/complete`（推送去向读 `auth_push_target`，结果在 `followups.sub2api` 或 `followups.codex_rs`）。
 
 ### codex-rs 导入（`application/codex_publish.py`、`integrations/codex/client.py`）
 

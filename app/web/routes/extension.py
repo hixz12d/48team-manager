@@ -22,6 +22,8 @@ from app.web.schemas.workspaces import (
     ExtensionHandoffRequest,
     ExtensionPhoneRequest,
     ExtensionResolveRequest,
+    ExtensionRsCompleteRequest,
+    ExtensionRsStartRequest,
 )
 
 MIN_TOKEN_LENGTH = 24
@@ -59,7 +61,25 @@ def build_extension_router(get_db, settings: Settings) -> APIRouter:
 
     @router.get("/ping")
     async def ping(_: None = Depends(require_extension)) -> dict:
-        return {"ok": True, "proxy_policy": "workspace_owner"}
+        return {"ok": True, "proxy_policy": "workspace_owner", "rs_direct": True}
+
+    @router.post("/rs/start")
+    async def rs_start(
+        payload: ExtensionRsStartRequest,
+        _: None = Depends(require_extension),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        from app.application.extension_rs import start_extension_rs_auth
+        return await start_extension_rs_auth(db, email=payload.email)
+
+    @router.post("/rs/complete")
+    async def rs_complete(
+        payload: ExtensionRsCompleteRequest,
+        _: None = Depends(require_extension),
+        db: AsyncSession = Depends(get_db),
+    ) -> dict:
+        from app.application.extension_rs import complete_extension_rs_auth
+        return await complete_extension_rs_auth(db, ticket=payload.ticket, callback_url=payload.callback_url)
 
     @router.get("/workspaces")
     async def workspaces(_: None = Depends(require_extension), db: AsyncSession = Depends(get_db)) -> dict:

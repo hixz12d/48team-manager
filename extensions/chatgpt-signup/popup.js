@@ -61,34 +61,69 @@ const ATTENTION_TITLES = {
   user_edit: '检测到人工修改页面，已暂停',
   debugger_detached: '页面调试连接已断开，请查看窗口',
 };
-const LAST_WORKSPACE = 'team48:last-workspace';
+const LAST_WORKSPACE = 'team48:last-handoff-v2';
+const RS_DIRECT = 'rs';
 const AUTO_TEAM = 'auto';
+const HINT_RS_DIRECT = '默认不查 Team48 团队：网页遇到工作空间选择时只有 1 个 Team 自动点选，有 2 个及以上立即停止；注册完成后直接在本页授权并导入 codex-rs（已存在则覆盖更新凭据并保留原设置），遇手机验证暂停交人工。';
+const HINT_TEAM_AUTO = '开始注册就在后台查询哪个团队邀请了这个邮箱，注册完成后自动：同步团队 → 接入本地 → 在本页授权 → 推送（按 Team48 设置推到 Sub2API 或 codex-rs）→ 今日切换 +1。邀请需已发出。';
+const HINT_TEAM_FIXED = '注册完成后自动：同步所选团队 → 接入本地 → 在本页授权 → 推送（按 Team48 设置推到 Sub2API 或 codex-rs）→ 今日切换 +1。';
+const HINT_NONE = '只完成 ChatGPT 注册，不自动发起授权或接入。';
 
-function fillWorkspaceSelect(select, empty, withAuto = false) {
-  const keep = select.value || localStorage.getItem(LAST_WORKSPACE) || (withAuto ? AUTO_TEAM : '');
-  select.replaceChildren(new Option(workspaceError || empty, ''));
-  if (withAuto && !workspaceError) select.add(new Option('自动识别邀请的团队（推荐）', AUTO_TEAM));
+function renderAutoHints() {
+  const hintFor = value => value === RS_DIRECT ? HINT_RS_DIRECT : value === AUTO_TEAM ? HINT_TEAM_AUTO : value ? HINT_TEAM_FIXED : HINT_NONE;
+  if ($('batch-auto-hint')) $('batch-auto-hint').textContent = hintFor($('batch-auto-workspace').value);
+  if ($('single-auto-hint')) $('single-auto-hint').textContent = hintFor($('auto-workspace').value);
+}
+
+function fillWorkspaceSelect(select, empty, {withAuto = false, withRs = false} = {}) {
+  const saved = localStorage.getItem(LAST_WORKSPACE);
+  let wanted;
+  if (select.dataset.ready === '1') wanted = select.value;
+  else if (saved === 'none') wanted = '';
+  else if (saved) wanted = saved;
+  else wanted = withRs ? RS_DIRECT : withAuto ? AUTO_TEAM : '';
+  select.replaceChildren(new Option(empty, ''));
+  if (withRs) select.add(new Option('直接授权接入 rs（不查团队，推荐）', RS_DIRECT));
+  if (withAuto && !workspaceError) select.add(new Option('查 Team48 团队并接入', AUTO_TEAM));
   for (const item of workspaces || []) select.add(new Option(item.name, String(item.id)));
-  select.value = [...select.options].some(option => option.value === keep) ? keep : '';
+  select.value = [...select.options].some(option => option.value === wanted) ? wanted : (withRs && saved !== 'none' ? RS_DIRECT : '');
+  select.dataset.ready = '1';
+}
+function fillAllSelects() {
+  fillWorkspaceSelect($('auto-workspace'), '不自动接入', {withAuto: true, withRs: true});
+  fillWorkspaceSelect($('batch-auto-workspace'), '不自动接入', {withAuto: true, withRs: true});
+  fillWorkspaceSelect($('handoff-workspace'), workspaceError || '选择接入方式…', {withRs: true});
+  renderAutoHints();
 }
 async function loadWorkspaces() {
-  if (!team48 || workspaces || Date.now() < workspacesRetryAt) return;
+  if (!team48) return;
+  if (!$('auto-workspace').dataset.ready) fillAllSelects();
+  if (workspaces || Date.now() < workspacesRetryAt) return;
   workspaces = [];
   try { workspaces = (await request('workspaces')).items; workspaceError = ''; }
   catch (error) { workspaces = null; workspaceError = error.message; workspacesRetryAt = Date.now() + 15000; }
-  fillWorkspaceSelect($('auto-workspace'), '不自动接入', true);
-  fillWorkspaceSelect($('batch-auto-workspace'), '不自动接入', true);
-  fillWorkspaceSelect($('handoff-workspace'), '选择团队…');
+  fillAllSelects();
 }
 const chosenWorkspace = select => {
   const item = (workspaces || []).find(entry => String(entry.id) === select.value);
   return item ? {workspaceId: item.id, workspaceName: item.name} : null;
 };
+const selectedHandoff = select => {
+  if (!team48) return null;
+  if (select.value === RS_DIRECT) return {rs: true};
+  if (select.value === AUTO_TEAM) return {auto: true};
+  return chosenWorkspace(select);
+};
+function rememberHandoffChoice(val) {
+  if (!team48) return;
+  localStorage.setItem(LAST_WORKSPACE, val || 'none');
+}
 function syncWorkspaceChoice(source, target) {
   if (!team48) return;
   const val = source.value;
-  localStorage.setItem(LAST_WORKSPACE, val || 'none');
+  rememberHandoffChoice(val);
   if ([...target.options].some(option => option.value === val)) target.value = val;
+  renderAutoHints();
 }
 function syncHidePanel(checked) {
   localStorage.setItem('hidePanel', String(checked));
@@ -170,10 +205,13 @@ function renderHandoff(job) {
   box.hidden = !eligible;
   if (!eligible) return;
   const status = handoff?.status || 'idle';
+  const isRs = handoff?.rs === true;
   box.dataset.status = status;
-  $('handoff-title').textContent = HANDOFF_TITLES[status] || '接入 Team48';
+  const rsTitles = {syncing: '正在准备 rs 授权', opening: '正在打开授权页', authorizing: '正在授权',
+    completing: '正在导入 codex-rs', done: '已接入 codex-rs', failed: '接入未完成', callback_retry: '回调待重新提交'};
+  $('handoff-title').textContent = (isRs ? rsTitles[status] : HANDOFF_TITLES[status]) || '授权与接入';
   $('handoff-team').textContent = handoff?.workspaceName || '';
-  $('handoff-message').textContent = handoff?.message || '选择团队后自动：同步 → 接入本地 → 授权 → 推送（按 Team48 设置推到 Sub2API 或 codex-rs）→ 今日切换 +1。';
+  $('handoff-message').textContent = handoff?.message || '默认选「直接授权接入 rs（不查团队）」即可在本页完成授权并导入 codex-rs；也可选择具体 Team48 团队接入。';
   const steps = $('handoff-steps');
   const rows = status === 'done' ? [['授权', {ok: true, message: handoff.message}], ['Sub2API', handoff.followups?.sub2api],
     ['codex-rs', handoff.followups?.codexRs], ['切换次数', handoff.followups?.switchCount]].filter(([, step]) => step) : [];
@@ -429,7 +467,8 @@ function renderBatch(batch) {
   const done = c.succeeded + c.failed + c.skipped;
   $('batch-counts').textContent = `已完成 ${done} / 总计 ${c.total} · 成功 ${c.succeeded} · 失败 ${c.failed} · 跳过 ${c.skipped}${c.stopped ? ` · 已停 ${c.stopped}` : ''}`;
 
-  const handoffText = batch.handoffMode === 'auto' ? '自动接入：自动识别邀请团队' :
+  const handoffText = batch.handoffMode === 'rs' ? '自动接入：直接授权接入 rs（不查团队）' :
+    batch.handoffMode === 'auto' ? '自动接入：查 Team48 团队并接入' :
     batch.handoffMode === 'workspace' ? `自动接入：${batch.workspaceName || '指定团队'}` : '';
   $('batch-meta').hidden = !handoffText;
   $('batch-meta').textContent = handoffText;
@@ -536,9 +575,8 @@ $('batch-form').addEventListener('submit', event => {
     showFeedback('请先在 chrome://extensions 开启「允许在无痕模式下运行」。', true);
     return;
   }
-  const automatic = team48 && $('batch-auto-workspace').value === AUTO_TEAM;
-  const handoff = automatic ? {auto: true} : team48 ? chosenWorkspace($('batch-auto-workspace')) : null;
-  if (team48) localStorage.setItem(LAST_WORKSPACE, automatic ? AUTO_TEAM : String(handoff?.workspaceId || 'none'));
+  const handoff = selectedHandoff($('batch-auto-workspace'));
+  rememberHandoffChoice($('batch-auto-workspace').value);
   const emailsText = $('batch-emails').value;
   const hidePanel = $('batch-hide-panel').checked;
   act(async () => {
@@ -582,9 +620,8 @@ $('batch-items').addEventListener('click', event => {
 $('register').addEventListener('submit', event => {
   event.preventDefault();
   const mode = $('workflow').value;
-  const automatic = team48 && $('auto-workspace').value === AUTO_TEAM;
-  const handoff = automatic ? {auto: true} : team48 ? chosenWorkspace($('auto-workspace')) : null;
-  if (team48) localStorage.setItem(LAST_WORKSPACE, automatic ? AUTO_TEAM : String(handoff?.workspaceId || 'none'));
+  const handoff = selectedHandoff($('auto-workspace'));
+  rememberHandoffChoice($('auto-workspace').value);
   act(() => request('start', {email: $('email').value, mode, hidePanel: !$('hide-panel').disabled && $('hide-panel').checked,
     profile: ['auto', 'review'].includes(mode) ? {name: $('profile-name').value, birthday: $('profile-birthday').value} : undefined,
     handoff}));
@@ -593,9 +630,15 @@ $('auto-workspace').addEventListener('change', () => syncWorkspaceChoice($('auto
 $('batch-auto-workspace').addEventListener('change', () => syncWorkspaceChoice($('batch-auto-workspace'), $('auto-workspace')));
 $('handoff-workspace').addEventListener('change', () => renderHandoff(currentJob));
 $('handoff-start').addEventListener('click', () => {
+  const val = $('handoff-workspace').value;
+  if (val === RS_DIRECT) {
+    rememberHandoffChoice(RS_DIRECT);
+    act(() => request('handoff-start', {rs: true}));
+    return;
+  }
   const choice = chosenWorkspace($('handoff-workspace'));
   if (!choice) return;
-  localStorage.setItem(LAST_WORKSPACE, String(choice.workspaceId));
+  rememberHandoffChoice(String(choice.workspaceId));
   act(() => request('handoff-start', choice));
 });
 $('handoff-retry').addEventListener('click', () => act(() => request('handoff-retry')));

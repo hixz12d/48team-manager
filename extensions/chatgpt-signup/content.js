@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.10.0';
+  const VERSION = '0.11.0';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;
@@ -1297,9 +1297,163 @@
     return matches.find(node => !matches.some(other => other !== node && node.contains(other)));
   }
   let pickedOn = '', pickedAt = 0;
+  let singleTeamPickedOn = '', singleTeamPickedAt = 0, teamMissingSince = 0, inviteClickedKey = '', inviteClicks = 0;
   const workspaceNames = () => (job.workspaceNames || []).map(name => String(name).trim().toLowerCase()).filter(Boolean);
   // "Choose a workspace" lists clickable rows and has no Continue button of its own.
-  const chooserPage = (text, path) => /workspace|organization/.test(path) || /choose a workspace|select a workspace|选择工作空间|选择一个工作空间/.test(text);
+  const chooserPage = (text, path) => /workspace|organization/.test(path) ||
+    /choose a workspace|select a workspace|choose an organization|select an organization|which workspace|选择工作空间|选择一个工作空间|选择组织/.test(text);
+  const WS_SKIP_EXACT = new Set([
+    'continue', 'confirm', 'allow', 'authorize', 'accept', 'next', 'ok', 'okay', "okay, let's go", 'okay, let’s go',
+    'get started', 'submit', 'join', 'join workspace', 'accept invite', 'accept invitation', 'cancel', 'deny', 'decline',
+    'back', 'go back', 'close', 'done', 'skip', 'skip for now', 'not now', 'maybe later', 'log in', 'login', 'sign in',
+    'sign up', 'log out', 'logout', 'sign out', 'switch account', 'use another account', 'use a different account',
+    'sign in with another account', 'log in with another account', 'try again', 'learn more', 'help', 'terms of use',
+    'privacy policy', '继续', '确认', '允许', '授权', '接受', '下一步', '开始使用', '接受邀请', '加入工作空间', '取消',
+    '拒绝', '返回', '关闭', '完成', '跳过', '暂时跳过', '登录', '退出', '退出登录', '切换账号', '切换账户',
+    '使用其他账号', '使用其他账户',
+  ]);
+  const WS_SKIP_SUB = [
+    'continue with ', 'sign in with ', 'log in with ', 'use another', 'use a different',
+    'switch account', 'log out', 'sign out', 'create a workspace', 'create workspace',
+    'new workspace', 'privacy policy', 'terms of use', 'cookie',
+  ];
+  const isWsActionOrChrome = label => {
+    const low = label.toLowerCase();
+    if (!low || extractEmails(low).length > 0 || SWITCH_ACCOUNT.test(low)) return true;
+    if (WS_SKIP_EXACT.has(low)) return true;
+    return WS_SKIP_SUB.some(sub => low.includes(sub));
+  };
+  const isPersonalWorkspace = label => /\bpersonal\b|个人账[户号]?|个人空间/i.test(label);
+  const isOptionSelected = node => node.getAttribute('aria-checked') === 'true' ||
+    node.getAttribute('aria-selected') === 'true' || node.getAttribute('data-state') === 'checked' ||
+    !!node.querySelector?.('input[type="radio"]:checked');
+  function inspectSingleTeamChoices(text, path) {
+    const isChooser = chooserPage(text, path);
+    if (/introduce yourself|your role|profile handle/.test(text) && !isChooser) return {kind: 'none'};
+    const dialogs = all('[role="dialog"],dialog[open],[aria-modal="true"]').filter(node => !node.closest('#team48-signup-progress'));
+    const dialog = dialogs.at(-1) || null;
+    const root = dialog || document.querySelector('main') || document.body || document.documentElement;
+    if (!root) return {kind: 'none'};
+    const inChrome = node => !!node.closest('#team48-signup-progress') || (!dialog && !!node.closest('nav,aside,header,footer'));
+    const norm = node => String(node.innerText || node.getAttribute('aria-label') || node.value || '').replace(/\s+/g, ' ').trim();
+    let candidates = [];
+    for (const radio of root.querySelectorAll('input[type="radio"]')) {
+      const target = radio.closest('label') || radio.closest('[role="radio"]') || (visible(radio) ? radio : null);
+      if (target && visible(target) && !inChrome(target) && !candidates.includes(target)) candidates.push(target);
+    }
+    for (const el of root.querySelectorAll('[role="radio"],[role="option"],[role="menuitemradio"]')) {
+      if (!visible(el) || inChrome(el)) continue;
+      if (candidates.some(c => c === el || c.contains(el) || el.contains(c))) continue;
+      candidates.push(el);
+    }
+    const explicitChoices = candidates.length > 0;
+    const maxLen = explicitChoices ? 180 : 100;
+    if (!explicitChoices) {
+      if (!isChooser) return {kind: 'none'};
+      const raw = [...root.querySelectorAll('button,[role="listitem"],[role="button"],li,a')]
+        .filter(el => visible(el) && enabled(el) && !inChrome(el));
+      candidates = raw.filter(el => {
+        if (raw.some(other => other !== el && (
+          el.tagName === 'BUTTON' ? other.tagName === 'BUTTON' && el.contains(other)
+            : (el.contains(other) || (other.tagName === 'BUTTON' && other.contains(el)))
+        ))) return false;
+        for (const childBtn of el.querySelectorAll('button')) {
+          if (childBtn !== el && visible(childBtn) && WS_SKIP_EXACT.has(norm(childBtn).toLowerCase())) return false;
+        }
+        return true;
+      });
+    }
+    const valid = [];
+    for (const el of candidates) {
+      const label = norm(el);
+      if (!label || label.length > maxLen || isWsActionOrChrome(label)) continue;
+      valid.push({el, personal: isPersonalWorkspace(label), selected: isOptionSelected(el)});
+    }
+    if (!valid.length) return {kind: isChooser ? 'wait' : 'none'};
+    const teams = valid.filter(item => !item.personal);
+    const personals = valid.filter(item => item.personal);
+    if (teams.length > 1) return {kind: 'ambiguous', count: teams.length};
+    if (teams.length === 0) return personals.length > 0 ? {kind: 'team_missing'} : {kind: isChooser ? 'wait' : 'none'};
+    return {kind: 'pick', target: teams[0].el, selected: teams[0].selected};
+  }
+  async function runSingleTeamPicker(text, path, approve = null) {
+    const choice = inspectSingleTeamChoices(text, path);
+    if (choice.kind === 'none') { teamMissingSince = 0; return 'none'; }
+    unknownSince = clock();
+    if (choice.kind === 'ambiguous') {
+      teamMissingSince = 0;
+      await pause(`网页检测到 ${choice.count} 个 Team 工作空间，已停止自动接入，以免选错团队。`, 'workspace_ambiguous');
+      return 'handled';
+    }
+    if (choice.kind === 'team_missing') {
+      teamMissingSince ||= clock();
+      if (clock() - teamMissingSince < 1800) {
+        renderProgress({...job, message: '正在确认工作空间列表…'});
+        return 'handled';
+      }
+      await pause('网页只有个人空间（Personal），未看到任何 Team 工作空间，已停止接入。', 'team_missing');
+      return 'handled';
+    }
+    teamMissingSince = 0;
+    if (!autoFill() || job.mode !== 'auto') {
+      renderProgress({...job, message: '请在网页选择目标 Team 工作空间并继续。'});
+      return 'handled';
+    }
+    if (choice.kind === 'wait') {
+      singleTeamPickedAt ||= clock();
+      if (clock() - singleTeamPickedAt > 20000) {
+        await pause('工作空间选择页等待 20 秒仍未加载出选项，请检查网页后继续。', 'manual_step');
+      } else {
+        renderProgress({...job, message: '等待工作空间列表加载…'});
+      }
+      return 'handled';
+    }
+    if (choice.selected && approve && approve !== choice.target && enabled(approve)) return 'ready_approve';
+    if (singleTeamPickedOn !== location.pathname) {
+      renderProgress({...job, message: '检测到唯一 Team 工作空间，正在自动点选。'});
+      if (!enabled(choice.target)) return 'handled';
+      if (await clickControl(choice.target)) {
+        singleTeamPickedOn = location.pathname;
+        singleTeamPickedAt = clock();
+      }
+      await rest(600, 1000);
+      return 'handled';
+    }
+    if (approve && approve !== choice.target && enabled(approve)) return 'ready_approve';
+    if (clock() - singleTeamPickedAt > 20000) {
+      await pause('已点选唯一 Team 工作空间，但页面 20 秒没有前进，请检查网页后继续。', 'manual_step');
+      return 'handled';
+    }
+    renderProgress({...job, message: '已选择唯一 Team 工作空间，等待页面进入下一步。'});
+    return 'handled';
+  }
+  async function onboardingInviteStep() {
+    if (!autoFill() || job.mode !== 'auto' || inviteClicks >= 3) return false;
+    const dialogs = all('[role="dialog"],dialog[open],[aria-modal="true"]').filter(node => !node.closest('#team48-signup-progress'));
+    const scope = dialogs.at(-1) || document;
+    const target = [...scope.querySelectorAll('button,a,[role="button"]')].find(el => {
+      if (!visible(el) || !enabled(el) || el.closest('#team48-signup-progress')) return false;
+      if (!dialogs.length && el.closest('nav,aside,header,footer')) return false;
+      const label = (el.innerText || el.getAttribute('aria-label') || '').trim();
+      return /^(accept invite|accept invitation|join workspace|okay, let['’]s go|接受邀请|加入工作空间|开始使用)$/i.test(label);
+    });
+    if (!target) return false;
+    const key = `${location.pathname}:${(target.innerText || target.getAttribute('aria-label') || '').trim().toLowerCase()}`;
+    if (key === inviteClickedKey) return false;
+    unknownSince = clock();
+    const checkbox = [...scope.querySelectorAll('input[type="checkbox"]')].find(box => visible(box) && enabled(box) && !box.checked);
+    if (checkbox) {
+      await clickControl(checkbox);
+      await rest(300, 600);
+    }
+    renderProgress({...job, message: '正在接受团队邀请进入工作空间。'});
+    if (await clickControl(target)) {
+      inviteClickedKey = key;
+      inviteClicks++;
+      await rest(1000, 1600);
+    }
+    return true;
+  }
   async function pickWorkspace(names) {
     const target = workspaceChoice(names);
     if (!target) {
@@ -1314,6 +1468,18 @@
   }
   // Signup can also end on the chooser (the invited team next to Personal account): pick the team.
   async function signupWorkspace(text, path) {
+    if (job.pickSingleTeam) {
+      if (!chooserPage(text, path)) return false;
+      const approve = button(/^(continue|confirm|accept invite|join workspace|get started|okay, let['’]s go|继续|确认|接受邀请|加入工作空间|开始使用)$/i);
+      const outcome = await runSingleTeamPicker(text, path, approve);
+      if (outcome === 'none') return false;
+      if (outcome === 'ready_approve' && approve && enabled(approve)) {
+        renderProgress({...job, message: '确认进入所选 Team 工作空间。'});
+        await clickControl(approve);
+        await rest(600, 1000);
+      }
+      return true;
+    }
     if (!chooserPage(text, path) || !/personal account|个人帐户|个人账户/.test(text)) return false;
     unknownSince = clock();
     const names = workspaceNames();
@@ -1334,10 +1500,22 @@
   async function oauthPage(text, path) {
     const names = workspaceNames();
     const approve = button(/^(continue|allow|authorize|accept|confirm|继续|允许|授权|确认)$/i);
-    const approval = /consent|authorize|workspace|organization/.test(path) || /codex/.test(text) || desktopAuthPage(path);
+    const inviteBtn = job.pickSingleTeam ? button(/^(accept invite|accept invitation|join workspace|接受邀请|加入工作空间)$/i) : null;
+    const approval = /consent|authorize|workspace|organization/.test(path) || /codex/.test(text) || desktopAuthPage(path) || !!inviteBtn;
     const chooser = chooserPage(text, path);
     if (!chooser && accountChooserPage(text, path)) {
       if (await pickDesktopAccount(text, approve) === 'handled') return true;
+    }
+    if (inviteBtn && enabled(inviteBtn) && autoFill() && job.mode === 'auto') {
+      const key = `oauth:${location.pathname}:${(inviteBtn.innerText || '').trim().toLowerCase()}`;
+      if (key !== inviteClickedKey && inviteClicks < 3) {
+        unknownSince = clock();
+        currentStage = 'consent';
+        renderProgress({...job, message: '正在接受团队邀请进入工作空间。'});
+        if (await clickControl(inviteBtn)) { inviteClickedKey = key; inviteClicks++; }
+        await rest(800, 1400);
+        return true;
+      }
     }
     if ((!approve || !approval) && !chooser) {
       const login = button(/^(log in|continue with password|使用密码继续|登录)$/i);
@@ -1356,19 +1534,22 @@
     unknownSince = clock();
     currentStage = 'consent';
     if (!autoFill()) {
-      renderProgress({...job, message: '请在网页选择团队并确认授权；拿到回调后插件会自动提交 Team48。'});
+      renderProgress({...job, message: '请在网页选择团队并确认授权；拿到回调后插件会自动提交。'});
       return true;
     }
     // A team chooser has selectable options or a workspace path; consent text alone is not one.
     const picker = chooser ||
       all('[role="radio"],[role="option"],[role="menuitemradio"],input[type="radio"]').length > 1;
-    if (picker && names.length && pickedOn !== location.pathname) {
+    if (picker && job.pickSingleTeam && !names.length) {
+      const outcome = await runSingleTeamPicker(text, path, approve);
+      if (outcome === 'handled') return true;
+    } else if (picker && names.length && pickedOn !== location.pathname) {
       // Same rule as the project's browser runner: click the team's name once, then approve.
       await pickWorkspace(names);
       return true;
     }
     if (!enabled(approve)) {
-      if (chooser && !names.length) {
+      if (chooser && !names.length && !job.pickSingleTeam) {
         await pause('授权页需要选择团队，但这次接入没有团队名称，请在网页手动选择后点击插件中的继续。', 'manual_step');
         return true;
       }
@@ -1377,7 +1558,7 @@
         await pause('已点选团队，但页面 20 秒没有前进，请在网页手动选择该团队后点击插件中的继续。', 'manual_step');
         return true;
       }
-      renderProgress({...job, message: chooser && pickedOn === location.pathname ? '已选择团队，等待页面进入授权确认。' : '等待授权按钮可用。'});
+      renderProgress({...job, message: chooser && (pickedOn === location.pathname || singleTeamPickedOn === location.pathname) ? '已选择团队，等待页面进入授权确认。' : '等待授权按钮可用。'});
       return true;
     }
     if (job.mode === 'review') {
@@ -1845,6 +2026,8 @@
       resumeCount = job.resumeCount || 0;
       entryWaitSince = 0; homeSince = 0; sessionErrors = 0;
       accountPickedOn = ''; accountPickedAt = 0;
+      pickedOn = ''; pickedAt = 0;
+      singleTeamPickedOn = ''; singleTeamPickedAt = 0; teamMissingSince = 0; inviteClickedKey = ''; inviteClicks = 0;
       backSince = 0; backClickedAt = 0; phoneWaitSince = 0; codeWaitSince = 0; phoneReloadAt = 0;
     }
     renderProgress(job);
@@ -1922,7 +2105,8 @@
       if (clock() - unknownSince > 25000) await pause('未识别当前授权页面，请手动继续；拿到回调后插件会自动提交。', 'unknown_page');
       return;
     }
-    if (!managed && ['signup', 'unknown'].includes(stage) && await signupWorkspace(text, path)) return;
+    if (!managed && ['signup', 'unknown', 'home'].includes(stage) && await signupWorkspace(text, path)) return;
+    if (!managed && job.pickSingleTeam && job.entryFormSeen && ['signup', 'unknown', 'home'].includes(stage) && await onboardingInviteStep()) return;
     if (managed && location.hostname === 'chatgpt.com' && ['home', 'unknown'].includes(stage)) {
       // Yield all page interaction to the host for invitation/workspace handling.
       unknownSince = clock();

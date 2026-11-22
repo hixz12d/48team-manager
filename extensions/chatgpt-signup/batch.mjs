@@ -29,6 +29,10 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const between = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
 
 function parseHandoffOption(handoff, hasTeam48) {
+  if (handoff?.rs === true) {
+    if (!hasTeam48) throw new Error('插件未配置 Team48 地址和令牌，无法开启自动接入 rs。');
+    return {handoffMode: 'rs', workspaceId: null, workspaceName: ''};
+  }
   if (handoff?.auto === true) {
     if (!hasTeam48) throw new Error('插件未配置 Team48 地址和令牌，无法开启自动接入。');
     return {handoffMode: 'auto', workspaceId: null, workspaceName: ''};
@@ -42,6 +46,7 @@ function parseHandoffOption(handoff, hasTeam48) {
 }
 
 function handoffSpecForBatch(batch) {
+  if (batch.handoffMode === 'rs') return {rs: true};
   if (batch.handoffMode === 'auto') return {auto: true};
   if (batch.handoffMode === 'workspace' && Number.isInteger(batch.workspaceId) && batch.workspaceId > 0) {
     return {workspaceId: batch.workspaceId, workspaceName: batch.workspaceName || ''};

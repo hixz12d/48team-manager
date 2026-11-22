@@ -20,9 +20,9 @@
       <p id="batch-emails-hint" class="hint">每行一个邮箱，自动去重，单批最多 50 个；开始前请关闭其他无痕窗口。</p>
       <label class="check-option"><input id="batch-hide-panel" type="checkbox">隐藏网页进度卡片，在插件弹窗中查看</label>
       <div id="batch-team48-auto" class="team48-box" hidden>
-        <label for="batch-auto-workspace">注册完成后自动接入团队</label>
+        <label for="batch-auto-workspace">注册完成后自动接入</label>
         <select id="batch-auto-workspace"><option value="">不自动接入</option></select>
-        <p class="hint">选「自动识别」时，每个号在无痕窗口内自动查询邀请团队，注册完成后自动：同步团队 → 接入本地 → 在本页授权 → 推送（按 Team48 设置推到 Sub2API 或 codex-rs）→ 今日切换 +1。邀请需已发出。</p>
+        <p id="batch-auto-hint" class="hint">默认不查 Team48 团队：网页遇到工作空间选择时只有 1 个 Team 自动点选，有 2 个及以上立即停止；注册完成后直接在本页授权并导入 codex-rs（已存在则覆盖更新凭据并保留原设置），遇手机验证暂停交人工。</p>
       </div>
       <button id="batch-start" type="submit" disabled>开始批量注册 <span aria-hidden="true">↗</span></button>
     </form>
@@ -70,9 +70,9 @@
       </details>
       <label class="check-option"><input id="hide-panel" type="checkbox">隐藏网页进度卡片，在插件弹窗中查看</label>
       <div id="team48-auto" class="team48-box" hidden>
-        <label for="auto-workspace">注册完成后自动接入团队</label>
+        <label for="auto-workspace">注册完成后自动接入</label>
         <select id="auto-workspace"><option value="">不自动接入</option></select>
-        <p class="hint">选「自动识别」时，开始注册就在后台查询哪个团队邀请了这个邮箱，注册完成后自动：同步团队 → 接入本地 → 在本页授权 → 推送（按 Team48 设置推到 Sub2API 或 codex-rs）→ 今日切换 +1。邀请需已发出。</p>
+        <p id="single-auto-hint" class="hint">默认不查 Team48 团队：网页遇到工作空间选择时只有 1 个 Team 自动点选，有 2 个及以上立即停止；注册完成后直接在本页授权并导入 codex-rs（已存在则覆盖更新凭据并保留原设置），遇手机验证暂停交人工。</p>
       </div>
       <button id="start" type="submit" disabled>开始注册 <span aria-hidden="true">↗</span></button>
     </form>
