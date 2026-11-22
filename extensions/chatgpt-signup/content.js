@@ -1,7 +1,7 @@
 /* Runs only in the single incognito tab explicitly started by the user. */
 (() => {
   if (window !== window.top) return;
-  const VERSION = '0.9.0';
+  const VERSION = '0.10.0';
   // One runner per extension world. Reloading an unpacked extension invalidates the old world.
   if (globalThis.__team48SignupRunner) return;
   globalThis.__team48SignupRunner = true;

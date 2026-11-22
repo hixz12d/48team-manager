@@ -18,7 +18,7 @@ Python 3.11、FastAPI、SQLAlchemy 2 + aiosqlite（SQLite WAL）、Jinja2 + 原�
 | `app/persistence/` | 表模型、仓储、`migrations/bootstrap.py`（启动时幂等建表 / 补列 / 补索引） |
 | `app/web/` | 路由（`pages.py` 页面、`api.py` 接口、`extension.py` 插件接口、`runner.py` 运行器接口、`codex_rs_onboard.py` rs 内部接口）、模板、静态资源；`static/fonts/` 是自托管的 Anthropic Sans / Mono |
 | `DESIGN.md` | 界面设计规范（配色、字号、组件、状态写法），改界面前先读 |
-| `extensions/chatgpt-signup/` | 自用注册插件；`content.js` 也被服务端托管注册复用；`runner.mjs` 是服务器模式 |
+| `extensions/chatgpt-signup/` | 自用注册插件（`incognito: spanning`，单个后台统管普通与无痕窗口）；`content.js` 也被服务端托管注册复用；`runner.mjs` 是服务器模式；`batch.mjs` 是本机批量无痕队列（依赖注入 `background.js` 的单号函数，状态存 `chrome.storage.session` 的 `batch`） |
 | `scripts/` | 本机工具：插件打包、单席位补位、浏览器冒烟、HubStudio 观察、Excel 购买台账一次性导入 |
 | `tests/` | Python / Node / Playwright 回归；`preview_app.py` 本地示例数据预览 |
 | `deploy/` | Dockerfile、compose、Nginx 配置 |

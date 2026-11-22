@@ -143,6 +143,66 @@ export const laterStage = (next, previous) => STAGE_ORDER.indexOf(previous) >= 0
   STAGE_ORDER.indexOf(next) > STAGE_ORDER.indexOf(previous);
 export const pauseReason = value => PAUSE_REASONS.has(value) ? value : 'other';
 
+// Batch incognito queue (popup <-> background contract).
+// view -> {job, batch: publicBatch(batch), incognito, incognitoAllowed, version, team48}
+// batch-start {emailsText, hidePanel, handoff} -> {batch}
+// batch-pause / batch-resume / batch-skip / batch-stop / batch-focus -> {batch}; batch-clear -> {batch: null}
+export const MAX_BATCH_EMAILS = 50;
+export const BATCH_COOLDOWN_MIN = 3000, BATCH_COOLDOWN_MAX = 8000;
+export const BATCH_STATUSES = new Set(['running', 'cooldown', 'waiting_human', 'paused', 'finished', 'stopped']);
+export const BATCH_ACTIVE = new Set(['running', 'cooldown', 'waiting_human', 'paused']);
+export const BATCH_ITEM_STATUSES = new Set(['pending', 'running', 'waiting_human', 'paused', 'succeeded', 'failed', 'skipped', 'stopped']);
+// Pauses that keep the current incognito window open and wait for a person.
+export const BATCH_HUMAN_PAUSE_REASONS = new Set(['captcha', 'phone', 'phone_pool_empty', 'phone_limit', 'phone_back_missing',
+  'phone_relay_error', 'rate_limit', 'user', 'user_edit', 'debugger_detached']);
+export const isBatchHumanPause = job => job?.status === 'paused' && BATCH_HUMAN_PAUSE_REASONS.has(pauseReason(job.pauseReason));
+
+const BATCH_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export function parseBatchEmails(rawText) {
+  const lines = String(rawText || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const seen = new Set(), emails = [], invalid = [];
+  let duplicateCount = 0;
+  for (const line of lines) {
+    const email = line.toLowerCase();
+    if (seen.has(email)) { duplicateCount++; continue; }
+    seen.add(email);
+    if (email.length > 254 || !BATCH_EMAIL.test(email)) invalid.push(line); else emails.push(email);
+  }
+  if (invalid.length) {
+    return {ok: false, emails: [], invalid: invalid.slice(0, 10), duplicateCount,
+      message: `有 ${invalid.length} 行邮箱格式不正确，请修正后再开始。`};
+  }
+  if (!emails.length) return {ok: false, emails: [], invalid: [], duplicateCount: 0, message: '请至少输入 1 个邮箱地址。'};
+  if (emails.length > MAX_BATCH_EMAILS) {
+    return {ok: false, emails: [], invalid: [], duplicateCount, message: `单批最多支持 ${MAX_BATCH_EMAILS} 个邮箱，请分批粘贴。`};
+  }
+  return {ok: true, emails, invalid: [], duplicateCount, message: ''};
+}
+
+export function publicBatch(batch) {
+  if (!batch) return null;
+  const items = (Array.isArray(batch.items) ? batch.items : []).map((item, index) => ({
+    index, email: String(item?.email || ''), password: String(item?.password || ''), passwordSet: !!item?.passwordSet,
+    status: BATCH_ITEM_STATUSES.has(item?.status) ? item.status : 'pending', stage: String(item?.stage || ''),
+    workspaceName: String(item?.workspaceName || '').slice(0, 120), message: String(item?.message || '').slice(0, 240),
+    errorCode: item?.errorCode ? String(item.errorCode).slice(0, 60) : null,
+    startedAt: Number(item?.startedAt) || null, finishedAt: Number(item?.finishedAt) || null,
+  }));
+  const counts = {total: items.length, pending: 0, running: 0, succeeded: 0, failed: 0, skipped: 0, stopped: 0};
+  for (const {status} of items) counts[['waiting_human', 'paused'].includes(status) ? 'running' : status]++;
+  return {
+    id: String(batch.id || ''), status: BATCH_STATUSES.has(batch.status) ? batch.status : 'stopped',
+    message: String(batch.message || '').slice(0, 300), startedAt: Number(batch.startedAt) || 0,
+    finishedAt: Number(batch.finishedAt) || null, cooldownUntil: Number(batch.cooldownUntil) || null,
+    attentionAt: Number(batch.attentionAt) || null, attentionReason: batch.attentionReason ? pauseReason(batch.attentionReason) : null,
+    currentIndex: Number.isInteger(batch.currentIndex) ? batch.currentIndex : -1,
+    windowId: Number.isInteger(batch.windowId) ? batch.windowId : null, hidePanel: batch.hidePanel === true,
+    handoffMode: ['auto', 'workspace', 'none'].includes(batch.handoffMode) ? batch.handoffMode : 'none',
+    workspaceId: Number.isInteger(batch.workspaceId) && batch.workspaceId > 0 ? batch.workspaceId : null,
+    workspaceName: String(batch.workspaceName || '').slice(0, 120), counts, items,
+  };
+}
+
 export function checkedProfile(value) {
   const name = String(value?.name || '').trim();
   const birthday = String(value?.birthday || '');
